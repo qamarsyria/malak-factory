@@ -1,0 +1,9 @@
+edge-tts==6.1.12
+moviepy==1.0.3
+Pillow==10.4.0
+arabic-reshaper==3.0.0
+python-bidi==0.6.3
+requests==2.32.3
+google-api-python-client==2.147.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
