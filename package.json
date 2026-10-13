@@ -1,0 +1,11 @@
+{
+  "name": "malak-factory",
+  "version": "1.0.0",
+  "private": true,
+  "description": "مصنع فيديو آلي من محتوى ملاك المعرفة",
+  "scripts": {
+    "parse:riyad": "node scripts/parse_riyad.js",
+    "parse:content": "node scripts/parse_content.js",
+    "parse:all": "npm run parse:riyad && npm run parse:content"
+  }
+}
