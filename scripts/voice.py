@@ -1,27 +1,33 @@
-"""توليد الصوت العربي — gTTS (Google) كأساس، edge-tts كبديل."""
+"""توليد الصوت العربي — edge-tts (أصوات رجل) مع gTTS كبديل."""
 import asyncio
 import time
 from pathlib import Path
 
 
-def _gtts(text, out_path):
-    """المحرك الأساسي: Google TTS."""
-    from gtts import gTTS
-    tts = gTTS(text=text, lang="ar", slow=False)
-    tts.save(out_path)
+# أصوات رجل عربية متعددة (مرتبة حسب الجودة)
+MALE_VOICES = [
+    "ar-EG-ShakirNeural",      # مصري، فصيح
+    "ar-SA-HamedNeural",       # سعودي
+    "ar-SY-LaithNeural",       # سوري
+    "ar-JO-TaimNeural",        # أردني
+    "ar-AE-HamdanNeural",      # إماراتي
+]
 
 
-async def _edge_async(text, out_path):
+async def _edge_async(text, out_path, voice):
     import edge_tts
-    from config import TTS_VOICE, TTS_RATE, TTS_VOLUME
-    communicate = edge_tts.Communicate(
-        text, TTS_VOICE, rate=TTS_RATE, volume=TTS_VOLUME
-    )
+    communicate = edge_tts.Communicate(text, voice, rate="+0%", volume="+0%")
     await communicate.save(out_path)
 
 
-def _edge(text, out_path):
-    asyncio.run(_edge_async(text, out_path))
+def _edge(text, out_path, voice):
+    asyncio.run(_edge_async(text, out_path, voice))
+
+
+def _gtts(text, out_path):
+    from gtts import gTTS
+    tts = gTTS(text=text, lang="ar", slow=False)
+    tts.save(out_path)
 
 
 def _is_ok(out_path):
@@ -30,38 +36,38 @@ def _is_ok(out_path):
 
 
 def generate(text, out_path="out/voice.mp3"):
-    """يولّد الصوت. gTTS أولاً، ثم edge-tts كبديل."""
     if not text or not text.strip():
         raise ValueError("النص فارغ")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     text = text.strip()
 
-    # المحرك الأساسي: gTTS
+    # 1) جرّب edge-tts مع كل الأصوات الرجالية
+    for voice in MALE_VOICES:
+        for attempt in range(1, 3):
+            try:
+                print(f"🔊 edge-tts ({voice}) محاولة {attempt}/2...")
+                _edge(text, out_path, voice)
+                if _is_ok(out_path):
+                    size = Path(out_path).stat().st_size
+                    print(f"✅ الصوت (edge-tts، {voice}): {out_path} ({size} بايت)")
+                    return out_path
+            except Exception as e:
+                print(f"⚠️  {voice} فشل: {str(e)[:100]}")
+                time.sleep(1)
+
+    # 2) إذا فشل كل شيء، نستخدم gTTS كبديل
+    print("⚠️  كل أصوات edge-tts فشلت — استخدام gTTS")
     for attempt in range(1, 4):
         try:
-            print(f"🔊 محاولة gTTS {attempt}/3...")
+            print(f"🔊 gTTS محاولة {attempt}/3...")
             _gtts(text, out_path)
             if _is_ok(out_path):
                 size = Path(out_path).stat().st_size
                 print(f"✅ الصوت (gTTS): {out_path} ({size} بايت)")
                 return out_path
-            print(f"⚠️  الملف صغير جداً")
         except Exception as e:
             print(f"⚠️  gTTS فشل: {e}")
-            time.sleep(2)
-
-    # البديل: edge-tts
-    for attempt in range(1, 3):
-        try:
-            print(f"🔊 محاولة edge-tts (بديل) {attempt}/2...")
-            _edge(text, out_path)
-            if _is_ok(out_path):
-                size = Path(out_path).stat().st_size
-                print(f"✅ الصوت (edge-tts): {out_path} ({size} بايت)")
-                return out_path
-        except Exception as e:
-            print(f"⚠️  edge-tts فشل: {e}")
             time.sleep(2)
 
     raise RuntimeError("كل محركات الصوت فشلت")
