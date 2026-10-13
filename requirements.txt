@@ -1,5 +1,5 @@
+piper-tts>=1.2.0
 gTTS>=2.5.0
-edge-tts>=7.0.0
 moviepy==1.0.3
 Pillow==9.5.0
 arabic-reshaper==3.0.0
