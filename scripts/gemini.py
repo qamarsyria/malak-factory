@@ -1,4 +1,4 @@
-"""إعادة صياغة النص إلى سكريبت فيديو (40-50 كلمة) عبر Gemini."""
+ح"""إعادة صياغة النص إلى سكريبت فيديو (40-50 كلمة) عبر Gemini."""
 import json
 import requests
 from config import GEMINI_API_KEY
@@ -58,7 +58,7 @@ def _call_gemini(model, prompt):
         ],
     }
     try:
-        r = requests.post(url, json=body, timeout=90)
+        r = requests.post(url, json=body, timeout=30)
         if r.status_code != 200:
             print(f"⚠️  {model}: HTTP {r.status_code} — {r.text[:200]}")
             return None
