@@ -1,5 +1,6 @@
 """إعادة صياغة النص إلى سكريبت فيديو (40-50 كلمة) عبر Gemini."""
 import json
+import re
 import requests
 from config import GEMINI_API_KEY
 
@@ -108,10 +109,34 @@ def reformulate(item):
     return _fallback(item)
 
 
+def _clean_hadith_start(text):
+    """يزيل البدايات الشائعة من نصوص الأحاديث."""
+    patterns = [
+        r'^قَالَ\s*:\s*',
+        r'^قَالَتْ\s*:\s*',
+        r'^قَالَ\s+',
+        r'^قَالَتْ\s+',
+        r'^عَنْ\s+[^:]+?:\s*',
+        r'^عَنِ\s+[^:]+?:\s*',
+        r'^رَسُولُ\s+اللَّهِ.*?:\s*',
+    ]
+    for p in patterns:
+        text = re.sub(p, '', text, count=1).strip()
+    return text
+
+
 def _fallback(item):
-    q = item.get("question", "").strip()
+    """يرجع النص الأصلي كـ سؤال/جواب — بدون تكرار."""
     text = item["text"].strip()
-    if not q:
-        first = text.split(".")[0].strip()
-        q = first[:60] + ("..." if len(first) > 60 else "")
-    return {"question": q, "answer": text, "used_original": True}
+    cleaned = _clean_hadith_start(text)
+    source_type = item.get("source_type", "")
+
+    if source_type == "riyad":
+        question = "من رياض الصالحين — حديث اليوم"
+    elif source_type == "hadith":
+        question = "من هدي النبي ﷺ"
+    else:
+        q = item.get("question", "").strip()
+        question = q if q else "مسألة شرعية"
+
+    return {"question": question, "answer": cleaned, "used_original": True}
