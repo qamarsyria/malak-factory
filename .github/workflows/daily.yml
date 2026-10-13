@@ -2,7 +2,6 @@ name: Daily Video Factory
 
 on:
   schedule:
-    # 05:00 UTC = 08:00 دمشق
     - cron: '0 5 * * *'
   workflow_dispatch:
 
@@ -23,8 +22,12 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg + Arabic fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-hosny-amiri
+          echo "الخطوط العربية المتوفرة:"
+          fc-list :lang=ar | head -20
 
       - name: Install Python deps
         run: pip install -r requirements.txt
