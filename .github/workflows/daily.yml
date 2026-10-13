@@ -2,6 +2,7 @@ name: Daily Video Factory
 
 on:
   schedule:
+    # 05:00 UTC = 08:00 دمشق
     - cron: '0 5 * * *'
   workflow_dispatch:
 
@@ -22,15 +23,35 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install FFmpeg + Arabic fonts
+      - name: Install FFmpeg + Arabic fonts + libraqm
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core fonts-hosny-amiri
+          sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0
+          echo "═══════════════════════════════════════"
           echo "الخطوط العربية المتوفرة:"
+          echo "═══════════════════════════════════════"
           fc-list :lang=ar | head -20
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "التحقق من libraqm:"
+          echo "═══════════════════════════════════════"
+          ldconfig -p | grep -i raqm || echo "⚠️ libraqm غير موجود"
 
       - name: Install Python deps
         run: pip install -r requirements.txt
+
+      - name: Verify Pillow has RAQM
+        run: |
+          python -c "
+          from PIL import features
+          print('Pillow version:', __import__('PIL').__version__)
+          raqm = features.check('raqm')
+          print('RAQM support:', raqm)
+          if not raqm:
+              print('⚠️  RAQM not available — النص العربي قد يظهر مشوّهاً')
+          else:
+              print('✅ RAQM متوفر — النص العربي سيظهر بشكل صحيح')
+          "
 
       - name: Prepare JSON from sources
         run: |
@@ -56,6 +77,15 @@ jobs:
         with:
           name: video-${{ github.run_number }}
           path: out/video.mp4
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload composite image as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: composite-${{ github.run_number }}
+          path: out/composite.png
           retention-days: 7
           if-no-files-found: ignore
 
