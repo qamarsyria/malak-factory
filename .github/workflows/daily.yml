@@ -2,7 +2,6 @@ name: Daily Video Factory
 
 on:
   schedule:
-    # 05:00 UTC = 08:00 دمشق
     - cron: '0 5 * * *'
   workflow_dispatch:
 
@@ -12,7 +11,7 @@ permissions:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,34 +22,42 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install FFmpeg + Arabic fonts + libraqm
+      - name: Install FFmpeg + Arabic fonts + espeak-ng
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0
+          sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0 espeak-ng
           echo "═══════════════════════════════════════"
-          echo "الخطوط العربية المتوفرة:"
-          echo "═══════════════════════════════════════"
+          echo "الخطوط العربية:"
           fc-list :lang=ar | head -20
-          echo ""
           echo "═══════════════════════════════════════"
-          echo "التحقق من libraqm:"
+          echo "espeak-ng:"
+          espeak-ng --version
           echo "═══════════════════════════════════════"
-          ldconfig -p | grep -i raqm || echo "⚠️ libraqm غير موجود"
 
       - name: Install Python deps
         run: pip install -r requirements.txt
+
+      - name: Download Piper Arabic voice model
+        run: |
+          mkdir -p /tmp/piper
+          cd /tmp/piper
+          echo "⬇️  تحميل نموذج Piper (رجل أردني)..."
+          wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx" -O ar_JO-kareem-medium.onnx
+          wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx.json" -O ar_JO-kareem-medium.onnx.json
+          ls -lh /tmp/piper/
 
       - name: Verify Pillow has RAQM
         run: |
           python -c "
           from PIL import features
-          print('Pillow version:', __import__('PIL').__version__)
+          import PIL
+          print('Pillow version:', PIL.__version__)
           raqm = features.check('raqm')
           print('RAQM support:', raqm)
-          if not raqm:
-              print('⚠️  RAQM not available — النص العربي قد يظهر مشوّهاً')
+          if raqm:
+              print('✅ RAQM متوفر')
           else:
-              print('✅ RAQM متوفر — النص العربي سيظهر بشكل صحيح')
+              print('⚠️  RAQM غير متوفر')
           "
 
       - name: Prepare JSON from sources
