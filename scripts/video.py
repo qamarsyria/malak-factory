@@ -9,7 +9,7 @@ import arabic_reshaper
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from config import (
     VIDEO_W, VIDEO_H, VIDEO_FPS, VIDEO_DURATION_MAX,
-    FONT_SIZE, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR,
+    FONT_PATH, FONT_SIZE, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR,
     PIXABAY_KEY, PIXABAY_QUERY, BG_FALLBACK,
     BG_OVERLAY_OPACITY, KEN_BURNS_ZOOM,
 )
@@ -25,6 +25,7 @@ def _find_arabic_font():
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -41,6 +42,10 @@ def _find_arabic_font():
             if "Amiri" in f and "Bold" in f:
                 print(f"✅ الخط المكتشف (Amiri Bold): {f}")
                 return f
+        for f in files:
+            if "Amiri" in f:
+                print(f"✅ الخط المكتشف (Amiri): {f}")
+                return f
         if files:
             print(f"✅ الخط المكتشف: {files[0]}")
             return files[0]
@@ -54,16 +59,13 @@ DETECTED_FONT = _find_arabic_font()
 
 
 def _shape(text):
-    """
-    يعالج النص العربي: يوصل الحروف (reshape) فقط.
-    لا نستخدم bidi لأن RAQM في Pillow يتعامل مع الاتجاه.
-    """
+    """يعالج النص العربي: يوصل الحروف فقط (RAQM يتعامل مع الاتجاه)."""
     text = str(text)
     return arabic_reshaper.reshape(text)
 
 
 def _wrap(text, font, max_w, draw):
-    """يكسر النص إلى أسطر (بعد الـ reshape)."""
+    """يكسر النص إلى أسطر."""
     words = text.split()
     lines, current = [], ""
     for w in words:
@@ -169,6 +171,7 @@ def _make_composite(bg_path, question, answer, attribution):
     draw = ImageDraw.Draw(bg)
 
     font_path = DETECTED_FONT
+
     # استخدام RAQM layout engine
     try:
         font_answer = ImageFont.truetype(font_path, FONT_SIZE, layout_engine=ImageFont.Layout.RAQM)
