@@ -36,7 +36,7 @@ STATE_FILE = "state/published.json"
 
 # ===== Gemini =====
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
