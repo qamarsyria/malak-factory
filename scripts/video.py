@@ -9,7 +9,7 @@ import arabic_reshaper
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from config import (
     VIDEO_W, VIDEO_H, VIDEO_FPS, VIDEO_DURATION_MAX,
-    FONT_PATH, FONT_SIZE, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR,
+    FONT_SIZE, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR,
     PIXABAY_KEY, PIXABAY_QUERY, BG_FALLBACK,
     BG_OVERLAY_OPACITY, KEN_BURNS_ZOOM,
 )
@@ -22,14 +22,9 @@ def _find_arabic_font():
         return FONT_PATH
 
     candidates = [
-        # Cairo (مفضّل — يحتوي تشكيل عربي)
-        "/usr/share/fonts/truetype/cairo/Cairo-Bold.ttf",
-        # Amiri (بديل جيد — مصمم للنصوص العربية بتشكيل)
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
-        # Noto Naskh (احتياطي)
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -42,18 +37,9 @@ def _find_arabic_font():
             capture_output=True, text=True, timeout=10,
         )
         files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
-        # فضّل Amiri
         for f in files:
             if "Amiri" in f and "Bold" in f:
                 print(f"✅ الخط المكتشف (Amiri Bold): {f}")
-                return f
-        for f in files:
-            if "Amiri" in f:
-                print(f"✅ الخط المكتشف (Amiri): {f}")
-                return f
-        for f in files:
-            if "Bold" in f:
-                print(f"✅ الخط المكتشف: {f}")
                 return f
         if files:
             print(f"✅ الخط المكتشف: {files[0]}")
@@ -70,8 +56,7 @@ DETECTED_FONT = _find_arabic_font()
 def _shape(text):
     """
     يعالج النص العربي: يوصل الحروف (reshape) فقط.
-    لا نستخدم bidi لأن PIL يرسم من اليمين لليسار تلقائياً
-    عند عرض نص عربي.
+    لا نستخدم bidi لأن RAQM في Pillow يتعامل مع الاتجاه.
     """
     text = str(text)
     return arabic_reshaper.reshape(text)
@@ -184,9 +169,17 @@ def _make_composite(bg_path, question, answer, attribution):
     draw = ImageDraw.Draw(bg)
 
     font_path = DETECTED_FONT
-    font_answer = ImageFont.truetype(font_path, FONT_SIZE)
-    font_question = ImageFont.truetype(font_path, int(FONT_SIZE * 0.85))
-    font_source = ImageFont.truetype(font_path, 40)
+    # استخدام RAQM layout engine
+    try:
+        font_answer = ImageFont.truetype(font_path, FONT_SIZE, layout_engine=ImageFont.Layout.RAQM)
+        font_question = ImageFont.truetype(font_path, int(FONT_SIZE * 0.85), layout_engine=ImageFont.Layout.RAQM)
+        font_source = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
+        print("✅ استخدام RAQM layout engine")
+    except Exception as e:
+        print(f"⚠️  فشل RAQM، استخدام الافتراضي: {e}")
+        font_answer = ImageFont.truetype(font_path, FONT_SIZE)
+        font_question = ImageFont.truetype(font_path, int(FONT_SIZE * 0.85))
+        font_source = ImageFont.truetype(font_path, 40)
 
     q_shaped = _shape(question) if question else ""
     a_shaped = _shape(answer)
