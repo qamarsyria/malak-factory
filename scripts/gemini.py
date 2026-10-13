@@ -126,17 +126,8 @@ def _clean_hadith_start(text):
 
 
 def _fallback(item):
-    """يرجع النص الأصلي كـ سؤال/جواب — بدون تكرار."""
+    """يرجع الحديث فقط — بدون عنوان."""
     text = item["text"].strip()
     cleaned = _clean_hadith_start(text)
-    source_type = item.get("source_type", "")
-
-    if source_type == "riyad":
-        question = "من رياض الصالحين — حديث اليوم"
-    elif source_type == "hadith":
-        question = "من هدي النبي ﷺ"
-    else:
-        q = item.get("question", "").strip()
-        question = q if q else "مسألة شرعية"
-
-    return {"question": question, "answer": cleaned, "used_original": True}
+    # لا سؤال — فقط الحديث
+    return {"question": "", "answer": cleaned, "used_original": True}
