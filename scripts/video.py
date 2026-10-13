@@ -6,7 +6,6 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
-from bidi.algorithm import get_display
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from config import (
     VIDEO_W, VIDEO_H, VIDEO_FPS, VIDEO_DURATION_MAX,
@@ -23,12 +22,14 @@ def _find_arabic_font():
         return FONT_PATH
 
     candidates = [
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        # Cairo (مفضّل — يحتوي تشكيل عربي)
+        "/usr/share/fonts/truetype/cairo/Cairo-Bold.ttf",
+        # Amiri (بديل جيد — مصمم للنصوص العربية بتشكيل)
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
-        "/usr/share/fonts/truetype/kacst/KacstTitle.ttf",
-        "/usr/share/fonts/truetype/kacst/KacstOne.ttf",
+        # Noto Naskh (احتياطي)
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -41,33 +42,47 @@ def _find_arabic_font():
             capture_output=True, text=True, timeout=10,
         )
         files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        # فضّل Amiri
+        for f in files:
+            if "Amiri" in f and "Bold" in f:
+                print(f"✅ الخط المكتشف (Amiri Bold): {f}")
+                return f
+        for f in files:
+            if "Amiri" in f:
+                print(f"✅ الخط المكتشف (Amiri): {f}")
+                return f
         for f in files:
             if "Bold" in f:
-                print(f"✅ الخط المكتشف (fc-list): {f}")
+                print(f"✅ الخط المكتشف: {f}")
                 return f
         if files:
-            print(f"✅ الخط المكتشف (fc-list): {files[0]}")
+            print(f"✅ الخط المكتشف: {files[0]}")
             return files[0]
     except Exception as e:
         print(f"⚠️  fc-list فشل: {e}")
 
-    raise RuntimeError(
-        "لا يوجد خط عربي. ثبّت fonts-noto-core في الـ workflow."
-    )
+    raise RuntimeError("لا يوجد خط عربي. ثبّت fonts-hosny-amiri في الـ workflow.")
 
 
 DETECTED_FONT = _find_arabic_font()
 
 
 def _shape(text):
-    return get_display(arabic_reshaper.reshape(str(text)))
+    """
+    يعالج النص العربي: يوصل الحروف (reshape) فقط.
+    لا نستخدم bidi لأن PIL يرسم من اليمين لليسار تلقائياً
+    عند عرض نص عربي.
+    """
+    text = str(text)
+    return arabic_reshaper.reshape(text)
 
 
 def _wrap(text, font, max_w, draw):
+    """يكسر النص إلى أسطر (بعد الـ reshape)."""
     words = text.split()
     lines, current = [], ""
     for w in words:
-        trial = (current + " " + w).strip()
+        trial = (current + " " + w).strip() if current else w
         bbox = draw.textbbox((0, 0), trial, font=font)
         if bbox[2] - bbox[0] <= max_w:
             current = trial
@@ -124,13 +139,9 @@ def _fetch_background(out_path="out/bg.jpg"):
             r = requests.get(
                 "https://pixabay.com/api/",
                 params={
-                    "key": PIXABAY_KEY,
-                    "q": q,
-                    "image_type": "photo",
-                    "orientation": "vertical",
-                    "per_page": 30,
-                    "safesearch": "true",
-                    "min_width": 1080,
+                    "key": PIXABAY_KEY, "q": q,
+                    "image_type": "photo", "orientation": "vertical",
+                    "per_page": 30, "safesearch": "true", "min_width": 1080,
                 },
                 timeout=20,
             )
@@ -138,8 +149,7 @@ def _fetch_background(out_path="out/bg.jpg"):
             hits = data.get("hits") or []
             if hits:
                 url = random.choice(hits)["largeImageURL"]
-                img = requests.get(url, timeout=30).content
-                Path(out_path).write_bytes(img)
+                Path(out_path).write_bytes(requests.get(url, timeout=30).content)
                 print(f"🖼️  خلفية من Pixabay: {q}")
                 return out_path
         except Exception as e:
@@ -178,8 +188,11 @@ def _make_composite(bg_path, question, answer, attribution):
     font_question = ImageFont.truetype(font_path, int(FONT_SIZE * 0.85))
     font_source = ImageFont.truetype(font_path, 40)
 
-    q_lines = _wrap(_shape(question), font_question, VIDEO_W - 120, draw) if question else []
-    a_lines = _wrap(_shape(answer), font_answer, VIDEO_W - 120, draw)
+    q_shaped = _shape(question) if question else ""
+    a_shaped = _shape(answer)
+
+    q_lines = _wrap(q_shaped, font_question, VIDEO_W - 120, draw) if q_shaped else []
+    a_lines = _wrap(a_shaped, font_answer, VIDEO_W - 120, draw)
 
     line_h_q = int(FONT_SIZE * 0.85 * 1.5)
     line_h_a = int(FONT_SIZE * 1.6)
