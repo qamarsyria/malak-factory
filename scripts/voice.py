@@ -1,4 +1,4 @@
-"""توليد الصوت العربي — Piper (صوت رجالي) مع بدائل."""
+"""توليد الصوت العربي — Piper (صوت رجل) مع بدائل."""
 import os
 import subprocess
 import time
@@ -9,9 +9,10 @@ PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
 
 
 def _piper_to_wav(text, wav_path):
-    """يستخدم Piper CLI مع نموذج رجل أردني."""
     if not os.path.exists(PIPER_MODEL):
-        raise RuntimeError(f"نموذج Piper غير موجود: {PIPER_MODEL}")
+        raise RuntimeError(f"نموذج Piper غير موجود")
+    if not os.path.exists(PIPER_CONFIG):
+        raise RuntimeError(f"ملف إعدادات Piper غير موجود")
 
     proc = subprocess.run(
         [
@@ -30,7 +31,6 @@ def _piper_to_wav(text, wav_path):
 
 
 def _wav_to_mp3(wav_path, mp3_path):
-    """يحوّل wav إلى mp3 بـ ffmpeg."""
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", wav_path,
@@ -44,7 +44,6 @@ def _wav_to_mp3(wav_path, mp3_path):
 
 
 def _espeak(text, out_mp3):
-    """بديل: espeak-ng بصوت رجل عربي."""
     wav = out_mp3.replace(".mp3", ".wav")
     subprocess.run(
         ["espeak-ng", "-v", "ar", "-s", "145", "-p", "35", "-w", wav, text],
