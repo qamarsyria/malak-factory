@@ -1,0 +1,36 @@
+name: Test Batch 2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt
+
+      - name: Run content + gemini + verifier + voice
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cd scripts
+          python -c "
+          import content, gemini, verifier, voice
+          item, state = content.pick_next()
+          print('📖 العنصر:', item['id'], '—', item['text'][:80])
+          script = gemini.reformulate(item)
+          print('✍️ السؤال:', script['question'])
+          print('✍️ الجواب:', script['answer'][:100])
+          print('🔎 التحقق:', verifier.verify(script)['ok'])
+          voice.generate(script['question'] + '. ' + script['answer'], 'test.mp3')
+          print('✅ اكتمل الاختبار')
+          "
