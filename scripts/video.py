@@ -1,5 +1,7 @@
 """تركيب الفيديو: خلفية + نص عربي + صوت."""
+import os
 import random
+import subprocess
 from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -12,6 +14,49 @@ from config import (
     PIXABAY_KEY, PIXABAY_QUERY, BG_FALLBACK,
     BG_OVERLAY_OPACITY, KEN_BURNS_ZOOM,
 )
+
+
+def _find_arabic_font():
+    """يبحث عن خط عربي متوفر في النظام."""
+    if FONT_PATH and os.path.exists(FONT_PATH):
+        print(f"✅ الخط (مخصص): {FONT_PATH}")
+        return FONT_PATH
+
+    candidates = [
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Regular.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstTitle.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstOne.ttf",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            print(f"✅ الخط المكتشف: {c}")
+            return c
+
+    try:
+        result = subprocess.run(
+            ["fc-list", ":lang=ar", "--format=%{file}\n"],
+            capture_output=True, text=True, timeout=10,
+        )
+        files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        for f in files:
+            if "Bold" in f:
+                print(f"✅ الخط المكتشف (fc-list): {f}")
+                return f
+        if files:
+            print(f"✅ الخط المكتشف (fc-list): {files[0]}")
+            return files[0]
+    except Exception as e:
+        print(f"⚠️  fc-list فشل: {e}")
+
+    raise RuntimeError(
+        "لا يوجد خط عربي. ثبّت fonts-noto-core في الـ workflow."
+    )
+
+
+DETECTED_FONT = _find_arabic_font()
 
 
 def _shape(text):
@@ -36,12 +81,11 @@ def _wrap(text, font, max_w, draw):
 
 
 def _generate_fallback_bg(out_path):
-    """يولّد خلفية تدرج أخضر-ذهبي جميلة برمجياً."""
+    """يولّد خلفية تدرج أخضر-ذهبي."""
     print("🎨 توليد خلفية احتياطية برمجياً...")
     img = Image.new("RGB", (VIDEO_W, VIDEO_H), (13, 77, 60))
     draw = ImageDraw.Draw(img)
 
-    # تدرج عمودي من الأخضر الداكن إلى الأخضر الفاتح
     for y in range(VIDEO_H):
         ratio = y / VIDEO_H
         r = int(10 + (26 - 10) * ratio)
@@ -49,18 +93,15 @@ def _generate_fallback_bg(out_path):
         b = int(44 + (84 - 44) * ratio)
         draw.line([(0, y), (VIDEO_W, y)], fill=(r, g, b))
 
-    # نقاط ذهبية خفيفة (زخرفة)
     for _ in range(80):
         x = random.randint(0, VIDEO_W)
         y = random.randint(0, VIDEO_H)
         size = random.randint(1, 3)
-        alpha = random.randint(30, 80)
         draw.ellipse(
             [x - size, y - size, x + size, y + size],
             fill=(212, 175, 55),
         )
 
-    # إطار ذهبي خفيف
     border = 20
     draw.rectangle(
         [border, border, VIDEO_W - border, VIDEO_H - border],
@@ -75,10 +116,8 @@ def _generate_fallback_bg(out_path):
 
 
 def _fetch_background(out_path="out/bg.jpg"):
-    """يجرب Pixabay، ثم الخلفية المرفوعة، ثم يولد خلفية برمجياً."""
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # 1) Pixabay إن وُجد المفتاح
     if PIXABAY_KEY:
         try:
             q = random.choice(PIXABAY_QUERY.split(",")).strip()
@@ -106,13 +145,11 @@ def _fetch_background(out_path="out/bg.jpg"):
         except Exception as e:
             print(f"⚠️  Pixabay فشل: {e}")
 
-    # 2) خلفية مرفوعة يدوياً
     if Path(BG_FALLBACK).exists():
         Path(out_path).write_bytes(Path(BG_FALLBACK).read_bytes())
         print(f"🖼️  خلفية مرفوعة: {BG_FALLBACK}")
         return out_path
 
-    # 3) توليد خلفية برمجياً
     return _generate_fallback_bg(out_path)
 
 
@@ -136,15 +173,10 @@ def _make_composite(bg_path, question, answer, attribution):
 
     draw = ImageDraw.Draw(bg)
 
-    if not Path(FONT_PATH).exists():
-        raise RuntimeError(
-            f"الخط غير موجود: {FONT_PATH}\n"
-            "ارفع ملف Cairo-Bold.ttf إلى assets/fonts/"
-        )
-
-    font_answer = ImageFont.truetype(FONT_PATH, FONT_SIZE)
-    font_question = ImageFont.truetype(FONT_PATH, int(FONT_SIZE * 0.85))
-    font_source = ImageFont.truetype(FONT_PATH, 40)
+    font_path = DETECTED_FONT
+    font_answer = ImageFont.truetype(font_path, FONT_SIZE)
+    font_question = ImageFont.truetype(font_path, int(FONT_SIZE * 0.85))
+    font_source = ImageFont.truetype(font_path, 40)
 
     q_lines = _wrap(_shape(question), font_question, VIDEO_W - 120, draw) if question else []
     a_lines = _wrap(_shape(answer), font_answer, VIDEO_W - 120, draw)
