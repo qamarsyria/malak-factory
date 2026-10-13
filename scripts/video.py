@@ -15,12 +15,10 @@ from config import (
 
 
 def _shape(text):
-    """يعالج النص العربي للعرض."""
     return get_display(arabic_reshaper.reshape(str(text)))
 
 
 def _wrap(text, font, max_w, draw):
-    """يكسر النص إلى أسطر حسب العرض."""
     words = text.split()
     lines, current = [], ""
     for w in words:
@@ -37,10 +35,50 @@ def _wrap(text, font, max_w, draw):
     return lines
 
 
+def _generate_fallback_bg(out_path):
+    """يولّد خلفية تدرج أخضر-ذهبي جميلة برمجياً."""
+    print("🎨 توليد خلفية احتياطية برمجياً...")
+    img = Image.new("RGB", (VIDEO_W, VIDEO_H), (13, 77, 60))
+    draw = ImageDraw.Draw(img)
+
+    # تدرج عمودي من الأخضر الداكن إلى الأخضر الفاتح
+    for y in range(VIDEO_H):
+        ratio = y / VIDEO_H
+        r = int(10 + (26 - 10) * ratio)
+        g = int(58 + (107 - 58) * ratio)
+        b = int(44 + (84 - 44) * ratio)
+        draw.line([(0, y), (VIDEO_W, y)], fill=(r, g, b))
+
+    # نقاط ذهبية خفيفة (زخرفة)
+    for _ in range(80):
+        x = random.randint(0, VIDEO_W)
+        y = random.randint(0, VIDEO_H)
+        size = random.randint(1, 3)
+        alpha = random.randint(30, 80)
+        draw.ellipse(
+            [x - size, y - size, x + size, y + size],
+            fill=(212, 175, 55),
+        )
+
+    # إطار ذهبي خفيف
+    border = 20
+    draw.rectangle(
+        [border, border, VIDEO_W - border, VIDEO_H - border],
+        outline=(212, 175, 55),
+        width=3,
+    )
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path, "JPEG", quality=92)
+    print(f"🎨 خلفية مولّدة: {out_path}")
+    return out_path
+
+
 def _fetch_background(out_path="out/bg.jpg"):
-    """يجرب Pixabay، ثم الخلفية الاحتياطية."""
+    """يجرب Pixabay، ثم الخلفية المرفوعة، ثم يولد خلفية برمجياً."""
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
+    # 1) Pixabay إن وُجد المفتاح
     if PIXABAY_KEY:
         try:
             q = random.choice(PIXABAY_QUERY.split(",")).strip()
@@ -68,21 +106,19 @@ def _fetch_background(out_path="out/bg.jpg"):
         except Exception as e:
             print(f"⚠️  Pixabay فشل: {e}")
 
-    if not Path(BG_FALLBACK).exists():
-        raise RuntimeError(
-            f"لا توجد خلفية. أضف صورة إلى: {BG_FALLBACK}\n"
-            "أو ضع PIXABAY_API_KEY في GitHub Secrets."
-        )
-    Path(out_path).write_bytes(Path(BG_FALLBACK).read_bytes())
-    print(f"🖼️  خلفية احتياطية: {BG_FALLBACK}")
-    return out_path
+    # 2) خلفية مرفوعة يدوياً
+    if Path(BG_FALLBACK).exists():
+        Path(out_path).write_bytes(Path(BG_FALLBACK).read_bytes())
+        print(f"🖼️  خلفية مرفوعة: {BG_FALLBACK}")
+        return out_path
+
+    # 3) توليد خلفية برمجياً
+    return _generate_fallback_bg(out_path)
 
 
 def _make_composite(bg_path, question, answer, attribution):
-    """يركّب النص على الخلفية بـ PIL. يرجع مسار PNG."""
     bg = Image.open(bg_path).convert("RGB")
 
-    # قص وتوسيط إلى 1080x1920
     ratio = max(VIDEO_W / bg.width, VIDEO_H / bg.height)
     bg = bg.resize(
         (int(bg.width * ratio), int(bg.height * ratio)),
@@ -92,7 +128,6 @@ def _make_composite(bg_path, question, answer, attribution):
     top = (bg.height - VIDEO_H) // 2
     bg = bg.crop((left, top, left + VIDEO_W, top + VIDEO_H))
 
-    # طبقة تعتيم
     overlay = Image.new(
         "RGBA", bg.size,
         (0, 0, 0, int(255 * BG_OVERLAY_OPACITY)),
@@ -101,7 +136,6 @@ def _make_composite(bg_path, question, answer, attribution):
 
     draw = ImageDraw.Draw(bg)
 
-    # تحقق من الخط
     if not Path(FONT_PATH).exists():
         raise RuntimeError(
             f"الخط غير موجود: {FONT_PATH}\n"
@@ -112,7 +146,6 @@ def _make_composite(bg_path, question, answer, attribution):
     font_question = ImageFont.truetype(FONT_PATH, int(FONT_SIZE * 0.85))
     font_source = ImageFont.truetype(FONT_PATH, 40)
 
-    # كسر الأسطر
     q_lines = _wrap(_shape(question), font_question, VIDEO_W - 120, draw) if question else []
     a_lines = _wrap(_shape(answer), font_answer, VIDEO_W - 120, draw)
 
@@ -122,7 +155,6 @@ def _make_composite(bg_path, question, answer, attribution):
 
     y = max(150, (VIDEO_H - total_h) // 2)
 
-    # السؤال (ذهبي)
     for line in q_lines:
         bbox = draw.textbbox((0, 0), line, font=font_question)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
@@ -135,7 +167,6 @@ def _make_composite(bg_path, question, answer, attribution):
     if q_lines:
         y += 60
 
-    # الجواب (أبيض)
     for line in a_lines:
         bbox = draw.textbbox((0, 0), line, font=font_answer)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
@@ -146,7 +177,6 @@ def _make_composite(bg_path, question, answer, attribution):
         )
         y += line_h_a
 
-    # المصدر أسفل
     if attribution:
         s_text = _shape(f"— {attribution}")
         bbox = draw.textbbox((0, 0), s_text, font=font_source)
@@ -163,10 +193,6 @@ def _make_composite(bg_path, question, answer, attribution):
 
 
 def build(script, voice_path, out_path="out/video.mp4"):
-    """
-    script: dict فيه question, answer
-    voice_path: مسار mp3
-    """
     Path("out").mkdir(exist_ok=True)
 
     bg_path = _fetch_background()
