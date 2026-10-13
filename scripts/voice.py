@@ -1,33 +1,61 @@
-"""توليد الصوت العربي — edge-tts (أصوات رجل) مع gTTS كبديل."""
-import asyncio
+"""توليد الصوت العربي — Piper (صوت رجالي) مع بدائل."""
+import os
+import subprocess
 import time
 from pathlib import Path
 
-
-# أصوات رجل عربية متعددة (مرتبة حسب الجودة)
-MALE_VOICES = [
-    "ar-EG-ShakirNeural",      # مصري، فصيح
-    "ar-SA-HamedNeural",       # سعودي
-    "ar-SY-LaithNeural",       # سوري
-    "ar-JO-TaimNeural",        # أردني
-    "ar-AE-HamdanNeural",      # إماراتي
-]
+PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
+PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
 
 
-async def _edge_async(text, out_path, voice):
-    import edge_tts
-    communicate = edge_tts.Communicate(text, voice, rate="+0%", volume="+0%")
-    await communicate.save(out_path)
+def _piper_to_wav(text, wav_path):
+    """يستخدم Piper CLI مع نموذج رجل أردني."""
+    if not os.path.exists(PIPER_MODEL):
+        raise RuntimeError(f"نموذج Piper غير موجود: {PIPER_MODEL}")
+
+    proc = subprocess.run(
+        [
+            "python", "-m", "piper",
+            "--model", PIPER_MODEL,
+            "--config", PIPER_CONFIG,
+            "--output_file", wav_path,
+        ],
+        input=text.encode("utf-8"),
+        capture_output=True,
+        timeout=180,
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="ignore")[:300]
+        raise RuntimeError(f"Piper فشل: {err}")
 
 
-def _edge(text, out_path, voice):
-    asyncio.run(_edge_async(text, out_path, voice))
+def _wav_to_mp3(wav_path, mp3_path):
+    """يحوّل wav إلى mp3 بـ ffmpeg."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", wav_path,
+            "-codec:a", "libmp3lame", "-q:a", "4",
+            mp3_path,
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+
+def _espeak(text, out_mp3):
+    """بديل: espeak-ng بصوت رجل عربي."""
+    wav = out_mp3.replace(".mp3", ".wav")
+    subprocess.run(
+        ["espeak-ng", "-v", "ar", "-s", "145", "-p", "35", "-w", wav, text],
+        check=True, capture_output=True, timeout=60,
+    )
+    _wav_to_mp3(wav, out_mp3)
 
 
 def _gtts(text, out_path):
     from gtts import gTTS
-    tts = gTTS(text=text, lang="ar", slow=False)
-    tts.save(out_path)
+    gTTS(text=text, lang="ar", slow=False).save(out_path)
 
 
 def _is_ok(out_path):
@@ -42,32 +70,41 @@ def generate(text, out_path="out/voice.mp3"):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     text = text.strip()
 
-    # 1) جرّب edge-tts مع كل الأصوات الرجالية
-    for voice in MALE_VOICES:
-        for attempt in range(1, 3):
-            try:
-                print(f"🔊 edge-tts ({voice}) محاولة {attempt}/2...")
-                _edge(text, out_path, voice)
-                if _is_ok(out_path):
-                    size = Path(out_path).stat().st_size
-                    print(f"✅ الصوت (edge-tts، {voice}): {out_path} ({size} بايت)")
-                    return out_path
-            except Exception as e:
-                print(f"⚠️  {voice} فشل: {str(e)[:100]}")
-                time.sleep(1)
+    # 1) Piper (صوت رجل — الأفضل)
+    try:
+        print("🔊 محاولة Piper (صوت رجل)...")
+        wav = out_path.replace(".mp3", ".wav")
+        _piper_to_wav(text, wav)
+        _wav_to_mp3(wav, out_path)
+        if _is_ok(out_path):
+            size = Path(out_path).stat().st_size
+            print(f"✅ الصوت (Piper رجل): {out_path} ({size} بايت)")
+            return out_path
+    except Exception as e:
+        print(f"⚠️  Piper فشل: {str(e)[:150]}")
 
-    # 2) إذا فشل كل شيء، نستخدم gTTS كبديل
-    print("⚠️  كل أصوات edge-tts فشلت — استخدام gTTS")
+    # 2) espeak-ng (صوت رجل — جودة أقل)
+    try:
+        print("🔊 محاولة espeak-ng (صوت رجل)...")
+        _espeak(text, out_path)
+        if _is_ok(out_path):
+            size = Path(out_path).stat().st_size
+            print(f"✅ الصوت (espeak): {out_path} ({size} بايت)")
+            return out_path
+    except Exception as e:
+        print(f"⚠️  espeak فشل: {str(e)[:150]}")
+
+    # 3) gTTS (صوت أنثوي — آخر حل)
+    print("⚠️  استخدام gTTS (صوت أنثوي)")
     for attempt in range(1, 4):
         try:
-            print(f"🔊 gTTS محاولة {attempt}/3...")
             _gtts(text, out_path)
             if _is_ok(out_path):
                 size = Path(out_path).stat().st_size
                 print(f"✅ الصوت (gTTS): {out_path} ({size} بايت)")
                 return out_path
         except Exception as e:
-            print(f"⚠️  gTTS فشل: {e}")
+            print(f"⚠️  gTTS {attempt}/3 فشل: {e}")
             time.sleep(2)
 
     raise RuntimeError("كل محركات الصوت فشلت")
