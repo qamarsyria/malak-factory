@@ -30,7 +30,6 @@ jobs:
           echo "الخطوط العربية:"
           fc-list :lang=ar | head -20
           echo "═══════════════════════════════════════"
-          echo "espeak-ng:"
           espeak-ng --version
           echo "═══════════════════════════════════════"
 
@@ -38,13 +37,19 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Download Piper Arabic voice model
+        continue-on-error: true
         run: |
           mkdir -p /tmp/piper
           cd /tmp/piper
           echo "⬇️  تحميل نموذج Piper (رجل أردني)..."
-          wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx" -O ar_JO-kareem-medium.onnx
-          wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx.json" -O ar_JO-kareem-medium.onnx.json
-          ls -lh /tmp/piper/
+          curl -L --retry 3 --retry-delay 5 \
+            -o ar_JO-kareem-medium.onnx \
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx"
+          curl -L --retry 3 --retry-delay 5 \
+            -o ar_JO-kareem-medium.onnx.json \
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx.json"
+          ls -lh /tmp/piper/ || true
+          echo "✅ انتهت محاولة التحميل"
 
       - name: Verify Pillow has RAQM
         run: |
@@ -52,12 +57,7 @@ jobs:
           from PIL import features
           import PIL
           print('Pillow version:', PIL.__version__)
-          raqm = features.check('raqm')
-          print('RAQM support:', raqm)
-          if raqm:
-              print('✅ RAQM متوفر')
-          else:
-              print('⚠️  RAQM غير متوفر')
+          print('RAQM support:', features.check('raqm'))
           "
 
       - name: Prepare JSON from sources
