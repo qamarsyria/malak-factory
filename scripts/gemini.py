@@ -1,13 +1,12 @@
 """إعادة صياغة النص إلى سكريبت فيديو (40-50 كلمة) عبر Gemini."""
 import json
 import requests
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_URL
+from config import GEMINI_API_KEY, GEMINI_MODEL
 
-# نماذج بديلة عند فشل الأساسي
-FALLBACK_MODELS = [
+# قائمة النماذج المتاحة — مرتّبة حسب الأولوية (2026)
+MODELS_TO_TRY = [
+    "gemini-3.8-flash",
     "gemini-flash-latest",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash-latest",
     "gemini-flash-lite-latest",
 ]
 
@@ -17,19 +16,19 @@ PROMPT_TEMPLATE = """أنت كاتب محتوى دعوي محترف.
 
 قواعد صارمة:
 1. لا تُضف أي معلومة غير موجودة في النص الأصلي.
-2. لا تذكر مذاهب فقهية (حنفي، مالكي، شافعي، حنبلي) ولا فرق إسلامية.
+2. لا تذكر مذاهب فقهية ولا فرق إسلامية.
 3. لا تذكر أسماء علماء معاصرين.
 4. الصياغة: سؤال استفهامي مشوّق (8-12 كلمة) ثم جواب مباشر (30-40 كلمة).
-5. الأسلوب: فصحى مبسّطة، دافئة، مؤثرة، دون مبالغة أو ركاكة.
-6. الحفاظ على الآيات والأحاديث كما هي حرفياً إن وُجدت.
+5. الأسلوب: فصحى مبسّطة، دافئة، مؤثرة.
+6. احفظ الآيات والأحاديث كما هي حرفياً إن وُجدت.
 
 النص الأصلي:
 {source_text}
 
-المصدر (للاستئناف فقط، لا يُذكر في الإخراج):
+المصدر (للاستئناف فقط):
 {attribution}
 
-أعد النتيجة بصيغة JSON فقط بالشكل:
+أعد النتيجة بصيغة JSON فقط:
 {{
   "question": "...",
   "answer": "..."
@@ -37,8 +36,10 @@ PROMPT_TEMPLATE = """أنت كاتب محتوى دعوي محترف.
 
 
 def _call_gemini(model, prompt):
-    """طلب واحد إلى Gemini. يُرجع dict أو None."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={GEMINI_API_KEY}"
+    )
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -55,7 +56,7 @@ def _call_gemini(model, prompt):
         ],
     }
     try:
-        r = requests.post(url, json=body, timeout=60)
+        r = requests.post(url, json=body, timeout=90)
         if r.status_code != 200:
             print(f"⚠️  {model}: HTTP {r.status_code} — {r.text[:200]}")
             return None
@@ -69,7 +70,6 @@ def _call_gemini(model, prompt):
             print(f"⚠️  {model}: لا يوجد parts")
             return None
         text = parts[0].get("text", "").strip()
-        # نظّف code fences إن وُجدت
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -85,11 +85,7 @@ def _call_gemini(model, prompt):
 
 
 def reformulate(item):
-    """
-    يُعيد dict بصيغة:
-      {question, answer, used_original: bool}
-    إذا فشل Gemini، يُرجع النص الأصلي مباشرة.
-    """
+    """يُرجع {question, answer, used_original}."""
     if not GEMINI_API_KEY:
         print("⚠️  GEMINI_API_KEY غير موجود — استخدام النص الأصلي")
         return _fallback(item)
@@ -99,15 +95,14 @@ def reformulate(item):
         attribution=item.get("attribution", ""),
     )
 
-    # جرّب النموذج الأساسي ثم البدائل
-    models = [GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != GEMINI_MODEL]
-    for model in models:
+    for model in MODELS_TO_TRY:
         print(f"🤖 محاولة {model}...")
         result = _call_gemini(model, prompt)
         if result and result.get("question") and result.get("answer"):
             q = str(result["question"]).strip()
             a = str(result["answer"]).strip()
             if 5 <= len(q.split()) <= 25 and 20 <= len(a.split()) <= 80:
+                print(f"✅ نجح {model}")
                 return {"question": q, "answer": a, "used_original": False}
             print(f"⚠️  {model}: النص خارج النطاق — رفض")
 
@@ -116,11 +111,9 @@ def reformulate(item):
 
 
 def _fallback(item):
-    """يرجع النص الأصلي كـ سؤال/جواب."""
     q = item.get("question", "").strip()
     text = item["text"].strip()
     if not q:
-        # اشتق سؤالاً من أول جملة
         first = text.split(".")[0].strip()
         q = first[:60] + ("..." if len(first) > 60 else "")
     return {"question": q, "answer": text, "used_original": True}
