@@ -22,48 +22,25 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install FFmpeg + Arabic fonts + espeak-ng
+      - name: Install FFmpeg + Arabic fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0 espeak-ng
-          echo "═══════════════════════════════════════"
-          echo "الخطوط العربية:"
-          fc-list :lang=ar | head -20
-          echo "═══════════════════════════════════════"
-          espeak-ng --version
-          echo "═══════════════════════════════════════"
+          sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0
+          echo "✅ تم التثبيت"
+          fc-list :lang=ar | head -10
 
       - name: Install Python deps
         run: pip install -r requirements.txt
 
-      - name: Download Piper Arabic voice model
-        continue-on-error: true
+      - name: Verify Pillow RAQM
         run: |
-          mkdir -p /tmp/piper
-          cd /tmp/piper
-          echo "⬇️  تحميل نموذج Piper (رجل أردني)..."
-          curl -L --retry 3 --retry-delay 5 \
-            -o ar_JO-kareem-medium.onnx \
-            "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx"
-          curl -L --retry 3 --retry-delay 5 \
-            -o ar_JO-kareem-medium.onnx.json \
-            "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO-kareem-medium/ar_JO-kareem-medium.onnx.json"
-          ls -lh /tmp/piper/ || true
-          echo "✅ انتهت محاولة التحميل"
-
-      - name: Verify Pillow has RAQM
-        run: |
-          python -c "
-          from PIL import features
-          import PIL
-          print('Pillow version:', PIL.__version__)
-          print('RAQM support:', features.check('raqm'))
-          "
+          python -c "from PIL import features; print('RAQM:', features.check('raqm'))"
 
       - name: Prepare JSON from sources
         run: |
           node scripts/parse_content.js
           node scripts/parse_riyad.js
+          echo "✅ JSON جاهز"
 
       - name: Run factory
         env:
@@ -78,7 +55,7 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python scripts/main.py
 
-      - name: Upload video as artifact
+      - name: Upload video artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -87,7 +64,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Upload composite image as artifact
+      - name: Upload composite image artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
