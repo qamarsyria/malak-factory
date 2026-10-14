@@ -1,18 +1,19 @@
 {
   "last_index": 0,
   "published_ids": [
+    "faq-002",
     "faq-003",
-    "riyad-5",
-    "riyad-4",
-    "riyad-3",
-    "hadith-صحيحالبخاري-1",
+    "hadith-صحيحالبخاري-9",
     "riyad-2",
     "riyad-1",
     "hadith-صحيحالبخاري-8",
+    "riyad-5",
+    "riyad-6",
+    "riyad-3",
+    "riyad-4",
     "faq-001",
-    "faq-002",
-    "hadith-صحيحالبخاري-9"
+    "hadith-صحيحالبخاري-1"
   ],
-  "last_run": "2026-10-14T11:20:58.471719+00:00",
-  "day_index": 4
+  "last_run": "2026-10-14T11:33:12.863824+00:00",
+  "day_index": 5
 }
