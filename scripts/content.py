@@ -6,7 +6,7 @@ from config import (
     FAQ_JSON, HADITH_JSON, RIYAD_JSON,
     STATE_FILE, SOURCE_ROTATION,
 )
-from types import ruqyah as ruqyah_type
+import ruqyah as ruqyah_type
 
 
 def _read_json(path):
