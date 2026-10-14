@@ -1,4 +1,4 @@
-"""إعادة صياغة النص إلى سكريبت فيديو (40-50 كلمة) عبر Gemini."""
+"""إعادة صياغة النص إلى سكريبت فيديو عبر Gemini."""
 import json
 import re
 import requests
@@ -85,6 +85,7 @@ def _call_gemini(model, prompt):
 
 
 def reformulate(item):
+    """يرجع dict بصيغة {question, answer, used_original}."""
     if not GEMINI_API_KEY:
         print("⚠️  GEMINI_API_KEY غير موجود — استخدام النص الأصلي")
         return _fallback(item)
@@ -126,8 +127,16 @@ def _clean_hadith_start(text):
 
 
 def _fallback(item):
-    """يرجع الحديث فقط — بدون عنوان."""
+    """يرجع النص الأصلي كـ سؤال/جواب."""
     text = item["text"].strip()
-    cleaned = _clean_hadith_start(text)
-    # لا سؤال — فقط الحديث
-    return {"question": "", "answer": cleaned, "used_original": True}
+    source_type = item.get("source_type", "")
+
+    if source_type in ("riyad", "hadith"):
+        question = ""
+    elif source_type == "ruqyah":
+        question = item.get("question", "")
+    else:
+        q = item.get("question", "").strip()
+        question = q if q else ""
+
+    return {"question": question, "answer": text, "used_original": True}
