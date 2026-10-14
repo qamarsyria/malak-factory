@@ -1,4 +1,4 @@
-"""اختيار الموضوع اليومي حسب التوزيع الأسبوعي + تتبع المنشور."""
+"""اختيار الموضوع اليومي حسب التوزيع الأسبوعي."""
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -6,6 +6,7 @@ from config import (
     FAQ_JSON, HADITH_JSON, RIYAD_JSON,
     STATE_FILE, SOURCE_ROTATION,
 )
+from types import ruqyah as ruqyah_type
 
 
 def _read_json(path):
@@ -20,7 +21,6 @@ def _read_json(path):
 
 
 def _normalize_faq(item):
-    """المسألة: سؤال + جواب."""
     q = (item.get("question") or "").strip()
     a = (item.get("answer") or "").strip()
     if not q or not a:
@@ -36,7 +36,6 @@ def _normalize_faq(item):
 
 
 def _normalize_hadith(item):
-    """الحديث: نص الحديث + مصدره."""
     text = (item.get("answer") or item.get("text") or "").strip()
     if len(text) < 30:
         return None
@@ -51,7 +50,6 @@ def _normalize_hadith(item):
 
 
 def _normalize_riyad(item):
-    """حديث رياض الصالحين: متن + راوي + مخرج."""
     text = (item.get("text") or "").strip()
     if len(text) < 30:
         return None
@@ -70,14 +68,32 @@ def _normalize_riyad(item):
     }
 
 
+def _normalize_ruqyah(item):
+    return {
+        "id": item.get("id") or f"ruqyah-{hash(item.get('text','')) % 100000}",
+        "source_type": "ruqyah",
+        "question": item.get("title", ""),
+        "text": item.get("text", ""),
+        "attribution": item.get("source", ""),
+        "voice": item.get("voice", "Charon"),
+        "category": "",
+    }
+
+
 def load_all_items():
-    """يرجع dict بمفاتيح faq/hadith/riyad وقوائم موحّدة."""
     faq = [x for x in (_normalize_faq(i) for i in _read_json(FAQ_JSON)) if x]
     hadith = [x for x in (_normalize_hadith(i) for i in _read_json(HADITH_JSON)) if x]
     riyad = [x for x in (_normalize_riyad(i) for i in _read_json(RIYAD_JSON)) if x]
+    ruqyah_list = [_normalize_ruqyah(i) for i in ruqyah_type.load_all()]
+    ruqyah_list = [x for x in ruqyah_list if x]
 
-    print(f"📚 محتوى محمّل: faq={len(faq)}, hadith={len(hadith)}, riyad={len(riyad)}")
-    return {"faq": faq, "hadith": hadith, "riyad": riyad}
+    print(f"📚 محتوى محمّل: faq={len(faq)}, hadith={len(hadith)}, "
+          f"riyad={len(riyad)}, ruqyah={len(ruqyah_list)}")
+
+    return {
+        "faq": faq, "hadith": hadith,
+        "riyad": riyad, "ruqyah": ruqyah_list,
+    }
 
 
 def _load_state():
@@ -98,32 +114,24 @@ def _save_state(state):
     )
 
 
-def _pick_from_pool(pool, published_set):
-    """أول عنصر غير منشور. إذا انتهى الكل، نبدأ دورة جديدة."""
+def _pick_from_pool(pool, published):
     for item in pool:
-        if item["id"] not in published_set:
+        if item["id"] not in published:
             return item
-    # انتهى المصدر → أعد من البداية
     return pool[0] if pool else None
 
 
 def pick_next():
-    """
-    يرجع (item, state) حسب التوزيع اليومي.
-    يحدّث day_index تلقائياً.
-    """
     pools = load_all_items()
     state = _load_state()
     published = set(state.get("published_ids", []))
 
-    # إذا كانت كل المصادر فارغة
     if not any(pools.values()):
-        raise RuntimeError("لا يوجد محتوى. تأكد من وجود JSON في data/")
+        raise RuntimeError("لا يوجد محتوى")
 
     day_index = state.get("day_index", 0) % len(SOURCE_ROTATION)
     source_key = SOURCE_ROTATION[day_index]
 
-    # إذا المصدر فارغ، جرّب المصادر الأخرى بالترتيب
     tried = set()
     item = None
     while source_key not in tried:
@@ -136,9 +144,8 @@ def pick_next():
         source_key = SOURCE_ROTATION[day_index]
 
     if not item:
-        raise RuntimeError("لم يُعثر على عنصر مناسب")
+        raise RuntimeError("لم يُعثر على عنصر")
 
-    # احفظ المصدر واليوم لاستخدامهما بعد النجاح
     state["_pending"] = {
         "day_index": day_index,
         "source_key": source_key,
@@ -148,7 +155,6 @@ def pick_next():
 
 
 def mark_published(item, state):
-    """تُستدعى بعد نجاح النشر."""
     pending = state.pop("_pending", None)
     if pending:
         state["day_index"] = (pending["day_index"] + 1) % len(SOURCE_ROTATION)
