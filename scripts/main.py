@@ -12,7 +12,7 @@ from verifier import verify
 from voice import generate
 from video import build
 from uploaders import telegram, facebook, youtube
-from config import SITE_URL
+from config import SITE_URL, VOICE_MAP
 
 
 def build_caption(item, script):
@@ -36,7 +36,22 @@ def run():
     print(f"📖 العنصر: {item['id']} | نوع={item['source_type']}")
     print(f"📝 النص الأصلي: {item['text'][:120]}...")
 
-    script = reformulate(item)
+    # تحديد الصوت حسب النوع
+    voice_name = item.get("voice") or VOICE_MAP.get(item["source_type"], "Charon")
+    print(f"🎙️  الصوت: {voice_name}")
+
+    # الرقية لا تُعاد صياغتها (نصوص قرآنية)
+    if item["source_type"] == "ruqyah":
+        script = {
+            "question": item.get("question", ""),
+            "answer": item["text"],
+            "used_original": True,
+            "voice": voice_name,
+        }
+    else:
+        script = reformulate(item)
+        script["voice"] = voice_name
+
     print(f"✍️  السؤال: {script['question'] or '(بدون)'}")
     print(f"✍️  الجواب: {script['answer'][:120]}...")
     print(f"🔁 استُخدم النص الأصلي؟ {script['used_original']}")
@@ -44,19 +59,13 @@ def run():
     script["attribution"] = item.get("attribution", "")
     check = verify(script)
     print(f"🔎 التحقق: ok={check['ok']}, تحذيرات={len(check['warnings'])}")
-    for w in check["warnings"][:3]:
-        print(f"   ⚠️  {w}")
 
     if not check["ok"]:
-        print("❌ النص لم يجتز التحقق — إيقاف بدون نشر")
+        print("❌ النص لم يجتز التحقق — إيقاف")
         sys.exit(1)
 
-    # الصوت: إذا لا يوجد سؤال، انطق الجواب فقط
-    if script["question"]:
-        voice_text = script["question"] + ". " + script["answer"]
-    else:
-        voice_text = script["answer"]
-    voice_path = generate(voice_text, "out/voice.mp3")
+    voice_text = script["answer"] if not script["question"] else f"{script['question']}. {script['answer']}"
+    voice_path = generate(voice_text, "out/voice.mp3", voice=voice_name)
 
     video_path = build(script, voice_path, "out/video.mp4")
 
