@@ -1,0 +1,52 @@
+name: Test Fetch Visuals
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: pip install requests
+
+      - name: Run fetch_visuals
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        working-directory: scripts
+        run: python fetch_visuals.py
+
+      - name: Show results
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "الصور:"
+          ls -lh assets/backgrounds/images/ | head -20 || echo "لا توجد"
+          echo ""
+          echo "الفيديوهات:"
+          ls -lh assets/backgrounds/videos/ | head -20 || echo "لا توجد"
+
+      - name: Upload backgrounds as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backgrounds
+          path: assets/backgrounds/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Commit backgrounds to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/backgrounds/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: fetch backgrounds from Pixabay"
+            git push
+          fi
