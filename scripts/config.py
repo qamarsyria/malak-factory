@@ -5,7 +5,7 @@ import os
 VIDEO_W = 1080
 VIDEO_H = 1920
 VIDEO_FPS = 30
-VIDEO_DURATION_MAX = 90
+VIDEO_DURATION_MAX = 1200   # 20 دقيقة للحلقات القصصية
 FONT_PATH = ""
 FONT_SIZE = 70
 TEXT_COLOR = "white"
@@ -15,17 +15,30 @@ ACCENT_COLOR = "#FFD700"
 
 # ===== الصوت =====
 TTS_VOICE = "Charon"        # الافتراضي للفيديوهات (رجل)
-TTS_VOICE_FEMALE = "Kore"   # للقصص
+TTS_VOICE_FEMALE = "Kore"   # للقصص (احتياطي)
 TTS_RATE = "+0%"
 TTS_VOLUME = "+0%"
+TTS_DELAY_BETWEEN_SEGMENTS = 3   # ثواني بين طلبات Gemini TTS
+
+# ===== القرآن (everyayah) =====
+QURAN_RECITER = "Alafasy_128kbps"   # مشاري العفاسي
+# خيارات أخرى:
+#   "Husary_128kbps"                → الحصري
+#   "Minshawy_Murattal_128kbps"     → المنشاوي
+#   "Abdul_Basit_Murattal_192kbps"  → عبد الباسط
+#   "Abdurrahmaan_As-Sudais_192kbps"→ السديس
+#   "Hudhaify_128kbps"              → الحذيفي
+#   "Nasser_Alqatami_128kbps"       → القطامي
+#   "Yasser_Ad-Dussary_128kbps"     → الدوسري
+QURAN_BASE = "https://everyayah.com/data"
 
 # ===== خريطة الأصوات لكل نوع =====
 VOICE_MAP = {
     "hadith": "Charon",
     "faq": "Charon",
     "riyad": "Charon",
-    "ruqyah": "Charon",     # الرقية بصوت رجل
-    "story": "Kore",        # القصص بصوت نسائي
+    "ruqyah": "Charon",
+    "story": "Charon",      # القصص: Charon (رجل هادئ)
 }
 
 # ===== الخلفية =====
@@ -70,8 +83,7 @@ YT_PRIVACY = "public"
 # ===== الموقع =====
 SITE_URL = "https://qamarsyria.github.io/qamar-malak/"
 
-# ===== توزيع المصادر (7 أيام) =====
-# السبت=0 الأحد=1 الاثنين=2 الثلاثاء=3 الأربعاء=4 الخميس=5 الجمعة=6
+# ===== توزيع المصادر =====
 SOURCE_ROTATION = [
     "riyad",    # السبت
     "ruqyah",   # الأحد
