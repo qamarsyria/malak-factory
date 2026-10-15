@@ -14,7 +14,7 @@ from config import (
 
 
 def _clean_for_tts(text):
-    """ينظف النص العربي للـ TTS (يزيل التشكيل الزائد)."""
+    """ينظف النص العربي للـ TTS."""
     text = re.sub(r"[\u064B-\u0652\u0670\u0640]", "", text)
     text = re.sub(r"[ۖۗۘۙۚۛ]", "", text)
     text = text.replace("۝", " ")
@@ -90,15 +90,10 @@ def _gemini_tts(text, out_mp3, voice="Charon"):
 # 2) everyayah — للآيات
 # ============================================================
 def _fetch_quran_ayah(surah, ayah, out_path):
-    """
-    يحمّل آية من everyayah.
-    صيغة الملف: {surah:03d}{ayah:03d}.mp3
-    مثال: surah=12، ayah=1 → 012001.mp3
-    """
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{QURAN_RECITER}/{filename}"
 
-    print(f"   📖 {surah}:{ayah} → {url.split('/')[-1]}")
+    print(f"   📖 {surah}:{ayah} → {filename}")
 
     r = requests.get(url, timeout=60)
     if r.status_code != 200:
@@ -115,25 +110,18 @@ def _fetch_quran_ayah(surah, ayah, out_path):
 # 3) بناء المقاطع
 # ============================================================
 def generate_quran_audio(segment, out_path):
-    """يولّد صوت آية أو عدة آيات من everyayah."""
     ayah_numbers = segment.get("ayah_numbers") or []
-    surah = segment.get("surah")  # قد لا يكون موجوداً
-
-    if not surah:
-        # استخرجه من الـ parent (episode)
-        surah = segment.get("_surah") or 12
+    surah = segment.get("_surah") or 12
 
     if not ayah_numbers:
         raise RuntimeError("لا يوجد أرقام آيات")
 
     if len(ayah_numbers) == 1:
-        # آية واحدة
         _fetch_quran_ayah(surah, ayah_numbers[0], out_path)
         duration = _get_duration(out_path)
         print(f"   ✅ {duration:.1f} ثانية")
         return duration
 
-    # عدة آيات — نحمّل كل واحدة، ثم ندمج
     temp_dir = Path(tempfile.mkdtemp())
     files = []
     for n, ayah in enumerate(ayah_numbers, 1):
@@ -142,7 +130,6 @@ def generate_quran_audio(segment, out_path):
         files.append(str(f))
         time.sleep(0.3)
 
-    # دمج
     concat_file = temp_dir / "concat.txt"
     with open(concat_file, "w", encoding="utf-8") as cf:
         for f in files:
@@ -159,21 +146,31 @@ def generate_quran_audio(segment, out_path):
     return duration
 
 
-def generate_narration_audio(segment, out_path):
-    """يولّد صوت سرد بـ Gemini TTS."""
+def generate_narration_audio(segment, out_path, retries=3):
+    """يولّد صوت سرد مع retry عند 429."""
     text = segment.get("text", "").strip()
     if not text:
         return None
 
     print(f"   🔊 [narration] {text[:60]}...")
-    try:
-        _gemini_tts(text, out_path, voice="Charon")
-        duration = _get_duration(out_path)
-        print(f"   ✅ {duration:.1f} ثانية")
-        return duration
-    except Exception as e:
-        print(f"   ❌ فشل: {e}")
-        return None
+
+    for attempt in range(1, retries + 1):
+        try:
+            _gemini_tts(text, out_path, voice="Charon")
+            duration = _get_duration(out_path)
+            print(f"   ✅ {duration:.1f} ثانية")
+            return duration
+        except Exception as e:
+            err = str(e)
+            if "429" in err and attempt < retries:
+                wait = 20 * attempt
+                print(f"   ⏳ [429] انتظار {wait} ثانية قبل المحاولة {attempt+1}...")
+                time.sleep(wait)
+            else:
+                print(f"   ❌ فشل: {err[:150]}")
+                return None
+
+    return None
 
 
 # ============================================================
@@ -195,8 +192,6 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     for i, seg in enumerate(segments, 1):
         seg_type = seg["type"]
         seg_file = temp_dir / f"seg-{i:02d}.mp3"
-
-        # إضافة السورة للـ segment للاستخدام لاحقاً
         seg["_surah"] = surah
 
         try:
@@ -204,7 +199,8 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
                 duration = generate_quran_audio(seg, str(seg_file))
             elif seg_type in ("narration", "intro", "outro"):
                 duration = generate_narration_audio(seg, str(seg_file))
-                time.sleep(TTS_DELAY_BETWEEN_SEGMENTS)
+                if duration:
+                    time.sleep(TTS_DELAY_BETWEEN_SEGMENTS)
             else:
                 duration = None
 
@@ -214,13 +210,12 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
                 failed += 1
 
         except Exception as e:
-            print(f"   ❌ فشل المقطع {i}: {e}")
+            print(f"   ❌ فشل المقطع {i}: {str(e)[:150]}")
             failed += 1
 
     if not segment_files:
         raise RuntimeError("لم يُولَّد أي صوت")
 
-    # دمج
     print(f"\n🔗 دمج {len(segment_files)} مقطع ({failed} فشل)...")
     concat_file = temp_dir / "concat.txt"
     with open(concat_file, "w", encoding="utf-8") as f:
