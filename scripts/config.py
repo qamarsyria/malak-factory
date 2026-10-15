@@ -15,42 +15,22 @@ ACCENT_COLOR = "#FFD700"
 
 # ===== الصوت =====
 TTS_VOICE = "ar-EG-ShakirNeural"   # رجل مصري فصيح
-# خيارات أخرى:
-#   "ar-SA-HamedNeural"   → سعودي
-#   "ar-SY-LaithNeural"   → سوري
-#   "ar-JO-TaimNeural"    → أردني
-#   "ar-AE-HamdanNeural"  → إماراتي
-
-TTS_VOICE_FEMALE = "ar-EG-SalmaNeural"   # للقصص النسائية (احتياطي)
-# خيارات نسائية:
-#   "ar-SA-ZariyahNeural" → سعودي
-#   "ar-SY-AmanyNeural"   → سوري
-#   "ar-JO-SanaNeural"    → أردني
-#   "ar-AE-FatimaNeural"  → إماراتي
-
-TTS_RATE = "-25%"        # تباطؤ 25% للسرد القصصي
+TTS_VOICE_FEMALE = "ar-EG-SalmaNeural"
+TTS_RATE = "-10%"                  # edge-tts يبطئ قليلاً فقط، atempo يفعل الباقي
 TTS_VOLUME = "+0%"
-TTS_DELAY_BETWEEN_SEGMENTS = 2   # ثواني بين الطلبات
+TTS_DELAY_BETWEEN_SEGMENTS = 2
 
 # ===== القرآن (everyayah) =====
-QURAN_RECITER = "Alafasy_128kbps"   # مشاري العفاسي
-# خيارات أخرى:
-#   "Husary_128kbps"                → الحصري
-#   "Minshawy_Murattal_128kbps"     → المنشاوي
-#   "Abdul_Basit_Murattal_192kbps"  → عبد الباسط
-#   "Abdurrahmaan_As-Sudais_192kbps"→ السديس
-#   "Hudhaify_128kbps"              → الحذيفي
-#   "Nasser_Alqatami_128kbps"       → القطامي
-#   "Yasser_Ad-Dussary_128kbps"     → الدوسري
+QURAN_RECITER = "Alafasy_128kbps"
 QURAN_BASE = "https://everyayah.com/data"
 
 # ===== خريطة الأصوات لكل نوع =====
 VOICE_MAP = {
-    "hadith":  "ar-EG-ShakirNeural",   # أحاديث: رجل مصري
-    "faq":     "ar-EG-ShakirNeural",   # مسائل: رجل مصري
-    "riyad":   "ar-EG-ShakirNeural",   # رياض الصالحين: رجل مصري
-    "ruqyah":  "ar-SA-HamedNeural",    # رقية: رجل سعودي وقور
-    "story":   "ar-EG-ShakirNeural",   # قصص: رجل مصري فصيح
+    "hadith":  "ar-EG-ShakirNeural",
+    "faq":     "ar-EG-ShakirNeural",
+    "riyad":   "ar-EG-ShakirNeural",
+    "ruqyah":  "ar-SA-HamedNeural",
+    "story":   "ar-EG-ShakirNeural",
 }
 
 # ===== الخلفية =====
@@ -96,13 +76,7 @@ YT_PRIVACY = "public"
 SITE_URL = "https://qamarsyria.github.io/qamar-malak/"
 
 # ===== توزيع المصادر (7 أيام) =====
-# السبت=0 الأحد=1 الاثنين=2 الثلاثاء=3 الأربعاء=4 الخميس=5 الجمعة=6
 SOURCE_ROTATION = [
-    "riyad",    # السبت
-    "ruqyah",   # الأحد
-    "faq",      # الاثنين
-    "hadith",   # الثلاثاء
-    "ruqyah",   # الأربعاء
-    "faq",      # الخميس
-    "hadith",   # الجمعة
+    "riyad", "ruqyah", "faq", "hadith",
+    "ruqyah", "faq", "hadith",
 ]
