@@ -10,6 +10,8 @@ on:
         description: 'الاسم اللاتيني (yusuf)'
         default: 'yusuf'
 
+permissions:
+  contents: write
 jobs:
   fetch:
     runs-on: ubuntu-latest
