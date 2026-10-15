@@ -1,4 +1,4 @@
-"""دمج صوت الراوي + الآيات — edge-tts (الخادم الجديد) + everyayah."""
+"""دمج صوت الراوي (edge-tts + atempo) + الآيات (everyayah)."""
 import asyncio
 import re
 import subprocess
@@ -21,22 +21,25 @@ except Exception as e:
 
 from config import (
     QURAN_RECITER, QURAN_BASE,
-    TTS_VOICE,
+    TTS_VOICE, TTS_RATE,
 )
 
 
-# ============================================================
-# إعدادات
-# ============================================================
-NARRATION_SPEED = "-25%"   # تباطؤ 25% (يمكن تعديله: -10%, -20%, -30%)
 DEFAULT_VOICE = TTS_VOICE or "ar-EG-ShakirNeural"
+DEFAULT_RATE = TTS_RATE or "-10%"
+
+# سرعات atempo للتجربة (كل نسخة بسرعة مختلفة)
+ATEMPO_VARIANTS = [
+    ("slow",    0.55),   # تباطؤ 45%
+    ("slower",  0.45),   # تباطؤ 55%
+    ("slowest", 0.35),   # تباطؤ 65%
+]
 
 
 # ============================================================
 # دوال مساعدة
 # ============================================================
 def _clean_for_tts(text):
-    """ينظف النص العربي للـ TTS."""
     text = re.sub(r"[\u064B-\u0652\u0670\u0640]", "", text)
     text = re.sub(r"[ۖۗۘۙۚۛ]", "", text)
     text = text.replace("۝", " ")
@@ -44,7 +47,6 @@ def _clean_for_tts(text):
 
 
 def _get_duration(file_path):
-    """يرجع مدة الملف بالثواني."""
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
          "format=duration", "-of",
@@ -58,39 +60,63 @@ def _get_duration(file_path):
 
 
 # ============================================================
-# 1) edge-tts (خادم جديد)
+# 1) edge-tts + atempo
 # ============================================================
 async def _edge_async(text, out_path, voice, rate):
     communicate = edge_tts.Communicate(text, voice, rate=rate)
     await communicate.save(out_path)
 
 
-def _edge_tts(text, out_mp3, voice=DEFAULT_VOICE, rate=NARRATION_SPEED):
-    """يولّد صوت بـ edge-tts (الخادم الجديد)."""
+def _edge_tts(text, out_mp3, voice=DEFAULT_VOICE,
+              rate=DEFAULT_RATE, atempo=0.5):
+    """edge-tts + atempo للتبطيء الإضافي."""
     clean = _clean_for_tts(text)
     if not clean:
         raise RuntimeError("النص فارغ بعد التنظيف")
 
-    asyncio.run(_edge_async(clean, out_mp3, voice, rate))
+    raw_mp3 = out_mp3.replace(".mp3", "_raw.mp3")
+
+    # 1) edge-tts
+    asyncio.run(_edge_async(clean, raw_mp3, voice, rate))
+
+    if not Path(raw_mp3).exists() or Path(raw_mp3).stat().st_size < 2048:
+        raise RuntimeError("edge-tts: الملف الناتج صغير جداً")
+
+    # 2) atempo
+    if atempo >= 0.5:
+        filter_chain = f"atempo={atempo}"
+    else:
+        filter_chain = f"atempo=0.5,atempo={atempo / 0.5}"
+
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", raw_mp3,
+         "-filter:a", filter_chain,
+         "-codec:a", "libmp3lame", "-q:a", "4",
+         out_mp3],
+        check=True, capture_output=True, timeout=120,
+    )
 
     if not Path(out_mp3).exists() or Path(out_mp3).stat().st_size < 2048:
-        raise RuntimeError("الملف الناتج صغير جداً")
+        raise RuntimeError("الملف النهائي صغير جداً")
 
 
 # ============================================================
-# 2) gTTS احتياطي (إذا فشل edge-tts)
+# 2) gTTS احتياطي
 # ============================================================
-def _gtts_fallback(text, out_mp3, speed=0.6):
-    """gTTS + atempo كاحتياطي."""
+def _gtts_fallback(text, out_mp3, speed=0.5):
     from gtts import gTTS
-
     clean = _clean_for_tts(text)
     raw = out_mp3.replace(".mp3", "_raw.mp3")
     gTTS(text=clean, lang="ar", slow=False).save(raw)
 
+    if speed >= 0.5:
+        filter_chain = f"atempo={speed}"
+    else:
+        filter_chain = f"atempo=0.5,atempo={speed / 0.5}"
+
     subprocess.run(
         ["ffmpeg", "-y", "-i", raw,
-         "-filter:a", f"atempo={speed}",
+         "-filter:a", filter_chain,
          "-codec:a", "libmp3lame", "-q:a", "4",
          out_mp3],
         check=True, capture_output=True, timeout=120,
@@ -131,7 +157,6 @@ def generate_quran_audio(segment, out_path):
         print(f"   ✅ {duration:.1f} ثانية")
         return duration
 
-    # عدة آيات: نحمل ثم ندمج
     temp_dir = Path(tempfile.mkdtemp())
     files = []
     for n, ayah in enumerate(ayah_numbers, 1):
@@ -156,8 +181,7 @@ def generate_quran_audio(segment, out_path):
     return duration
 
 
-def generate_narration_audio(segment, out_path):
-    """يولّد صوت السرد: edge-tts أولاً، ثم gTTS احتياطياً."""
+def generate_narration_audio(segment, out_path, atempo=0.5):
     text = segment.get("text", "").strip()
     if not text:
         return None
@@ -167,19 +191,19 @@ def generate_narration_audio(segment, out_path):
     # 1) edge-tts
     for attempt in range(1, 3):
         try:
-            _edge_tts(text, out_path)
+            _edge_tts(text, out_path, atempo=atempo)
             duration = _get_duration(out_path)
             print(f"   ✅ edge-tts: {duration:.1f} ثانية")
             return duration
         except Exception as e:
-            print(f"   ⚠️  edge-tts محاولة {attempt} فشلت: {str(e)[:100]}")
+            print(f"   ⚠️  edge-tts محاولة {attempt}: {str(e)[:100]}")
             if attempt < 2:
                 time.sleep(3)
 
     # 2) gTTS احتياطي
     try:
-        print(f"   🔄 جرب gTTS احتياطياً...")
-        _gtts_fallback(text, out_path)
+        print(f"   🔄 gTTS احتياطي...")
+        _gtts_fallback(text, out_path, speed=atempo)
         duration = _get_duration(out_path)
         print(f"   ✅ gTTS: {duration:.1f} ثانية")
         return duration
@@ -189,17 +213,19 @@ def generate_narration_audio(segment, out_path):
 
 
 # ============================================================
-# 5) بناء الحلقة
+# 5) بناء 3 نسخ بسرعات مختلفة
 # ============================================================
-def build_full_audio(episode, out_path="out/episode-audio.mp3"):
+def build_variant(episode, variant_name, atempo):
+    """يبني نسخة واحدة بسرعة محددة."""
+    print(f"\n{'='*60}")
+    print(f"🎬 النسخة: {variant_name} (atempo={atempo})")
+    print(f"{'='*60}")
+
+    out_path = f"out/episode-audio-{variant_name}.mp3"
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+
     segments = episode.get("segments", [])
     surah = episode.get("surah", 12)
-
-    print(f"\n🎙️  بناء صوت الحلقة ({len(segments)} مقطع)")
-    print(f"   السورة: {surah} | القارئ: {QURAN_RECITER}")
-    print(f"   الصوت: {DEFAULT_VOICE} | السرعة: {NARRATION_SPEED}")
-    print("=" * 60)
 
     temp_dir = Path(tempfile.mkdtemp())
     segment_files = []
@@ -214,7 +240,9 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
             if seg_type == "quran":
                 duration = generate_quran_audio(seg, str(seg_file))
             elif seg_type in ("narration", "intro", "outro"):
-                duration = generate_narration_audio(seg, str(seg_file))
+                duration = generate_narration_audio(
+                    seg, str(seg_file), atempo=atempo
+                )
             else:
                 duration = None
 
@@ -228,9 +256,9 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
             failed += 1
 
     if not segment_files:
-        raise RuntimeError("لم يُولَّد أي صوت")
+        print(f"   ⚠️  لا مقاطع للنسخة {variant_name}")
+        return None
 
-    print(f"\n🔗 دمج {len(segment_files)} مقطع ({failed} فشل)...")
     concat_file = temp_dir / "concat.txt"
     with open(concat_file, "w", encoding="utf-8") as f:
         for sf in segment_files:
@@ -243,10 +271,30 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     )
 
     duration = _get_duration(out_path)
-    print(f"\n✅ الحلقة الصوتية: {out_path}")
-    print(f"   المدة: {duration/60:.1f} دقيقة ({duration:.0f} ثانية)")
+    print(f"\n   ✅ {out_path}")
+    print(f"   المدة: {duration/60:.1f} دقيقة ({duration:.0f} ث)")
     print(f"   نجح: {len(segment_files)} | فشل: {failed}")
     return out_path
+
+
+def build_full_audio(episode):
+    """يبني 3 نسخ بسرعات مختلفة للتجربة."""
+    print(f"\n🎙️  بناء 3 نسخ بسرعات مختلفة")
+    print(f"   السورة: {episode.get('surah', 12)} | القارئ: {QURAN_RECITER}")
+    print(f"   الصوت: {DEFAULT_VOICE} | rate: {DEFAULT_RATE}")
+    print("=" * 60)
+
+    for name, atempo in ATEMPO_VARIANTS:
+        try:
+            build_variant(episode, name, atempo)
+        except Exception as e:
+            print(f"❌ فشل نسخة {name}: {e}")
+
+    print(f"\n{'='*60}")
+    print("✅ 3 نسخ جاهزة:")
+    for name, atempo in ATEMPO_VARIANTS:
+        print(f"   - out/episode-audio-{name}.mp3 (atempo={atempo})")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
