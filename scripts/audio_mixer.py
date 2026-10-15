@@ -1,16 +1,17 @@
-"""دمج صوت الراوي + الآيات + القرآن الحقيقي من everyayah."""
-import base64
+"""دمج صوت الراوي + الآيات — gTTS + atempo (تجربة)."""
 import re
 import subprocess
 import tempfile
 import time
-import wave
 from pathlib import Path
 import requests
 from config import (
-    GEMINI_API_KEY, QURAN_RECITER, QURAN_BASE,
+    QURAN_RECITER, QURAN_BASE,
     TTS_DELAY_BETWEEN_SEGMENTS,
 )
+
+# سرعة السرد (0.5 = نصف السرعة)
+NARRATION_SPEED = 0.5
 
 
 def _clean_for_tts(text):
@@ -36,58 +37,30 @@ def _get_duration(file_path):
 
 
 # ============================================================
-# 1) Gemini TTS — للسرد
+# 1) gTTS للسرد (مع atempo للتبطيء)
 # ============================================================
-def _gemini_tts(text, out_mp3, voice="Charon"):
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY غير موجود")
+def _gtts_slow(text, out_mp3, speed=NARRATION_SPEED):
+    """يولّد صوت gTTS مع تبطيء."""
+    from gtts import gTTS
 
     clean = _clean_for_tts(text)
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash-preview-tts:generateContent?key={GEMINI_API_KEY}"
-    )
-    body = {
-        "contents": [{"parts": [{"text": clean}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": voice}
-                }
-            }
-        }
-    }
-    r = requests.post(url, json=body, timeout=120)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
-    data = r.json()
-    cands = data.get("candidates") or []
-    if not cands:
-        raise RuntimeError("لا يوجد candidates")
-    parts = (cands[0].get("content") or {}).get("parts") or []
-    if not parts:
-        raise RuntimeError("لا يوجد parts")
-    inline = parts[0].get("inlineData") or {}
-    audio_b64 = inline.get("data")
-    if not audio_b64:
-        raise RuntimeError("لا يوجد audio data")
-    raw = base64.b64decode(audio_b64)
-    wav = out_mp3.replace(".mp3", ".wav")
-    with wave.open(wav, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(24000)
-        wf.writeframes(raw)
+    raw_mp3 = out_mp3.replace(".mp3", "_raw.mp3")
+
+    # 1) gTTS
+    gTTS(text=clean, lang="ar", slow=False).save(raw_mp3)
+
+    # 2) atempo
     subprocess.run(
-        ["ffmpeg", "-y", "-i", wav, "-codec:a", "libmp3lame",
-         "-q:a", "4", out_mp3],
-        check=True, capture_output=True, timeout=60,
+        ["ffmpeg", "-y", "-i", raw_mp3,
+         "-filter:a", f"atempo={speed}",
+         "-codec:a", "libmp3lame", "-q:a", "4",
+         out_mp3],
+        check=True, capture_output=True, timeout=120,
     )
 
 
 # ============================================================
-# 2) everyayah — للآيات
+# 2) everyayah للآيات
 # ============================================================
 def _fetch_quran_ayah(surah, ayah, out_path):
     filename = f"{surah:03d}{ayah:03d}.mp3"
@@ -146,31 +119,26 @@ def generate_quran_audio(segment, out_path):
     return duration
 
 
-def generate_narration_audio(segment, out_path, retries=3):
-    """يولّد صوت سرد مع retry عند 429."""
+def generate_narration_audio(segment, out_path, retries=2):
+    """يولّد صوت السرد بـ gTTS + atempo."""
     text = segment.get("text", "").strip()
     if not text:
         return None
 
     print(f"   🔊 [narration] {text[:60]}...")
-
     for attempt in range(1, retries + 1):
         try:
-            _gemini_tts(text, out_path, voice="Charon")
+            _gtts_slow(text, out_path)
             duration = _get_duration(out_path)
             print(f"   ✅ {duration:.1f} ثانية")
             return duration
         except Exception as e:
             err = str(e)
-            if "429" in err and attempt < retries:
-                wait = 20 * attempt
-                print(f"   ⏳ [429] انتظار {wait} ثانية قبل المحاولة {attempt+1}...")
-                time.sleep(wait)
+            print(f"   ⚠️  محاولة {attempt}/{retries} فشلت: {err[:100]}")
+            if attempt < retries:
+                time.sleep(5)
             else:
-                print(f"   ❌ فشل: {err[:150]}")
                 return None
-
-    return None
 
 
 # ============================================================
@@ -183,6 +151,7 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
 
     print(f"\n🎙️  بناء صوت الحلقة ({len(segments)} مقطع)")
     print(f"   السورة: {surah} | القارئ: {QURAN_RECITER}")
+    print(f"   سرعة السرد: {NARRATION_SPEED}x")
     print("=" * 60)
 
     temp_dir = Path(tempfile.mkdtemp())
@@ -199,8 +168,6 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
                 duration = generate_quran_audio(seg, str(seg_file))
             elif seg_type in ("narration", "intro", "outro"):
                 duration = generate_narration_audio(seg, str(seg_file))
-                if duration:
-                    time.sleep(TTS_DELAY_BETWEEN_SEGMENTS)
             else:
                 duration = None
 
