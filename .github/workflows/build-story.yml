@@ -9,6 +9,8 @@ on:
       episode:
         description: 'رقم الحلقة (1-21) أو اتركه فارغاً لكل الحلقات'
         default: '1'
+        permissions:
+  contents: write
 
 jobs:
   build:
