@@ -3,6 +3,9 @@ name: Test Audio Mixer
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,11 +22,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Python deps
-        run: pip install requests
+        run: pip install requests gTTS
 
       - name: Build audio
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scripts/audio_mixer.py
 
       - name: Show result
