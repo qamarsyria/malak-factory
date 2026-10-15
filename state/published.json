@@ -1,22 +1,23 @@
 {
   "last_index": 0,
   "published_ids": [
-    "faq-003",
-    "riyad-3",
-    "riyad-5",
-    "hadith-صحيحالبخاري-10",
-    "hadith-صحيحالبخاري-1",
-    "riyad-4",
-    "hadith-صحيحالبخاري-8",
-    "faq-001",
-    "hadith-صحيحالبخاري-9",
-    "riyad-7",
-    "riyad-2",
-    "riyad-6",
+    "faq-004",
     "faq-002",
+    "hadith-صحيحالبخاري-1",
+    "riyad-6",
     "riyad-1",
-    "faq-004"
+    "hadith-صحيحالبخاري-10",
+    "riyad-3",
+    "hadith-صحيحالبخاري-9",
+    "riyad-5",
+    "riyad-7",
+    "hadith-صحيحالبخاري-8",
+    "riyad-2",
+    "faq-003",
+    "ruqyah-001",
+    "riyad-4",
+    "faq-001"
   ],
-  "last_run": "2026-10-14T16:29:24.497488+00:00",
-  "day_index": 1
+  "last_run": "2026-10-15T05:22:56.910500+00:00",
+  "day_index": 2
 }
