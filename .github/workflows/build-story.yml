@@ -7,9 +7,10 @@ on:
         description: 'اسم القصة (yusuf)'
         default: 'yusuf'
       episode:
-        description: 'رقم الحلقة (1-21) أو اتركه فارغاً لكل الحلقات'
+        description: 'رقم الحلقة (1-21)'
         default: '1'
-        permissions:
+
+permissions:
   contents: write
 
 jobs:
