@@ -24,26 +24,29 @@ jobs:
       - name: Install Python deps
         run: pip install requests gTTS edge-tts
 
-      - name: Build audio
+      - name: Build 3 variants
         run: python scripts/audio_mixer.py
 
-      - name: Show result
+      - name: Show results
         if: always()
         run: |
           echo "═══════════════════════════════════════"
           ls -lh out/ || echo "لا يوجد"
           echo ""
-          if [ -f "out/episode-audio.mp3" ]; then
-            echo "المدة:"
-            ffprobe -v error -show_entries format=duration -of \
-              default=noprint_wrappers=1:nokey=1 out/episode-audio.mp3
-          fi
+          for f in out/episode-audio-*.mp3; do
+            if [ -f "$f" ]; then
+              echo "$f:"
+              ffprobe -v error -show_entries format=duration -of \
+                default=noprint_wrappers=1:nokey=1 "$f"
+              echo ""
+            fi
+          done
 
-      - name: Upload audio as artifact
+      - name: Upload all variants
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: episode-audio
+          name: episode-audio-variants
           path: out/
           retention-days: 7
           if-no-files-found: warn
