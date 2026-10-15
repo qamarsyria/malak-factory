@@ -18,7 +18,7 @@ TTS_VOICE = "Charon"        # الافتراضي للفيديوهات (رجل)
 TTS_VOICE_FEMALE = "Kore"   # للقصص (احتياطي)
 TTS_RATE = "+0%"
 TTS_VOLUME = "+0%"
-TTS_DELAY_BETWEEN_SEGMENTS = 3   # ثواني بين طلبات Gemini TTS
+TTS_DELAY_BETWEEN_SEGMENTS = 15   # ثواني بين طلبات Gemini TTS
 
 # ===== القرآن (everyayah) =====
 QURAN_RECITER = "Alafasy_128kbps"   # مشاري العفاسي
