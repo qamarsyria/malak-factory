@@ -12,9 +12,8 @@ from config import QURAN_RECITER, QURAN_BASE
 # ============================================================
 # إعدادات
 # ============================================================
-PIPER_MODEL = "/tmp/piper/ar_JO-kareem.onnx"
-PIPER_CONFIG = "/tmp/piper/ar_JO-kareem.onnx.json"
-
+PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
+PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
 # length_scale: 1.0 = عادي | 1.3 = بطيء 30% | 1.5 = بطيء 50%
 PIPER_LENGTH_SCALE = 1.3
 
