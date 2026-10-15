@@ -5,7 +5,7 @@ import os
 VIDEO_W = 1080
 VIDEO_H = 1920
 VIDEO_FPS = 30
-VIDEO_DURATION_MAX = 1200   # 20 دقيقة للحلقات القصصية
+VIDEO_DURATION_MAX = 1200
 FONT_PATH = ""
 FONT_SIZE = 70
 TEXT_COLOR = "white"
@@ -14,11 +14,23 @@ TEXT_STROKE_W = 3
 ACCENT_COLOR = "#FFD700"
 
 # ===== الصوت =====
-TTS_VOICE = "Charon"        # الافتراضي للفيديوهات (رجل)
-TTS_VOICE_FEMALE = "Kore"   # للقصص (احتياطي)
-TTS_RATE = "+0%"
+TTS_VOICE = "ar-EG-ShakirNeural"   # رجل مصري فصيح
+# خيارات أخرى:
+#   "ar-SA-HamedNeural"   → سعودي
+#   "ar-SY-LaithNeural"   → سوري
+#   "ar-JO-TaimNeural"    → أردني
+#   "ar-AE-HamdanNeural"  → إماراتي
+
+TTS_VOICE_FEMALE = "ar-EG-SalmaNeural"   # للقصص النسائية (احتياطي)
+# خيارات نسائية:
+#   "ar-SA-ZariyahNeural" → سعودي
+#   "ar-SY-AmanyNeural"   → سوري
+#   "ar-JO-SanaNeural"    → أردني
+#   "ar-AE-FatimaNeural"  → إماراتي
+
+TTS_RATE = "-25%"        # تباطؤ 25% للسرد القصصي
 TTS_VOLUME = "+0%"
-TTS_DELAY_BETWEEN_SEGMENTS = 15   # ثواني بين طلبات Gemini TTS
+TTS_DELAY_BETWEEN_SEGMENTS = 2   # ثواني بين الطلبات
 
 # ===== القرآن (everyayah) =====
 QURAN_RECITER = "Alafasy_128kbps"   # مشاري العفاسي
@@ -34,11 +46,11 @@ QURAN_BASE = "https://everyayah.com/data"
 
 # ===== خريطة الأصوات لكل نوع =====
 VOICE_MAP = {
-    "hadith": "Charon",
-    "faq": "Charon",
-    "riyad": "Charon",
-    "ruqyah": "Charon",
-    "story": "Charon",      # القصص: Charon (رجل هادئ)
+    "hadith":  "ar-EG-ShakirNeural",   # أحاديث: رجل مصري
+    "faq":     "ar-EG-ShakirNeural",   # مسائل: رجل مصري
+    "riyad":   "ar-EG-ShakirNeural",   # رياض الصالحين: رجل مصري
+    "ruqyah":  "ar-SA-HamedNeural",    # رقية: رجل سعودي وقور
+    "story":   "ar-EG-ShakirNeural",   # قصص: رجل مصري فصيح
 }
 
 # ===== الخلفية =====
@@ -83,7 +95,8 @@ YT_PRIVACY = "public"
 # ===== الموقع =====
 SITE_URL = "https://qamarsyria.github.io/qamar-malak/"
 
-# ===== توزيع المصادر =====
+# ===== توزيع المصادر (7 أيام) =====
+# السبت=0 الأحد=1 الاثنين=2 الثلاثاء=3 الأربعاء=4 الخميس=5 الجمعة=6
 SOURCE_ROTATION = [
     "riyad",    # السبت
     "ruqyah",   # الأحد
