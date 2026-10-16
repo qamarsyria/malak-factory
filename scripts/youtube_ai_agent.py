@@ -1,15 +1,28 @@
-"""رفع فيديو على يوتيوب باستخدام Gemini Vision — اكتشاف تلقائي للموديلات."""
+"""رفع فيديو على يوتيوب — AI Vision + بروكسي سوري + مسار بشري طبيعي."""
 from __future__ import annotations
 
 import base64
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+# ═══ استيراد مدير البروكسي ═══
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from syrian_proxy import find_working_proxy
+    HAS_PROXY = True
+except ImportError as e:
+    print(f"⚠️  لم أستطع استيراد syrian_proxy: {e}", flush=True)
+    HAS_PROXY = False
+
+    def find_working_proxy():
+        return None
 
 
 def _log(msg: str) -> None:
@@ -60,33 +73,25 @@ def pool() -> GeminiPool:
 
 
 # ═══════════════════════════════════════════════════════
-#  🎯 اكتشاف الموديلات تلقائياً
+#  اكتشاف الموديلات تلقائياً
 # ═══════════════════════════════════════════════════════
 
 _MODEL_CACHE: list[str] | None = None
 
 
 def _rank_model(name: str) -> tuple:
-    """
-    يعطي كل موديل درجة لترتيبه.
-    الأصغر = الأفضل (نستخدم min).
-    """
     n = name.lower()
-
-    # استبعاد الموديلات غير المناسبة
     if any(x in n for x in [
         "embedding", "aqa", "imagen", "veo", "tts", "audio",
         "vision-latest", "video", "learnlm", "gemma",
     ]):
         return (999, 999, name)
 
-    # استخرج رقم الإصدار: gemini-3.8-flash → 3.8
     version = 0.0
     m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
     if m:
         version = float(m.group(1))
 
-    # ترتيب النوع: flash أولاً (أسرع + أرخص)
     if "flash" in n and "lite" not in n:
         kind_rank = 0
     elif "flash" in n and "lite" in n:
@@ -96,20 +101,14 @@ def _rank_model(name: str) -> tuple:
     else:
         kind_rank = 3
 
-    # الأولوية للإصدارات المستقرة (بدون preview/exp)
     stable = 0
     if "preview" in n or "exp" in n or "experimental" in n:
         stable = 1
 
-    # نرتب تنازلياً حسب الإصدار (الأحدث أولاً)
     return (kind_rank, stable, -version, name)
 
 
 def discover_models(force_refresh: bool = False) -> list[str]:
-    """
-    يسأل Gemini API عن الموديلات المتاحة ويرجعها مرتبة بالأفضلية.
-    يستخدم cache.
-    """
     global _MODEL_CACHE
     if _MODEL_CACHE is not None and not force_refresh:
         return _MODEL_CACHE
@@ -118,7 +117,6 @@ def discover_models(force_refresh: bool = False) -> list[str]:
     key = p.get()
 
     _log("🔍 نسأل Gemini عن الموديلات المتاحة...")
-
     try:
         r = requests.get(
             f"https://generativelanguage.googleapis.com/v1beta/models?key={key}",
@@ -126,18 +124,15 @@ def discover_models(force_refresh: bool = False) -> list[str]:
         )
     except Exception as e:
         _log(f"⚠️  فشل الاتصال: {e}")
-        # قائمة احتياطية
         return ["gemini-3.8-flash", "gemini-2.5-flash-latest", "gemini-flash-latest"]
 
     if r.status_code != 200:
-        _log(f"⚠️  HTTP {r.status_code}: {r.text[:200]}")
         return ["gemini-3.8-flash", "gemini-2.5-flash-latest", "gemini-flash-latest"]
 
     data = r.json()
     models_raw = data.get("models", [])
     _log(f"📋 وجدنا {len(models_raw)} موديل إجمالي")
 
-    # فلترة: فقط الموديلات التي تدعم generateContent
     candidates = []
     for m in models_raw:
         name = m.get("name", "").replace("models/", "")
@@ -148,17 +143,13 @@ def discover_models(force_refresh: bool = False) -> list[str]:
     _log(f"🎯 منها {len(candidates)} تدعم generateContent")
 
     if not candidates:
-        _log("⚠️  لا موديلات صالحة — نستخدم fallback")
         return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
 
-    # رتّب
     candidates.sort(key=_rank_model)
-
-    # خذ أفضل 10
     top = candidates[:10]
-    _log(f"✅ ترتيبنا النهائي:")
+    _log("✅ ترتيبنا النهائي:")
     for i, m in enumerate(top):
-        _log(f"   {i+1}. {m}")
+        _log(f"   {i + 1}. {m}")
 
     _MODEL_CACHE = top
     return top
@@ -276,7 +267,6 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
     )
     try:
         r = requests.post(url, json=body, timeout=90)
-
         if r.status_code == 429:
             return False, "rate_limit"
         if r.status_code == 404:
@@ -287,7 +277,7 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
         data = r.json()
         cands = data.get("candidates") or []
         if not cands:
-            return False, f"no_candidates"
+            return False, "no_candidates"
 
         parts = (cands[0].get("content") or {}).get("parts") or []
         txt = ""
@@ -301,7 +291,6 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
             return False, f"no_json: {txt[:200]}"
 
         return True, json.loads(m.group(0))
-
     except Exception as e:
         return False, f"exception: {str(e)[:120]}"
 
@@ -346,16 +335,13 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     }
 
     p = pool()
-    models = discover_models()  # ← تلقائي
+    models = discover_models()
 
     last_error = ""
-    # جرّب كل موديل
     for model in models:
-        # جرّب الموديل مرتين (مرة لكل مفتاح إذا rate limit)
         for attempt in range(len(p.keys)):
             key = p.get()
             ok, result = _call_gemini(model, body, key)
-
             if ok:
                 result["_elements"] = elements
                 result["_model"] = model
@@ -368,8 +354,7 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
                 p.fail(60)
                 continue
             elif "model_not_found" in err:
-                # هذا الموديل غير متوفر — نستبعد من الكاش
-                _log(f"⚠️  {model} غير متوفر، نستبعده")
+                _log(f"⚠️  {model} غير متوفر")
                 if _MODEL_CACHE and model in _MODEL_CACHE:
                     _MODEL_CACHE.remove(model)
                 break
@@ -460,7 +445,7 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
 
 
 # ═══════════════════════════════════════════════════════
-#  الدالة الرئيسية
+#  الكوكيز
 # ═══════════════════════════════════════════════════════
 
 def _parse_cookies(raw: str) -> list[dict]:
@@ -499,6 +484,107 @@ def _parse_cookies(raw: str) -> list[dict]:
     raise ValueError("صيغة غير معروفة")
 
 
+# ═══════════════════════════════════════════════════════
+#  المسار البشري الطبيعي (Homepage → رفع)
+# ═══════════════════════════════════════════════════════
+
+def _navigate_like_human(page, screenshot_dir: str) -> bool:
+    """
+    يسلك مسار طبيعي: الرئيسية → صورة الحساب → رفع.
+    يرجع True إذا نجح، False إذا احتاج fallback.
+    """
+    _log("🌐 فتح youtube.com الرئيسية...")
+    page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(5000)
+    page.screenshot(path=f"{screenshot_dir}/01_home.png")
+
+    if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
+        raise RuntimeError("❌ فشل تسجيل الدخول")
+
+    _log("✅ مسجّل — نبدأ سلوك بشري")
+
+    # حركة ماوس طبيعية
+    page.mouse.move(720, 400)
+    page.wait_for_timeout(700)
+    page.mouse.move(500, 350)
+    page.wait_for_timeout(500)
+    page.mouse.move(900, 500)
+    page.wait_for_timeout(600)
+
+    # سكرول بسيط
+    try:
+        page.mouse.wheel(0, 300)
+        page.wait_for_timeout(1500)
+        page.mouse.wheel(0, -200)
+        page.wait_for_timeout(1000)
+    except Exception:
+        pass
+
+    # ضغط على صورة الحساب
+    _log("👤 ضغط على صورة الحساب...")
+    avatar_clicked = False
+    for sel in [
+        'button#avatar-btn',
+        'yt-img-shadow#avatar',
+        '#avatar-btn',
+        'ytd-topbar-menu-button-renderer #avatar-btn',
+        'button[aria-label*="الحساب"]',
+        'button[aria-label*="Account"]',
+    ]:
+        try:
+            page.click(sel, timeout=5000)
+            _log(f"   ✅ نجح: {sel}")
+            avatar_clicked = True
+            break
+        except Exception:
+            continue
+
+    if not avatar_clicked:
+        _log("⚠️  ما لقيت صورة الحساب — نروح مباشرة للرفع")
+        page.goto("https://www.youtube.com/upload",
+                  wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(6000)
+        return True
+
+    page.wait_for_timeout(2500)
+    page.screenshot(path=f"{screenshot_dir}/02_avatar_menu.png")
+
+    # ضغط على "إنشاء" أو "رفع فيديو"
+    _log("➕ البحث عن زر الرفع...")
+    create_clicked = False
+    for sel in [
+        'ytd-compact-link-renderer a[href="/upload"]',
+        'a[href="/upload"]',
+        'yt-formatted-string:has-text("رفع فيديو")',
+        'yt-formatted-string:has-text("Upload video")',
+        'tp-yt-paper-item:has-text("رفع فيديو")',
+        'tp-yt-paper-item:has-text("Upload video")',
+        'tp-yt-paper-item:has-text("رفع")',
+        'tp-yt-paper-item:has-text("Upload")',
+    ]:
+        try:
+            page.click(sel, timeout=5000)
+            _log(f"   ✅ نجح: {sel}")
+            create_clicked = True
+            break
+        except Exception:
+            continue
+
+    if not create_clicked:
+        _log("⚠️  ما لقيت زر الرفع — نروح مباشرة")
+        page.goto("https://www.youtube.com/upload",
+                  wait_until="domcontentloaded", timeout=60000)
+
+    page.wait_for_timeout(8000)
+    page.screenshot(path=f"{screenshot_dir}/03_after_create.png")
+    _log(f"📍 الرابط: {page.url}")
+    return True
+
+
+# ═══════════════════════════════════════════════════════
+#  الدالة الرئيسية
+# ═══════════════════════════════════════════════════════
+
 def upload_video_ai(
     video_path: str,
     title: str,
@@ -513,25 +599,39 @@ def upload_video_ai(
         raise FileNotFoundError(video_path)
 
     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
-
     cookies_list = _parse_cookies(cookies_raw)
     _log(f"🍪 {len(cookies_list)} كوكي")
 
-    # ═══ اكتشاف الموديلات قبل البدء ═══
     _log("═" * 50)
     models = discover_models()
     if not models:
-        raise RuntimeError("❌ لا موديلات متاحة")
+        raise RuntimeError("❌ لا موديلات")
     _log(f"🎯 سأستخدم: {models[0]}")
 
+    # ═══ بحث عن بروكسي سوري ═══
+    _log("═" * 50)
+    proxy_config = None
+    if HAS_PROXY:
+        try:
+            proxy_config = find_working_proxy()
+        except Exception as e:
+            _log(f"⚠️  فشل مدير البروكسي: {e}")
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=headless,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
+        launch_kwargs = {
+            "headless": headless,
+            "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+        }
+        if proxy_config:
+            launch_kwargs["proxy"] = proxy_config
+            _log(f"🌐 سأرفع عبر: {proxy_config.get('server')}")
+        else:
+            _log("⚠️  بدون بروكسي — IP افتراضي")
+
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             viewport={"width": 1440, "height": 900},
-            locale="en-US",
+            locale="ar-SA",
             timezone_id="Asia/Damascus",
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -540,41 +640,35 @@ def upload_video_ai(
         )
         context.add_cookies(cookies_list)
         page = context.new_page()
-
         history: list[str] = []
 
         try:
-            _log("🌐 فتح صفحة الرفع...")
-            page.goto(
-                "https://www.youtube.com/upload",
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-            page.wait_for_timeout(6000)
+            # ═══ 1) مسار بشري طبيعي ═══
+            _navigate_like_human(page, screenshot_dir)
 
-            if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
-                raise RuntimeError("❌ فشل تسجيل الدخول")
-            _log("✅ مسجّل")
-
+            # ═══ 2) رفع الملف ═══
             _log(f"📁 رفع: {Path(video_path).name}")
             file_input = None
-            for _ in range(6):
+            for _ in range(10):
                 c = page.locator('input[type="file"]')
                 if c.count() > 0:
                     file_input = c.first
                     break
                 page.wait_for_timeout(3000)
+
             if file_input is None:
-                raise RuntimeError("❌ ما لقيت input")
+                page.screenshot(path=f"{screenshot_dir}/no_input.png")
+                raise RuntimeError("❌ ما لقيت input الفيديو")
 
             file_input.set_input_files(video_path)
-            _log("⏳ انتظار 30 ثانية...")
+            _log("⏳ انتظار 30 ثانية لبدء المعالجة...")
             page.wait_for_timeout(30000)
+            page.screenshot(path=f"{screenshot_dir}/04_uploaded.png")
 
+            # ═══ 3) حلقة Gemini Vision ═══
             _log("═" * 50)
             _log("🧠 حلقة Gemini Vision")
             _log(f"📝 العنوان: {title}")
-
             history.append(f"العنوان: {title}")
             history.append(f"الوصف: {description[:200]}")
 
@@ -582,7 +676,6 @@ def upload_video_ai(
             for step in range(1, max_steps + 1):
                 _log(f"\n{'─' * 50}")
                 _log(f"🎯 خطوة {step}")
-
                 page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_before.png")
 
                 try:
@@ -611,8 +704,7 @@ def upload_video_ai(
             if done:
                 _log("🎉 اكتمل الرفع")
                 return True
-
-            _log("⚠️  الحلقة انتهت")
+            _log("⚠️  الحلقة انتهت بدون تأكيد")
             return False
 
         except Exception as e:
