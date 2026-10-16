@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-audio_mixer_audar.py — التوليد الصوتي باستخدام Audar-TTS-V1-Flash
+audio_mixer_audar.py — التوليد الصوتي الكامل باستخدام Audar-TTS-V1-Flash
+- يتجاوز torchaudio.load باستخدام soundfile
+- يعيد أخذ العينات إلى 16kHz المطلوبة من NeuCodec
 """
 
 import os
@@ -32,6 +34,29 @@ def download_gguf():
     return path
 
 
+def load_audio_16k(wav_path: Path):
+    """تحميل الصوت من ملف WAV وإعادة أخذ العينات إلى 16kHz مع قناة واحدة"""
+    import soundfile as sf
+    import numpy as np
+    import torch
+
+    # تحميل الصوت باستخدام soundfile (يتخطى torchaudio.load)
+    data, sr = sf.read(str(wav_path), dtype="float32")
+    if data.ndim > 1:
+        data = data.mean(axis=1)  # mono
+
+    # إعادة أخذ العينات إلى 16kHz باستخدام torch
+    if sr != 16000:
+        import torchaudio.functional as F
+        wav = torch.from_numpy(data).unsqueeze(0)  # (1, T)
+        wav = F.resample(wav, orig_freq=sr, new_freq=16000)
+        data = wav.squeeze(0).numpy()
+
+    # الشكل المطلوب: (1, 1, T)
+    tensor = torch.from_numpy(data).float().unsqueeze(0).unsqueeze(0)
+    return tensor
+
+
 def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -53,7 +78,8 @@ def main():
     codec = NeuCodec.from_pretrained("neuphonic/neucodec").eval()
 
     print("🎤 ترميز المرجع الصوتي ...")
-    ref_codes = codec.encode_code(str(REF_WAV)).squeeze().tolist()
+    ref_tensor = load_audio_16k(REF_WAV)  # (1, 1, T)
+    ref_codes = codec.encode_code(ref_tensor).squeeze().tolist()
     ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
     print(f"📊 عدد codes المرجع: {len(ref_codes)}")
 
