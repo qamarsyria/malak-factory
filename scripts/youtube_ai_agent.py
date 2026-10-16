@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب باستخدام Gemini Vision كموجّه — نسخة محدّثة."""
+"""رفع فيديو على يوتيوب باستخدام Gemini Vision — اكتشاف تلقائي للموديلات."""
 from __future__ import annotations
 
 import base64
@@ -14,21 +14,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 def _log(msg: str) -> None:
     print(f"[ai-agent] {msg}", flush=True)
-
-
-# ═══════════════════════════════════════════════════════
-#  الموديلات (بالترتيب) — من الأحدث للأقدم
-# ═══════════════════════════════════════════════════════
-
-GEMINI_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.5-flash",
-    "gemini-3.0-flash",
-    "gemini-2.5-flash-latest",
-    "gemini-2.5-flash-002",
-    "gemini-flash-latest",
-    "gemini-pro-latest",
-]
 
 
 # ═══════════════════════════════════════════════════════
@@ -72,6 +57,111 @@ def pool() -> GeminiPool:
     if _pool is None:
         _pool = GeminiPool()
     return _pool
+
+
+# ═══════════════════════════════════════════════════════
+#  🎯 اكتشاف الموديلات تلقائياً
+# ═══════════════════════════════════════════════════════
+
+_MODEL_CACHE: list[str] | None = None
+
+
+def _rank_model(name: str) -> tuple:
+    """
+    يعطي كل موديل درجة لترتيبه.
+    الأصغر = الأفضل (نستخدم min).
+    """
+    n = name.lower()
+
+    # استبعاد الموديلات غير المناسبة
+    if any(x in n for x in [
+        "embedding", "aqa", "imagen", "veo", "tts", "audio",
+        "vision-latest", "video", "learnlm", "gemma",
+    ]):
+        return (999, 999, name)
+
+    # استخرج رقم الإصدار: gemini-3.8-flash → 3.8
+    version = 0.0
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+    if m:
+        version = float(m.group(1))
+
+    # ترتيب النوع: flash أولاً (أسرع + أرخص)
+    if "flash" in n and "lite" not in n:
+        kind_rank = 0
+    elif "flash" in n and "lite" in n:
+        kind_rank = 1
+    elif "pro" in n:
+        kind_rank = 2
+    else:
+        kind_rank = 3
+
+    # الأولوية للإصدارات المستقرة (بدون preview/exp)
+    stable = 0
+    if "preview" in n or "exp" in n or "experimental" in n:
+        stable = 1
+
+    # نرتب تنازلياً حسب الإصدار (الأحدث أولاً)
+    return (kind_rank, stable, -version, name)
+
+
+def discover_models(force_refresh: bool = False) -> list[str]:
+    """
+    يسأل Gemini API عن الموديلات المتاحة ويرجعها مرتبة بالأفضلية.
+    يستخدم cache.
+    """
+    global _MODEL_CACHE
+    if _MODEL_CACHE is not None and not force_refresh:
+        return _MODEL_CACHE
+
+    p = pool()
+    key = p.get()
+
+    _log("🔍 نسأل Gemini عن الموديلات المتاحة...")
+
+    try:
+        r = requests.get(
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+            timeout=30,
+        )
+    except Exception as e:
+        _log(f"⚠️  فشل الاتصال: {e}")
+        # قائمة احتياطية
+        return ["gemini-3.8-flash", "gemini-2.5-flash-latest", "gemini-flash-latest"]
+
+    if r.status_code != 200:
+        _log(f"⚠️  HTTP {r.status_code}: {r.text[:200]}")
+        return ["gemini-3.8-flash", "gemini-2.5-flash-latest", "gemini-flash-latest"]
+
+    data = r.json()
+    models_raw = data.get("models", [])
+    _log(f"📋 وجدنا {len(models_raw)} موديل إجمالي")
+
+    # فلترة: فقط الموديلات التي تدعم generateContent
+    candidates = []
+    for m in models_raw:
+        name = m.get("name", "").replace("models/", "")
+        methods = m.get("supportedGenerationMethods", [])
+        if "generateContent" in methods:
+            candidates.append(name)
+
+    _log(f"🎯 منها {len(candidates)} تدعم generateContent")
+
+    if not candidates:
+        _log("⚠️  لا موديلات صالحة — نستخدم fallback")
+        return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
+
+    # رتّب
+    candidates.sort(key=_rank_model)
+
+    # خذ أفضل 10
+    top = candidates[:10]
+    _log(f"✅ ترتيبنا النهائي:")
+    for i, m in enumerate(top):
+        _log(f"   {i+1}. {m}")
+
+    _MODEL_CACHE = top
+    return top
 
 
 # ═══════════════════════════════════════════════════════
@@ -146,7 +236,7 @@ def _screenshot_b64(page) -> str:
 
 
 # ═══════════════════════════════════════════════════════
-#  استدعاء Gemini Vision
+#  Gemini Vision
 # ═══════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
@@ -179,8 +269,7 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 """
 
 
-def _call_gemini_with_model(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
-    """يستدعي Gemini بموديل محدد. يرجع (نجح, بيانات/سبب الفشل)."""
+def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={key}"
@@ -190,18 +279,15 @@ def _call_gemini_with_model(model: str, body: dict, key: str) -> tuple[bool, dic
 
         if r.status_code == 429:
             return False, "rate_limit"
-
         if r.status_code == 404:
-            # موديل غير موجود
-            return False, f"model_not_found: {r.text[:120]}"
-
+            return False, "model_not_found"
         if r.status_code != 200:
             return False, f"http_{r.status_code}: {r.text[:200]}"
 
         data = r.json()
         cands = data.get("candidates") or []
         if not cands:
-            return False, f"no_candidates: {str(data)[:200]}"
+            return False, f"no_candidates"
 
         parts = (cands[0].get("content") or {}).get("parts") or []
         txt = ""
@@ -234,15 +320,15 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
 
     recent_history = "\n".join(history[-6:]) if history else "(لا شيء بعد)"
 
-    prompt = f"""**الخطوة الحالية: {step}**
+    prompt = f"""**الخطوة: {step}**
 
 **سجل آخر الخطوات:**
 {recent_history}
 
-**العناصر القابلة للتفاعل ({len(elements)} عنصر):**
+**العناصر القابلة للتفاعل ({len(elements)}):**
 {elements_txt}
 
-بناءً على الصورة + العناصر، ما هي الخطوة التالية؟ أجب بـ JSON فقط."""
+ما هي الخطوة التالية؟ أجب بـ JSON فقط."""
 
     body = {
         "contents": [{
@@ -260,16 +346,17 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     }
 
     p = pool()
+    models = discover_models()  # ← تلقائي
 
-    # ═══ جرّب كل موديل، ثم كل مفتاح ═══
     last_error = ""
-    for model in GEMINI_MODELS:
-        for attempt in range(2):
+    # جرّب كل موديل
+    for model in models:
+        # جرّب الموديل مرتين (مرة لكل مفتاح إذا rate limit)
+        for attempt in range(len(p.keys)):
             key = p.get()
-            ok, result = _call_gemini_with_model(model, body, key)
+            ok, result = _call_gemini(model, body, key)
 
             if ok:
-                _log(f"✅ {model} نجح")
                 result["_elements"] = elements
                 result["_model"] = model
                 return result
@@ -278,22 +365,23 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
             last_error = f"{model}: {err}"
 
             if "rate_limit" in err:
-                _log(f"⚠️  {model} → rate limit، ننتقل لمفتاح آخر")
                 p.fail(60)
                 continue
             elif "model_not_found" in err:
-                _log(f"⚠️  {model} → غير متوفر، نجرّب الموديل التالي")
-                break  # انتقل للموديل التالي
+                # هذا الموديل غير متوفر — نستبعد من الكاش
+                _log(f"⚠️  {model} غير متوفر، نستبعده")
+                if _MODEL_CACHE and model in _MODEL_CACHE:
+                    _MODEL_CACHE.remove(model)
+                break
             else:
-                _log(f"⚠️  {model} → {err[:120]}")
                 p.fail(20)
                 continue
 
-    raise RuntimeError(f"فشلت كل الموديلات. آخر خطأ: {last_error}")
+    raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ قرار Gemini
+#  تنفيذ القرار
 # ═══════════════════════════════════════════════════════
 
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
@@ -328,13 +416,12 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
             _log(f"⚠️  عنصر {eid} غير موجود")
             return f"err: element {eid} not found"
 
-        _log(f"👆 ضغط على [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
+        _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
 
         clicked = False
         try:
             page.mouse.click(el["x"], el["y"])
             clicked = True
-            _log(f"   ✅ mouse click @({el['x']},{el['y']})")
         except Exception as e:
             _log(f"   ⚠️  mouse: {e}")
 
@@ -342,12 +429,11 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
             try:
                 page.locator(f'[name="{el["name"]}"]').first.click(force=True, timeout=5000)
                 clicked = True
-                _log(f"   ✅ locator name={el['name']}")
-            except Exception as e:
-                _log(f"   ⚠️  locator: {e}")
+            except Exception:
+                pass
 
         page.wait_for_timeout(2500)
-        page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after_click.png")
+        page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
         return f"clicked '{el['text'][:40]}'"
 
     if action == "type":
@@ -355,22 +441,18 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         text = decision.get("text", "")
         el = find_el(eid)
         if not el:
-            _log(f"⚠️  عنصر {eid} غير موجود")
             return f"err: element {eid} not found"
 
-        _log(f"⌨️  كتابة في [{eid}]: '{text[:50]}'")
+        _log(f"⌨️  كتابة [{eid}]: '{text[:50]}'")
         try:
             page.mouse.click(el["x"], el["y"])
             page.wait_for_timeout(500)
             page.keyboard.press("Control+A")
-            page.wait_for_timeout(200)
             page.keyboard.press("Delete")
             page.wait_for_timeout(200)
             page.keyboard.type(text, delay=15)
             page.wait_for_timeout(800)
-            _log(f"   ✅ تم")
         except Exception as e:
-            _log(f"   ❌ {e}")
             return f"err: {e}"
         return f"typed '{text[:30]}'"
 
@@ -435,6 +517,13 @@ def upload_video_ai(
     cookies_list = _parse_cookies(cookies_raw)
     _log(f"🍪 {len(cookies_list)} كوكي")
 
+    # ═══ اكتشاف الموديلات قبل البدء ═══
+    _log("═" * 50)
+    models = discover_models()
+    if not models:
+        raise RuntimeError("❌ لا موديلات متاحة")
+    _log(f"🎯 سأستخدم: {models[0]}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=headless,
@@ -485,7 +574,6 @@ def upload_video_ai(
             _log("═" * 50)
             _log("🧠 حلقة Gemini Vision")
             _log(f"📝 العنوان: {title}")
-            _log(f"📝 الوصف: {description[:80]}")
 
             history.append(f"العنوان: {title}")
             history.append(f"الوصف: {description[:200]}")
@@ -514,10 +602,7 @@ def upload_video_ai(
                     done = True
                     break
                 if result.startswith("fail"):
-                    _log(f"❌ Gemini أعلن فشل: {result}")
                     break
-                if result.startswith("err"):
-                    _log(f"⚠️  {result}")
 
                 page.wait_for_timeout(2000)
 
@@ -527,7 +612,7 @@ def upload_video_ai(
                 _log("🎉 اكتمل الرفع")
                 return True
 
-            _log("⚠️  الحلقة انتهت بدون تأكيد")
+            _log("⚠️  الحلقة انتهت")
             return False
 
         except Exception as e:
