@@ -1,3 +1,16 @@
+# ===== مصنع الفيديو الأساسي =====
+edge-tts>=7.0.0
+gTTS>=2.5.0
+moviepy==1.0.3
+Pillow==9.5.0
+arabic-reshaper==3.0.0
+python-bidi==0.6.3
+requests==2.32.3
+google-api-python-client==2.147.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+
+# ===== مشروع القصص (XTTS + Fasih) =====
 coqui-tts>=0.25.0
 transformers==4.45.2
 torch==2.5.1
@@ -6,4 +19,3 @@ spacy
 click
 soundfile
 huggingface_hub
-requests
