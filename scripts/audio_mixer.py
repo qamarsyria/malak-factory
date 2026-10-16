@@ -1,4 +1,4 @@
-"""Fasih-TTS-V1 + مرجع السديس + everyayah للسرد والآيات."""
+"""Fasih-TTS-V1 + مرجع السديس + everyayah — جمل طبيعية كاملة."""
 import os
 import re
 import subprocess
@@ -30,6 +30,7 @@ TARGET_BITRATE = "128k"
 # دوال مساعدة
 # ============================================================
 def _clean_text(text):
+    """تنظيف خفيف — يُبقي التشكيل."""
     text = re.sub(r"[ۖۗۘۙۚۛ]", "", text)
     text = text.replace("۝", " ")
     text = re.sub(r"\s+", " ", text)
@@ -50,6 +51,7 @@ def _get_duration(path):
 
 
 def _normalize(input_path, output_path):
+    """توحيد 44100 Hz mono mp3."""
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
          "-ar", TARGET_SAMPLE_RATE,
@@ -65,6 +67,7 @@ def _normalize(input_path, output_path):
 # 1. تحميل مرجع السديس
 # ============================================================
 def download_reference():
+    """يحمّل آية قصيرة بصوت السديس كمرجع."""
     Path(REFERENCE_DIR).mkdir(parents=True, exist_ok=True)
 
     if Path(REFERENCE_WAV).exists() and Path(REFERENCE_WAV).stat().st_size > 10240:
@@ -99,6 +102,7 @@ def download_reference():
 # 2. تحميل Fasih-TTS-V1
 # ============================================================
 def load_fasih():
+    """يحمل نموذج Fasih-TTS-V1."""
     os.environ["COQUI_TOS_AGREED"] = "1"
 
     from huggingface_hub import snapshot_download
@@ -126,48 +130,85 @@ def load_fasih():
 
 
 # ============================================================
-# 3. توليد السرد (مع مرجع السديس + تقسيم جمل)
+# 3. تقسيم الجمل (طبيعي — بلا دمج جبري)
 # ============================================================
 def split_into_sentences(text):
-    """يقسّم النص إلى جمل."""
-    text = re.sub(r'([.!؟?])\s+', r'\1\n', text)
-    text = re.sub(r'([۔])\s+', r'\1\n', text)
-    sentences = [s.strip() for s in text.split('\n') if s.strip()]
-    return sentences
+    """
+    يقسّم النص إلى جمل طبيعية كاملة.
+    - ينقسم عند . ! ؟ ۔
+    - إذا الجملة طويلة جداً (> 200 حرف)، ينقسم إضافياً عند ،
+    - الجمل القصيرة جداً (< 15 حرف) تُدمج مع التالية.
+    """
+    # 1) تقسيم أولي عند علامات نهاية الجملة
+    text = re.sub(r'([.!؟?۔])\s+', r'\1\n', text)
+    chunks = [s.strip() for s in text.split('\n') if s.strip()]
+
+    # 2) تقسيم إضافي للجمل الطويلة جداً عند الفاصلة
+    result = []
+    for chunk in chunks:
+        if len(chunk) <= 200:
+            result.append(chunk)
+        else:
+            parts = re.split(r'([،,؛;])\s+', chunk)
+            current = ""
+            for i, p in enumerate(parts):
+                if i % 2 == 0:  # نص
+                    test = (current + " " + p).strip()
+                    if len(test) > 200 and current:
+                        result.append(current.strip())
+                        current = p
+                    else:
+                        current = test
+                else:  # علامة ترقيم
+                    current += p + " "
+            if current.strip():
+                result.append(current.strip())
+
+    # 3) دمج الجمل القصيرة جداً (< 15 حرف) مع التالية
+    final = []
+    buffer = ""
+    for s in result:
+        if len(s) < 15:
+            buffer = (buffer + " " + s).strip()
+        else:
+            if buffer:
+                final.append((buffer + " " + s).strip())
+                buffer = ""
+            else:
+                final.append(s)
+    if buffer:
+        if final:
+            final[-1] = (final[-1] + " " + buffer).strip()
+        else:
+            final.append(buffer)
+
+    return final
 
 
+# ============================================================
+# 4. توليد السرد (Fasih + صوت السديس)
+# ============================================================
 def generate_fasih(text, out_mp3, model, config):
-    """يولّد السرد مع استنساخ صوت السديس وتقسيم الجمل."""
+    """يولّد السرد — كل جملة طبيعية كاملة تُولّد منفصلة (بلا دمج)."""
     clean = _clean_text(text)
     if not clean:
         return None
 
     print(f"   🔊 [Fasih] {clean[:60]}...")
 
-    # 1) تقسيم إلى جمل
+    # 1) تقسيم إلى جمل طبيعية
     sentences = split_into_sentences(clean)
     if not sentences:
         sentences = [clean]
 
-    # 2) دمج الجمل القصيرة
-    merged = []
-    current = ""
-    for s in sentences:
-        if len(current) + len(s) < 200:
-            current = (current + " " + s).strip()
-        else:
-            if current:
-                merged.append(current)
-            current = s
-    if current:
-        merged.append(current)
-
-    print(f"   📝 {len(merged)} جملة")
+    print(f"   📝 {len(sentences)} جملة طبيعية")
+    for idx, s in enumerate(sentences, 1):
+        print(f"      [{idx}] ({len(s)} حرف) {s[:70]}...")
 
     temp_dir = Path(tempfile.mkdtemp())
     sentence_files = []
 
-    for idx, sentence in enumerate(merged, 1):
+    for idx, sentence in enumerate(sentences, 1):
         if len(sentence) < 5:
             continue
 
@@ -175,7 +216,7 @@ def generate_fasih(text, out_mp3, model, config):
             out = model.synthesize(
                 sentence,
                 config,
-                speaker_wav=REFERENCE_WAV,   # ← مرجع السديس
+                speaker_wav=REFERENCE_WAV,   # ← صوت السديس
                 gpt_cond_len=6,
                 language="ar",
             )
@@ -192,12 +233,12 @@ def generate_fasih(text, out_mp3, model, config):
                 wf.setframerate(24000)
                 wf.writeframes(wav_int16.tobytes())
 
-            # صمت 250ms
+            # صمت 0.35 ثانية بين الجمل
             silence = temp_dir / f"silence-{idx:03d}.wav"
             subprocess.run(
                 ["ffmpeg", "-y", "-f", "lavfi",
                  "-i", "anullsrc=channel_layout=mono:sample_rate=24000",
-                 "-t", "0.25", str(silence)],
+                 "-t", "0.35", str(silence)],
                 check=True, capture_output=True, timeout=30,
             )
 
@@ -210,7 +251,7 @@ def generate_fasih(text, out_mp3, model, config):
     if not sentence_files:
         return None
 
-    # 3) دمج الجمل
+    # 2) دمج الجمل
     wav_raw = out_mp3.replace(".mp3", "_raw.wav")
     with open(temp_dir / "sent_concat.txt", "w") as f:
         for sf in sentence_files:
@@ -230,7 +271,7 @@ def generate_fasih(text, out_mp3, model, config):
 
 
 # ============================================================
-# 4. جلب الآيات
+# 5. جلب الآيات من everyayah
 # ============================================================
 def _fetch_quran(surah, ayah, out_path):
     """يجلب آية من everyayah (السديس)."""
@@ -249,12 +290,15 @@ def _fetch_quran(surah, ayah, out_path):
 
 
 # ============================================================
-# 5. بناء الحلقة
+# 6. بناء الحلقة كاملة
 # ============================================================
 def build_episode(episode, out_path="out/episode-audio.mp3"):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
+    # 1) مرجع السديس
     download_reference()
+
+    # 2) تحميل Fasih
     model, config = load_fasih()
 
     segments = episode.get("segments", [])
@@ -302,7 +346,7 @@ def build_episode(episode, out_path="out/episode-audio.mp3"):
     if not segment_files:
         raise RuntimeError("لم يُولَّد صوت")
 
-    # دمج
+    # 3) الدمج النهائي
     print(f"\n🔗 دمج {len(segment_files)} مقطع...")
     with open(temp_dir / "final.txt", "w") as f:
         for sf in segment_files:
@@ -321,7 +365,12 @@ def build_episode(episode, out_path="out/episode-audio.mp3"):
     return out_path
 
 
+# ============================================================
+# التشغيل الرئيسي
+# ============================================================
 if __name__ == "__main__":
     import json
-    ep = json.loads(Path("data/stories/yusuf/episode-01.json").read_text(encoding="utf-8"))
+    ep = json.loads(
+        Path("data/stories/yusuf/episode-01.json").read_text(encoding="utf-8")
+    )
     build_episode(ep)
