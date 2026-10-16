@@ -1,214 +1,159 @@
-"""دمج صوت السرد (Piper) + الآيات (everyayah) — بلا تشكيل + سرعة مضبوطة."""
+"""توليد صوت السرد باستخدام XTTS v2 مع استنساخ صوت السديس."""
+import os
 import re
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 import requests
+import torch
+
+# استيراد TTS
+os.environ["COQUI_TOS_AGREED"] = "1"
+from TTS.tts.configs.xtts_config import XttsConfig
+from TTS.tts.models.xtts import Xtts
 
 from config import QURAN_RECITER, QURAN_BASE
-
 
 # ============================================================
 # إعدادات
 # ============================================================
-PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
-PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
+# مسار ملف صوت السديس المرجعي (يجب أن ترفعه إلى المستودع)
+REFERENCE_AUDIO = "assets/audio/reference/sudais_reference.wav"
 
-PIPER_LENGTH_SCALE = 0.9   # 0.9 = أسرع 10% من الطبيعي (لأن الطبيعي بطيء قليلاً)
+# مسار موديل XTTS v2 (سيتم تحميله تلقائياً)
+XTTS_MODEL_DIR = "/tmp/xtts_model"
 
+# صيغة موحّدة للدمج
 TARGET_SAMPLE_RATE = "44100"
 TARGET_CHANNELS = "1"
 TARGET_BITRATE = "128k"
 
 
 # ============================================================
-# دوال معالجة النص
+# تحميل موديل XTTS v2 (مرة واحدة)
 # ============================================================
-def _remove_tashkeel(text):
-    """يزيل التشكيل العربي (Piper لا يفهمه)."""
-    # الحركات: fatha, damma, kasra, sukun, shadda, fathatan, dammatan, kasratan
-    # + علامات أخرى
-    tashkeel = re.compile(r"[\u064B-\u0652\u0670\u0640\u06D6-\u06ED]")
-    return tashkeel.sub("", text)
+def load_xtts_model():
+    """يحمل موديل XTTS v2 من HuggingFace."""
+    print("⬇️  تحميل موديل XTTS v2...")
 
-
-def _clean_for_piper(text):
-    """ينظف النص للسرد (بلا تشكيل، بلا رموز مخصوصة)."""
-    # إزالة الرموز المخصوصة
-    text = re.sub(r"[ۖۗۘۙۚۛ]", "", text)
-    text = text.replace("۝", " ")
-    # إزالة التشكيل
-    text = _remove_tashkeel(text)
-    # تنظيف المسافات
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-# ============================================================
-# دوال مساعدة
-# ============================================================
-def _get_duration(file_path):
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries",
-         "format=duration", "-of",
-         "default=noprint_wrappers=1:nokey=1", file_path],
-        capture_output=True, text=True, timeout=30,
-    )
-    try:
-        return float(result.stdout.strip())
-    except Exception:
-        return 0.0
-
-
-def _normalize_audio(input_path, output_path):
-    """يوحّد صيغة الصوت (44100 Hz, mono)."""
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", input_path,
-         "-ar", TARGET_SAMPLE_RATE,
-         "-ac", TARGET_CHANNELS,
-         "-codec:a", "libmp3lame",
-         "-b:a", TARGET_BITRATE,
-         output_path],
-        check=True, capture_output=True, timeout=120,
+    # استخدام snapshot_download لتحميل الموديل
+    from huggingface_hub import snapshot_download
+    model_path = snapshot_download(
+        repo_id="coqui/XTTS-v2",
+        cache_dir=XTTS_MODEL_DIR
     )
 
+    # تحميل الإعدادات
+    config = XttsConfig()
+    config.load_json(f"{model_path}/config.json")
 
-# ============================================================
-# Piper TTS — للسرد
-# ============================================================
-def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
-    if not Path(PIPER_MODEL).exists():
-        raise RuntimeError(f"نموذج Piper غير موجود: {PIPER_MODEL}")
-
-    clean = _clean_for_piper(text)
-    if not clean:
-        raise RuntimeError("النص فارغ")
-
-    wav_path = out_mp3.replace(".mp3", ".wav")
-    raw_mp3 = out_mp3.replace(".mp3", "_raw.mp3")
-
-    # 1) Piper يولّد wav
-    proc = subprocess.run(
-        ["python", "-m", "piper",
-         "--model", PIPER_MODEL,
-         "--config", PIPER_CONFIG,
-         "--output_file", wav_path,
-         "--length-scale", str(length_scale)],
-        input=clean.encode("utf-8"),
-        capture_output=True,
-        timeout=180,
+    # تهيئة الموديل
+    model = Xtts.init_from_config(config)
+    model.load_checkpoint(
+        config,
+        checkpoint_dir=model_path,
+        use_deepspeed=False,
     )
+    model.cpu()  # تشغيل على CPU (لا يحتاج GPU)
+    model.eval()
 
-    if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", errors="ignore")[:300]
-        raise RuntimeError(f"Piper فشل: {err}")
-
-    if not Path(wav_path).exists() or Path(wav_path).stat().st_size < 2048:
-        raise RuntimeError("Piper: ملف صغير جداً")
-
-    # 2) wav → mp3 خام
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", wav_path,
-         "-codec:a", "libmp3lame", "-q:a", "4",
-         raw_mp3],
-        check=True, capture_output=True, timeout=60,
-    )
-
-    # 3) توحيد الصيغة
-    _normalize_audio(raw_mp3, out_mp3)
+    print("✅ XTTS v2 جاهز")
+    return model, config
 
 
 # ============================================================
-# everyayah — للآيات
+# توليد الصوت بـ XTTS v2
 # ============================================================
-def _fetch_quran_ayah(surah, ayah, out_path):
-    filename = f"{surah:03d}{ayah:03d}.mp3"
-    url = f"{QURAN_BASE}/{QURAN_RECITER}/{filename}"
-
-    print(f"   📖 {surah}:{ayah} → {filename}")
-
-    r = requests.get(url, timeout=60)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code} — {url}")
-
-    temp_path = out_path.replace(".mp3", "_raw.mp3")
-    Path(temp_path).write_bytes(r.content)
-
-    if Path(temp_path).stat().st_size < 2048:
-        raise RuntimeError("ملف صغير جداً")
-
-    _normalize_audio(temp_path, out_path)
-
-
-# ============================================================
-# بناء المقاطع
-# ============================================================
-def generate_quran_audio(segment, out_path):
-    ayah_numbers = segment.get("ayah_numbers") or []
-    surah = segment.get("_surah") or 12
-
-    if not ayah_numbers:
-        raise RuntimeError("لا يوجد أرقام آيات")
-
-    if len(ayah_numbers) == 1:
-        _fetch_quran_ayah(surah, ayah_numbers[0], out_path)
-        duration = _get_duration(out_path)
-        print(f"   ✅ {duration:.1f} ثانية")
-        return duration
-
-    temp_dir = Path(tempfile.mkdtemp())
-    files = []
-    for n, ayah in enumerate(ayah_numbers, 1):
-        f = temp_dir / f"ayah-{n:02d}.mp3"
-        _fetch_quran_ayah(surah, ayah, str(f))
-        files.append(str(f))
-
-    concat_file = temp_dir / "concat.txt"
-    with open(concat_file, "w", encoding="utf-8") as cf:
-        for f in files:
-            cf.write(f"file '{f}'\n")
-
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", str(concat_file), "-c", "copy", out_path],
-        check=True, capture_output=True, timeout=120,
-    )
-
-    duration = _get_duration(out_path)
-    print(f"   ✅ {len(ayah_numbers)} آيات = {duration:.1f} ثانية")
-    return duration
-
-
-def generate_narration_audio(segment, out_path):
+def generate_narration_audio(segment, out_path, model, config):
+    """يولّد صوت السرد باستخدام XTTS v2 مع صوت السديس."""
     text = segment.get("text", "").strip()
     if not text:
         return None
 
-    # نظهر النص الأصلي (للتشخيص)
     print(f"   🔊 [narration] {text[:60]}...")
+
     try:
-        _piper_tts(text, out_path)
-        duration = _get_duration(out_path)
+        # توليد الصوت
+        # XTTS v2 يدعم النص العربي مع التشكيل
+        outputs = model.synthesize(
+            text,
+            config,
+            speaker_wav=REFERENCE_AUDIO,  # <-- صوت السديس
+            language="ar",                # العربية
+        )
+
+        # حفظ الملف
+        wav_path = out_path.replace(".mp3", ".wav")
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)  # XTTS v2 ينتج 24000 هرتز
+            wf.writeframes(outputs["wav"])
+
+        # تحويل إلى mp3
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", wav_path,
+             "-ar", TARGET_SAMPLE_RATE,
+             "-ac", TARGET_CHANNELS,
+             "-codec:a", "libmp3lame",
+             "-b:a", TARGET_BITRATE,
+             out_path],
+            check=True, capture_output=True, timeout=120,
+        )
+
+        duration = len(outputs["wav"]) / (24000 * 2)  # 2 بايت لكل عينة
         print(f"   ✅ {duration:.1f} ثانية")
         return duration
+
     except Exception as e:
         print(f"   ❌ فشل: {str(e)[:150]}")
         return None
 
 
 # ============================================================
+# دوال بناء الآيات (كما هي)
+# ============================================================
+def _fetch_quran_ayah(surah, ayah, out_path):
+    filename = f"{surah:03d}{ayah:03d}.mp3"
+    url = f"{QURAN_BASE}/{QURAN_RECITER}/{filename}"
+
+    print(f"   📖 {surah}:{ayah} → {filename}")
+    r = requests.get(url, timeout=60)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+
+    Path(out_path).write_bytes(r.content)
+
+    # توحيد الصيغة
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", out_path,
+         "-ar", TARGET_SAMPLE_RATE,
+         "-ac", TARGET_CHANNELS,
+         "-codec:a", "libmp3lame",
+         "-b:a", TARGET_BITRATE,
+         out_path + ".tmp"],
+        check=True, capture_output=True, timeout=120,
+    )
+    os.replace(out_path + ".tmp", out_path)
+
+
+# ============================================================
 # بناء الحلقة كاملة
 # ============================================================
 def build_full_audio(episode, out_path="out/episode-audio.mp3"):
+    """يبني صوت الحلقة كاملة."""
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     segments = episode.get("segments", [])
     surah = episode.get("surah", 12)
 
     print(f"\n🎙️  بناء صوت الحلقة ({len(segments)} مقطع)")
     print(f"   السورة: {surah} | القارئ: {QURAN_RECITER}")
-    print(f"   السرد: Piper (length_scale={PIPER_LENGTH_SCALE})")
-    print(f"   صيغة موحّدة: {TARGET_SAMPLE_RATE} Hz | بلا تشكيل")
+    print(f"   السرد: XTTS v2 + صوت السديس")
     print("=" * 60)
+
+    # تحميل الموديل مرة واحدة
+    model, config = load_xtts_model()
 
     temp_dir = Path(tempfile.mkdtemp())
     segment_files = []
@@ -217,17 +162,38 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     for i, seg in enumerate(segments, 1):
         seg_type = seg["type"]
         seg_file = temp_dir / f"seg-{i:02d}.mp3"
-        seg["_surah"] = surah
 
         try:
             if seg_type == "quran":
-                duration = generate_quran_audio(seg, str(seg_file))
+                ayah_numbers = seg.get("ayah_numbers") or []
+                if len(ayah_numbers) == 1:
+                    _fetch_quran_ayah(surah, ayah_numbers[0], str(seg_file))
+                else:
+                    # دمج آيات متعددة
+                    temp_ayahs = []
+                    for n, ayah in enumerate(ayah_numbers, 1):
+                        f = temp_dir / f"ayah-{n:02d}.mp3"
+                        _fetch_quran_ayah(surah, ayah, str(f))
+                        temp_ayahs.append(str(f))
+                    with open(temp_dir / "concat.txt", "w") as f:
+                        for tf in temp_ayahs:
+                            f.write(f"file '{tf}'\n")
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                         "-i", str(temp_dir / "concat.txt"), "-c", "copy",
+                         str(seg_file)],
+                        check=True, capture_output=True, timeout=120,
+                    )
+                duration = 0  # سيتم حسابه لاحقاً
+
             elif seg_type in ("narration", "intro", "outro"):
-                duration = generate_narration_audio(seg, str(seg_file))
+                duration = generate_narration_audio(
+                    seg, str(seg_file), model, config
+                )
             else:
                 duration = None
 
-            if duration:
+            if seg_file.exists():
                 segment_files.append(str(seg_file))
             else:
                 failed += 1
@@ -237,11 +203,12 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
             failed += 1
 
     if not segment_files:
-        raise RuntimeError("لم يُولَّد أي صوت")
+        raise RuntimeError("لم يُولَّد صوت")
 
-    print(f"\n🔗 دمج {len(segment_files)} مقطع ({failed} فشل)...")
-    concat_file = temp_dir / "concat.txt"
-    with open(concat_file, "w", encoding="utf-8") as f:
+    # دمج كل المقاطع
+    print(f"\n🔗 دمج {len(segment_files)} مقطع...")
+    concat_file = temp_dir / "concat_final.txt"
+    with open(concat_file, "w") as f:
         for sf in segment_files:
             f.write(f"file '{sf}'\n")
 
@@ -251,9 +218,7 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
         check=True, capture_output=True, timeout=180,
     )
 
-    duration = _get_duration(out_path)
-    print(f"\n✅ الحلقة الصوتية: {out_path}")
-    print(f"   المدة: {duration/60:.1f} دقيقة ({duration:.0f} ث)")
+    print(f"\n✅ الحلقة: {out_path}")
     print(f"   نجح: {len(segment_files)} | فشل: {failed}")
     return out_path
 
