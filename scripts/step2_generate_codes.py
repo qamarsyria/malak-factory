@@ -12,6 +12,9 @@ GGUF_FILE  = "Audar-TTS-V1-Flash-Q4_K_M.gguf"
 REF_JSON   = Path("output/ref_codes.json")
 TARGET_JSON = Path("output/target_codes.json")
 
+# حد أقصى لعدد codes المرجع (50 code = 1 ثانية، 300 = 6 ثواني)
+MAX_REF_CODES = 300
+
 DEFAULT_TEXT = (
     "الحَمدُ لِلَّهِ رَبِّ العالَمينَ. "
     "هذا اِختِبارٌ لِنِظامِ تَوليدِ الصَّوتِ العَرَبِيِّ الفَصيحِ."
@@ -29,9 +32,17 @@ def download_gguf():
 def main():
     ref_data = json.loads(REF_JSON.read_text(encoding="utf-8"))
     ref_text = ref_data["ref_text"]
-    ref_codes = ref_data["ref_codes"]
+    ref_codes_all = ref_data["ref_codes"]
+
+    # اقتصاص المرجع إلى MAX_REF_CODES
+    if len(ref_codes_all) > MAX_REF_CODES:
+        print(f"✂️ اقتصاص المرجع من {len(ref_codes_all)} إلى {MAX_REF_CODES} code")
+        ref_codes = ref_codes_all[:MAX_REF_CODES]
+    else:
+        ref_codes = ref_codes_all
+
     ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
-    print(f"📖 قراءة {len(ref_codes)} code المرجع")
+    print(f"📖 استخدام {len(ref_codes)} code المرجع")
 
     target_text = os.environ.get("TEST_TEXT", "").strip() or DEFAULT_TEXT
     print(f"📝 النص المستهدف: {target_text[:80]}...")
@@ -40,7 +51,13 @@ def main():
 
     print("🔧 تحميل llama-cpp-python ...")
     from llama_cpp import Llama
-    llm = Llama(model_path=gguf_path, n_ctx=4096, n_gpu_layers=0, verbose=False)
+    llm = Llama(
+        model_path=gguf_path,
+        n_ctx=16384,        # ← زيادة كبيرة
+        n_batch=512,        # ← معالجة على دفعات
+        n_gpu_layers=0,
+        verbose=False,
+    )
 
     prompt = (
         "user: Convert the text to speech:"
@@ -53,6 +70,11 @@ def main():
     print("🎙️ توليد ...")
     tce = llm.tokenize(b"<|TARGET_CODES_END|>", add_bos=False, special=True)[0]
     toks = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
+    print(f"📊 طول الـ prompt: {len(toks)} token")
+
+    if len(toks) >= 16000:
+        print(f"❌ الـ prompt كبير جداً: {len(toks)} token")
+        sys.exit(1)
 
     ids = []
     for tid in llm.generate(toks, temp=0.7, top_k=20, top_p=0.8, repeat_penalty=1.1):
