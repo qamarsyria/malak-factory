@@ -1,9 +1,8 @@
-"""رفع فيديو على يوتيوب عبر Playwright — نسخة تعالج Modal الأطفال أولاً."""
+"""رفع فيديو على يوتيوب — نسخة تعالج شاشة Visibility + Made for Kids بشكل صحيح."""
 from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from pathlib import Path
 
@@ -22,12 +21,14 @@ def _try_click(page, selectors: list[str], timeout: int = 15000, force: bool = F
             return True
         except PWTimeout:
             continue
+        except Exception as e:
+            _log(f"⚠️  {sel} → {str(e)[:80]}")
+            continue
     return False
 
 
 def _parse_cookies(raw: str) -> list[dict]:
     data = json.loads(raw)
-
     if isinstance(data, list):
         out = []
         for c in data:
@@ -54,142 +55,120 @@ def _parse_cookies(raw: str) -> list[dict]:
                 item["sameSite"] = "Strict"
             out.append(item)
         return out
-
     if isinstance(data, dict):
         return [
             {"name": k, "value": v, "domain": ".youtube.com", "path": "/"}
             for k, v in data.items()
         ]
-
     raise ValueError(f"صيغة كوكيز غير معروفة: {type(data)}")
 
 
-def _wait_no_overlay(page, max_wait: int = 20) -> bool:
-    """ينتظر اختفاء أي overlay (backdrop) من الشاشة."""
-    for i in range(max_wait):
-        try:
-            overlays = page.locator('tp-yt-iron-overlay-backdrop.opened')
-            if overlays.count() == 0:
-                return True
-        except Exception:
-            return True
-        page.wait_for_timeout(1000)
-    return False
-
-
-def _handle_kids_modal(page, screenshot_dir: str) -> bool:
-    """
-    يعالج Modal "Made for Kids" الذي يظهر بعد رفع الفيديو.
-    يرجع True إذا عالجه، False إذا ما كان موجود.
-    """
-    _log("🔎 فحص Modal الأطفال...")
-
-    # انتظر ظهور modal (يظهر خلال 3-10 ثواني بعد الرفع)
-    modal_appeared = False
-    for i in range(10):
-        try:
-            modal = page.locator('tp-yt-paper-dialog[opened], ytcp-modal[opened]')
-            if modal.count() > 0:
-                # تأكد إنه modal الأطفال تحديداً
-                text = modal.first.inner_text(timeout=2000)
-                if re.search(r"kids|الأطفال|طفل|Made for", text, re.I):
-                    modal_appeared = True
-                    _log(f"✅ Modal الأطفال ظهر (طول النص: {len(text)})")
-                    break
-        except Exception:
-            pass
-        page.wait_for_timeout(1000)
-
-    if not modal_appeared:
-        _log("ℹ️  لا يوجد Modal للأطفال — أتابع")
-        return False
-
-    page.screenshot(path=f"{screenshot_dir}/kids_modal_appeared.png")
-
-    # اختر "ليس للأطفال"
-    _log("👶 اختيار: ليس للأطفال...")
-    not_kids_selectors = [
-        'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
-        'ytcp-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
-        'tp-yt-paper-radio-button:has-text("Not made for kids")',
-        'tp-yt-paper-radio-button:has-text("ليس للأطفال")',
-    ]
-    kids_clicked = False
-    for sel in not_kids_selectors:
-        try:
-            page.locator(sel).first.click(force=True, timeout=8000)
-            _log(f"✅ اخترنا: {sel}")
-            kids_clicked = True
-            break
-        except Exception:
-            continue
-
-    if not kids_clicked:
-        _log("⚠️  ما قدرنا نختار — نحاول نجبر الحفظ مباشرة")
-
-    page.wait_for_timeout(1500)
-
-    # اضغط Save
-    _log("💾 حفظ الـ Modal...")
-    save_clicked = False
-    for sel in [
-        'ytcp-button#save-button',
-        'ytcp-button:has-text("Save")',
-        'ytcp-button:has-text("حفظ")',
-        'tp-yt-paper-button:has-text("Save")',
-    ]:
-        try:
-            page.locator(sel).first.click(force=True, timeout=8000)
-            _log(f"✅ حفظنا: {sel}")
-            save_clicked = True
-            break
-        except Exception:
-            continue
-
-    page.wait_for_timeout(3000)
-    page.screenshot(path=f"{screenshot_dir}/after_kids_modal.png")
-
-    # انتظر يختفي overlay
-    _wait_no_overlay(page, max_wait=15)
-    _log("✅ انتهينا من Modal الأطفال")
-
-    return True
+def _dump_radios(page, label: str) -> None:
+    """يطبع كل radio buttons الموجودة لمساعدتنا في التشخيص."""
+    _log(f"🔍 [{label}] فحص radio buttons...")
+    try:
+        radios = page.locator('tp-yt-paper-radio-button, ytcp-radio-button')
+        count = radios.count()
+        _log(f"   وجدت {count} radio")
+        for i in range(min(count, 25)):
+            try:
+                name = radios.nth(i).get_attribute("name") or "?"
+                visible = radios.nth(i).is_visible()
+                checked = radios.nth(i).get_attribute("checked") or "false"
+                _log(f"   [{i}] name={name} visible={visible} checked={checked}")
+            except Exception:
+                pass
+    except Exception as e:
+        _log(f"   فشل الفحص: {e}")
 
 
 def _set_text_field(page, locator, text: str, label: str) -> None:
-    """يكتب نصاً في حقل contenteditable بأمان."""
     try:
         locator.wait_for(state="visible", timeout=15000)
     except PWTimeout:
         _log(f"⚠️  {label} ما ظهر")
         raise
 
-    # حاول نضغط force
     try:
         locator.click(force=True, timeout=10000)
     except Exception:
-        _log(f"⚠️  ضغط عادي فشل على {label} — نتابع")
+        pass
 
     page.wait_for_timeout(500)
-    # محدّد الكل + مسح
     page.keyboard.press("Control+A")
     page.wait_for_timeout(200)
     page.keyboard.press("Delete")
     page.wait_for_timeout(300)
-
-    # اكتب النص بحروف
-    try:
-        page.keyboard.type(text, delay=15)
-    except Exception:
-        # بديل: استخدم fill
-        try:
-            locator.fill(text)
-        except Exception as e:
-            _log(f"⚠️  فشل كتابة {label}: {e}")
-            raise
-
+    page.keyboard.type(text, delay=15)
     page.wait_for_timeout(800)
-    _log(f"✅ كتبنا {label}: {text[:60]}...")
+    _log(f"✅ كتبنا {label}")
+
+
+def _select_made_for_kids_no(page) -> bool:
+    """يختار 'ليس للأطفال' في شاشة Visibility."""
+    _log("👶 اختيار: ليس للأطفال...")
+    selectors = [
+        'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
+        'ytcp-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
+        '#radioLabel:has-text("No, it\'s not made for kids")',
+        'tp-yt-paper-radio-button:has-text("ليس للأطفال")',
+        'tp-yt-paper-radio-button:has-text("ليس موجّه")',
+    ]
+    for sel in selectors:
+        try:
+            el = page.locator(sel).first
+            if el.count() > 0:
+                el.click(force=True, timeout=8000)
+                page.wait_for_timeout(1500)
+                _log(f"✅ Made for Kids = No ({sel})")
+                return True
+        except Exception:
+            continue
+    _log("⚠️  ما لقيت خيار Made for Kids")
+    return False
+
+
+def _select_public(page) -> bool:
+    """يختار Public في شاشة Visibility."""
+    _log("🌍 اختيار Public...")
+    selectors = [
+        'tp-yt-paper-radio-button[name="PUBLIC"]',
+        'ytcp-radio-button[name="PUBLIC"]',
+        '#radioLabel:has-text("Public")',
+        'tp-yt-paper-radio-button:has-text("عام")',
+        'tp-yt-paper-radio-button:has-text("Public")',
+    ]
+    for sel in selectors:
+        try:
+            el = page.locator(sel).first
+            if el.count() > 0:
+                el.click(force=True, timeout=8000)
+                page.wait_for_timeout(1500)
+                _log(f"✅ Public ({sel})")
+                return True
+        except Exception:
+            continue
+    _log("⚠️  ما لقيت Public")
+    return False
+
+
+def _wait_done_button_enabled(page, max_wait: int = 30) -> bool:
+    """ينتظر حتى يصير زر Publish/Done مفعّلاً."""
+    _log("⏳ انتظار تفعيل زر Publish...")
+    for i in range(max_wait):
+        try:
+            btn = page.locator('ytcp-button#done-button')
+            if btn.count() > 0:
+                is_disabled = btn.first.get_attribute("aria-disabled")
+                is_hidden = btn.first.get_attribute("hidden")
+                if is_disabled != "true" and is_hidden is None:
+                    _log(f"✅ الزر مفعّل (بعد {i}ث)")
+                    return True
+        except Exception:
+            pass
+        page.wait_for_timeout(1000)
+    _log(f"⚠️  الزر ما تفعّل بعد {max_wait}ث")
+    return False
 
 
 def upload_video(
@@ -210,8 +189,7 @@ def upload_video(
     _log(f"🍪 تم تحليل {len(cookies_list)} كوكي")
 
     names = {c["name"] for c in cookies_list}
-    required = {"SID", "LOGIN_INFO"}
-    missing = required - names
+    missing = {"SID", "LOGIN_INFO"} - names
     if missing:
         raise RuntimeError(f"❌ كوكيز أساسية ناقصة: {missing}")
 
@@ -229,106 +207,101 @@ def upload_video(
                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
             ),
         )
-
         context.add_cookies(cookies_list)
         _log(f"✅ حُقن {len(cookies_list)} كوكي")
 
         page = context.new_page()
 
         try:
-            # ═══════ 1) فتح صفحة الرفع ═══════
-            _log("🌐 فتح صفحة الرفع مباشرة...")
+            # 1) فتح صفحة الرفع
+            _log("🌐 فتح صفحة الرفع...")
             page.goto(
                 "https://www.youtube.com/upload",
                 wait_until="domcontentloaded",
                 timeout=60000,
             )
             page.wait_for_timeout(6000)
-            page.screenshot(path=f"{screenshot_dir}/01_goto_upload.png")
-            _log(f"📍 الرابط: {page.url}")
+            page.screenshot(path=f"{screenshot_dir}/01_goto.png")
 
             if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
-                page.screenshot(path=f"{screenshot_dir}/login_failed.png")
                 raise RuntimeError("❌ فشل تسجيل الدخول")
 
             _log("✅ مسجّل الدخول")
 
-            # ═══════ 2) انتظر input الفيديو ═══════
+            # 2) input الفيديو
             file_input = None
             for attempt in range(6):
                 c = page.locator('input[type="file"]')
                 if c.count() > 0:
                     file_input = c.first
-                    _log(f"✅ لقينا input في المحاولة {attempt+1}")
                     break
                 page.wait_for_timeout(3000)
-
             if file_input is None:
-                page.screenshot(path=f"{screenshot_dir}/02_no_input.png")
                 raise RuntimeError("❌ ما لقيت input الفيديو")
 
-            # ═══════ 3) ارفع الفيديو ═══════
+            # 3) ارفع
             _log(f"📁 رفع: {Path(video_path).name}")
             file_input.set_input_files(video_path)
-            _log("⏳ انتظار معالجة الرفع الأولي...")
-            page.wait_for_timeout(8000)
-            page.screenshot(path=f"{screenshot_dir}/03_after_upload.png")
+            _log("⏳ انتظار معالجة الرفع (30 ثانية)...")
+            page.wait_for_timeout(30000)
+            page.screenshot(path=f"{screenshot_dir}/02_uploaded.png")
 
-            # ═══════ 4) 🎯 نعالج Modal الأطفال أولاً! ═══════
-            _handle_kids_modal(page, screenshot_dir)
-
-            # ═══════ 5) الآن اكتب العنوان ═══════
-            _log("⏳ انتظار حقول التفاصيل...")
-            page.wait_for_timeout(3000)
-
+            # 4) العنوان والوصف
+            _log("📝 كتابة العنوان...")
             title_box = page.locator(
                 'ytcp-social-suggestions-textbox #textbox, '
                 '#textbox[contenteditable="true"]'
             ).first
             _set_text_field(page, title_box, title[:95], "العنوان")
-            page.screenshot(path=f"{screenshot_dir}/04_title_done.png")
 
-            # ═══════ 6) اكتب الوصف ═══════
             try:
                 all_boxes = page.locator('#textbox[contenteditable="true"]')
                 if all_boxes.count() > 1:
-                    desc_box = all_boxes.nth(1)
-                    _set_text_field(page, desc_box, description[:4900], "الوصف")
+                    _set_text_field(
+                        page, all_boxes.nth(1), description[:4900], "الوصف"
+                    )
             except Exception as e:
-                _log(f"⚠️  فشل الوصف: {e}")
+                _log(f"⚠️  الوصف: {e}")
 
-            page.screenshot(path=f"{screenshot_dir}/05_desc_done.png")
+            page.screenshot(path=f"{screenshot_dir}/03_details.png")
 
-            # ═══════ 7) Next × 3 ═══════
-            _log("➡️  التخطي (3 مرات)...")
+            # 5) Next × 3 (بفواصل أطول)
+            _log("➡️  التخطي (3 مرات) مع فواصل زمنية...")
             for i in range(3):
                 ok = _try_click(page, [
                     "ytcp-button#next-button",
                     'ytcp-button:has-text("Next")',
-                ], timeout=20000, force=True)
+                ], timeout=30000, force=True)
                 if not ok:
-                    _log(f"⚠️  ما لقيت Next {i+1}")
+                    _log(f"⚠️  Next {i+1} فشل")
                     break
-                page.wait_for_timeout(3000)
+                _log(f"   ⏸️  انتظار بعد Next {i+1}...")
+                page.wait_for_timeout(5000)
+                page.screenshot(path=f"{screenshot_dir}/next_{i+1}.png")
 
-            page.screenshot(path=f"{screenshot_dir}/06_after_next.png")
+            # 6) 🎯 الآن نحن في شاشة Visibility
+            _log("═" * 40)
+            _log("🎯 وصلنا لشاشة Visibility + Made for Kids")
+            page.wait_for_timeout(3000)
+            _dump_radios(page, "بعد 3 next")
+            page.screenshot(path=f"{screenshot_dir}/04_visibility_screen.png")
 
-            # ═══════ 8) Public ═══════
-            _log("🌍 Public...")
-            try:
-                page.locator(
-                    'tp-yt-paper-radio-button[name="PUBLIC"], '
-                    'ytcp-radio-button[name="PUBLIC"]'
-                ).first.click(force=True, timeout=8000)
-                page.wait_for_timeout(1500)
-                _log("✅ Public محدد")
-            except Exception:
-                _log("⚠️  Public مش متاح")
+            # 7) اختر Made for Kids = No (إلزامي!)
+            _select_made_for_kids_no(page)
+            page.wait_for_timeout(2000)
+            page.screenshot(path=f"{screenshot_dir}/05_kids_selected.png")
 
-            page.screenshot(path=f"{screenshot_dir}/07_before_publish.png")
+            # 8) اختر Public
+            _select_public(page)
+            page.wait_for_timeout(2000)
+            page.screenshot(path=f"{screenshot_dir}/06_public_selected.png")
 
-            # ═══════ 9) Publish ═══════
-            _log("🚀 النشر...")
+            # 9) انتظر الزر يتفعّل
+            _wait_done_button_enabled(page, max_wait=30)
+            page.screenshot(path=f"{screenshot_dir}/07_ready_to_publish.png")
+
+            # 10) اضغط Publish
+            _log("🚀 الضغط على Publish...")
             published = _try_click(page, [
                 "ytcp-button#done-button",
                 'ytcp-button:has-text("Publish")',
@@ -339,7 +312,9 @@ def upload_video(
                 page.screenshot(path=f"{screenshot_dir}/08_no_publish.png")
                 raise RuntimeError("❌ فشل النشر")
 
-            page.wait_for_timeout(10000)
+            # 11) انتظر تأكيد النجاح
+            _log("⏳ انتظار تأكيد النشر...")
+            page.wait_for_timeout(15000)
             page.screenshot(path=f"{screenshot_dir}/09_done.png")
             _log("🎉 تم النشر بنجاح")
             return True
@@ -347,7 +322,6 @@ def upload_video(
         except Exception as e:
             try:
                 page.screenshot(path=f"{screenshot_dir}/error.png")
-                _log(f"📸 screenshot: {screenshot_dir}/error.png")
             except Exception:
                 pass
             _log(f"❌ خطأ: {e}")
