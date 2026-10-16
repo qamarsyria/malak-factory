@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب باستخدام Gemini Vision كموجّه."""
+"""رفع فيديو على يوتيوب باستخدام Gemini Vision كموجّه — نسخة محدّثة."""
 from __future__ import annotations
 
 import base64
@@ -7,7 +7,6 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any
 
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -18,7 +17,22 @@ def _log(msg: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════
-#  إدارة مفاتيح Gemini (نفس نمط gemini_tts_pool)
+#  الموديلات (بالترتيب) — من الأحدث للأقدم
+# ═══════════════════════════════════════════════════════
+
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash",
+    "gemini-3.0-flash",
+    "gemini-2.5-flash-latest",
+    "gemini-2.5-flash-002",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+]
+
+
+# ═══════════════════════════════════════════════════════
+#  إدارة مفاتيح Gemini
 # ═══════════════════════════════════════════════════════
 
 class GeminiPool:
@@ -40,7 +54,6 @@ class GeminiPool:
             if now >= self.cooldowns.get(k, 0):
                 return k
             self.idx = (self.idx + 1) % len(self.keys)
-        # كل المفاتيح في تبريد
         wait = max(1, int(min(self.cooldowns.values()) - time.time()))
         time.sleep(wait)
         return self.get()
@@ -62,7 +75,7 @@ def pool() -> GeminiPool:
 
 
 # ═══════════════════════════════════════════════════════
-#  أدوات استخراج عناصر الصفحة
+#  استخراج عناصر الصفحة
 # ═══════════════════════════════════════════════════════
 
 JS_COLLECT_INTERACTIVE = r"""
@@ -89,7 +102,6 @@ JS_COLLECT_INTERACTIVE = r"""
             if (rect.top < 0 || rect.left < 0) continue;
             if (rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
 
-            // نص العنصر
             let text = (el.innerText || el.textContent || '').trim().slice(0, 120);
             if (!text) text = el.getAttribute('aria-label') || '';
             if (!text) text = el.getAttribute('placeholder') || '';
@@ -115,7 +127,7 @@ JS_COLLECT_INTERACTIVE = r"""
             });
         } catch (e) {}
     }
-    return results.slice(0, 80);  // لا نرسل أكثر من 80 عنصر
+    return results.slice(0, 80);
 }
 """
 
@@ -142,24 +154,23 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 مهمتك: تنظر إلى لقطة شاشة + قائمة العناصر القابلة للتفاعل، وتقرر الخطوة التالية لرفع فيديو.
 
 **المسار الكامل:**
-1. إذا ظهرت شاشة "Details": اكتب العنوان والوصف
-2. إذا ظهرت شاشة "Video elements": تخطَّ
-3. إذا ظهرت شاشة "Checks": تخطَّ
-4. إذا ظهرت شاشة "Made for Kids": اختر "ليس للأطفال" (NOT_MFK)
-5. إذا ظهرت شاشة "Visibility": اختر "Public"
+1. شاشة "Details": اكتب العنوان والوصف
+2. شاشة "Video elements": تخطَّ
+3. شاشة "Checks": تخطَّ
+4. شاشة "Made for Kids": اختر "ليس للأطفال" (NOT_MFK)
+5. شاشة "Visibility": اختر "Public"
 6. ثم اضغط "Next" حتى الشاشة الأخيرة
 7. في الشاشة الأخيرة: اضغط "Publish"
 
-**قواعد مهمة:**
+**قواعد:**
 - لا تختر "made for kids" أبداً
-- لا تضغط "Save" أو "Close" بدون سبب
 - إذا شفت زر "Next" مفعّل → اضغطه
 - إذا شفت خيار "Public" غير محدد → حدده أولاً
 - إذا شفت "Publish" مفعّل → اضغطه
-- إذا الشاشة الحالية لا تحتاج فعل → ارجع {"action": "wait"}
-- إذا انتهى الرفع بنجاح (رأيت رسالة تأكيد أو رابط الفيديو) → ارجع {"action": "done"}
+- إذا الشاشة لا تحتاج فعل → {"action": "wait"}
+- إذا انتهى الرفع بنجاح → {"action": "done"}
 
-**الإخراج:** JSON فقط، بدون شرح، بأحد هذه الأشكال:
+**الإخراج:** JSON فقط، بأحد هذه الأشكال:
 - {"action": "click", "id": 5}
 - {"action": "type", "id": 2, "text": "المحتوى"}
 - {"action": "wait", "seconds": 3}
@@ -168,11 +179,51 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 """
 
 
+def _call_gemini_with_model(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
+    """يستدعي Gemini بموديل محدد. يرجع (نجح, بيانات/سبب الفشل)."""
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={key}"
+    )
+    try:
+        r = requests.post(url, json=body, timeout=90)
+
+        if r.status_code == 429:
+            return False, "rate_limit"
+
+        if r.status_code == 404:
+            # موديل غير موجود
+            return False, f"model_not_found: {r.text[:120]}"
+
+        if r.status_code != 200:
+            return False, f"http_{r.status_code}: {r.text[:200]}"
+
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            return False, f"no_candidates: {str(data)[:200]}"
+
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        txt = ""
+        for part in parts:
+            if "text" in part:
+                txt += part["text"]
+        txt = txt.strip()
+
+        m = re.search(r'\{[\s\S]*\}', txt)
+        if not m:
+            return False, f"no_json: {txt[:200]}"
+
+        return True, json.loads(m.group(0))
+
+    except Exception as e:
+        return False, f"exception: {str(e)[:120]}"
+
+
 def _gemini_decide(page, step: int, history: list[str]) -> dict:
     elements = _collect_elements(page)
     img_b64 = _screenshot_b64(page)
 
-    # نضغط قائمة العناصر بشكل مختصر
     elements_txt = "\n".join([
         f"[{e['id']}] <{e['tag']}> \"{e['text'][:60]}\" "
         f"name={e['name']} type={e['type']} "
@@ -185,10 +236,10 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
 
     prompt = f"""**الخطوة الحالية: {step}**
 
-**سجل آخر {len(history[-6:])} خطوات:**
+**سجل آخر الخطوات:**
 {recent_history}
 
-**العناصر القابلة للتفاعل في الشاشة الحالية ({len(elements)} عنصر):**
+**العناصر القابلة للتفاعل ({len(elements)} عنصر):**
 {elements_txt}
 
 بناءً على الصورة + العناصر، ما هي الخطوة التالية؟ أجب بـ JSON فقط."""
@@ -203,56 +254,42 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
         }],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 300,
+            "maxOutputTokens": 500,
             "responseMimeType": "application/json",
         },
     }
 
     p = pool()
-    for attempt in range(len(p.keys) * 2):
-        key = p.get()
-        try:
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.5-flash:generateContent?key={key}",
-                json=body,
-                timeout=60,
-            )
-            if r.status_code == 429:
+
+    # ═══ جرّب كل موديل، ثم كل مفتاح ═══
+    last_error = ""
+    for model in GEMINI_MODELS:
+        for attempt in range(2):
+            key = p.get()
+            ok, result = _call_gemini_with_model(model, body, key)
+
+            if ok:
+                _log(f"✅ {model} نجح")
+                result["_elements"] = elements
+                result["_model"] = model
+                return result
+
+            err = str(result)
+            last_error = f"{model}: {err}"
+
+            if "rate_limit" in err:
+                _log(f"⚠️  {model} → rate limit، ننتقل لمفتاح آخر")
                 p.fail(60)
                 continue
-            if r.status_code != 200:
-                _log(f"⚠️  HTTP {r.status_code}: {r.text[:200]}")
-                p.fail(30)
-                continue
-
-            data = r.json()
-            cands = data.get("candidates") or []
-            if not cands:
-                p.fail(30)
-                continue
-            parts = (cands[0].get("content") or {}).get("parts") or []
-            txt = ""
-            for part in parts:
-                if "text" in part:
-                    txt += part["text"]
-            txt = txt.strip()
-            _log(f"🤖 Gemini raw: {txt[:200]}")
-
-            # استخرج JSON
-            m = re.search(r'\{[\s\S]*\}', txt)
-            if not m:
+            elif "model_not_found" in err:
+                _log(f"⚠️  {model} → غير متوفر، نجرّب الموديل التالي")
+                break  # انتقل للموديل التالي
+            else:
+                _log(f"⚠️  {model} → {err[:120]}")
                 p.fail(20)
                 continue
-            decision = json.loads(m.group(0))
-            decision["_elements"] = elements  # نحفظ العناصر للتنفيذ
-            return decision
 
-        except Exception as e:
-            _log(f"⚠️  {str(e)[:120]}")
-            p.fail(20)
-
-    raise RuntimeError("فشل Gemini في اتخاذ قرار")
+    raise RuntimeError(f"فشلت كل الموديلات. آخر خطأ: {last_error}")
 
 
 # ═══════════════════════════════════════════════════════
@@ -293,30 +330,7 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
 
         _log(f"👆 ضغط على [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
 
-        # 3 طرق: JS click على الموقع، ثم mouse click إحداثيات، ثم locator
         clicked = False
-
-        # 1) نحاول نحدد العنصر بـ JS ونضغطه
-        try:
-            js = f"""
-            () => {{
-                const all = document.querySelectorAll(
-                    'button,a,input,textarea,select,[role="button"],[role="radio"],' +
-                    '[role="checkbox"],[role="tab"],tp-yt-paper-radio-button,' +
-                    'ytcp-button,ytcp-radio-button,tp-yt-paper-item,tp-yt-paper-button,' +
-                    '[contenteditable="true"]'
-                );
-                const target = all[{eid}];
-                if (target) {{ target.click(); return true; }}
-                return false;
-            }}
-            """
-            # ⚠️ ملاحظة: id من collection مش نفس index all — نستخدم الإحداثيات
-            # نكتفي بالضغط بالإحداثيات هنا
-        except Exception:
-            pass
-
-        # 2) ضغط بالإحداثيات — الأكثر موثوقية
         try:
             page.mouse.click(el["x"], el["y"])
             clicked = True
@@ -324,7 +338,6 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         except Exception as e:
             _log(f"   ⚠️  mouse: {e}")
 
-        # 3) fallback: locator بـ name
         if not clicked and el.get("name"):
             try:
                 page.locator(f'[name="{el["name"]}"]').first.click(force=True, timeout=5000)
@@ -401,7 +414,7 @@ def _parse_cookies(raw: str) -> list[dict]:
             {"name": k, "value": v, "domain": ".youtube.com", "path": "/"}
             for k, v in data.items()
         ]
-    raise ValueError(f"صيغة غير معروفة")
+    raise ValueError("صيغة غير معروفة")
 
 
 def upload_video_ai(
@@ -454,7 +467,6 @@ def upload_video_ai(
                 raise RuntimeError("❌ فشل تسجيل الدخول")
             _log("✅ مسجّل")
 
-            # ═══ رفع الفيديو بأنفسنا (لأن Gemini ما يقدر) ═══
             _log(f"📁 رفع: {Path(video_path).name}")
             file_input = None
             for _ in range(6):
@@ -467,18 +479,16 @@ def upload_video_ai(
                 raise RuntimeError("❌ ما لقيت input")
 
             file_input.set_input_files(video_path)
-            _log("⏳ انتظار 30 ثانية لبدء المعالجة...")
+            _log("⏳ انتظار 30 ثانية...")
             page.wait_for_timeout(30000)
 
-            # ═══ الحلقة الذكية ═══
             _log("═" * 50)
-            _log("🧠 نبدأ حلقة Gemini Vision")
+            _log("🧠 حلقة Gemini Vision")
             _log(f"📝 العنوان: {title}")
             _log(f"📝 الوصف: {description[:80]}")
 
-            # نحفظ المعلومات في history عشان Gemini يعرف
-            history.append(f"العنوان المطلوب: {title}")
-            history.append(f"الوصف المطلوب: {description[:200]}")
+            history.append(f"العنوان: {title}")
+            history.append(f"الوصف: {description[:200]}")
 
             done = False
             for step in range(1, max_steps + 1):
@@ -494,7 +504,8 @@ def upload_video_ai(
                     break
 
                 action = decision.get("action")
-                _log(f"📋 القرار: {action} — {decision}")
+                model_used = decision.get("_model", "?")
+                _log(f"📋 القرار ({model_used}): {action}")
 
                 result = _execute(page, decision, screenshot_dir, step)
                 history.append(f"خطوة {step}: {action} → {result}")
@@ -506,14 +517,14 @@ def upload_video_ai(
                     _log(f"❌ Gemini أعلن فشل: {result}")
                     break
                 if result.startswith("err"):
-                    _log(f"⚠️  خطأ في التنفيذ: {result}")
+                    _log(f"⚠️  {result}")
 
                 page.wait_for_timeout(2000)
 
             page.screenshot(path=f"{screenshot_dir}/ai_final.png")
 
             if done:
-                _log("🎉 اكتمل الرفع عبر Gemini")
+                _log("🎉 اكتمل الرفع")
                 return True
 
             _log("⚠️  الحلقة انتهت بدون تأكيد")
@@ -534,8 +545,8 @@ if __name__ == "__main__":
     cookies_raw = os.getenv("YOUTUBE_COOKIES", "[]")
     ok = upload_video_ai(
         video_path="out/video.mp4",
-        title=os.getenv("YT_TITLE", "اختبار رفع آلي — مالك فاكتوري"),
-        description=os.getenv("YT_DESC", "رفع تجريبي من مصنع مالك."),
+        title=os.getenv("YT_TITLE", "اختبار AI Agent — مالك فاكتوري"),
+        description=os.getenv("YT_DESC", "رفع تجريبي عبر Gemini Vision."),
         cookies_raw=cookies_raw,
         headless=True,
     )
