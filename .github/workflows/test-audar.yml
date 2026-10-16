@@ -27,23 +27,30 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libsndfile1
+          sudo apt-get install -y ffmpeg libsndfile1 curl
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          # 1. llama-cpp-python من فهرس العجلات الجاهزة (CPU)
           pip install llama-cpp-python \
             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          # 2. الحزم المساعدة من PyPI
-          pip install \
-            huggingface_hub \
-            soundfile \
-            numpy \
-            scipy \
-            librosa
-          # 3. torch نسخة CPU من فهرسه الخاص
+          pip install huggingface_hub soundfile numpy scipy librosa
           pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download reference audio (Sudais)
+        run: |
+          mkdir -p assets/audio/reference
+          curl -L -o assets/audio/reference/sudais_ref.mp3 \
+            "https://everyayah.com/data/Sudais_192kbps/012004.mp3"
+          ffmpeg -y -i assets/audio/reference/sudais_ref.mp3 \
+            -ar 22050 -ac 1 -c:a pcm_s16le \
+            assets/audio/reference/sudais_ref.wav
+          echo "📁 محتويات المرجع:"
+          ls -lah assets/audio/reference/
+          echo "⏱️ مدة المرجع:"
+          ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 \
+            assets/audio/reference/sudais_ref.wav
 
       - name: Download model and generate audio
         env:
