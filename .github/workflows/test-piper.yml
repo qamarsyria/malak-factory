@@ -1,0 +1,47 @@
+name: Test Piper
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install deps
+        run: pip install requests piper-tts huggingface_hub
+
+      - name: Download Piper
+        run: python scripts/download_piper.py
+
+      - name: Run test
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/test_piper.py
+
+      - name: Show file info
+        if: always()
+        run: |
+          for f in out/test-*.mp3; do
+            if [ -f "$f" ]; then
+              echo "$f:"
+              ffprobe -v error -show_entries stream=sample_rate,channels -show_entries format=duration -of default=noprint_wrappers=1 "$f"
+              echo ""
+            fi
+          done
+
+      - name: Upload test files
+        uses: actions/upload-artifact@v4
+        with:
+          name: piper-tests
+          path: out/test-*.mp3
+          retention-days: 7
