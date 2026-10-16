@@ -2,6 +2,8 @@ coqui-tts>=0.25.0
 transformers==4.45.2
 torch>=2.2.2
 torchaudio>=2.2.2
+spacy
+click
 soundfile
 huggingface_hub
 requests
