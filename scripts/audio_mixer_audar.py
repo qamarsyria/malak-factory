@@ -1,13 +1,37 @@
 #!/usr/bin/env python3
 """
 audio_mixer_audar.py — التوليد الصوتي الكامل باستخدام Audar-TTS-V1-Flash
-يتبع الطريقة الرسمية من HuggingFace.
 """
 
 import os
 import re
 import sys
+import importlib.util
 from pathlib import Path
+
+# ========== باتش إصلاح torchao.nf4tensor ==========
+# بعض إصدارات torchao لا تُصدّر nf4tensor في المسار القديم
+# الذي يتوقعه torchtune. نصنع alias بسيط قبل الاستيراد.
+try:
+    import torchao  # noqa: F401
+    from torchao.dtypes import NF4Tensor  # noqa: F401
+except (ImportError, ModuleNotFoundError):
+    try:
+        import torchao.quantization as _tq
+        if not hasattr(torchao, "dtypes"):
+            import types
+            torchao.dtypes = types.ModuleType("torchao.dtypes")
+            sys.modules["torchao.dtypes"] = torchao.dtypes
+        # محاولة استيراد NF4Tensor من مكانه الجديد
+        try:
+            from torchao.quantization import NF4Tensor
+            torchao.dtypes.nf4tensor = sys.modules[__name__]
+            torchao.dtypes.nf4tensor.NF4Tensor = NF4Tensor
+        except ImportError:
+            pass
+    except ImportError:
+        pass
+# ==================================================
 
 MODEL_REPO = "audarai/Audar-TTS-V1-Flash"
 GGUF_FILE  = "Audar-TTS-V1-Flash-Q4_K_M.gguf"
@@ -46,7 +70,6 @@ def main():
 
     gguf_path = download_gguf()
 
-    # 1. تحميل محرك llama.cpp
     print("🔧 تحميل llama-cpp-python ...")
     from llama_cpp import Llama
     llm = Llama(
@@ -56,18 +79,15 @@ def main():
         verbose=False,
     )
 
-    # 2. تحميل الكوديك
     print("🔧 تحميل NeuCodec ...")
     from neucodec import NeuCodec
     codec = NeuCodec.from_pretrained("neuphonic/neucodec").eval()
 
-    # 3. ترميز المرجع الصوتي
     print("🎤 ترميز المرجع الصوتي ...")
     ref_codes = codec.encode_code(str(REF_WAV)).squeeze().tolist()
     ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
     print(f"📊 عدد codes المرجع: {len(ref_codes)}")
 
-    # 4. بناء الـ prompt
     prompt = (
         "user: Convert the text to speech:"
         f"<|REF_TEXT_START|>{REF_TEXT}<|REF_TEXT_END|>"
@@ -77,7 +97,6 @@ def main():
     )
     print("📝 بناء الـ prompt تم ...")
 
-    # 5. التوليد
     print("🎙️ توليد الصوت ...")
     tce = llm.tokenize(b"<|TARGET_CODES_END|>", add_bos=False, special=True)[0]
     toks = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
@@ -96,7 +115,6 @@ def main():
 
     print(f"📊 عدد التوكنز المولدة: {len(ids)}")
 
-    # 6. فك الترميز
     text = "".join(
         llm.detokenize([t], special=True).decode("utf-8", "ignore")
         for t in ids
@@ -109,7 +127,6 @@ def main():
         print(f"📤 النص الخام (أول 300 حرف): {text[:300]}")
         sys.exit(1)
 
-    # 7. تحويل codes إلى موجات صوتية
     import torch
     import soundfile as sf
     wav = codec.decode_code(torch.tensor(codes)[None, None, :]).cpu().numpy()[0, 0, :]
