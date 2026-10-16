@@ -1,0 +1,64 @@
+name: Test Audar TTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_tier:
+        description: 'Audar tier (Flash/Turbo)'
+        required: false
+        default: 'Flash'
+        type: choice
+        options:
+          - Flash
+          - Turbo
+      test_text:
+        description: 'نص تجريبي (اتركه فارغاً للاستخدام الافتراضي)'
+        required: false
+        default: ''
+
+jobs:
+  test-audar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsndfile1
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install \
+            llama-cpp-python \
+            huggingface_hub \
+            soundfile \
+            numpy \
+            scipy \
+            librosa \
+            neucodec \
+            torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download model & generate
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python scripts/audio_mixer_audar.py
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audar-output
+          path: output/
+          retention-days: 7
