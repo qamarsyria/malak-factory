@@ -34,10 +34,10 @@ jobs:
           pip install --upgrade pip
           pip install llama-cpp-python \
             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          pip install torchao==0.3.1
-          pip install torchtune==0.2.1
-          pip install huggingface_hub soundfile numpy scipy librosa neucodec
           pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install huggingface_hub soundfile numpy scipy librosa
+          pip install neucodec --no-deps
+          pip install torchao torchtune torchaudio
 
       - name: Download reference audio
         run: |
