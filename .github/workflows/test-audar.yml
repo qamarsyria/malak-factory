@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       test_text:
-        description: 'نص تجريبي (اتركه فارغاً للاستخدام الافتراضي)'
+        description: 'نص تجريبي (اتركه فارغاً للافتراضي)'
         required: false
         default: ''
         type: string
@@ -32,50 +32,22 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-
-          # 1. torch 2.9.1 (يحتوي على ScalingType في torch.nn.functional)
           pip install torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 \
             --index-url https://download.pytorch.org/whl/cpu
-
-          # 2. قيود لمنع pip من ترقية أي منها لاحقاً
-          pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/torch_constraints.txt
-
-          # 3. torchao 0.15.0 (يحتوي على nf4tensor) + torchtune 0.6.1
-          pip install torchao==0.15.0 torchtune==0.6.1 \
-            --constraint /tmp/torch_constraints.txt
-
-          # 4. llama-cpp-python
+          pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/c.txt
+          pip install torchao==0.15.0 torchtune==0.6.1 --constraint /tmp/c.txt
           pip install llama-cpp-python \
             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
-            --constraint /tmp/torch_constraints.txt
-
-          # 5. البقية
+            --constraint /tmp/c.txt
           pip install huggingface_hub soundfile numpy scipy librosa \
-            --constraint /tmp/torch_constraints.txt
-
-          # 6. neucodec مع القيود (بدون سحب تبعيات قد تكسر التوافق)
-          pip install neucodec --no-deps --constraint /tmp/torch_constraints.txt
+            --constraint /tmp/c.txt
+          pip install neucodec --no-deps --constraint /tmp/c.txt
           pip install local_attention vector-quantize-pytorch transformers \
-            --constraint /tmp/torch_constraints.txt
-
-      - name: Verify imports
-        run: |
-          python -c "
-          import torch, torchaudio, torchvision
-          print(f'torch: {torch.__version__}')
-          print(f'torchaudio: {torchaudio.__version__}')
-          print(f'torchvision: {torchvision.__version__}')
-          import torchao
-          print(f'torchao: {torchao.__version__}')
-          from torchao.dtypes.nf4tensor import NF4Tensor
-          print('✅ NF4Tensor موجود')
-          from neucodec import NeuCodec
-          print('✅ neucodec يعمل')
-          "
+            --constraint /tmp/c.txt
 
       - name: Download reference audio
         run: |
-          mkdir -p assets/audio/reference
+          mkdir -p assets/audio/reference output
           REF="assets/audio/reference/sudais_ref.mp3"
           URLS=(
             "https://everyayah.com/data/Alafasy_128kbps/012004.mp3"
@@ -83,34 +55,40 @@ jobs:
           )
           SUCCESS=0
           for URL in "${URLS[@]}"; do
-            echo "⬇️ تجربة: $URL"
             if curl -L -f --max-time 30 -o "$REF" "$URL"; then
               SIZE=$(stat -c%s "$REF")
               if [ "$SIZE" -gt 20000 ]; then
-                echo "✅ نجح: $URL"
                 SUCCESS=1
                 break
               fi
             fi
           done
-          [ "$SUCCESS" -ne 1 ] && { echo "❌ فشلت جميع الروابط"; exit 1; }
-          ffmpeg -y -i "$REF" -ar 24000 -ac 1 -c:a pcm_s16le \
+          [ "$SUCCESS" -ne 1 ] && { echo "❌ فشل التحميل"; exit 1; }
+          ffmpeg -y -i "$REF" -ar 16000 -ac 1 -c:a pcm_s16le \
             assets/audio/reference/sudais_ref.wav
           ls -lah assets/audio/reference/
 
-      - name: Download model and generate audio
+      - name: Step 1 — Encode reference
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/step1_encode_ref.py
+
+      - name: Step 2 — Generate codes
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           TEST_TEXT: ${{ inputs.test_text }}
-        run: |
-          python scripts/audio_mixer_audar.py
+        run: python scripts/step2_generate_codes.py
+
+      - name: Step 3 — Decode to WAV
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/step3_decode.py
 
       - name: Check output
         if: always()
-        run: |
-          ls -lah output/ || echo "⚠️ مجلد output غير موجود"
+        run: ls -lah output/
 
-      - name: Upload audio artifact
+      - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
