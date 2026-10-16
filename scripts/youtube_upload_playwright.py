@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — نسخة تعالج 4 شاشات Next + Visibility."""
+"""رفع فيديو على يوتيوب — نسخة تستخدم JS click + تحقق فعلي من الحالة."""
 from __future__ import annotations
 
 import json
@@ -63,6 +63,74 @@ def _parse_cookies(raw: str) -> list[dict]:
     raise ValueError(f"صيغة كوكيز غير معروفة: {type(data)}")
 
 
+def _is_radio_checked(radio) -> bool:
+    """يتحقق فعلياً إذا الـ radio محدد — يقرأ الـ property وليس الـ attribute."""
+    try:
+        return bool(radio.evaluate("el => el.checked === true || el.hasAttribute('checked')"))
+    except Exception:
+        return False
+
+
+def _select_radio_robust(page, name: str, screenshot_dir: str, label: str) -> bool:
+    """
+    يحدد radio button بشكل موثوق.
+    يستخدم JS click لأنه ضروري لعناصر Polymer.
+    """
+    _log(f"🎯 محاولة تحديد: {label} ({name})")
+
+    selector = f'tp-yt-paper-radio-button[name="{name}"]'
+    radio = page.locator(selector).first
+
+    if radio.count() == 0:
+        _log(f"⚠️  {name} غير موجود في DOM")
+        return False
+
+    # إذا محدد مسبقاً
+    if _is_radio_checked(radio):
+        _log(f"ℹ️  {name} محدد مسبقاً")
+        return True
+
+    # ═══ 5 طرق للضغط — بالترتيب ═══
+    attempts = [
+        ("JS click على العنصر نفسه",
+         lambda: radio.evaluate("el => el.click()")),
+        ("JS click على radioContainer الداخلي",
+         lambda: page.locator(f'{selector} #radioContainer').first.evaluate("el => el.click()")),
+        ("ضغط على الـ label الداخلي",
+         lambda: page.locator(f'{selector} #radioLabel').first.click(force=True, timeout=5000)),
+        ("ضغط عادي force",
+         lambda: radio.click(force=True, timeout=5000)),
+        ("ضغط بـ dispatchEvent كامل",
+         lambda: radio.evaluate("""
+            el => {
+                const ev = new MouseEvent('click', {bubbles: true, cancelable: true, view: window});
+                el.dispatchEvent(ev);
+                if (el.click) el.click();
+            }
+         """)),
+    ]
+
+    for attempt_name, attempt_fn in attempts:
+        try:
+            _log(f"   🔸 {attempt_name}...")
+            attempt_fn()
+            page.wait_for_timeout(1800)
+
+            # تحقق فعلي
+            if _is_radio_checked(radio):
+                _log(f"   ✅ نجح! ({attempt_name})")
+                page.screenshot(path=f"{screenshot_dir}/radio_{name}_selected.png")
+                return True
+            else:
+                _log(f"   ❌ لم يُسجَّل (حاول اللي بعده)")
+        except Exception as e:
+            _log(f"   ❌ فشل: {str(e)[:80]}")
+
+    _log(f"❌ {name} — كل الطرق فشلت")
+    page.screenshot(path=f"{screenshot_dir}/radio_{name}_FAILED.png")
+    return False
+
+
 def _dump_radios(page, label: str) -> None:
     _log(f"🔍 [{label}] فحص radio buttons...")
     try:
@@ -74,9 +142,10 @@ def _dump_radios(page, label: str) -> None:
                 r = radios.nth(i)
                 name = r.get_attribute("name") or "?"
                 visible = r.is_visible()
-                checked = r.get_attribute("checked") or "false"
+                checked_prop = r.evaluate("el => el.checked === true") if visible else False
+                checked_attr = r.get_attribute("checked")
                 if visible:
-                    _log(f"   [{i}] name={name} checked={checked}")
+                    _log(f"   [{i}] name={name} checked_prop={checked_prop} checked_attr={checked_attr}")
             except Exception:
                 pass
     except Exception as e:
@@ -152,7 +221,7 @@ def _upload_video(
         page = context.new_page()
 
         try:
-            # ═══════ 1) فتح صفحة الرفع ═══════
+            # ═══ 1) فتح صفحة الرفع ═══
             _log("🌐 فتح صفحة الرفع...")
             page.goto(
                 "https://www.youtube.com/upload",
@@ -167,7 +236,7 @@ def _upload_video(
 
             _log("✅ مسجّل الدخول")
 
-            # ═══════ 2) input الفيديو ═══════
+            # ═══ 2) input الفيديو ═══
             file_input = None
             for attempt in range(6):
                 c = page.locator('input[type="file"]')
@@ -178,14 +247,14 @@ def _upload_video(
             if file_input is None:
                 raise RuntimeError("❌ ما لقيت input الفيديو")
 
-            # ═══════ 3) ارفع ═══════
+            # ═══ 3) ارفع ═══
             _log(f"📁 رفع: {Path(video_path).name}")
             file_input.set_input_files(video_path)
-            _log("⏳ انتظار 30 ثانية (معالجة الرفع)...")
+            _log("⏳ انتظار 30 ثانية...")
             page.wait_for_timeout(30000)
             page.screenshot(path=f"{screenshot_dir}/02_uploaded.png")
 
-            # ═══════ 4) العنوان والوصف ═══════
+            # ═══ 4) العنوان والوصف ═══
             _log("📝 العنوان...")
             title_box = page.locator(
                 'ytcp-social-suggestions-textbox #textbox, '
@@ -202,73 +271,63 @@ def _upload_video(
 
             page.screenshot(path=f"{screenshot_dir}/03_details.png")
 
-            # ═══════ 5) Next loop — نضغط Next حتى نوصل شاشة Visibility ═══════
+            # ═══ 5) Next loop ═══
             _log("═" * 40)
-            _log("🔁 نضغط Next في حلقة حتى نوصل لشاشة Public/Private")
+            _log("🔁 نضغط Next في حلقة حتى نختار Public + Made for Kids")
 
-            public_selected = False
-            kids_selected = False
+            public_done = False
+            kids_done = False
             max_steps = 8
 
             for step in range(max_steps):
-                # افحص الـ radios في الشاشة الحالية
                 page.wait_for_timeout(2500)
                 _dump_radios(page, f"خطوة {step+1}")
                 page.screenshot(path=f"{screenshot_dir}/step_{step+1}.png")
 
-                # هل ظهر Public؟
-                public_btn = page.locator(
-                    'tp-yt-paper-radio-button[name="PUBLIC"], '
-                    'ytcp-radio-button[name="PUBLIC"]'
-                )
-                # هل ظهر Made for Kids؟
-                kids_no = page.locator(
-                    'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"], '
-                    'ytcp-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]'
-                )
+                # Made for Kids
+                kids_radio = page.locator(
+                    'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]'
+                ).first
+                if kids_radio.count() > 0 and kids_radio.is_visible():
+                    if not _is_radio_checked(kids_radio):
+                        _log(f"👶 [خطوة {step+1}] اختر 'ليس للأطفال'")
+                        _select_radio_robust(
+                            page,
+                            "VIDEO_MADE_FOR_KIDS_NOT_MFK",
+                            screenshot_dir,
+                            "ليس للأطفال",
+                        )
+                    if _is_radio_checked(kids_radio):
+                        kids_done = True
+                        _log(f"   ✔️ Kids done")
 
-                has_kids = kids_no.count() > 0 and kids_no.first.is_visible()
-                has_public = public_btn.count() > 0 and public_btn.first.is_visible()
+                # Public
+                public_radio = page.locator(
+                    'tp-yt-paper-radio-button[name="PUBLIC"]'
+                ).first
+                if public_radio.count() > 0 and public_radio.is_visible():
+                    if not _is_radio_checked(public_radio):
+                        _log(f"🌍 [خطوة {step+1}] اختر Public")
+                        _select_radio_robust(page, "PUBLIC", screenshot_dir, "Public")
+                    if _is_radio_checked(public_radio):
+                        public_done = True
+                        _log(f"   ✔️ Public done")
 
-                # ═══ معالجة Made for Kids إذا موجود ═══
-                if has_kids and not kids_selected:
-                    _log(f"👶 [خطوة {step+1}] اختر: ليس للأطفال")
-                    try:
-                        kids_no.first.click(force=True, timeout=8000)
-                        kids_selected = True
-                        page.wait_for_timeout(2000)
-                        page.screenshot(path=f"{screenshot_dir}/kids_selected_step_{step+1}.png")
-                    except Exception as e:
-                        _log(f"⚠️  فشل اختيار Kids: {e}")
-
-                # ═══ معالجة Public إذا موجود ═══
-                if has_public and not public_selected:
-                    _log(f"🌍 [خطوة {step+1}] اختر Public")
-                    try:
-                        public_btn.first.click(force=True, timeout=8000)
-                        public_selected = True
-                        page.wait_for_timeout(2000)
-                        page.screenshot(path=f"{screenshot_dir}/public_selected_step_{step+1}.png")
-                    except Exception as e:
-                        _log(f"⚠️  فشل اختيار Public: {e}")
-
-                # ═══ إذا الاثنين اخترناهم — نكمل للنشر ═══
-                if public_selected and kids_selected:
+                if public_done and kids_done:
                     _log("✅ اخترنا Public + Kids — جاهزين للنشر")
                     break
 
-                # ═══ اضغط Next للانتقال للشاشة التالية ═══
+                # Next
                 _log(f"➡️  [خطوة {step+1}] Next...")
                 if not _click_next(page):
-                    _log(f"⚠️  ما لقينا Next في الخطوة {step+1} — نتوقف")
+                    _log(f"⚠️  ما لقينا Next في الخطوة {step+1}")
                     break
-
                 page.wait_for_timeout(3500)
 
-            page.screenshot(path=f"{screenshot_dir}/08_after_next_loop.png")
+            page.screenshot(path=f"{screenshot_dir}/08_after_loop.png")
 
-            # ═══════ 6) انتظر الزر يتفعّل ═══════
-            _log("⏳ انتظار تفعيل زر Publish...")
+            # ═══ 6) انتظر الزر يتفعّل ═══
+            _log("⏳ انتظار تفعيل Publish...")
             for i in range(30):
                 try:
                     btn = page.locator('ytcp-button#done-button')
@@ -276,7 +335,7 @@ def _upload_video(
                         disabled = btn.first.get_attribute("aria-disabled")
                         hidden = btn.first.get_attribute("hidden")
                         if disabled != "true" and hidden is None:
-                            _log(f"✅ الزر مفعّل (بعد {i}ث)")
+                            _log(f"✅ الزر مفعّل بعد {i}ث")
                             break
                 except Exception:
                     pass
@@ -284,19 +343,24 @@ def _upload_video(
 
             page.screenshot(path=f"{screenshot_dir}/09_before_publish.png")
 
-            # ═══════ 7) اضغط Publish ═══════
+            # ═══ 7) Publish ═══
             _log("🚀 Publish...")
-            published = _try_click(page, [
-                "ytcp-button#done-button",
-                'ytcp-button:has-text("Publish")',
-                'ytcp-button:has-text("Save")',
-            ], timeout=30000, force=True)
+            published = False
+            try:
+                page.locator('ytcp-button#done-button').first.evaluate("el => el.click()")
+                published = True
+                _log("✅ نجح: JS click على done-button")
+            except Exception as e:
+                _log(f"⚠️  JS click فشل: {e}")
+                published = _try_click(page, [
+                    "ytcp-button#done-button",
+                    'ytcp-button:has-text("Publish")',
+                ], timeout=30000, force=True)
 
             if not published:
                 page.screenshot(path=f"{screenshot_dir}/10_no_publish.png")
                 raise RuntimeError("❌ فشل النشر")
 
-            # ═══════ 8) انتظر تأكيد ═══════
             _log("⏳ انتظار تأكيد النشر...")
             page.wait_for_timeout(15000)
             page.screenshot(path=f"{screenshot_dir}/11_done.png")
@@ -314,7 +378,6 @@ def _upload_video(
             browser.close()
 
 
-# alias للتوافق مع الاستدعاء القديم
 upload_video = _upload_video
 
 
