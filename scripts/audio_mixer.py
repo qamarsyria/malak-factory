@@ -1,8 +1,7 @@
-"""دمج صوت السرد (Piper TTS) + الآيات (everyayah)."""
+"""دمج صوت السرد (Piper) + الآيات (everyayah) — مع توحيد الصيغة."""
 import re
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 import requests
 
@@ -14,8 +13,13 @@ from config import QURAN_RECITER, QURAN_BASE
 # ============================================================
 PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
 PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
-# length_scale: 1.0 = عادي | 1.3 = بطيء 30% | 1.5 = بطيء 50%
-PIPER_LENGTH_SCALE = 1.3
+
+PIPER_LENGTH_SCALE = 1.0   # طبيعي (كما أوصيت)
+
+# صيغة موحّدة لكل الملفات قبل الدمج
+TARGET_SAMPLE_RATE = "44100"
+TARGET_CHANNELS = "1"
+TARGET_BITRATE = "128k"
 
 
 # ============================================================
@@ -40,11 +44,24 @@ def _get_duration(file_path):
         return 0.0
 
 
+def _normalize_audio(input_path, output_path):
+    """يوحّد صيغة الصوت (44100 Hz, mono, 128kbps)."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", input_path,
+         "-ar", TARGET_SAMPLE_RATE,
+         "-ac", TARGET_CHANNELS,
+         "-codec:a", "libmp3lame",
+         "-b:a", TARGET_BITRATE,
+         output_path],
+        check=True, capture_output=True, timeout=120,
+    )
+
+
 # ============================================================
 # Piper TTS — للسرد
 # ============================================================
 def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
-    """يولّد صوت بـ Piper، ثم يحوّله mp3."""
+    """يولّد صوت بـ Piper، ثم يوحّد الصيغة."""
     if not Path(PIPER_MODEL).exists():
         raise RuntimeError(f"نموذج Piper غير موجود: {PIPER_MODEL}")
 
@@ -53,14 +70,15 @@ def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
         raise RuntimeError("النص فارغ")
 
     wav_path = out_mp3.replace(".mp3", ".wav")
+    raw_mp3 = out_mp3.replace(".mp3", "_raw.mp3")
 
-    # 1) Piper يولّد wav مباشرة
+    # 1) Piper يولّد wav
     proc = subprocess.run(
         ["python", "-m", "piper",
          "--model", PIPER_MODEL,
          "--config", PIPER_CONFIG,
          "--output_file", wav_path,
-         "--length_scale", str(length_scale)],
+         "--length-scale", str(length_scale)],
         input=clean.encode("utf-8"),
         capture_output=True,
         timeout=180,
@@ -73,30 +91,41 @@ def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
     if not Path(wav_path).exists() or Path(wav_path).stat().st_size < 2048:
         raise RuntimeError("Piper: ملف صغير جداً")
 
-    # 2) تحويل wav → mp3
+    # 2) wav → mp3 (خام)
     subprocess.run(
         ["ffmpeg", "-y", "-i", wav_path,
          "-codec:a", "libmp3lame", "-q:a", "4",
-         out_mp3],
+         raw_mp3],
         check=True, capture_output=True, timeout=60,
     )
+
+    # 3) توحيد الصيغة
+    _normalize_audio(raw_mp3, out_mp3)
 
 
 # ============================================================
 # everyayah — للآيات
 # ============================================================
 def _fetch_quran_ayah(surah, ayah, out_path):
+    """يحمّل آية من everyayah ثم يوحّد الصيغة."""
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{QURAN_RECITER}/{filename}"
 
     print(f"   📖 {surah}:{ayah} → {filename}")
+
     r = requests.get(url, timeout=60)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} — {url}")
 
-    Path(out_path).write_bytes(r.content)
-    if Path(out_path).stat().st_size < 2048:
+    # نحفظ مؤقتاً
+    temp_path = out_path.replace(".mp3", "_raw.mp3")
+    Path(temp_path).write_bytes(r.content)
+
+    if Path(temp_path).stat().st_size < 2048:
         raise RuntimeError("ملف صغير جداً")
+
+    # توحيد الصيغة
+    _normalize_audio(temp_path, out_path)
 
 
 # ============================================================
@@ -115,13 +144,13 @@ def generate_quran_audio(segment, out_path):
         print(f"   ✅ {duration:.1f} ثانية")
         return duration
 
+    # عدة آيات: نحمل كل واحدة (موحّدة) ثم ندمج
     temp_dir = Path(tempfile.mkdtemp())
     files = []
     for n, ayah in enumerate(ayah_numbers, 1):
         f = temp_dir / f"ayah-{n:02d}.mp3"
         _fetch_quran_ayah(surah, ayah, str(f))
         files.append(str(f))
-        time.sleep(0.2)
 
     concat_file = temp_dir / "concat.txt"
     with open(concat_file, "w", encoding="utf-8") as cf:
@@ -166,6 +195,7 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     print(f"\n🎙️  بناء صوت الحلقة ({len(segments)} مقطع)")
     print(f"   السورة: {surah} | القارئ: {QURAN_RECITER}")
     print(f"   السرد: Piper (length_scale={PIPER_LENGTH_SCALE})")
+    print(f"   صيغة موحّدة: {TARGET_SAMPLE_RATE} Hz")
     print("=" * 60)
 
     temp_dir = Path(tempfile.mkdtemp())
