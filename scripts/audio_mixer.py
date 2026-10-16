@@ -3,9 +3,9 @@ import os
 import re
 import subprocess
 import tempfile
-import time
 import wave
 from pathlib import Path
+import numpy as np
 import requests
 
 from config import QURAN_BASE
@@ -14,9 +14,8 @@ from config import QURAN_BASE
 # ============================================================
 # إعدادات
 # ============================================================
-SUDAIS = "Abdurrahmaan_As-Sudais_192kbps"   # ← السديس
+SUDAIS = "Abdurrahmaan_As-Sudais_192kbps"
 
-# المرجع: نستخدم سورة يوسف الآية 4 (جملة كاملة ~ 10 ثوان)
 REFERENCE_SURAH = 12
 REFERENCE_AYAH = 4
 
@@ -31,17 +30,15 @@ TARGET_BITRATE = "128k"
 
 
 # ============================================================
-# 1. تحميل ملف صوتي مرجعي للسديس (تلقائي)
+# 1. تحميل مرجع السديس
 # ============================================================
 def download_reference():
-    """يحمّل عيّنة صوت السديس من everyayah، ويحوّلها إلى wav."""
     Path(REFERENCE_DIR).mkdir(parents=True, exist_ok=True)
 
-    if Path(REFERENCE_WAV).exists():
+    if Path(REFERENCE_WAV).exists() and Path(REFERENCE_WAV).stat().st_size > 10240:
         print(f"✅ المرجع موجود: {REFERENCE_WAV}")
         return REFERENCE_WAV
 
-    # 1) نحمّل آية من everyayah (السديس)
     filename = f"{REFERENCE_SURAH:03d}{REFERENCE_AYAH:03d}.mp3"
     url = f"{QURAN_BASE}/{SUDAIS}/{filename}"
 
@@ -53,7 +50,6 @@ def download_reference():
     temp_mp3 = f"{REFERENCE_DIR}/sudais_ref.mp3"
     Path(temp_mp3).write_bytes(r.content)
 
-    # 2) نحوله إلى wav (22050 Hz — المطلوب لـ XTTS)
     subprocess.run(
         ["ffmpeg", "-y", "-i", temp_mp3,
          "-ar", "22050",
@@ -71,7 +67,6 @@ def download_reference():
 # 2. تحميل XTTS v2
 # ============================================================
 def load_xtts():
-    """يحمل موديل XTTS v2."""
     os.environ["COQUI_TOS_AGREED"] = "1"
 
     from huggingface_hub import snapshot_download
@@ -101,16 +96,13 @@ def load_xtts():
 # ============================================================
 # 3. توليد السرد بصوت السديس
 # ============================================================
-def generate_narration(text, out_mp3, model, config, model_path):
+def generate_narration(text, out_mp3, model, config):
     """يولّد السرد بصوت السديس (استنساخ)."""
     clean = _clean_text(text)
     if not clean:
         return None
 
     print(f"   🔊 [narration] {clean[:60]}...")
-
-    # XTTS ينتج 24000 Hz
-    wav_path = out_mp3.replace(".mp3", "_raw.wav")
 
     try:
         out = model.synthesize(
@@ -121,14 +113,19 @@ def generate_narration(text, out_mp3, model, config, model_path):
             language="ar",
         )
 
-        # حفظ wav
+        # ⚠️ الإصلاح: XTTS يُعيد Tensor، نحوله إلى int16
+        wav_data = out["wav"]
+        if hasattr(wav_data, "cpu"):
+            wav_data = wav_data.cpu().numpy()
+        wav_int16 = (np.clip(wav_data, -1.0, 1.0) * 32767).astype(np.int16)
+
+        wav_path = out_mp3.replace(".mp3", "_raw.wav")
         with wave.open(wav_path, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(24000)
-            wf.writeframes(out["wav"])
+            wf.writeframes(wav_int16.tobytes())
 
-        # توحيد الصيغة
         _normalize(wav_path, out_mp3)
 
         duration = _duration(out_mp3)
@@ -136,15 +133,16 @@ def generate_narration(text, out_mp3, model, config, model_path):
         return duration
 
     except Exception as e:
-        print(f"   ❌ فشل: {str(e)[:150]}")
+        import traceback
+        print(f"   ❌ فشل: {type(e).__name__}: {str(e)[:200]}")
+        traceback.print_exc()
         return None
 
 
 # ============================================================
-# 4. جلب الآيات من everyayah (السديس نفسه)
+# 4. جلب الآيات
 # ============================================================
 def fetch_quran(surah, ayah, out_path):
-    """يجلب آية من everyayah (السديس)، ويوحّد الصيغة."""
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{SUDAIS}/{filename}"
 
@@ -163,7 +161,6 @@ def fetch_quran(surah, ayah, out_path):
 # دوال مساعدة
 # ============================================================
 def _clean_text(text):
-    """تنظيف خفيف — يُبقي التشكيل (XTTS يفهمه)."""
     text = re.sub(r"[ۖۗۘۙۚۛ]", "", text)
     text = text.replace("۝", " ")
     text = re.sub(r"\s+", " ", text)
@@ -171,7 +168,6 @@ def _clean_text(text):
 
 
 def _normalize(input_path, output_path):
-    """توحيد 44100 Hz mono mp3."""
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
          "-ar", TARGET_SAMPLE_RATE,
@@ -197,7 +193,7 @@ def _duration(path):
 
 
 # ============================================================
-# 5. بناء الحلقة كاملة
+# 5. بناء الحلقة
 # ============================================================
 def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -205,18 +201,16 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     surah = episode.get("surah", 12)
 
     print(f"\n🎙️  بناء صوت الحلقة ({len(segments)} مقطع)")
-    print(f"   السورة: {surah} | الصوت: السديس (استنساخ + أصلي)")
+    print(f"   السورة: {surah} | الصوت: السديس")
     print("=" * 60)
 
-    # 1) مرجع السديس
     download_reference()
-
-    # 2) تحميل XTTS
-    model, config, model_path = load_xtts()
+    model, config, _ = load_xtts()
 
     temp_dir = Path(tempfile.mkdtemp())
     segment_files = []
-    failed = 0
+    failed_narration = 0
+    failed_quran = 0
 
     for i, seg in enumerate(segments, 1):
         seg_type = seg["type"]
@@ -246,22 +240,33 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
             elif seg_type in ("narration", "intro", "outro"):
                 text = seg.get("text", "").strip()
                 if not text:
+                    print(f"   ⏭️  [{i}] {seg_type} — بدون نص")
                     continue
-                generate_narration(text, str(seg_file), model, config, model_path)
+                result = generate_narration(text, str(seg_file), model, config)
+                if not result:
+                    failed_narration += 1
 
             if seg_file.exists() and seg_file.stat().st_size > 2048:
                 segment_files.append(str(seg_file))
             else:
-                failed += 1
+                if seg_type == "quran":
+                    failed_quran += 1
 
         except Exception as e:
-            print(f"   ❌ فشل المقطع {i}: {str(e)[:150]}")
-            failed += 1
+            print(f"   ❌ فشل المقطع {i}: {type(e).__name__}: {str(e)[:200]}")
+            if seg_type == "quran":
+                failed_quran += 1
+            else:
+                failed_narration += 1
+
+    print(f"\n📊 نتيجة التوليد:")
+    print(f"   نجح: {len(segment_files)} مقطع")
+    print(f"   فشل سرد: {failed_narration}")
+    print(f"   فشل قرآن: {failed_quran}")
 
     if not segment_files:
         raise RuntimeError("لم يُولَّد صوت")
 
-    # 3) الدمج النهائي
     print(f"\n🔗 دمج {len(segment_files)} مقطع...")
     with open(temp_dir / "final.txt", "w") as f:
         for sf in segment_files:
@@ -276,7 +281,6 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     duration = _duration(out_path)
     print(f"\n✅ الحلقة: {out_path}")
     print(f"   المدة: {duration/60:.1f} دقيقة")
-    print(f"   نجح: {len(segment_files)} | فشل: {failed}")
     return out_path
 
 
