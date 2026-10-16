@@ -1,4 +1,4 @@
-"""دمج صوت السرد (Piper) + الآيات (everyayah) — مع توحيد الصيغة."""
+"""دمج صوت السرد (Piper) + الآيات (everyayah) — بلا تشكيل + سرعة مضبوطة."""
 import re
 import subprocess
 import tempfile
@@ -14,23 +14,39 @@ from config import QURAN_RECITER, QURAN_BASE
 PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
 PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
 
-PIPER_LENGTH_SCALE = 1.0   # طبيعي (كما أوصيت)
+PIPER_LENGTH_SCALE = 0.9   # 0.9 = أسرع 10% من الطبيعي (لأن الطبيعي بطيء قليلاً)
 
-# صيغة موحّدة لكل الملفات قبل الدمج
 TARGET_SAMPLE_RATE = "44100"
 TARGET_CHANNELS = "1"
 TARGET_BITRATE = "128k"
 
 
 # ============================================================
-# دوال مساعدة
+# دوال معالجة النص
 # ============================================================
-def _clean_for_tts(text):
+def _remove_tashkeel(text):
+    """يزيل التشكيل العربي (Piper لا يفهمه)."""
+    # الحركات: fatha, damma, kasra, sukun, shadda, fathatan, dammatan, kasratan
+    # + علامات أخرى
+    tashkeel = re.compile(r"[\u064B-\u0652\u0670\u0640\u06D6-\u06ED]")
+    return tashkeel.sub("", text)
+
+
+def _clean_for_piper(text):
+    """ينظف النص للسرد (بلا تشكيل، بلا رموز مخصوصة)."""
+    # إزالة الرموز المخصوصة
     text = re.sub(r"[ۖۗۘۙۚۛ]", "", text)
     text = text.replace("۝", " ")
+    # إزالة التشكيل
+    text = _remove_tashkeel(text)
+    # تنظيف المسافات
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
+# ============================================================
+# دوال مساعدة
+# ============================================================
 def _get_duration(file_path):
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
@@ -45,7 +61,7 @@ def _get_duration(file_path):
 
 
 def _normalize_audio(input_path, output_path):
-    """يوحّد صيغة الصوت (44100 Hz, mono, 128kbps)."""
+    """يوحّد صيغة الصوت (44100 Hz, mono)."""
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
          "-ar", TARGET_SAMPLE_RATE,
@@ -61,11 +77,10 @@ def _normalize_audio(input_path, output_path):
 # Piper TTS — للسرد
 # ============================================================
 def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
-    """يولّد صوت بـ Piper، ثم يوحّد الصيغة."""
     if not Path(PIPER_MODEL).exists():
         raise RuntimeError(f"نموذج Piper غير موجود: {PIPER_MODEL}")
 
-    clean = _clean_for_tts(text)
+    clean = _clean_for_piper(text)
     if not clean:
         raise RuntimeError("النص فارغ")
 
@@ -91,7 +106,7 @@ def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
     if not Path(wav_path).exists() or Path(wav_path).stat().st_size < 2048:
         raise RuntimeError("Piper: ملف صغير جداً")
 
-    # 2) wav → mp3 (خام)
+    # 2) wav → mp3 خام
     subprocess.run(
         ["ffmpeg", "-y", "-i", wav_path,
          "-codec:a", "libmp3lame", "-q:a", "4",
@@ -107,7 +122,6 @@ def _piper_tts(text, out_mp3, length_scale=PIPER_LENGTH_SCALE):
 # everyayah — للآيات
 # ============================================================
 def _fetch_quran_ayah(surah, ayah, out_path):
-    """يحمّل آية من everyayah ثم يوحّد الصيغة."""
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{QURAN_RECITER}/{filename}"
 
@@ -117,14 +131,12 @@ def _fetch_quran_ayah(surah, ayah, out_path):
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} — {url}")
 
-    # نحفظ مؤقتاً
     temp_path = out_path.replace(".mp3", "_raw.mp3")
     Path(temp_path).write_bytes(r.content)
 
     if Path(temp_path).stat().st_size < 2048:
         raise RuntimeError("ملف صغير جداً")
 
-    # توحيد الصيغة
     _normalize_audio(temp_path, out_path)
 
 
@@ -144,7 +156,6 @@ def generate_quran_audio(segment, out_path):
         print(f"   ✅ {duration:.1f} ثانية")
         return duration
 
-    # عدة آيات: نحمل كل واحدة (موحّدة) ثم ندمج
     temp_dir = Path(tempfile.mkdtemp())
     files = []
     for n, ayah in enumerate(ayah_numbers, 1):
@@ -173,6 +184,7 @@ def generate_narration_audio(segment, out_path):
     if not text:
         return None
 
+    # نظهر النص الأصلي (للتشخيص)
     print(f"   🔊 [narration] {text[:60]}...")
     try:
         _piper_tts(text, out_path)
@@ -195,7 +207,7 @@ def build_full_audio(episode, out_path="out/episode-audio.mp3"):
     print(f"\n🎙️  بناء صوت الحلقة ({len(segments)} مقطع)")
     print(f"   السورة: {surah} | القارئ: {QURAN_RECITER}")
     print(f"   السرد: Piper (length_scale={PIPER_LENGTH_SCALE})")
-    print(f"   صيغة موحّدة: {TARGET_SAMPLE_RATE} Hz")
+    print(f"   صيغة موحّدة: {TARGET_SAMPLE_RATE} Hz | بلا تشكيل")
     print("=" * 60)
 
     temp_dir = Path(tempfile.mkdtemp())
