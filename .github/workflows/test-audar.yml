@@ -37,17 +37,33 @@ jobs:
           pip install huggingface_hub soundfile numpy scipy librosa
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Download reference audio (Sudais)
+      - name: Download reference audio
         run: |
           mkdir -p assets/audio/reference
-          curl -L -o assets/audio/reference/sudais_ref.mp3 \
-            "https://everyayah.com/data/Sudais_192kbps/012004.mp3"
-          ffmpeg -y -i assets/audio/reference/sudais_ref.mp3 \
-            -ar 22050 -ac 1 -c:a pcm_s16le \
+          REF="assets/audio/reference/sudais_ref.mp3"
+          URLS=(
+            "https://everyayah.com/data/Alafasy_128kbps/012004.mp3"
+            "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/012004.mp3"
+            "https://everyayah.com/data/Abdurrahmaan_As-Sudais_64kbps/012004.mp3"
+            "https://everyayah.com/data/Minshawy_Murattal_128kbps/012004.mp3"
+          )
+          SUCCESS=0
+          for URL in "${URLS[@]}"; do
+            echo "⬇️ تجربة: $URL"
+            if curl -L -f --max-time 30 -o "$REF" "$URL"; then
+              SIZE=$(stat -c%s "$REF")
+              echo "📦 الحجم: $SIZE بايت"
+              if [ "$SIZE" -gt 20000 ]; then
+                echo "✅ نجح: $URL"
+                SUCCESS=1
+                break
+              fi
+            fi
+          done
+          [ "$SUCCESS" -ne 1 ] && { echo "❌ فشلت جميع الروابط"; exit 1; }
+          ffmpeg -y -i "$REF" -ar 22050 -ac 1 -c:a pcm_s16le \
             assets/audio/reference/sudais_ref.wav
-          echo "📁 محتويات المرجع:"
           ls -lah assets/audio/reference/
-          echo "⏱️ مدة المرجع:"
           ffprobe -v error -show_entries format=duration \
             -of default=noprint_wrappers=1:nokey=1 \
             assets/audio/reference/sudais_ref.wav
@@ -62,7 +78,6 @@ jobs:
       - name: Check output
         if: always()
         run: |
-          echo "📁 محتويات مجلد output:"
           ls -lah output/ || echo "⚠️ مجلد output غير موجود"
 
       - name: Upload audio artifact
