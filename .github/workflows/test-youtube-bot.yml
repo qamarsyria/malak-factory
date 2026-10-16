@@ -27,10 +27,12 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Generate test video
         run: |
           mkdir -p out
-          sudo apt-get update && sudo apt-get install -y ffmpeg
           ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=8 \
             -f lavfi -i sine=frequency=440:duration=8 \
             -vf "drawtext=text='Malak Factory Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" \
