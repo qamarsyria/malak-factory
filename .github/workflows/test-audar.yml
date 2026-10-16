@@ -12,7 +12,7 @@ on:
 jobs:
   test-audar:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -34,7 +34,7 @@ jobs:
           pip install --upgrade pip
           pip install llama-cpp-python \
             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          pip install huggingface_hub soundfile numpy scipy librosa
+          pip install huggingface_hub soundfile numpy scipy librosa neucodec
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download reference audio
@@ -61,7 +61,7 @@ jobs:
             fi
           done
           [ "$SUCCESS" -ne 1 ] && { echo "❌ فشلت جميع الروابط"; exit 1; }
-          ffmpeg -y -i "$REF" -ar 22050 -ac 1 -c:a pcm_s16le \
+          ffmpeg -y -i "$REF" -ar 24000 -ac 1 -c:a pcm_s16le \
             assets/audio/reference/sudais_ref.wav
           ls -lah assets/audio/reference/
           ffprobe -v error -show_entries format=duration \
