@@ -1,0 +1,10 @@
+# ===== مشروع القصص =====
+coqui-tts>=0.25.0
+transformers==4.45.2
+torch==2.5.1
+torchaudio==2.5.1
+spacy==3.7.5
+click
+soundfile
+huggingface_hub
+requests==2.32.3
