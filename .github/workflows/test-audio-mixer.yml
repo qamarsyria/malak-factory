@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -21,13 +21,12 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Install deps
-        run: pip install requests piper-tts huggingface_hub
-
-      - name: Download Piper voice
-        run: python scripts/download_piper.py
+      - name: Install Python deps
+        run: pip install -r requirements.txt
 
       - name: Build audio
+        env:
+          COQUI_TOS_AGREED: "1"
         run: python scripts/audio_mixer.py
 
       - name: Show result
@@ -35,7 +34,6 @@ jobs:
         run: |
           ls -lh out/ || true
           if [ -f "out/episode-audio.mp3" ]; then
-            echo "المدة:"
             ffprobe -v error -show_entries format=duration -of \
               default=noprint_wrappers=1:nokey=1 out/episode-audio.mp3
           fi
