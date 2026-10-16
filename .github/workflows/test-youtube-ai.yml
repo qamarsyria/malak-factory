@@ -1,0 +1,52 @@
+name: Test YouTube AI Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: 'عنوان الفيديو'
+        default: 'اختبار AI Agent — مالك فاكتوري'
+      description:
+        description: 'الوصف'
+        default: 'رفع تجريبي عبر Gemini Vision.'
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install playwright requests
+          playwright install chromium
+          playwright install-deps chromium
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Generate test video
+        run: |
+          mkdir -p out
+          ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=8 \
+            -f lavfi -i sine=frequency=440:duration=8 \
+            -vf "drawtext=text='AI Agent Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" \
+            -c:v libx264 -c:a aac -shortest out/video.mp4
+
+      - name: Run AI Agent
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          YT_TITLE: ${{ github.event.inputs.title }}
+          YT_DESC: ${{ github.event.inputs.description }}
+        run: python scripts/youtube_ai_agent.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-agent-screenshots
+          path: out/screenshots/
+          if-no-files-found: ignore
