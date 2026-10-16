@@ -33,8 +33,8 @@ jobs:
         run: |
           pip install --upgrade pip
 
-          # 1. torch 2.6.0 (يحتوي على torch.int1) + الثلاثي من فهرس CPU
-          pip install torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
+          # 1. torch 2.7.0 (يحتوي على register_constant) + الثلاثي من فهرس CPU
+          pip install torch==2.7.0 torchaudio==2.7.0 torchvision==0.22.0 \
             --index-url https://download.pytorch.org/whl/cpu
 
           # 2. قيود لمنع pip من ترقية أي منها
@@ -42,8 +42,8 @@ jobs:
           echo "📌 ملف القيود:"
           cat /tmp/torch_constraints.txt
 
-          # 3. torchao 0.6.1 (يحتوي على nf4tensor) + torchtune 0.4.0
-          pip install torchao==0.6.1 torchtune==0.4.0 \
+          # 3. torchao 0.7.0 (يحتوي على nf4tensor ولم ينقله بعد) + torchtune 0.4.0
+          pip install torchao==0.7.0 torchtune==0.4.0 \
             --constraint /tmp/torch_constraints.txt
 
           # 4. llama-cpp-python
@@ -65,7 +65,8 @@ jobs:
           print(f'torch: {torch.__version__}')
           print(f'torchaudio: {torchaudio.__version__}')
           print(f'torchvision: {torchvision.__version__}')
-          print(f'torch.int1: {torch.int1}')  # ← الاختبار الحاسم
+          import torch.utils._pytree as pytree
+          print(f'register_constant: {hasattr(pytree, \"register_constant\")}')
           import torchao
           print(f'torchao: {torchao.__version__}')
           from torchao.dtypes.nf4tensor import NF4Tensor
