@@ -1,10 +1,23 @@
-# ===== مشروع القصص =====
+# ============================================
+# مشروع القصص — malak-factory / stories
+# ============================================
+# هذا الملف يخدم test-audio-mixer.yml و build-story.yml فقط
+# لا يُستخدم في daily.yml (المشروع القديم)
+# ============================================
+
+# --- TTS العصبي (XTTS / Fasih / Audar) ---
 coqui-tts>=0.25.0
 transformers==4.45.2
 torch==2.5.1
 torchaudio==2.5.1
+
+# --- معالجة اللغة ---
 spacy==3.7.5
 click
+
+# --- معالجة الصوت ---
 soundfile
-huggingface_hub
+
+# --- الشبكة والـ API ---
 requests==2.32.3
+huggingface_hub
