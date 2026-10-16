@@ -12,8 +12,9 @@ GGUF_FILE  = "Audar-TTS-V1-Flash-Q4_K_M.gguf"
 REF_JSON   = Path("output/ref_codes.json")
 TARGET_JSON = Path("output/target_codes.json")
 
-# حد أقصى لعدد codes المرجع (50 code = 1 ثانية، 300 = 6 ثواني)
-MAX_REF_CODES = 300
+MAX_REF_CODES = 600      # مرجع أطول لدقة أعلى
+MAX_NEW_TOKENS = 1000    # كافٍ لجملة كاملة
+LOOP_WINDOW = 15         # نافذة كشف التكرار
 
 DEFAULT_TEXT = (
     "الحَمدُ لِلَّهِ رَبِّ العالَمينَ. "
@@ -29,12 +30,18 @@ def download_gguf():
     return path
 
 
+def has_loop(ids, window=LOOP_WINDOW):
+    """كشف حلقة التكرار: آخر window token متطابقة"""
+    if len(ids) < window:
+        return False
+    return len(set(ids[-window:])) == 1
+
+
 def main():
     ref_data = json.loads(REF_JSON.read_text(encoding="utf-8"))
     ref_text = ref_data["ref_text"]
     ref_codes_all = ref_data["ref_codes"]
 
-    # اقتصاص المرجع إلى MAX_REF_CODES
     if len(ref_codes_all) > MAX_REF_CODES:
         print(f"✂️ اقتصاص المرجع من {len(ref_codes_all)} إلى {MAX_REF_CODES} code")
         ref_codes = ref_codes_all[:MAX_REF_CODES]
@@ -53,8 +60,8 @@ def main():
     from llama_cpp import Llama
     llm = Llama(
         model_path=gguf_path,
-        n_ctx=16384,        # ← زيادة كبيرة
-        n_batch=512,        # ← معالجة على دفعات
+        n_ctx=16384,
+        n_batch=512,
         n_gpu_layers=0,
         verbose=False,
     )
@@ -72,16 +79,30 @@ def main():
     toks = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
     print(f"📊 طول الـ prompt: {len(toks)} token")
 
-    if len(toks) >= 16000:
-        print(f"❌ الـ prompt كبير جداً: {len(toks)} token")
-        sys.exit(1)
-
     ids = []
-    for tid in llm.generate(toks, temp=0.7, top_k=20, top_p=0.8, repeat_penalty=1.1):
-        if tid == tce or len(ids) >= 4096:
+    stopped_by = "max_tokens"
+    for tid in llm.generate(
+        toks,
+        temp=0.5,              # ← أقل لتقليل العشوائية
+        top_k=20,
+        top_p=0.8,
+        repeat_penalty=1.3,    # ← عقوبة أعلى لمنع التكرار
+    ):
+        if tid == tce:
+            stopped_by = "stop_token"
+            break
+        if len(ids) >= MAX_NEW_TOKENS:
+            stopped_by = "max_tokens"
             break
         ids.append(tid)
+        if has_loop(ids):
+            stopped_by = f"loop_detected({LOOP_WINDOW} نفس الـ token)"
+            print(f"🔁 توقف بسبب: {stopped_by}")
+            # احذف التكرار من النهاية
+            ids = ids[:-LOOP_WINDOW]
+            break
 
+    print(f"🛑 توقف التوليد بسبب: {stopped_by}")
     print(f"📊 عدد التوكنز المولدة: {len(ids)}")
 
     text = "".join(
