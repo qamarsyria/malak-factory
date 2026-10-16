@@ -33,17 +33,15 @@ jobs:
         run: |
           pip install --upgrade pip
 
-          # 1. torch 2.7.0 (يحتوي على register_constant) + الثلاثي من فهرس CPU
-          pip install torch==2.7.0 torchaudio==2.7.0 torchvision==0.22.0 \
+          # 1. torch 2.9.1 (يحتوي على ScalingType في torch.nn.functional)
+          pip install torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 \
             --index-url https://download.pytorch.org/whl/cpu
 
-          # 2. قيود لمنع pip من ترقية أي منها
+          # 2. قيود لمنع pip من ترقية أي منها لاحقاً
           pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/torch_constraints.txt
-          echo "📌 ملف القيود:"
-          cat /tmp/torch_constraints.txt
 
-          # 3. torchao 0.7.0 (يحتوي على nf4tensor ولم ينقله بعد) + torchtune 0.4.0
-          pip install torchao==0.7.0 torchtune==0.4.0 \
+          # 3. torchao 0.15.0 (يحتوي على nf4tensor) + torchtune 0.6.1
+          pip install torchao==0.15.0 torchtune==0.6.1 \
             --constraint /tmp/torch_constraints.txt
 
           # 4. llama-cpp-python
@@ -55,8 +53,10 @@ jobs:
           pip install huggingface_hub soundfile numpy scipy librosa \
             --constraint /tmp/torch_constraints.txt
 
-          # 6. neucodec (مع القيود — المفتاح)
-          pip install neucodec --constraint /tmp/torch_constraints.txt
+          # 6. neucodec مع القيود (بدون سحب تبعيات قد تكسر التوافق)
+          pip install neucodec --no-deps --constraint /tmp/torch_constraints.txt
+          pip install local_attention vector-quantize-pytorch transformers \
+            --constraint /tmp/torch_constraints.txt
 
       - name: Verify imports
         run: |
@@ -65,8 +65,6 @@ jobs:
           print(f'torch: {torch.__version__}')
           print(f'torchaudio: {torchaudio.__version__}')
           print(f'torchvision: {torchvision.__version__}')
-          import torch.utils._pytree as pytree
-          print(f'register_constant: {hasattr(pytree, \"register_constant\")}')
           import torchao
           print(f'torchao: {torchao.__version__}')
           from torchao.dtypes.nf4tensor import NF4Tensor
