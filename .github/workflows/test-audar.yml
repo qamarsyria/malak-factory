@@ -32,12 +32,46 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
+
+          # 1. الثلاثي من فهرس CPU في أمر واحد
+          pip install torch==2.5.1 torchaudio==2.5.1 torchvision==0.20.1 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+          # 2. أنشئ ملف قيود يمنع pip من ترقية أي منها لاحقاً
+          pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/torch_constraints.txt
+          echo "📌 ملف القيود:"
+          cat /tmp/torch_constraints.txt
+
+          # 3. torchao و torchtune بالإصدارات المتوافقة مع CPU
+          pip install torchao==0.6.1 torchtune==0.4.0 \
+            --constraint /tmp/torch_constraints.txt
+
+          # 4. llama-cpp-python
           pip install llama-cpp-python \
-            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install huggingface_hub soundfile numpy scipy librosa
-          pip install neucodec --no-deps
-          pip install torchao torchtune torchaudio
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
+            --constraint /tmp/torch_constraints.txt
+
+          # 5. البقية مع القيود (تضمن عدم ترقية torch/torchaudio)
+          pip install huggingface_hub soundfile numpy scipy librosa \
+            --constraint /tmp/torch_constraints.txt
+
+          # 6. neucodec مع القيود أيضاً — هذا هو المفتاح!
+          pip install neucodec --constraint /tmp/torch_constraints.txt
+
+      - name: Verify imports
+        run: |
+          python -c "
+          import torch, torchaudio, torchvision
+          print(f'torch: {torch.__version__}')
+          print(f'torchaudio: {torchaudio.__version__}')
+          print(f'torchvision: {torchvision.__version__}')
+          import torchao
+          print(f'torchao: {torchao.__version__}')
+          from torchao.dtypes.nf4tensor import NF4Tensor
+          print('✅ NF4Tensor موجود')
+          from neucodec import NeuCodec
+          print('✅ neucodec يعمل')
+          "
 
       - name: Download reference audio
         run: |
@@ -46,15 +80,12 @@ jobs:
           URLS=(
             "https://everyayah.com/data/Alafasy_128kbps/012004.mp3"
             "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/012004.mp3"
-            "https://everyayah.com/data/Abdurrahmaan_As-Sudais_64kbps/012004.mp3"
-            "https://everyayah.com/data/Minshawy_Murattal_128kbps/012004.mp3"
           )
           SUCCESS=0
           for URL in "${URLS[@]}"; do
             echo "⬇️ تجربة: $URL"
             if curl -L -f --max-time 30 -o "$REF" "$URL"; then
               SIZE=$(stat -c%s "$REF")
-              echo "📦 الحجم: $SIZE بايت"
               if [ "$SIZE" -gt 20000 ]; then
                 echo "✅ نجح: $URL"
                 SUCCESS=1
@@ -66,9 +97,6 @@ jobs:
           ffmpeg -y -i "$REF" -ar 24000 -ac 1 -c:a pcm_s16le \
             assets/audio/reference/sudais_ref.wav
           ls -lah assets/audio/reference/
-          ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 \
-            assets/audio/reference/sudais_ref.wav
 
       - name: Download model and generate audio
         env:
