@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + TOTP/OTP + وضع الكمبيوتر + Force Click."""
+"""رفع فيديو على يوتيوب — AI Vision + TOTP/OTP + Flight Recorder + Enter Key Bypass."""
 from __future__ import annotations
 
 import base64
@@ -35,6 +35,34 @@ def _log(msg: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════
+#  الصندوق الأسود (Flight Recorder)
+# ═══════════════════════════════════════════════════════
+class FlightRecorder:
+    def __init__(self, output_dir: str):
+        self.filepath = Path(output_dir) / "flight_recorder.json"
+        self.records = []
+        
+    def record(self, step: int, action: str, details: str, result: str):
+        entry = {
+            "timestamp": time.strftime("%H:%M:%S"),
+            "step": step,
+            "action": action,
+            "details": details,
+            "result": result
+        }
+        self.records.append(entry)
+        self._save()
+        
+    def _save(self):
+        try:
+            self.filepath.write_text(json.dumps(self.records, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+recorder: FlightRecorder | None = None
+
+
+# ═══════════════════════════════════════════════════════
 #  دالة توليد كود TOTP (Google Authenticator)
 # ═══════════════════════════════════════════════════════
 
@@ -45,8 +73,7 @@ def get_totp_code() -> str | None:
     try:
         totp = pyotp.TOTP(secret)
         return totp.now()
-    except Exception as e:
-        _log(f"⚠️ فشل توليد TOTP: {e}")
+    except Exception:
         return None
 
 
@@ -58,8 +85,7 @@ class GeminiPool:
     def __init__(self):
         raw = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
         self.keys = [k.strip() for k in raw.split(",") if k.strip()]
-        if not self.keys:
-            raise RuntimeError("لا مفاتيح Gemini")
+        if not self.keys: raise RuntimeError("لا مفاتيح Gemini")
         self.idx = 0
         self.cooldowns: dict[str, float] = {}
         _log(f"🔑 {len(self.keys)} مفتاح")
@@ -68,8 +94,7 @@ class GeminiPool:
         now = time.time()
         for _ in range(len(self.keys)):
             k = self.keys[self.idx]
-            if now >= self.cooldowns.get(k, 0):
-                return k
+            if now >= self.cooldowns.get(k, 0): return k
             self.idx = (self.idx + 1) % len(self.keys)
         wait = max(1, int(min(self.cooldowns.values()) - time.time()))
         time.sleep(wait)
@@ -111,9 +136,7 @@ def discover_models(force_refresh: bool = False) -> list[str]:
     _log("🔍 نسأل Gemini عن الموديلات المتاحة...")
     try:
         r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=30)
-    except Exception:
-        return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
-
+    except Exception: return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
     if r.status_code != 200: return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
     
     candidates = [m.get("name", "").replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
@@ -167,7 +190,7 @@ def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
 
 # ═══════════════════════════════════════════════════════
-#  Gemini Vision (تعليمات محدثة)
+#  Gemini Vision
 # ═══════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
@@ -175,7 +198,7 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 
 **ماذا تفعل:**
 1. إذا كنت في لوحة التحكم ولم تفتح نافذة الرفع: ابحث عن زر "Create" أو "إنشاء" واضغطه. ثم اضغط "Upload videos" أو "رفع فيديوهات".
-2. إذا ظهرت نافذة بيضاء مكتوب عليها **"إثبات هويتك"** أو "Verify your identity": اضغط على زر **"التالي"** (Next). (إذا كان الزر رمادياً، انتظر 3 ثواني ثم أعد المحاولة).
+2. إذا ظهرت نافذة بيضاء مكتوب عليها **"إثبات هويتك"** أو "Verify your identity": اضغط على زر **"التالي"** (Next).
 3. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
 4. إذا ظهرت شاشة تطلب منك اختيار وسيلة للتحقق أو شاشة فيها مربع لإدخال كود:
    - أعلن التوقف فوراً بـ {"action": "get_email_otp"}.
@@ -244,7 +267,7 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ القرار (تمت إضافة Force Click)
+#  تنفيذ القرار
 # ═══════════════════════════════════════════════════════
 
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
@@ -265,10 +288,8 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
     if action == "wait":
         sec = int(decision.get("seconds", 3)); _log(f"⏸️  انتظار {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait"
         
-    # 🆕 أمر قراءة الكود (TOTP أو Email)
     if action == "get_email_otp":
         _log("🔐 Gemini اكتشف شاشة تحقق! جاري إحضار الكود...")
-        
         code = get_totp_code()
         if code:
             _log(f"🔑 كود TOTP تم توليده: {code} — جاري كتابته...")
@@ -281,15 +302,11 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
                     page.keyboard.press("Enter")
                     _log("✅ تم كتابة الكود")
                     return "otp_entered"
-                else:
-                    return "err: no input for otp"
-            except Exception as e:
-                return f"err: {e}"
+                else: return "err: no input for otp"
+            except Exception as e: return f"err: {e}"
         
-        # احتياطي: الإيميل
         _log("⚠️ لا يوجد TOTP Secret، سأبحث في الإيميل...")
         if not HAS_EMAIL: return "err: email reader missing"
-        
         result = get_youtube_verification(timeout_seconds=180)
         if not result: return "fail: no verification found"
             
@@ -304,8 +321,7 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
                     page.wait_for_timeout(1000)
                     page.keyboard.press("Enter")
                     return "otp_entered"
-            except Exception as e:
-                return f"err: {e}"
+            except Exception as e: return f"err: {e}"
                 
         elif result["type"] == "link":
             link = result["value"]
@@ -325,8 +341,7 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_timeout(5000)
                 return "link_opened"
-            except Exception as e:
-                return f"err: {e}"
+            except Exception as e: return f"err: {e}"
 
     if action == "click":
         eid = decision.get("id")
@@ -335,25 +350,19 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
         
         clicked = False
-        # 1. نقرة الماوس العادية
         try: 
             page.mouse.click(el["x"], el["y"]); 
             clicked = True
-        except Exception as e: 
-            _log(f"   ⚠️ mouse: {e}")
+        except Exception as e: _log(f"   ⚠️ mouse: {e}")
             
-        # 2. النقرة القسرية (Force Click) - الحل لمشكلة نافذة إثبات الهوية
-        if not clicked or el['text'] in ["التالي", "Next"]:
+        # ⚡ الحل السحري لشاشة إثبات الهوية: ضغط Enter بدل الماوس
+        if el['text'] in ["التالي", "Next", "Verify", "تأكيد"]:
+            _log(f"   ⚡ ضغط زر Enter للتفاعل مع نافذة جوجل...")
             try:
-                _log(f"   ⚡ محاولة الضغط القسري على '{el['text']}'...")
-                page.locator(f'text="{el["text"]}"').first.click(force=True, timeout=5000)
+                page.keyboard.press("Enter")
                 clicked = True
             except Exception as e:
-                try:
-                    if el.get("name"):
-                        page.locator(f'[name="{el["name"]}"]').first.click(force=True, timeout=5000)
-                        clicked = True
-                except Exception: pass
+                _log(f"   ⚠️ Enter failed: {e}")
 
         page.wait_for_timeout(2500)
         page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
@@ -402,10 +411,12 @@ def upload_video_ai(
     video_path: str, title: str, description: str, cookies_raw: str,
     headless: bool = True, screenshot_dir: str = "out/screenshots", max_steps: int = 50,
 ) -> bool:
+    global recorder
     video_path = str(Path(video_path).resolve())
     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
-    cookies_list = _parse_cookies(cookies_raw)
+    recorder = FlightRecorder(screenshot_dir)
     
+    cookies_list = _parse_cookies(cookies_raw)
     proxy_config = None
     if HAS_PROXY:
         try: proxy_config = find_working_proxy()
@@ -458,12 +469,10 @@ def upload_video_ai(
                 page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
 
             page.wait_for_timeout(6000)
-            
             if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
                 raise RuntimeError("❌ فشل تسجيل الدخول")
 
             _log("✅ تم الدخول — نبدأ حلقة Gemini")
-            
             file_uploaded = False
             history: list[str] = []
 
@@ -478,19 +487,25 @@ def upload_video_ai(
                     page.wait_for_timeout(30000)
                     file_uploaded = True
                     history.append("تم رفع الفيديو بنجاح")
+                    if recorder: recorder.record(step, "upload_file", "FILE", "success")
                     continue
 
                 try: 
                     decision = _gemini_decide(page, step, history)
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
+                    if recorder: recorder.record(step, "gemini_fail", str(e), "error")
                     break
 
                 action = decision.get("action")
-                _log(f"📋 القرار ({decision.get('_model', '?')}): {action}")
+                model = decision.get("_model", "?")
+                _log(f"📋 القرار ({model}): {action}")
 
                 result = _execute(page, decision, screenshot_dir, step)
                 history.append(f"خطوة {step}: {action} → {result}")
+                
+                details = json.dumps(decision.get("_elements", [])[:3], ensure_ascii=False)
+                if recorder: recorder.record(step, action, details, result)
 
                 if result == "done": 
                     _log("🎉 اكتمل الرفع بنجاح!")
@@ -508,8 +523,7 @@ def upload_video_ai(
             _log(f"❌ {e}")
             return False
         finally:
-            if browser:
-                browser.close()
+            if browser: browser.close()
 
 if __name__ == "__main__":
     cookies_raw = os.getenv("YOUTUBE_COOKIES", "[]")
