@@ -155,17 +155,20 @@ def _screenshot_b64(page) -> str:
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
 مهمتك: تنظر إلى لقطة شاشة + قائمة العناصر القابلة للتفاعل، وتقرر الخطوة التالية لرفع فيديو.
-أنت الآن في بداية العملية. قد ترى لوحة التحكم (Dashboard)، أو شاشة تحقق (Verify)، أو نافذة رفع الفيديو.
 
 **ماذا تفعل:**
 1. إذا كنت في لوحة التحكم ولم تفتح نافذة الرفع: ابحث عن زر "Create" أو "إنشاء" واضغطه. ثم اضغط "Upload videos" أو "رفع فيديوهات".
 2. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
-3. إذا ظهرت شاشة تطلب كود تحقق (Verify it's you) أو (Enter the code sent to your email) أو (Confirm it's you) أو (تحقق من هويتك): أعلن التوقف بـ {"action": "get_email_otp"}.
-4. إذا ظهرت شاشة تطلب "Try another way": اضغط عليه.
-5. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
-6. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
-7. إذا ظهرت شاشة Visibility: اختر "Public".
-8. اضغط "Next" حتى الشاشة الأخيرة، ثم "Publish".
+3. إذا ظهرت شاشة تطلب "Try another way" أو "جرب طريقة أخرى": اضغط عليه.
+4. إذا ظهرت شاشة تطلب منك اختيار وسيلة للتحقق (مثلاً: إرسال كود إلى الهاتف، أو إرسال كود إلى الإيميل):
+   - اختر "Get a verification code at emadhlaweh5@gmail.com" أو "إرسال كود إلى البريد الإلكتروني".
+   - إذا تم اختيار البريد، سيظهر لك حقل لإدخال الكود، أعلن التوقف فوراً بـ {"action": "get_email_otp"}.
+5. إذا ظهرت شاشة تطلب تأكيد الدخول من الهاتف (Check your phone / Tap Yes on your phone): 
+   - اضغط على "Try another way" لكي نطلب كود الإيميل بدلاً من الهاتف.
+6. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
+7. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
+8. إذا ظهرت شاشة Visibility: اختر "Public".
+9. اضغط "Next" حتى الشاشة الأخيرة، ثم "Publish".
 
 **الإخراج:** JSON فقط، بأحد هذه الأشكال:
 - {"action": "click", "id": 5}
@@ -255,7 +258,7 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
             _log("❌ email_reader.py غير متاح")
             return "err: email reader missing"
         
-        result = get_youtube_verification(timeout_seconds=120)
+        result = get_youtube_verification(timeout_seconds=180)
         if not result:
             _log("❌ لم تصل رسالة تأكيد.")
             return "fail: no verification found"
@@ -279,15 +282,23 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
                 
         elif result["type"] == "link":
             link = result["value"]
-            _log(f"🔗 رابط تأكيد وجد! جاري فتحه في نافذة جديدة...")
+            _log(f"🔗 رابط تأكيد وجد! جاري فتحه...")
             try:
-                # فتح رابط التأكيد في نافذة جديدة
                 new_page = page.context.new_page()
                 new_page.goto(link, wait_until="domcontentloaded", timeout=30000)
-                new_page.wait_for_timeout(5000)
+                new_page.wait_for_timeout(3000)
+                try:
+                    btn = new_page.locator('button:has-text("نعم، أنا"), button:has-text("Yes, it\'s me"), button:has-text("Continue"), button:has-text("تأكيد")')
+                    if btn.count() > 0:
+                        _log("👆 ضغط زر التأكيد النهائي في صفحة جوجل...")
+                        btn.first.click()
+                        new_page.wait_for_timeout(3000)
+                except Exception:
+                    pass
+
+                _log("✅ تم تأكيد الدخول! نعود لـ YouTube...")
                 new_page.close()
-                _log("✅ تم تأكيد الدخول بنجاح! نعود لـ YouTube...")
-                page.bring_to_front() # العودة للصفحة الأصلية
+                page.bring_to_front()
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_timeout(5000)
                 return "link_opened"
@@ -393,7 +404,6 @@ def upload_video_ai(
 
         browser = None
         try:
-            # ═══ محاولة الدخول: مع البروكسي أولاً، ثم بدونه ═══
             if proxy_config:
                 try:
                     browser, context, page = run_browser(proxy_config)
@@ -424,7 +434,6 @@ def upload_video_ai(
                 _log(f"\n{'─' * 50}\n🎯 خطوة {step}")
                 page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_before.png")
 
-                # فحص وجود input للرفع
                 if not file_uploaded and page.locator('input[type="file"]').count() > 0:
                     _log("📁 وجدنا نافذة الرفع! جاري رفع الملف...")
                     page.locator('input[type="file"]').first.set_input_files(video_path)
