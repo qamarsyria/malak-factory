@@ -11,7 +11,6 @@ from pathlib import Path
 
 import requests
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 # ═══ استيراد مدير البروكسي ═══
 sys.path.insert(0, str(Path(__file__).parent))
@@ -394,13 +393,8 @@ def upload_video_ai(
         except Exception as e: _log(f"⚠️  فشل مدير البروكسي: {e}")
 
     with sync_playwright() as p:
-        # ═══ محاكاة جهاز جوال حقيقي (Pixel 5) ═══
         device = p.devices['Pixel 5']
-        
-        launch_kwargs = {
-            "headless": headless,
-            "args": ["--no-sandbox", "--disable-dev-shm-usage"],
-        }
+        launch_kwargs = {"headless": headless, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
         if proxy_config:
             launch_kwargs["proxy"] = proxy_config
             _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
@@ -408,18 +402,19 @@ def upload_video_ai(
             _log("⚠️  بدون بروكسي — IP افتراضي + محاكاة جوال")
 
         browser = p.chromium.launch(**launch_kwargs)
+        context = browser.new_context(**device, locale="ar-SA", timezone_id="Asia/Damascus")
         
-        context = browser.new_context(
-            **device,
-            locale="ar-SA",
-            timezone_id="Asia/Damascus",
-        )
+        # ═══ 💡 حقن التخفي يدوياً (بدون مكتبات) ═══
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['ar-SA', 'ar', 'en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            window.chrome = { runtime: {} };
+        """)
+        
         context.add_cookies(cookies_list)
         page = context.new_page()
-
-        # ═══ تفعيل التخفي ═══
-        stealth_sync(page)
-        _log("🛡️  تم تفعيل وضع التخفي (Stealth)")
+        _log("🛡️  تم تفعيل وضع التخفي (حقن يدوي)")
 
         history: list[str] = []
         try:
