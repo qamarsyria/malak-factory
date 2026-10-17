@@ -39,7 +39,7 @@ jobs:
       - name: Generate test video
         run: |
           mkdir -p out
-          ffmpeg -y -f lavfi -i color=c=black:s=720x1280:d=8 \
+          ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=8 \
             -f lavfi -i sine=frequency=440:duration=8 \
             -vf "drawtext=text='AI Agent Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" \
             -c:v libx264 -c:a aac -shortest out/video.mp4
@@ -48,6 +48,9 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          # 👇 المتغيرات الجديدة للإيميل
+          GMAIL_USER: "emadhlaweh5@gmail.com"
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           YT_TITLE: ${{ github.event.inputs.title }}
           YT_DESC: ${{ github.event.inputs.description }}
         run: python scripts/youtube_ai_agent.py
