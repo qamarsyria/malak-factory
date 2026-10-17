@@ -21,15 +21,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ═══ نثبت كل المكتبات المطلوبة هنا ═══
       - name: Install deps
         run: |
-          pip install playwright requests aiohttp
+          pip install requests playwright playwright-stealth aiohttp
           playwright install chromium
           playwright install-deps chromium
           sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      # ═══ استرجاع البروكسي الناجح من الكاش (إن وجد) ═══
       - name: Restore proxy cache
         uses: actions/cache@v4
         with:
@@ -38,16 +36,14 @@ jobs:
           restore-keys: |
             proxy-cache-
 
-      # ═══ توليد فيديو تجريبي ═══
       - name: Generate test video
         run: |
           mkdir -p out
-          ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=8 \
+          ffmpeg -y -f lavfi -i color=c=black:s=720x1280:d=8 \
             -f lavfi -i sine=frequency=440:duration=8 \
             -vf "drawtext=text='AI Agent Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" \
             -c:v libx264 -c:a aac -shortest out/video.mp4
 
-      # ═══ تشغيل البوت ═══
       - name: Run AI Agent
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -56,7 +52,6 @@ jobs:
           YT_DESC: ${{ github.event.inputs.description }}
         run: python scripts/youtube_ai_agent.py
 
-      # ═══ حفظ البروكسي الناجح للمرة القادمة ═══
       - name: Save proxy cache
         if: always()
         uses: actions/cache/save@v4
@@ -64,7 +59,6 @@ jobs:
           path: state/working-proxy.json
           key: proxy-cache-${{ github.run_id }}
 
-      # ═══ رفع الصور للتشخيص ═══
       - uses: actions/upload-artifact@v4
         if: always()
         with:
