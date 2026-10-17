@@ -48,7 +48,6 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-          # 👇 المتغيرات الجديدة للإيميل
           GMAIL_USER: "emadhlaweh5@gmail.com"
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           YT_TITLE: ${{ github.event.inputs.title }}
