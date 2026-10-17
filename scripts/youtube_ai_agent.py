@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.sync_api import sync_playwright
 
 # ═══ استيراد الملفات المحلية ═══
 sys.path.insert(0, str(Path(__file__).parent))
@@ -22,11 +22,11 @@ except ImportError:
     def find_working_proxy(): return None
 
 try:
-    from email_reader import get_youtube_otp
+    from email_reader import get_youtube_verification
     HAS_EMAIL = True
 except ImportError:
     HAS_EMAIL = False
-    def get_youtube_otp(): return None
+    def get_youtube_verification(): return None
 
 
 def _log(msg: str) -> None:
@@ -160,7 +160,7 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 **ماذا تفعل:**
 1. إذا كنت في لوحة التحكم ولم تفتح نافذة الرفع: ابحث عن زر "Create" أو "إنشاء" واضغطه. ثم اضغط "Upload videos" أو "رفع فيديوهات".
 2. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
-3. إذا ظهرت شاشة تطلب كود تحقق (Verify it's you) أو (Enter the code sent to your email) أو (Confirm it's you): أعلن التوقف بـ {"action": "get_email_otp"}.
+3. إذا ظهرت شاشة تطلب كود تحقق (Verify it's you) أو (Enter the code sent to your email) أو (Confirm it's you) أو (تحقق من هويتك): أعلن التوقف بـ {"action": "get_email_otp"}.
 4. إذا ظهرت شاشة تطلب "Try another way": اضغط عليه.
 5. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
 6. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
@@ -248,36 +248,52 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
     if action == "wait":
         sec = int(decision.get("seconds", 3)); _log(f"⏸️  انتظار {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait"
         
-    # 🆕 أمر قراءة الإيميل
+    # 🆕 أمر قراءة الإيميل والتأكيد
     if action == "get_email_otp":
-        _log("📧 Gemini اكتشف شاشة تحقق! جاري قراءة الإيميل...")
+        _log("📧 Gemini اكتشف شاشة تحقق! جاري فحص الإيميل...")
         if not HAS_EMAIL:
             _log("❌ email_reader.py غير متاح")
             return "err: email reader missing"
         
-        code = get_youtube_otp(timeout_seconds=120)
-        if not code:
-            _log("❌ لم يصل كود التحقق.")
-            return "fail: no otp"
+        result = get_youtube_verification(timeout_seconds=120)
+        if not result:
+            _log("❌ لم تصل رسالة تأكيد.")
+            return "fail: no verification found"
             
-        _log(f"🔑 الكود: {code} — جاري كتابته في الشاشة...")
-        try:
-            # محاولة الكتابة في أول حقل إدخال متاح
-            inputs = page.locator('input[type="text"], input[type="tel"], input:not([type])')
-            if inputs.count() > 0:
-                inputs.first.click(force=True)
-                page.keyboard.type(code, delay=100)
-                page.wait_for_timeout(1000)
-                # بعض الشاشات تحتاج ضغط Enter
-                page.keyboard.press("Enter")
-                _log("✅ تم كتابة الكود والضغط على Enter")
-                return "otp_entered"
-            else:
-                _log("⚠️ لم أجد حقل إدخال")
-                return "err: no input field"
-        except Exception as e:
-            _log(f"⚠️ خطأ أثناء الكتابة: {e}")
-            return f"err: {e}"
+        if result["type"] == "otp":
+            code = result["value"]
+            _log(f"🔑 كود OTP: {code} — جاري كتابته...")
+            try:
+                inputs = page.locator('input[type="text"], input[type="tel"], input:not([type])')
+                if inputs.count() > 0:
+                    inputs.first.click(force=True)
+                    page.keyboard.type(code, delay=100)
+                    page.wait_for_timeout(1000)
+                    page.keyboard.press("Enter")
+                    _log("✅ تم كتابة الكود")
+                    return "otp_entered"
+                else:
+                    return "err: no input for otp"
+            except Exception as e:
+                return f"err: {e}"
+                
+        elif result["type"] == "link":
+            link = result["value"]
+            _log(f"🔗 رابط تأكيد وجد! جاري فتحه في نافذة جديدة...")
+            try:
+                # فتح رابط التأكيد في نافذة جديدة
+                new_page = page.context.new_page()
+                new_page.goto(link, wait_until="domcontentloaded", timeout=30000)
+                new_page.wait_for_timeout(5000)
+                new_page.close()
+                _log("✅ تم تأكيد الدخول بنجاح! نعود لـ YouTube...")
+                page.bring_to_front() # العودة للصفحة الأصلية
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_timeout(5000)
+                return "link_opened"
+            except Exception as e:
+                _log(f"⚠️ فشل فتح الرابط: {e}")
+                return f"err: {e}"
 
     if action == "click":
         eid = decision.get("id")
