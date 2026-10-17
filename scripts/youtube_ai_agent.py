@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + OTP + وضع الكمبيوتر."""
+"""رفع فيديو على يوتيوب — AI Vision + OTP + وضع الكمبيوتر + Fallback للبروكسي."""
 from __future__ import annotations
 
 import base64
@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 # ═══ استيراد الملفات المحلية ═══
 sys.path.insert(0, str(Path(__file__).parent))
@@ -160,7 +160,7 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 **ماذا تفعل:**
 1. إذا كنت في لوحة التحكم ولم تفتح نافذة الرفع: ابحث عن زر "Create" أو "إنشاء" واضغطه. ثم اضغط "Upload videos" أو "رفع فيديوهات".
 2. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
-3. إذا ظهرت شاشة تطلب كود تحقق (Verify it's you) أو (Enter the code sent to your email): أعلن التوقف بـ {"action": "get_email_otp"}.
+3. إذا ظهرت شاشة تطلب كود تحقق (Verify it's you) أو (Enter the code sent to your email) أو (Confirm it's you): أعلن التوقف بـ {"action": "get_email_otp"}.
 4. إذا ظهرت شاشة تطلب "Try another way": اضغط عليه.
 5. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
 6. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
@@ -347,47 +347,63 @@ def upload_video_ai(
         except Exception: pass
 
     with sync_playwright() as p:
-        launch_kwargs = {
-            "headless": headless, 
-            "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]
-        }
-        if proxy_config:
-            launch_kwargs["proxy"] = proxy_config
-            _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
-        else:
-            _log("⚠️ بدون بروكسي")
+        
+        def run_browser(proxy_cfg):
+            launch_kwargs = {
+                "headless": headless, 
+                "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]
+            }
+            if proxy_cfg:
+                launch_kwargs["proxy"] = proxy_cfg
+                _log(f"🌐 سأفتح المتصفح عبر بروكسي: {proxy_cfg.get('server')}")
+            else:
+                _log("⚠️ بدون بروكسي - اتصال مباشر")
+                
+            browser = p.chromium.launch(**launch_kwargs)
+            context = browser.new_context(
+                viewport={"width": 1440, "height": 900},
+                locale="ar-SA",
+                timezone_id="Asia/Damascus",
+                ignore_https_errors=True,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                window.chrome = { runtime: {} };
+            """)
+            context.add_cookies(cookies_list)
+            page = context.new_page()
+            return browser, context, page
 
-        browser = p.chromium.launch(**launch_kwargs)
-        
-        # وضع الكمبيوتر
-        context = browser.new_context(
-            viewport={"width": 1440, "height": 900},
-            locale="ar-SA",
-            timezone_id="Asia/Damascus",
-            ignore_https_errors=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
-        
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {} };
-        """)
-        
-        context.add_cookies(cookies_list)
-        page = context.new_page()
-
-        history: list[str] = []
+        browser = None
         try:
-            _log("🌐 فتح YouTube Studio...")
-            page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
+            # ═══ محاولة الدخول: مع البروكسي أولاً، ثم بدونه ═══
+            if proxy_config:
+                try:
+                    browser, context, page = run_browser(proxy_config)
+                    page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
+                    _log("✅ نجح الاتصال عبر البروكسي")
+                except Exception as e:
+                    _log(f"⚠️ فشل الاتصال عبر البروكسي: {str(e)[:100]}")
+                    if browser:
+                        browser.close()
+                    _log("🔄 إعادة المحاولة بدون بروكسي...")
+                    browser, context, page = run_browser(None)
+                    page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
+            else:
+                browser, context, page = run_browser(None)
+                page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
+
             page.wait_for_timeout(6000)
             
             if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
                 raise RuntimeError("❌ فشل تسجيل الدخول")
 
-            _log("✅ مسجّل — نبدأ حلقة Gemini")
+            _log("✅ تم الدخول — نبدأ حلقة Gemini")
             
             file_uploaded = False
+            history: list[str] = []
+
             for step in range(1, max_steps + 1):
                 _log(f"\n{'─' * 50}\n🎯 خطوة {step}")
                 page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_before.png")
@@ -430,7 +446,8 @@ def upload_video_ai(
             _log(f"❌ {e}")
             return False
         finally:
-            browser.close()
+            if browser:
+                browser.close()
 
 if __name__ == "__main__":
     cookies_raw = os.getenv("YOUTUBE_COOKIES", "[]")
