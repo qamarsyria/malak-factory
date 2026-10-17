@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + Stealth + محاكاة جوال."""
+"""رفع فيديو على يوتيوب — AI Vision + Stealth يدوي + محاكاة جوال."""
 from __future__ import annotations
 
 import base64
@@ -404,7 +404,7 @@ def upload_video_ai(
         browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(**device, locale="ar-SA", timezone_id="Asia/Damascus")
         
-        # ═══ 💡 حقن التخفي يدوياً (بدون مكتبات) ═══
+        # ═══ 💡 حقن التخفي يدوياً بدون مكتبات خارجية ═══
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'languages', { get: () => ['ar-SA', 'ar', 'en-US', 'en'] });
