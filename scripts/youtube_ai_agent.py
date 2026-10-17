@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — البوت الخارق (Brute Force Bypass + TOTP)."""
+"""رفع فيديو على يوتيوب — البوت الخارق (Smart Wait + TOTP + Gemini Protection)."""
 from __future__ import annotations
 
 import base64
@@ -209,72 +209,78 @@ def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  🛡️ الحل الخارق (Brute Force) لنافذة إثبات الهوية
+#  🛡️ الحل الخارق (Smart Wait + Brute Force)
 # ═══════════════════════════════════════════════════════
 def _bypass_identity_popup(page) -> bool:
     try:
         body_text = page.locator("body").inner_text(timeout=2000)
         if "إثبات هويتك" in body_text or "Verify your identity" in body_text or "Verify it's you" in body_text:
-            _log("🛡️ [خارق] اكتشفت نافذة 'إثبات هويتك' — سأجرب 4 طرق...")
-            hash_before = _hash_screenshot(page)
+            _log("🛡️ [خارق] اكتشفت نافذة 'إثبات هويتك'...")
             
-            # 1. Playwright Locator Click (الأقوى)
-            for frame in page.frames:
-                try:
-                    btn = frame.locator('button:has-text("التالي"), div[role="button"]:has-text("التالي")').first
-                    if btn.count() > 0 and btn.is_visible():
-                        btn.click(force=True, timeout=3000)
-                        page.wait_for_timeout(2000)
-                        if _hash_screenshot(page) != hash_before:
-                            _log("✅ [خارق] نجح النقر (Playwright)")
-                            return True
-                except Exception: pass
-
-            # 2. Mouse Events Dispatch (لاختراق React)
-            for frame in page.frames:
-                try:
-                    clicked = frame.evaluate("""() => {
-                        const btns = document.querySelectorAll('button, div[role="button"], span');
-                        for (const btn of btns) {
-                            if (btn.innerText.trim() === 'التالي') {
-                                const rect = btn.getBoundingClientRect();
-                                const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-                                btn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, clientX: x, clientY: y}));
-                                btn.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, clientX: x, clientY: y}));
-                                btn.dispatchEvent(new MouseEvent('click', {bubbles: true, clientX: x, clientY: y}));
-                                return true;
-                            }
+            # 1. التحقق من حالة الزر (هل هو رمادي؟)
+            for attempt in range(15): # ننتظر حتى 30 ثانية
+                state = page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button, div[role="button"], span');
+                    for (const btn of btns) {
+                        if ((btn.innerText || '').trim() === 'التالي') {
+                            return {
+                                exists: true,
+                                disabled: btn.disabled === true || btn.getAttribute('aria-disabled') === 'true'
+                            };
                         }
-                        return false;
-                    }""")
-                    if clicked:
-                        page.wait_for_timeout(2000)
-                        if _hash_screenshot(page) != hash_before:
-                            _log("✅ [خارق] نجح النقر (JS Mouse Events)")
-                            return True
+                    }
+                    return {exists: false, disabled: false};
+                }""")
+                
+                if not state['exists']:
+                    break # اختفت النافذة
+                    
+                if state['disabled']:
+                    _log(f"⏳ [خارق] زر 'التالي' رمادي (تأخير أمني) — أنتظر 2ث... ({attempt+1}/15)")
+                    page.wait_for_timeout(2000)
+                    continue
+                
+                # إذا كان الزر مفعل
+                _log("✅ الزر أصبح مفعّلاً! جاري الضغط...")
+                hash_before = _hash_screenshot(page)
+                
+                # طريقة 1: JS Mouse Events
+                for frame in page.frames:
+                    try:
+                        clicked = frame.evaluate("""() => {
+                            const btns = document.querySelectorAll('button, div[role="button"], span');
+                            for (const btn of btns) {
+                                if (btn.innerText.trim() === 'التالي') {
+                                    const rect = btn.getBoundingClientRect();
+                                    const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+                                    btn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, clientX: x, clientY: y}));
+                                    btn.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, clientX: x, clientY: y}));
+                                    btn.dispatchEvent(new MouseEvent('click', {bubbles: true, clientX: x, clientY: y}));
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }""")
+                        if clicked:
+                            page.wait_for_timeout(3000)
+                            if _hash_screenshot(page) != hash_before:
+                                _log("✅ [خارق] نجح النقر واختفت النافذة!")
+                                return True
+                    except Exception: pass
+                
+                # طريقة 2: الإحداثيات
+                try:
+                    page.mouse.click(488, 516)
+                    page.wait_for_timeout(3000)
+                    if _hash_screenshot(page) != hash_before:
+                        return True
                 except Exception: pass
-
-            # 3. Hardcoded Coordinates (بناءً على صورتك)
-            try:
-                _log("👆 [خارق] تجربة إحداثيات (488, 516)...")
-                page.mouse.click(488, 516)
-                page.wait_for_timeout(2000)
-                if _hash_screenshot(page) != hash_before:
-                    _log("✅ [خارق] نجح النقر بالإحداثيات!")
-                    return True
-            except Exception: pass
-
-            # 4. Press Enter
-            try:
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(2000)
-                if _hash_screenshot(page) != hash_before:
-                    _log("✅ [خارق] نجح الضغط على Enter!")
-                    return True
-            except Exception: pass
-
-            _log("⚠️ [خارق] فشلت كل طرق الضغط!")
+                
+                break # خرجنا من حلقة الانتظار لأننا حاولنا الضغط
+                
+            _log("⚠️ [خارق] الزر بقي رمادياً — جوجل تطلب تدخلاً بشرياً (تأخير أمني).")
             return False
+            
     except Exception:
         pass
     return False
@@ -411,20 +417,31 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             for step in range(1, max_steps + 1):
                 _log(f"\n{'═' * 50}\n🎯 خطوة {step}")
                 
+                # 1. تخطي نافذة التحقق
                 if _bypass_identity_popup(page):
-                    if recorder: recorder.record(step, "bypass_verify", "Brute Force", "success")
+                    if recorder: recorder.record(step, "bypass_verify", "Smart Wait", "success")
                     continue
                 
+                # 2. إدخال كود TOTP
                 if _handle_otp(page):
                     if recorder: recorder.record(step, "handle_otp", "TOTP", "success")
                     continue
 
+                # 3. إذا كنا لا نزال في شاشة التحقق، لا نسأل Gemini (نوفر الحصة)
+                body_text = page.locator("body").inner_text(timeout=2000)
+                if "إثبات هويتك" in body_text or "Verify your identity" in body_text:
+                    _log("⏳ نافذة التحقق موجودة (الزر رمادي) — أنتظر 5 ثوانٍ دون استهلاك Gemini...")
+                    page.wait_for_timeout(5000)
+                    continue
+
+                # 4. اكتشاف التحميل
                 is_loading, loading_reason = _detect_loading(page)
                 if is_loading:
                     _log(f"⏳ [ذكي] تحميل: {loading_reason} — أنتظر 20ث")
                     page.wait_for_timeout(20000)
                     continue
 
+                # 5. رفع الفيديو
                 if not file_uploaded and page.locator('input[type="file"]').count() > 0:
                     _log("📁 رفع الفيديو...")
                     page.locator('input[type="file"]').first.set_input_files(video_path)
@@ -433,6 +450,7 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                     if recorder: recorder.record(step, "upload_file", "FILE", "success")
                     continue
 
+                # 6. استشارة Gemini
                 try: decision = _gemini_decide(page, step, memory)
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
