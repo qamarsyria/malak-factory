@@ -62,9 +62,11 @@ jobs:
           path: state/working-proxy.json
           key: proxy-cache-${{ github.run_id }}
 
+      # 👇 هنا التعديل: رفع الصور + ملف الصندوق الأسود
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ai-agent-screenshots
-          path: out/screenshots/
-          if-no-files-found: ignore
+          name: ai-agent-traces
+          path: |
+            out/screenshots/
+            out/flight_recorder.json
