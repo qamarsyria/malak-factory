@@ -27,3 +27,4 @@ huggingface_hub
 
 # --- أدوات بوت رفع يوتيوب (AI Agent) ---
 playwright
+beautifulsoup4
