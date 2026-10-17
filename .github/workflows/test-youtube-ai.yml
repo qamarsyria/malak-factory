@@ -1,4 +1,4 @@
-name: Test YouTube AI Agent
+name: Test YouTube AI Agent with VPN
 
 on:
   workflow_dispatch:
@@ -21,20 +21,21 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install deps
+      - name: Install deps & WireGuard
         run: |
           pip install requests playwright aiohttp pyotp beautifulsoup4
           playwright install chromium
           playwright install-deps chromium
-          sudo apt-get update && sudo apt-get install -y ffmpeg
+          sudo apt-get update && sudo apt-get install -y ffmpeg wireguard-tools resolvconf
 
-      - name: Restore proxy cache
-        uses: actions/cache@v4
-        with:
-          path: state/working-proxy.json
-          key: proxy-cache-${{ github.run_id }}
-          restore-keys: |
-            proxy-cache-
+      - name: Setup VPN (Mullvad)
+        run: |
+          echo "${{ secrets.WIREGUARD_CONFIG }}" > wg0.conf
+          sudo cp wg0.conf /etc/wireguard/wg0.conf
+          sudo chmod 600 /etc/wireguard/wg0.conf
+          sudo wg-quick up wg0
+          echo "✅ VPN Connected. Real IP:"
+          curl -s https://am.i.mullvad.net/connected
 
       - name: Generate test video
         run: |
@@ -48,21 +49,15 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-          GMAIL_USER: "emadhlaweh5@gmail.com"
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GOOGLE_TOTP_SECRET: ${{ secrets.GOOGLE_TOTP_SECRET }}
           YT_TITLE: ${{ github.event.inputs.title }}
           YT_DESC: ${{ github.event.inputs.description }}
         run: python scripts/youtube_ai_agent.py
 
-      - name: Save proxy cache
+      - name: Shutdown VPN
         if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: state/working-proxy.json
-          key: proxy-cache-${{ github.run_id }}
+        run: sudo wg-quick down wg0
 
-      # 👇 هنا التعديل: رفع الصور + ملف الصندوق الأسود
       - uses: actions/upload-artifact@v4
         if: always()
         with:
