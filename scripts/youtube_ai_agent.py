@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + TOTP + Flight Recorder + Shadow DOM Pierce."""
+"""رفع فيديو على يوتيوب — AI Vision + Playwright Native Locators + TOTP."""
 from __future__ import annotations
 
 import base64
@@ -113,57 +113,44 @@ def discover_models(force_refresh: bool = False) -> list[str]:
     except Exception: return ["gemini-3.8-flash"]
 
 # ═══════════════════════════════════════════════════════
-#  قراءة العناصر مع اختراق Shadow DOM
+#  استخراج العناصر باستخدام محرك Playwright (يخترق Shadow DOM)
 # ═══════════════════════════════════════════════════════
-JS_COLLECT_INTERACTIVE = r"""
-() => {
-    const results = []; const seen = new Set();
-    const selectors = 'button, a, input, textarea, select, [role="button"], [role="radio"], [role="checkbox"], [role="tab"], [role="menuitem"], [role="option"], tp-yt-paper-radio-button, ytcp-button, ytcp-radio-button, tp-yt-paper-item, tp-yt-paper-button, [contenteditable="true"], div[role="checkbox"]';
-
-    function walk(node) {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.matches(selectors)) {
-                try {
-                    const rect = node.getBoundingClientRect();
-                    const style = window.getComputedStyle(node);
-                    if (rect.width > 3 && rect.height > 3 && style.visibility !== 'hidden' && style.display !== 'none' && parseFloat(style.opacity) > 0.1) {
-                        if (rect.top >= 0 && rect.left >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth) {
-                            let text = (node.innerText || node.textContent || '').trim().slice(0, 120) || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('title') || '';
-                            const key = `${node.tagName}|${text}|${Math.round(rect.top)}|${Math.round(rect.left)}`;
-                            if (!seen.has(key)) {
-                                seen.add(key);
-                                results.push({
-                                    id: results.length, tag: node.tagName.toLowerCase(), text: text, aria: node.getAttribute('aria-label') || '',
-                                    name: node.getAttribute('name') || '', type: node.getAttribute('type') || '',
-                                    disabled: node.disabled === true || node.getAttribute('aria-disabled') === 'true',
-                                    checked: node.checked === true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2),
-                                    w: Math.round(rect.width), h: Math.round(rect.height)
-                                });
-                            }
-                        }
-                    }
-                } catch (e) {}
-            }
-            if (node.shadowRoot) {
-                walk(node.shadowRoot);
-            }
-            let child = node.firstElementChild;
-            while (child) {
-                walk(child);
-                child = child.nextElementSibling;
-            }
-        }
-    }
-    walk(document.body);
-    return results.slice(0, 80);
-}
-"""
+LOCATOR_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="radio"], [role="checkbox"], [role="menuitem"], tp-yt-paper-radio-button, ytcp-button, ytcp-radio-button, tp-yt-paper-button, [contenteditable="true"]'
 
 def _collect_elements(page) -> list[dict]:
-    try: return page.evaluate(JS_COLLECT_INTERACTIVE)
+    elements = []
+    try:
+        locator = page.locator(LOCATOR_SELECTOR)
+        count = locator.count()
+        for i in range(count):
+            el = locator.nth(i)
+            try:
+                if not el.is_visible(): continue
+                box = el.bounding_box()
+                if not box: continue
+                
+                text = el.inner_text().strip().replace("\n", " ")[:80]
+                aria = el.get_attribute("aria-label") or ""
+                name = el.get_attribute("name") or ""
+                if not text and not aria: continue
+                
+                elements.append({
+                    "id": i,
+                    "tag": el.evaluate("el => el.tagName.toLowerCase()"),
+                    "text": text or aria,
+                    "aria": aria,
+                    "name": name,
+                    "disabled": el.is_disabled(),
+                    "x": int(box["x"] + box["width"]/2),
+                    "y": int(box["y"] + box["height"]/2),
+                    "w": int(box["width"]),
+                    "h": int(box["height"])
+                })
+            except Exception: pass
     except Exception as e:
-        _log(f"⚠️ خطأ في قراءة العناصر: {e}")
-        return []
+        _log(f"⚠️ خطأ في جمع العناصر: {e}")
+    
+    return elements[:80]
 
 def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
@@ -208,7 +195,7 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
 
 def _gemini_decide(page, step: int, history: list[str]) -> dict:
     elements = _collect_elements(page); img_b64 = _screenshot_b64(page)
-    elements_txt = "\n".join([f"[{e['id']}] <{e['tag']}> \"{e['text'][:60]}\" name={e['name']} type={e['type']} disabled={e['disabled']} checked={e['checked']} @({e['x']},{e['y']}) {e['w']}x{e['h']}" for e in elements])
+    elements_txt = "\n".join([f"[{e['id']}] <{e['tag']}> \"{e['text'][:60]}\" name={e['name']} disabled={e['disabled']} @({e['x']},{e['y']})" for e in elements])
     recent_history = "\n".join(history[-6:]) if history else "(لا شيء بعد)"
     prompt = f"**الخطوة: {step}**\n**السجل:**\n{recent_history}\n**العناصر ({len(elements)}):**\n{elements_txt}\nما هي الخطوة التالية؟ أجب بـ JSON فقط."
     body = {"contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": img_b64}}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500, "responseMimeType": "application/json"}}
@@ -226,7 +213,7 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ القرار
+#  تنفيذ القرار (النقر عبر الفهرس المباشر)
 # ═══════════════════════════════════════════════════════
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
     action = decision.get("action", "wait"); elements = decision.get("_elements", [])
@@ -261,24 +248,19 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         
         clicked = False
         try:
-            if el['text'] in ["التالي", "Next", "Verify", "تأكيد", "Confirm"]:
-                _log(f"   🎯 محاولة النقر على النص '{el['text']}' مباشرة...")
-                page.locator(f'text="{el["text"]}"').first.click(timeout=5000)
-                clicked = True
+            # استخدام محرك Playwright الأصلي (يخترق الـ Shadow DOM)
+            locator = page.locator(LOCATOR_SELECTOR).nth(eid)
+            locator.click(timeout=5000, force=True)
+            _log(f"   ✅ نجح النقر عبر Playwright Locator!")
+            clicked = True
         except Exception as e:
-            _log(f"   ⚠️ فشل النقر على النص: {e}")
-
-        if not clicked:
+            _log(f"   ⚠️ فشل النقر المباشر: {e}")
             try: 
                 page.mouse.click(el["x"], el["y"]); 
                 clicked = True
-                _log(f"   ✅ نقر ماوس عادي @({el['x']},{el['y']})")
+                _log(f"   ✅ نقر ماوس احتياطي @({el['x']},{el['y']})")
             except Exception as e: 
                 _log(f"   ⚠️ mouse: {e}")
-                
-        if not clicked or el['text'] in ["التالي", "Next"]:
-            try: page.keyboard.press("Enter")
-            except Exception: pass
 
         page.wait_for_timeout(3000)
         page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
@@ -289,7 +271,9 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         if not el: return f"err: element {eid} not found"
         _log(f"⌨️  كتابة [{eid}]: '{text[:50]}'")
         try:
-            page.mouse.click(el["x"], el["y"]); page.wait_for_timeout(500)
+            locator = page.locator(LOCATOR_SELECTOR).nth(eid)
+            locator.click(timeout=5000, force=True)
+            page.wait_for_timeout(500)
             page.keyboard.press("Control+A"); page.keyboard.press("Delete"); page.wait_for_timeout(200)
             page.keyboard.type(text, delay=15); page.wait_for_timeout(800)
         except Exception as e: return f"err: {e}"
