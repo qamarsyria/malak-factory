@@ -23,7 +23,7 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install requests playwright aiohttp
+          pip install requests playwright aiohttp pyotp beautifulsoup4
           playwright install chromium
           playwright install-deps chromium
           sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -50,6 +50,7 @@ jobs:
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           GMAIL_USER: "emadhlaweh5@gmail.com"
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GOOGLE_TOTP_SECRET: ${{ secrets.GOOGLE_TOTP_SECRET }}
           YT_TITLE: ${{ github.event.inputs.title }}
           YT_DESC: ${{ github.event.inputs.description }}
         run: python scripts/youtube_ai_agent.py
