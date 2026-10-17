@@ -1,7 +1,8 @@
-"""رفع فيديو على يوتيوب — Pure Visual Click + TOTP + Smart Screenshotting."""
+"""رفع فيديو على يوتيوب — بوت ذكي خارق (Shadow DOM + TOTP + التغيير)."""
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,61 @@ def get_totp_code() -> str | None:
     if not secret: return None
     try: return pyotp.TOTP(secret).now()
     except Exception: return None
+
+# ═══════════════════════════════════════════════════════
+#  🧠 الحالة الذكية للبوت
+# ═══════════════════════════════════════════════════════
+class BotMemory:
+    def __init__(self):
+        self.last_action = None
+        self.last_hash = None
+        self.same_hash_count = 0
+        self.failed_actions = []
+        self.last_feedback = ""
+
+    def get_feedback(self) -> str:
+        parts = []
+        if self.last_action:
+            if self.same_hash_count >= 1:
+                parts.append(f"⚠️ الإجراء السابق ({self.last_action}) لم يغيّر الشاشة!")
+            else:
+                parts.append(f"✅ الإجراء السابق ({self.last_action}) نجح وغيّر الشاشة")
+        
+        if self.same_hash_count >= 2:
+            parts.append(f"🚫 تحذير: الشاشة لم تتغير لمدة {self.same_hash_count} خطوات متتالية. جرب إجراءً مختلفاً تماماً!")
+        
+        if self.failed_actions:
+            parts.append(f"❌ إجراءات فشلت: {', '.join(self.failed_actions[-3:])}")
+        
+        return "\n".join(parts) if parts else "(لا توجد معلومات سابقة)"
+
+def _hash_screenshot(page) -> str:
+    try:
+        png = page.screenshot(type="png", full_page=False)
+        return hashlib.md5(png).hexdigest()[:16]
+    except Exception:
+        return "error"
+
+def _detect_loading(page) -> tuple[bool, str]:
+    try:
+        body_text = page.locator("body").inner_text(timeout=2000).lower()
+        for kw in ["processing", "loading", "uploading", "saving", "please wait", "publishing", "جاري", "جارٍ", "يعالج", "الانتظار", "تحميل"]:
+            if kw in body_text:
+                return True, f"نص ({kw})"
+        
+        try:
+            progress = page.locator('[role="progressbar"], ytcp-video-upload-progress')
+            if progress.count() > 0 and progress.first.is_visible():
+                return True, "شريط تقدم"
+        except Exception: pass
+        
+        try:
+            disabled = page.locator('button:disabled, [aria-disabled="true"]')
+            if disabled.count() > 8:
+                return True, "أزرار معطلة كثيرة"
+        except Exception: pass
+    except Exception: pass
+    return False, ""
 
 # ═══════════════════════════════════════════════════════
 #  إدارة مفاتيح Gemini
@@ -115,24 +171,31 @@ def discover_models(force_refresh: bool = False) -> list[str]:
 def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
 
+# ═══════════════════════════════════════════════════════
+#  تعليمات Gemini
+# ═══════════════════════════════════════════════════════
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
-أنت الآن ترى لقطة شاشة فقط. لا تعتمد على الكود، بل اعتمد على عينيك (الصورة).
+أنت ترى لقطة شاشة. مهمتك إخباري ماذا أفعل بالضبط.
 
-**ماذا تفعل:**
-1. إذا كنت ترى شاشة تطلب منك اختيار وسيلة للتحقق أو شاشة فيها مربع لإدخال كود (6 أرقام): أعلن التوقف فوراً بـ {"action": "get_email_otp"}.
-2. إذا ظهرت نافذة "إثبات هويتك" أو "Verify your identity": ابحث عن زر "التالي" (Next) في الصورة، وأعطني إحداثياته (x, y).
-3. إذا ظهرت شاشة التفاصيل (Details): أعطني إحداثيات حقل العنوان والوصف.
-4. إذا ظهرت شاشة Video elements: ابحث عن زر Next في الصورة، وأعطني إحداثياته.
-5. إذا ظهرت شاشة Checks: ابحث عن زر Next، وأعطني إحداثياته.
-6. إذا ظهرت شاشة Made for Kids: أعطني إحداثيات خيار "ليس للأطفال" ثم زر Next.
-7. إذا ظهرت شاشة Visibility: أعطني إحداثيات خيار "Public" ثم زر Next.
-8. في الشاشة الأخيرة: ابحث عن زر "Publish" (أو "نشر") في الصورة، وأعطني إحداثياته.
-9. إذا الشاشة لا تحتاج فعل (مثلاً قائمة فارغة): {"action": "wait", "seconds": 3}
+**المسار الطبيعي:**
+1. إذا رأيت نافذة "إثبات هويتك" أو "Verify your identity": ابحث عن زر "التالي" (Next) وأعطني إحداثياته.
+2. إذا ظهرت شاشة مربع كود 6 أرقام: أعلن {"action": "get_email_otp"}
+3. إذا ظهرت شاشة التفاصيل (Details): اكتب العنوان والوصف.
+4. إذا ظهرت شاشة Video elements أو Checks: اضغط Next.
+5. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" ثم Next.
+6. إذا ظهرت شاشة Visibility: اختر "Public" ثم Next.
+7. في الشاشة الأخيرة: اضغط "Publish" أو "نشر".
 
-**الإخراج:** JSON فقط، بأحد هذه الأشكال:
-- {"action": "click", "x": 500, "y": 600}  (إحداثيات زر في الصورة)
-- {"action": "type", "x": 500, "y": 300, "text": "المحتوى"} (إحداثيات حقل كتابة)
+**قواعد:**
+- إذا كان هناك شريط تحميل، استخدم {"action": "wait_long", "seconds": 20}
+- إذا الشاشة فارغة، استخدم {"action": "wait", "seconds": 3}
+- لا تضغط "التالي" إذا لم تره في الصورة.
+
+**الإخراج:** JSON فقط:
+- {"action": "click", "x": 500, "y": 600}
+- {"action": "type", "x": 500, "y": 300, "text": "..."}
 - {"action": "wait", "seconds": 3}
+- {"action": "wait_long", "seconds": 20}
 - {"action": "get_email_otp"}
 - {"action": "done"}
 - {"action": "fail", "reason": "..."}
@@ -153,16 +216,26 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
         return True, json.loads(m.group(0))
     except Exception as e: return False, f"exception: {str(e)[:120]}"
 
-def _gemini_decide(page, step: int, history: list[str]) -> dict:
+def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
     img_b64 = _screenshot_b64(page)
-    recent_history = "\n".join(history[-6:]) if history else "(لا شيء بعد)"
-    prompt = f"**الخطوة: {step}**\n**السجل:**\n{recent_history}\nانظر إلى الصورة. ما هي الخطوة التالية؟ أجب بـ JSON فقط يحتوي على إحداثيات (x, y)."
-    body = {"contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": img_b64}}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500, "responseMimeType": "application/json"}}
+    feedback = memory.get_feedback()
+    is_loading, loading_reason = _detect_loading(page)
+    
+    context = f"""**الخطوة: {step}**
+**التغذية الراجعة:** {feedback}
+**حالة التحميل:** {'نعم - ' + loading_reason if is_loading else 'لا'}
+**السؤال:** ما الإجراء التالي؟ (JSON فقط)"""
+    
+    body = {"contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": context}, {"inlineData": {"mimeType": "image/png", "data": img_b64}}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300, "responseMimeType": "application/json"}}
+    
     p = pool(); models = discover_models(); last_error = ""
     for model in models:
         for attempt in range(len(p.keys)):
             key = p.get(); ok, result = _call_gemini(model, body, key)
-            if ok: result["_model"] = model; return result
+            if ok: 
+                result["_model"] = model
+                result["_was_loading"] = is_loading
+                return result
             err = str(result); last_error = f"{model}: {err}"
             if "rate_limit" in err: p.fail(60); continue
             elif "model_not_found" in err:
@@ -172,24 +245,25 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ القرار (النقر البصري)
+#  تنفيذ القرار (ذكي + خارق)
 # ═══════════════════════════════════════════════════════
-def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
+def _execute_smart(page, decision: dict, screenshot_dir: str, step: int, memory: BotMemory) -> str:
     action = decision.get("action", "wait")
 
     if action == "done": _log("✅ Gemini أعلن الانتهاء"); return "done"
     if action == "fail": _log(f"❌ Gemini أعلن الفشل: {decision.get('reason')}"); return "fail"
     if action == "wait":
         sec = int(decision.get("seconds", 3)); _log(f"⏸️  انتظار {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait"
-        
+    if action == "wait_long":
+        sec = int(decision.get("seconds", 20)); _log(f"⏳ [ذكي] انتظار طويل {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait_long"
     if action == "get_email_otp":
-        _log("🔐 Gemini اكتشف شاشة تحقق! جاري إحضار الكود...")
+        _log("🔐 كود تحقق! جاري إحضاره...")
         code = get_totp_code()
         if code:
-            _log(f"🔑 كود TOTP تم توليده: {code} — جاري كتابته...")
+            _log(f"🔑 TOTP: {code}")
             try:
                 page.evaluate("""() => {
-                    const inputs = document.querySelectorAll('input[type="text"], input[type="tel"], input:not([type])');
+                    const inputs = document.querySelectorAll('input[type="text"], input[type="tel"]');
                     if (inputs.length > 0) { inputs[0].focus(); return true; }
                     return false;
                 }""")
@@ -198,26 +272,80 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
             except Exception as e: return f"err: {e}"
         return "fail: no totp"
 
+    # ═══ 🛡️ الحل السحري لنافذة إثبات الهوية ═══
+    # إذا وجدنا نص "إثبات هويتك" أو زر "التالي" في نافذة منبثقة، نضغطه عبر JS فوراً
+    try:
+        _log("🔍 فحص وجود نافذة 'إثبات هويتك'...")
+        
+        clicked_verify = page.evaluate("""() => {
+            // البحث عن أي زر يحتوي على نص "التالي" أو "Next" في الصفحة أو في نوافذ shadow DOM
+            const findButton = (root) => {
+                const btns = root.querySelectorAll('button, [role="button"], tp-yt-paper-button');
+                for (const btn of btns) {
+                    const text = (btn.innerText || '').trim();
+                    if (text === 'التالي' || text === 'Next') {
+                        btn.click();
+                        return true;
+                    }
+                }
+                // البحث داخل الـ shadow roots
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+                let node;
+                while (node = walker.nextNode()) {
+                    if (node.shadowRoot) {
+                        if (findButton(node.shadowRoot)) return true;
+                    }
+                }
+                return false;
+            };
+            return findButton(document.body);
+        }""")
+        
+        if clicked_verify:
+            _log("🎯 [سحري] وجدت زر 'التالي' في نافذة إثبات الهوية وضغطته مباشرة!")
+            page.wait_for_timeout(3000)
+            return "verify_clicked"
+    except Exception as e:
+        _log(f"⚠️ خطأ في فحص نافذة التحقق: {e}")
+
+    # ═══ التحقق من التغيير (البوت الذكي) ═══
+    hash_before = _hash_screenshot(page)
+    
     if action == "click":
         x = decision.get("x", 0); y = decision.get("y", 0)
-        _log(f"👆 النقر البصري @({x},{y})")
+        _log(f"👆 نقرة @({x},{y})")
         try:
             page.mouse.click(x, y)
-            page.wait_for_timeout(3000)
-            return f"clicked ({x},{y})"
+            page.wait_for_timeout(3500)
         except Exception as e: return f"err: {e}"
-        
-    if action == "type":
+        action_desc = f"click ({x},{y})"
+    elif action == "type":
         x = decision.get("x", 0); y = decision.get("y", 0); text = decision.get("text", "")
-        _log(f"⌨️  كتابة @({x},{y}): '{text[:50]}'")
+        _log(f"⌨️  كتابة @({x},{y}): '{text[:40]}'")
         try:
-            page.mouse.click(x, y)
-            page.wait_for_timeout(500)
+            page.mouse.click(x, y); page.wait_for_timeout(500)
             page.keyboard.press("Control+A"); page.keyboard.press("Delete"); page.wait_for_timeout(200)
             page.keyboard.type(text, delay=15); page.wait_for_timeout(800)
-            return f"typed '{text[:30]}'"
         except Exception as e: return f"err: {e}"
-    return "unknown"
+        action_desc = f"type at ({x},{y})"
+    else:
+        return "unknown"
+
+    page.wait_for_timeout(1000)
+    hash_after = _hash_screenshot(page)
+    
+    if hash_before == hash_after:
+        _log(f"⚠️  [ذكي] لم تتغير الشاشة بعد {action_desc}")
+        memory.same_hash_count += 1
+        memory.failed_actions.append(action_desc)
+        memory.last_feedback = f"'{action_desc}' فشل"
+        return "no_change"
+    else:
+        _log(f"✅ [ذكي] الشاشة تغيّرت!")
+        memory.same_hash_count = 0
+        memory.failed_actions = []
+        memory.last_feedback = f"'{action_desc}' نجح"
+        return "changed"
 
 def _parse_cookies(raw: str) -> list[dict]:
     data = json.loads(raw)
@@ -238,11 +366,12 @@ def _parse_cookies(raw: str) -> list[dict]:
     if isinstance(data, dict): return [{"name": k, "value": v, "domain": ".youtube.com", "path": "/"} for k, v in data.items()]
     raise ValueError("صيغة غير معروفة")
 
-def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: str, headless: bool = True, screenshot_dir: str = "out/screenshots", max_steps: int = 50) -> bool:
+def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: str, headless: bool = True, screenshot_dir: str = "out/screenshots", max_steps: int = 60) -> bool:
     global recorder
     video_path = str(Path(video_path).resolve())
     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
     recorder = FlightRecorder(screenshot_dir)
+    memory = BotMemory()
     cookies_list = _parse_cookies(cookies_raw)
     proxy_config = None
     if HAS_PROXY:
@@ -252,8 +381,8 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
     with sync_playwright() as p:
         def run_browser(proxy_cfg):
             launch_kwargs = {"headless": headless, "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]}
-            if proxy_cfg: launch_kwargs["proxy"] = proxy_cfg; _log(f"🌐 سأفتح المتصفح عبر بروكسي: {proxy_cfg.get('server')}")
-            else: _log("⚠️ بدون بروكسي - اتصال مباشر")
+            if proxy_cfg: launch_kwargs["proxy"] = proxy_cfg; _log(f"🌐 بروكسي: {proxy_cfg.get('server')}")
+            else: _log("⚠️ بدون بروكسي")
             browser = p.chromium.launch(**launch_kwargs)
             context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="ar-SA", timezone_id="Asia/Damascus", ignore_https_errors=True, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.chrome = { runtime: {} };")
@@ -268,11 +397,9 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                 try:
                     browser, context, page = run_browser(proxy_config)
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    _log("✅ نجح الاتصال عبر البروكسي")
                 except Exception as e:
-                    _log(f"⚠️ فشل الاتصال عبر البروكسي: {str(e)[:100]}")
+                    _log(f"⚠️ بروكسي فشل: {str(e)[:100]}")
                     if browser: browser.close()
-                    _log("🔄 إعادة المحاولة بدون بروكسي...")
                     browser, context, page = run_browser(None)
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
             else:
@@ -283,60 +410,57 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
                 raise RuntimeError("❌ فشل تسجيل الدخول")
 
-            _log("✅ تم الدخول لصفحة الرفع — نبدأ حلقة Gemini (النقر البصري)")
+            _log("✅ دخلنا — البوت الذكي الخارق يبدأ")
             file_uploaded = False
-            history: list[str] = []
-            failed = False
 
             for step in range(1, max_steps + 1):
-                _log(f"\n{'─' * 50}\n🎯 خطوة {step}")
+                _log(f"\n{'═' * 50}\n🎯 خطوة {step} | الشاشة لم تتغير: {memory.same_hash_count} مرة")
+                
+                is_loading, loading_reason = _detect_loading(page)
+                if is_loading:
+                    _log(f"⏳ [ذكي] تحميل: {loading_reason} — أنتظر 20ث")
+                    page.wait_for_timeout(20000)
+                    continue
 
                 if not file_uploaded and page.locator('input[type="file"]').count() > 0:
-                    _log("📁 وجدنا نافذة الرفع! جاري رفع الملف...")
+                    _log("📁 رفع الفيديو...")
                     page.locator('input[type="file"]').first.set_input_files(video_path)
-                    _log("⏳ انتظار 30 ثانية للمعالجة...")
                     page.wait_for_timeout(30000)
                     file_uploaded = True
-                    history.append("تم رفع الفيديو بنجاح")
                     if recorder: recorder.record(step, "upload_file", "FILE", "success")
                     continue
 
-                try: decision = _gemini_decide(page, step, history)
+                try: decision = _gemini_decide(page, step, memory)
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
                     if recorder: recorder.record(step, "gemini_fail", str(e), "error")
-                    failed = True
                     break
 
-                action = decision.get("action"); model = decision.get("_model", "?")
-                _log(f"📋 القرار ({model}): {action}")
+                action = decision.get("action")
+                _log(f"🧠 قرار Gemini ({decision.get('_model', '?')}): {action}")
 
-                result = _execute(page, decision, screenshot_dir, step)
-                history.append(f"خطوة {step}: {action} → {result}")
+                if is_loading and action not in ["wait", "wait_long", "done", "fail", "get_email_otp"]:
+                    _log(f"🚫 منعت الضغط (تحميل)...")
+                    page.wait_for_timeout(15000)
+                    continue
+
+                result = _execute_smart(page, decision, screenshot_dir, step, memory)
+                memory.last_action = action
                 
-                if recorder: recorder.record(step, action, json.dumps(decision, ensure_ascii=False), result)
+                if recorder: recorder.record(step, action, json.dumps({k:v for k,v in decision.items() if not k.startswith('_')}, ensure_ascii=False), result)
 
                 if result == "done": 
-                    _log("🎉 اكتمل الرفع بنجاح!")
+                    _log("🎉 اكتمل الرفع!")
                     return True
-                if result.startswith("fail"):
-                    failed = True 
-                    break
-                
-                page.wait_for_timeout(2000)
+                if result.startswith("fail"): break
 
-            # ═══ التصوير الذكي: نلتقط صورة فقط إذا فشلنا أو انتهت الخطوات ═══
-            if failed or step == max_steps:
-                _log("📸 البوت توقف (فشل أو انتهت المهلة) — جاري التقاط صورة للحالة النهائية...")
-                page.screenshot(path=f"{screenshot_dir}/failure_state.png")
-
-            _log("⚠️ الحلقة انتهت بدون تأكيد نهائي")
+            page.screenshot(path=f"{screenshot_dir}/failure_state.png")
+            _log("⚠️ انتهت المحاولات")
             return False
 
         except Exception as e:
             _log(f"❌ {e}")
-            try:
-                page.screenshot(path=f"{screenshot_dir}/failure_state.png")
+            try: page.screenshot(path=f"{screenshot_dir}/failure_state.png")
             except Exception: pass
             return False
         finally:
