@@ -218,20 +218,22 @@ def _handle_otp(page) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════
-#  🎯 المسار اليدوي المبرمج (حسب صور الدكتور)
+#  🎯 المسار اليدوي المبرمج (تم إصلاح الأخطاء)
 # ═══════════════════════════════════════════════════════
 def _navigate_to_upload_mobile(page) -> bool:
     try:
         # 1. الضغط على "أنت" (أسفل اليمين)
         _log("📱 [مسار] 1. الضغط على 'أنت'...")
-        you_btn = page.locator('a[href*="feed/you"], text="أنت", text="You"').first
+        you_btn = page.locator('ytm-pivot-bar-item-renderer').filter(has_text="أنت").first
+        if you_btn.count() == 0:
+            you_btn = page.locator('text="أنت"').last
         if you_btn.count() > 0 and you_btn.is_visible():
             you_btn.click(force=True)
             page.wait_for_timeout(3000)
 
         # 2. الضغط على "مشاهدة القناة"
         _log("📱 [مسار] 2. الضغط على 'مشاهدة القناة'...")
-        view_ch_btn = page.locator('text="مشاهدة القناة", text="View channel"').first
+        view_ch_btn = page.locator('text="مشاهدة القناة"').first
         if view_ch_btn.count() > 0 and view_ch_btn.is_visible():
             view_ch_btn.click(force=True)
             page.wait_for_timeout(4000)
@@ -245,7 +247,7 @@ def _navigate_to_upload_mobile(page) -> bool:
             
         # 4. اختيار "رفع فيديو"
         _log("📱 [مسار] 4. اختيار 'رفع فيديو'...")
-        upload_btn = page.locator('text="رفع فيديو", text="Upload video"').first
+        upload_btn = page.locator('text="رفع فيديو"').first
         if upload_btn.count() > 0 and upload_btn.is_visible():
             upload_btn.click(force=True)
             page.wait_for_timeout(4000)
@@ -324,8 +326,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
     memory = BotMemory()
     cookies_list = _parse_cookies(cookies_raw)
     
-    # لا نحتاج البروكسي الآن لأننا نستخدم VPN على مستوى النظام
-
     with sync_playwright() as p:
         def run_browser():
             launch_kwargs = {"headless": headless, "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]}
@@ -363,9 +363,10 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             _log("⏳ انتظار شاشة الرفع...")
             file_uploaded = False
             for _ in range(10):
-                if page.locator('input[type="file"]').count() > 0:
+                # تأكد أن الحقل مرئي وليس مخفياً
+                if page.locator('input[type="file"]:visible').count() > 0:
                     _log("📁 وجدنا حقل الرفع! جاري رفع الملف...")
-                    page.locator('input[type="file"]').first.set_input_files(video_path)
+                    page.locator('input[type="file"]:visible').first.set_input_files(video_path)
                     page.wait_for_timeout(30000)
                     file_uploaded = True
                     break
@@ -381,9 +382,9 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                     if recorder: recorder.record(step, "handle_otp", "TOTP", "success")
                     continue
 
-                if not file_uploaded and page.locator('input[type="file"]').count() > 0:
+                if not file_uploaded and page.locator('input[type="file"]:visible').count() > 0:
                     _log("📁 رفع الفيديو...")
-                    page.locator('input[type="file"]').first.set_input_files(video_path)
+                    page.locator('input[type="file"]:visible').first.set_input_files(video_path)
                     page.wait_for_timeout(30000)
                     file_uploaded = True
                     if recorder: recorder.record(step, "upload_file", "FILE", "success")
