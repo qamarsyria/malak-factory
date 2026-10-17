@@ -19,6 +19,7 @@ python-bidi==0.6.3
 
 # --- الشبكة والـ API ---
 requests==2.32.3
+aiohttp>=3.9.0
 
 # --- YouTube API ---
 google-api-python-client==2.147.0
@@ -27,4 +28,7 @@ google-auth-httplib2==0.2.0
 
 # --- HuggingFace (للوصول للمصادر) ---
 huggingface_hub
+
+# --- أدوات بوت رفع يوتيوب (AI Agent) ---
+playwright
 playwright-stealth
