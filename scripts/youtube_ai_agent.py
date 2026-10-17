@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + OTP + وضع الكمبيوتر + Fallback للبروكسي."""
+"""رفع فيديو على يوتيوب — AI Vision + TOTP/OTP + وضع الكمبيوتر + Force Click."""
 from __future__ import annotations
 
 import base64
@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import requests
+import pyotp
 from playwright.sync_api import sync_playwright
 
 # ═══ استيراد الملفات المحلية ═══
@@ -31,6 +32,22 @@ except ImportError:
 
 def _log(msg: str) -> None:
     print(f"[ai-agent] {msg}", flush=True)
+
+
+# ═══════════════════════════════════════════════════════
+#  دالة توليد كود TOTP (Google Authenticator)
+# ═══════════════════════════════════════════════════════
+
+def get_totp_code() -> str | None:
+    secret = os.getenv("GOOGLE_TOTP_SECRET", "").strip().replace(" ", "")
+    if not secret:
+        return None
+    try:
+        totp = pyotp.TOTP(secret)
+        return totp.now()
+    except Exception as e:
+        _log(f"⚠️ فشل توليد TOTP: {e}")
+        return None
 
 
 # ═══════════════════════════════════════════════════════
@@ -150,7 +167,7 @@ def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
 
 # ═══════════════════════════════════════════════════════
-#  Gemini Vision
+#  Gemini Vision (تعليمات محدثة)
 # ═══════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
@@ -158,17 +175,14 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 
 **ماذا تفعل:**
 1. إذا كنت في لوحة التحكم ولم تفتح نافذة الرفع: ابحث عن زر "Create" أو "إنشاء" واضغطه. ثم اضغط "Upload videos" أو "رفع فيديوهات".
-2. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
-3. إذا ظهرت شاشة تطلب "Try another way" أو "جرب طريقة أخرى": اضغط عليه.
-4. إذا ظهرت شاشة تطلب منك اختيار وسيلة للتحقق (مثلاً: إرسال كود إلى الهاتف، أو إرسال كود إلى الإيميل):
-   - اختر "Get a verification code at emadhlaweh5@gmail.com" أو "إرسال كود إلى البريد الإلكتروني".
-   - إذا تم اختيار البريد، سيظهر لك حقل لإدخال الكود، أعلن التوقف فوراً بـ {"action": "get_email_otp"}.
-5. إذا ظهرت شاشة تطلب تأكيد الدخول من الهاتف (Check your phone / Tap Yes on your phone): 
-   - اضغط على "Try another way" لكي نطلب كود الإيميل بدلاً من الهاتف.
-6. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
-7. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
-8. إذا ظهرت شاشة Visibility: اختر "Public".
-9. اضغط "Next" حتى الشاشة الأخيرة، ثم "Publish".
+2. إذا ظهرت نافذة بيضاء مكتوب عليها **"إثبات هويتك"** أو "Verify your identity": اضغط على زر **"التالي"** (Next). (إذا كان الزر رمادياً، انتظر 3 ثواني ثم أعد المحاولة).
+3. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
+4. إذا ظهرت شاشة تطلب منك اختيار وسيلة للتحقق أو شاشة فيها مربع لإدخال كود:
+   - أعلن التوقف فوراً بـ {"action": "get_email_otp"}.
+5. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
+6. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
+7. إذا ظهرت شاشة Visibility: اختر "Public".
+8. اضغط "Next" حتى الشاشة الأخيرة، ثم "Publish".
 
 **الإخراج:** JSON فقط، بأحد هذه الأشكال:
 - {"action": "click", "id": 5}
@@ -230,7 +244,7 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ القرار
+#  تنفيذ القرار (تمت إضافة Force Click)
 # ═══════════════════════════════════════════════════════
 
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
@@ -251,21 +265,13 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
     if action == "wait":
         sec = int(decision.get("seconds", 3)); _log(f"⏸️  انتظار {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait"
         
-    # 🆕 أمر قراءة الإيميل والتأكيد
+    # 🆕 أمر قراءة الكود (TOTP أو Email)
     if action == "get_email_otp":
-        _log("📧 Gemini اكتشف شاشة تحقق! جاري فحص الإيميل...")
-        if not HAS_EMAIL:
-            _log("❌ email_reader.py غير متاح")
-            return "err: email reader missing"
+        _log("🔐 Gemini اكتشف شاشة تحقق! جاري إحضار الكود...")
         
-        result = get_youtube_verification(timeout_seconds=180)
-        if not result:
-            _log("❌ لم تصل رسالة تأكيد.")
-            return "fail: no verification found"
-            
-        if result["type"] == "otp":
-            code = result["value"]
-            _log(f"🔑 كود OTP: {code} — جاري كتابته...")
+        code = get_totp_code()
+        if code:
+            _log(f"🔑 كود TOTP تم توليده: {code} — جاري كتابته...")
             try:
                 inputs = page.locator('input[type="text"], input[type="tel"], input:not([type])')
                 if inputs.count() > 0:
@@ -279,6 +285,27 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
                     return "err: no input for otp"
             except Exception as e:
                 return f"err: {e}"
+        
+        # احتياطي: الإيميل
+        _log("⚠️ لا يوجد TOTP Secret، سأبحث في الإيميل...")
+        if not HAS_EMAIL: return "err: email reader missing"
+        
+        result = get_youtube_verification(timeout_seconds=180)
+        if not result: return "fail: no verification found"
+            
+        if result["type"] == "otp":
+            code = result["value"]
+            _log(f"🔑 كود OTP من الإيميل: {code} — جاري كتابته...")
+            try:
+                inputs = page.locator('input[type="text"], input[type="tel"], input:not([type])')
+                if inputs.count() > 0:
+                    inputs.first.click(force=True)
+                    page.keyboard.type(code, delay=100)
+                    page.wait_for_timeout(1000)
+                    page.keyboard.press("Enter")
+                    return "otp_entered"
+            except Exception as e:
+                return f"err: {e}"
                 
         elif result["type"] == "link":
             link = result["value"]
@@ -290,20 +317,15 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
                 try:
                     btn = new_page.locator('button:has-text("نعم، أنا"), button:has-text("Yes, it\'s me"), button:has-text("Continue"), button:has-text("تأكيد")')
                     if btn.count() > 0:
-                        _log("👆 ضغط زر التأكيد النهائي في صفحة جوجل...")
-                        btn.first.click()
+                        btn.first.click(force=True)
                         new_page.wait_for_timeout(3000)
-                except Exception:
-                    pass
-
-                _log("✅ تم تأكيد الدخول! نعود لـ YouTube...")
+                except Exception: pass
                 new_page.close()
                 page.bring_to_front()
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_timeout(5000)
                 return "link_opened"
             except Exception as e:
-                _log(f"⚠️ فشل فتح الرابط: {e}")
                 return f"err: {e}"
 
     if action == "click":
@@ -311,12 +333,28 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         el = find_el(eid)
         if not el: return f"err: element {eid} not found"
         _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
+        
         clicked = False
-        try: page.mouse.click(el["x"], el["y"]); clicked = True
-        except Exception as e: _log(f"   ⚠️ mouse: {e}")
-        if not clicked and el.get("name"):
-            try: page.locator(f'[name="{el["name"]}"]').first.click(force=True, timeout=5000); clicked = True
-            except Exception: pass
+        # 1. نقرة الماوس العادية
+        try: 
+            page.mouse.click(el["x"], el["y"]); 
+            clicked = True
+        except Exception as e: 
+            _log(f"   ⚠️ mouse: {e}")
+            
+        # 2. النقرة القسرية (Force Click) - الحل لمشكلة نافذة إثبات الهوية
+        if not clicked or el['text'] in ["التالي", "Next"]:
+            try:
+                _log(f"   ⚡ محاولة الضغط القسري على '{el['text']}'...")
+                page.locator(f'text="{el["text"]}"').first.click(force=True, timeout=5000)
+                clicked = True
+            except Exception as e:
+                try:
+                    if el.get("name"):
+                        page.locator(f'[name="{el["name"]}"]').first.click(force=True, timeout=5000)
+                        clicked = True
+                except Exception: pass
+
         page.wait_for_timeout(2500)
         page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
         return f"clicked '{el['text'][:40]}'"
@@ -411,8 +449,7 @@ def upload_video_ai(
                     _log("✅ نجح الاتصال عبر البروكسي")
                 except Exception as e:
                     _log(f"⚠️ فشل الاتصال عبر البروكسي: {str(e)[:100]}")
-                    if browser:
-                        browser.close()
+                    if browser: browser.close()
                     _log("🔄 إعادة المحاولة بدون بروكسي...")
                     browser, context, page = run_browser(None)
                     page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
