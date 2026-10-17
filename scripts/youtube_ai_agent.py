@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — بوت ذكي خارق (Shadow DOM + TOTP + بدون Gemini للتحقق)."""
+"""رفع فيديو على يوتيوب — البوت الخارق (Brute Force Bypass + TOTP)."""
 from __future__ import annotations
 
 import base64
@@ -61,7 +61,6 @@ class BotMemory:
         self.last_action = None
         self.same_hash_count = 0
         self.failed_actions = []
-        self.last_feedback = ""
 
     def get_feedback(self) -> str:
         parts = []
@@ -188,7 +187,7 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
 def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
     img_b64 = _screenshot_b64(page)
     feedback = memory.get_feedback()
-    is_loading, loading_reason = _detect_loading(page)
+    is_loading, _ = _detect_loading(page)
     
     context = f"**الخطوة:** {step}\n**التغذية الراجعة:** {feedback}\n**حالة التحميل:** {'نعم' if is_loading else 'لا'}\n**السؤال:** ما الإجراء التالي؟"
     
@@ -210,56 +209,79 @@ def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  🛡️ الحل الخارق لنافذة إثبات الهوية (بدون Gemini)
+#  🛡️ الحل الخارق (Brute Force) لنافذة إثبات الهوية
 # ═══════════════════════════════════════════════════════
 def _bypass_identity_popup(page) -> bool:
-    """يفحص إذا كانت نافذة إثبات الهوية موجودة ويضغط زر التالي عبر JS."""
     try:
         body_text = page.locator("body").inner_text(timeout=2000)
-        # التحقق من وجود النافذة
         if "إثبات هويتك" in body_text or "Verify your identity" in body_text or "Verify it's you" in body_text:
-            _log("🛡️ [خارق] اكتشفت نافذة 'إثبات هويتك' — سأتخطاها عبر JS...")
+            _log("🛡️ [خارق] اكتشفت نافذة 'إثبات هويتك' — سأجرب 4 طرق...")
+            hash_before = _hash_screenshot(page)
             
-            clicked = page.evaluate("""() => {
-                // البحث عن أي زر يحتوي على "التالي" أو "Next" في الصفحة أو في الـ Shadow DOM
-                const findAndClick = (root) => {
-                    const btns = root.querySelectorAll('button, [role="button"], tp-yt-paper-button');
-                    for (const btn of btns) {
-                        const text = (btn.innerText || '').trim();
-                        if (text === 'التالي' || text === 'Next') {
-                            btn.click();
-                            return true;
+            # 1. Playwright Locator Click (الأقوى)
+            for frame in page.frames:
+                try:
+                    btn = frame.locator('button:has-text("التالي"), div[role="button"]:has-text("التالي")').first
+                    if btn.count() > 0 and btn.is_visible():
+                        btn.click(force=True, timeout=3000)
+                        page.wait_for_timeout(2000)
+                        if _hash_screenshot(page) != hash_before:
+                            _log("✅ [خارق] نجح النقر (Playwright)")
+                            return True
+                except Exception: pass
+
+            # 2. Mouse Events Dispatch (لاختراق React)
+            for frame in page.frames:
+                try:
+                    clicked = frame.evaluate("""() => {
+                        const btns = document.querySelectorAll('button, div[role="button"], span');
+                        for (const btn of btns) {
+                            if (btn.innerText.trim() === 'التالي') {
+                                const rect = btn.getBoundingClientRect();
+                                const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+                                btn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, clientX: x, clientY: y}));
+                                btn.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, clientX: x, clientY: y}));
+                                btn.dispatchEvent(new MouseEvent('click', {bubbles: true, clientX: x, clientY: y}));
+                                return true;
+                            }
                         }
-                    }
-                    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-                    let node;
-                    while (node = walker.nextNode()) {
-                        if (node.shadowRoot) {
-                            if (findAndClick(node.shadowRoot)) return true;
-                        }
-                    }
-                    return false;
-                };
-                return findAndClick(document.body);
-            }""")
-            
-            if clicked:
-                _log("✅ [خارق] ضغطت زر 'التالي' بنجاح!")
-                page.wait_for_timeout(3000)
-                return True
-    except Exception as e:
+                        return false;
+                    }""")
+                    if clicked:
+                        page.wait_for_timeout(2000)
+                        if _hash_screenshot(page) != hash_before:
+                            _log("✅ [خارق] نجح النقر (JS Mouse Events)")
+                            return True
+                except Exception: pass
+
+            # 3. Hardcoded Coordinates (بناءً على صورتك)
+            try:
+                _log("👆 [خارق] تجربة إحداثيات (488, 516)...")
+                page.mouse.click(488, 516)
+                page.wait_for_timeout(2000)
+                if _hash_screenshot(page) != hash_before:
+                    _log("✅ [خارق] نجح النقر بالإحداثيات!")
+                    return True
+            except Exception: pass
+
+            # 4. Press Enter
+            try:
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(2000)
+                if _hash_screenshot(page) != hash_before:
+                    _log("✅ [خارق] نجح الضغط على Enter!")
+                    return True
+            except Exception: pass
+
+            _log("⚠️ [خارق] فشلت كل طرق الضغط!")
+            return False
+    except Exception:
         pass
     return False
 
 def _handle_otp(page) -> bool:
-    """إذا وجدنا شاشة كود الـ 6 أرقام، نستخدم TOTP."""
     try:
-        # البحث عن حقل إدخال الكود
-        has_input = page.evaluate("""() => {
-            const inputs = document.querySelectorAll('input[type="text"], input[type="tel"]');
-            return inputs.length > 0;
-        }""")
-        
+        has_input = page.evaluate("""() => document.querySelectorAll('input[type="text"], input[type="tel"]').length > 0""")
         if has_input:
             _log("🔐 [خارق] اكتشفت حقل كود التحقق — سأستخدم TOTP...")
             code = get_totp_code()
@@ -281,24 +303,23 @@ def _handle_otp(page) -> bool:
 
 def _execute_smart(page, decision: dict, screenshot_dir: str, step: int, memory: BotMemory) -> str:
     action = decision.get("action", "wait")
-
     if action == "done": _log("✅ Gemini أعلن الانتهاء"); return "done"
     if action == "fail": _log(f"❌ Gemini أعلن الفشل: {decision.get('reason')}"); return "fail"
     if action == "wait":
-        sec = int(decision.get("seconds", 3)); _log(f"⏸️  انتظار {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait"
+        sec = int(decision.get("seconds", 3)); page.wait_for_timeout(sec * 1000); return "wait"
     if action == "wait_long":
-        sec = int(decision.get("seconds", 20)); _log(f"⏳ انتظار طويل {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait_long"
+        sec = int(decision.get("seconds", 20)); page.wait_for_timeout(sec * 1000); return "wait_long"
 
     hash_before = _hash_screenshot(page)
     
     if action == "click":
-        x = decision.get("x", 0); y = decision.get("y", 0)
+        x, y = decision.get("x", 0), decision.get("y", 0)
         _log(f"👆 نقرة @({x},{y})")
         try: page.mouse.click(x, y); page.wait_for_timeout(3500)
         except Exception as e: return f"err: {e}"
         action_desc = f"click ({x},{y})"
     elif action == "type":
-        x = decision.get("x", 0); y = decision.get("y", 0); text = decision.get("text", "")
+        x, y, text = decision.get("x", 0), decision.get("y", 0), decision.get("text", "")
         _log(f"⌨️  كتابة @({x},{y}): '{text[:40]}'")
         try:
             page.mouse.click(x, y); page.wait_for_timeout(500)
@@ -310,9 +331,7 @@ def _execute_smart(page, decision: dict, screenshot_dir: str, step: int, memory:
         return "unknown"
 
     page.wait_for_timeout(1000)
-    hash_after = _hash_screenshot(page)
-    
-    if hash_before == hash_after:
+    if hash_before == _hash_screenshot(page):
         _log(f"⚠️  [ذكي] لم تتغير الشاشة بعد {action_desc}")
         memory.same_hash_count += 1
         memory.failed_actions.append(action_desc)
@@ -392,24 +411,20 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             for step in range(1, max_steps + 1):
                 _log(f"\n{'═' * 50}\n🎯 خطوة {step}")
                 
-                # 1. تخطي نافذة التحقق (بدون Gemini)
                 if _bypass_identity_popup(page):
-                    if recorder: recorder.record(step, "bypass_verify", "JS Click", "success")
+                    if recorder: recorder.record(step, "bypass_verify", "Brute Force", "success")
                     continue
                 
-                # 2. إدخال كود التحقق (بدون Gemini)
                 if _handle_otp(page):
                     if recorder: recorder.record(step, "handle_otp", "TOTP", "success")
                     continue
 
-                # 3. اكتشاف التحميل
                 is_loading, loading_reason = _detect_loading(page)
                 if is_loading:
                     _log(f"⏳ [ذكي] تحميل: {loading_reason} — أنتظر 20ث")
                     page.wait_for_timeout(20000)
                     continue
 
-                # 4. رفع الفيديو
                 if not file_uploaded and page.locator('input[type="file"]').count() > 0:
                     _log("📁 رفع الفيديو...")
                     page.locator('input[type="file"]').first.set_input_files(video_path)
@@ -418,7 +433,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                     if recorder: recorder.record(step, "upload_file", "FILE", "success")
                     continue
 
-                # 5. استشارة Gemini (لما لا يوجد تحقق)
                 try: decision = _gemini_decide(page, step, memory)
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
