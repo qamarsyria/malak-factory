@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + Playwright Native Locators + TOTP."""
+"""رفع فيديو على يوتيوب — Pure Visual Click + TOTP + Smart Screenshotting."""
 from __future__ import annotations
 
 import base64
@@ -112,66 +112,26 @@ def discover_models(force_refresh: bool = False) -> list[str]:
         return _MODEL_CACHE
     except Exception: return ["gemini-3.8-flash"]
 
-# ═══════════════════════════════════════════════════════
-#  استخراج العناصر باستخدام محرك Playwright (يخترق Shadow DOM)
-# ═══════════════════════════════════════════════════════
-LOCATOR_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="radio"], [role="checkbox"], [role="menuitem"], tp-yt-paper-radio-button, ytcp-button, ytcp-radio-button, tp-yt-paper-button, [contenteditable="true"]'
-
-def _collect_elements(page) -> list[dict]:
-    elements = []
-    try:
-        locator = page.locator(LOCATOR_SELECTOR)
-        count = locator.count()
-        for i in range(count):
-            el = locator.nth(i)
-            try:
-                if not el.is_visible(): continue
-                box = el.bounding_box()
-                if not box: continue
-                
-                text = el.inner_text().strip().replace("\n", " ")[:80]
-                aria = el.get_attribute("aria-label") or ""
-                name = el.get_attribute("name") or ""
-                if not text and not aria: continue
-                
-                elements.append({
-                    "id": i,
-                    "tag": el.evaluate("el => el.tagName.toLowerCase()"),
-                    "text": text or aria,
-                    "aria": aria,
-                    "name": name,
-                    "disabled": el.is_disabled(),
-                    "x": int(box["x"] + box["width"]/2),
-                    "y": int(box["y"] + box["height"]/2),
-                    "w": int(box["width"]),
-                    "h": int(box["height"])
-                })
-            except Exception: pass
-    except Exception as e:
-        _log(f"⚠️ خطأ في جمع العناصر: {e}")
-    
-    return elements[:80]
-
 def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
-أنت الآن في شاشة رفع الفيديو (Upload Dialog). 
+أنت الآن ترى لقطة شاشة فقط. لا تعتمد على الكود، بل اعتمد على عينيك (الصورة).
 
 **ماذا تفعل:**
 1. إذا كنت ترى شاشة تطلب منك اختيار وسيلة للتحقق أو شاشة فيها مربع لإدخال كود (6 أرقام): أعلن التوقف فوراً بـ {"action": "get_email_otp"}.
-2. إذا ظهرت نافذة "إثبات هويتك" أو "Verify your identity": اضغط على زر "التالي" (Next).
-3. إذا ظهرت شاشة التفاصيل (Details): اكتب العنوان والوصف.
-4. إذا ظهرت شاشة Video elements: اضغط Next.
-5. إذا ظهرت شاشة Checks: اضغط Next.
-6. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK) ثم اضغط Next.
-7. إذا ظهرت شاشة Visibility: اختر "Public" ثم اضغط Next.
-8. في الشاشة الأخيرة: اضغط "Publish" أو "نشر".
-9. إذا الشاشة لا تحتاج فعل: {"action": "wait"}
+2. إذا ظهرت نافذة "إثبات هويتك" أو "Verify your identity": ابحث عن زر "التالي" (Next) في الصورة، وأعطني إحداثياته (x, y).
+3. إذا ظهرت شاشة التفاصيل (Details): أعطني إحداثيات حقل العنوان والوصف.
+4. إذا ظهرت شاشة Video elements: ابحث عن زر Next في الصورة، وأعطني إحداثياته.
+5. إذا ظهرت شاشة Checks: ابحث عن زر Next، وأعطني إحداثياته.
+6. إذا ظهرت شاشة Made for Kids: أعطني إحداثيات خيار "ليس للأطفال" ثم زر Next.
+7. إذا ظهرت شاشة Visibility: أعطني إحداثيات خيار "Public" ثم زر Next.
+8. في الشاشة الأخيرة: ابحث عن زر "Publish" (أو "نشر") في الصورة، وأعطني إحداثياته.
+9. إذا الشاشة لا تحتاج فعل (مثلاً قائمة فارغة): {"action": "wait", "seconds": 3}
 
 **الإخراج:** JSON فقط، بأحد هذه الأشكال:
-- {"action": "click", "id": 5}
-- {"action": "type", "id": 2, "text": "المحتوى"}
+- {"action": "click", "x": 500, "y": 600}  (إحداثيات زر في الصورة)
+- {"action": "type", "x": 500, "y": 300, "text": "المحتوى"} (إحداثيات حقل كتابة)
 - {"action": "wait", "seconds": 3}
 - {"action": "get_email_otp"}
 - {"action": "done"}
@@ -194,16 +154,15 @@ def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
     except Exception as e: return False, f"exception: {str(e)[:120]}"
 
 def _gemini_decide(page, step: int, history: list[str]) -> dict:
-    elements = _collect_elements(page); img_b64 = _screenshot_b64(page)
-    elements_txt = "\n".join([f"[{e['id']}] <{e['tag']}> \"{e['text'][:60]}\" name={e['name']} disabled={e['disabled']} @({e['x']},{e['y']})" for e in elements])
+    img_b64 = _screenshot_b64(page)
     recent_history = "\n".join(history[-6:]) if history else "(لا شيء بعد)"
-    prompt = f"**الخطوة: {step}**\n**السجل:**\n{recent_history}\n**العناصر ({len(elements)}):**\n{elements_txt}\nما هي الخطوة التالية؟ أجب بـ JSON فقط."
+    prompt = f"**الخطوة: {step}**\n**السجل:**\n{recent_history}\nانظر إلى الصورة. ما هي الخطوة التالية؟ أجب بـ JSON فقط يحتوي على إحداثيات (x, y)."
     body = {"contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": img_b64}}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500, "responseMimeType": "application/json"}}
     p = pool(); models = discover_models(); last_error = ""
     for model in models:
         for attempt in range(len(p.keys)):
             key = p.get(); ok, result = _call_gemini(model, body, key)
-            if ok: result["_elements"] = elements; result["_model"] = model; return result
+            if ok: result["_model"] = model; return result
             err = str(result); last_error = f"{model}: {err}"
             if "rate_limit" in err: p.fail(60); continue
             elif "model_not_found" in err:
@@ -213,14 +172,10 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ القرار (النقر عبر الفهرس المباشر)
+#  تنفيذ القرار (النقر البصري)
 # ═══════════════════════════════════════════════════════
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
-    action = decision.get("action", "wait"); elements = decision.get("_elements", [])
-    def find_el(eid):
-        for e in elements:
-            if e["id"] == eid: return e
-        return None
+    action = decision.get("action", "wait")
 
     if action == "done": _log("✅ Gemini أعلن الانتهاء"); return "done"
     if action == "fail": _log(f"❌ Gemini أعلن الفشل: {decision.get('reason')}"); return "fail"
@@ -233,51 +188,35 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         if code:
             _log(f"🔑 كود TOTP تم توليده: {code} — جاري كتابته...")
             try:
-                inputs = page.locator('input[type="text"], input[type="tel"], input:not([type])')
-                if inputs.count() > 0:
-                    inputs.first.click(force=True); page.keyboard.type(code, delay=100); page.wait_for_timeout(1000); page.keyboard.press("Enter")
-                    return "otp_entered"
-                else: return "err: no input for otp"
+                page.evaluate("""() => {
+                    const inputs = document.querySelectorAll('input[type="text"], input[type="tel"], input:not([type])');
+                    if (inputs.length > 0) { inputs[0].focus(); return true; }
+                    return false;
+                }""")
+                page.keyboard.type(code, delay=100); page.wait_for_timeout(1000); page.keyboard.press("Enter")
+                return "otp_entered"
             except Exception as e: return f"err: {e}"
         return "fail: no totp"
 
     if action == "click":
-        eid = decision.get("id"); el = find_el(eid)
-        if not el: return f"err: element {eid} not found"
-        _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
-        
-        clicked = False
+        x = decision.get("x", 0); y = decision.get("y", 0)
+        _log(f"👆 النقر البصري @({x},{y})")
         try:
-            # استخدام محرك Playwright الأصلي (يخترق الـ Shadow DOM)
-            locator = page.locator(LOCATOR_SELECTOR).nth(eid)
-            locator.click(timeout=5000, force=True)
-            _log(f"   ✅ نجح النقر عبر Playwright Locator!")
-            clicked = True
-        except Exception as e:
-            _log(f"   ⚠️ فشل النقر المباشر: {e}")
-            try: 
-                page.mouse.click(el["x"], el["y"]); 
-                clicked = True
-                _log(f"   ✅ نقر ماوس احتياطي @({el['x']},{el['y']})")
-            except Exception as e: 
-                _log(f"   ⚠️ mouse: {e}")
-
-        page.wait_for_timeout(3000)
-        page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
-        return f"clicked '{el['text'][:40]}'"
+            page.mouse.click(x, y)
+            page.wait_for_timeout(3000)
+            return f"clicked ({x},{y})"
+        except Exception as e: return f"err: {e}"
         
     if action == "type":
-        eid = decision.get("id"); text = decision.get("text", ""); el = find_el(eid)
-        if not el: return f"err: element {eid} not found"
-        _log(f"⌨️  كتابة [{eid}]: '{text[:50]}'")
+        x = decision.get("x", 0); y = decision.get("y", 0); text = decision.get("text", "")
+        _log(f"⌨️  كتابة @({x},{y}): '{text[:50]}'")
         try:
-            locator = page.locator(LOCATOR_SELECTOR).nth(eid)
-            locator.click(timeout=5000, force=True)
+            page.mouse.click(x, y)
             page.wait_for_timeout(500)
             page.keyboard.press("Control+A"); page.keyboard.press("Delete"); page.wait_for_timeout(200)
             page.keyboard.type(text, delay=15); page.wait_for_timeout(800)
+            return f"typed '{text[:30]}'"
         except Exception as e: return f"err: {e}"
-        return f"typed '{text[:30]}'"
     return "unknown"
 
 def _parse_cookies(raw: str) -> list[dict]:
@@ -344,13 +283,13 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
                 raise RuntimeError("❌ فشل تسجيل الدخول")
 
-            _log("✅ تم الدخول لصفحة الرفع — نبدأ حلقة Gemini")
+            _log("✅ تم الدخول لصفحة الرفع — نبدأ حلقة Gemini (النقر البصري)")
             file_uploaded = False
             history: list[str] = []
+            failed = False
 
             for step in range(1, max_steps + 1):
                 _log(f"\n{'─' * 50}\n🎯 خطوة {step}")
-                page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_before.png")
 
                 if not file_uploaded and page.locator('input[type="file"]').count() > 0:
                     _log("📁 وجدنا نافذة الرفع! جاري رفع الملف...")
@@ -366,6 +305,7 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
                     if recorder: recorder.record(step, "gemini_fail", str(e), "error")
+                    failed = True
                     break
 
                 action = decision.get("action"); model = decision.get("_model", "?")
@@ -374,22 +314,30 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                 result = _execute(page, decision, screenshot_dir, step)
                 history.append(f"خطوة {step}: {action} → {result}")
                 
-                details = json.dumps(decision.get("_elements", [])[:3], ensure_ascii=False)
-                if recorder: recorder.record(step, action, details, result)
+                if recorder: recorder.record(step, action, json.dumps(decision, ensure_ascii=False), result)
 
                 if result == "done": 
                     _log("🎉 اكتمل الرفع بنجاح!")
                     return True
-                if result.startswith("fail"): break
+                if result.startswith("fail"):
+                    failed = True 
+                    break
                 
                 page.wait_for_timeout(2000)
 
-            page.screenshot(path=f"{screenshot_dir}/ai_final.png")
+            # ═══ التصوير الذكي: نلتقط صورة فقط إذا فشلنا أو انتهت الخطوات ═══
+            if failed or step == max_steps:
+                _log("📸 البوت توقف (فشل أو انتهت المهلة) — جاري التقاط صورة للحالة النهائية...")
+                page.screenshot(path=f"{screenshot_dir}/failure_state.png")
+
             _log("⚠️ الحلقة انتهت بدون تأكيد نهائي")
             return False
 
         except Exception as e:
             _log(f"❌ {e}")
+            try:
+                page.screenshot(path=f"{screenshot_dir}/failure_state.png")
+            except Exception: pass
             return False
         finally:
             if browser: browser.close()
