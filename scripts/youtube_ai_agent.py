@@ -136,7 +136,7 @@ JS_COLLECT_INTERACTIVE = r"""
 () => {
     const results = [];
     const seen = new Set();
-    const selectors = ['button','a','input','textarea','select','[role="button"]','[role="radio"]','[role="checkbox"]','[role="tab"]','[role="menuitem"]','[role="option"]','tp-yt-paper-radio-button','ytcp-button','ytcp-radio-button','tp-yt-paper-item','tp-yt-paper-button','[contenteditable="true"]'];
+    const selectors = ['button','a','input','textarea','select','[role="button"]','[role="radio"]','[role="checkbox"]','[role="tab"]','[role="menuitem"]','[role="option"]','tp-yt-paper-radio-button','ytcp-button','ytcp-radio-button','tp-yt-paper-item','tp-yt-paper-button','[contenteditable="true"]','div[role="checkbox"]'];
     const all = document.querySelectorAll(selectors.join(','));
     let idx = 0;
     for (const el of all) {
@@ -171,12 +171,13 @@ def _screenshot_b64(page) -> str:
 
 
 # ═══════════════════════════════════════════════════════
-#  Gemini Vision
+#  Gemini Vision (مع تعليمات التحقق)
 # ═══════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
 مهمتك: تنظر إلى لقطة شاشة + قائمة العناصر القابلة للتفاعل، وتقرر الخطوة التالية لرفع فيديو.
-**المسار:**
+
+**المسار الطبيعي:**
 1. Details: اكتب العنوان والوصف
 2. Video elements: تخطَّ
 3. Checks: تخطَّ
@@ -184,6 +185,13 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 5. Visibility: اختر "Public"
 6. اضغط "Next" حتى الشاشة الأخيرة
 7. اضغط "Publish"
+
+**ماذا تفعل إذا ظهرت شاشة تحقق (Verify it's you / CAPTCHA / تأكيد الهوية):**
+- إذا رأيت زر "Try another way" أو "جرب طريقة أخرى"، اضغط عليه فوراً.
+- إذا رأيت خيار "Confirm" أو "Next" أو "التالي" أو "Verify"، اضغط عليه.
+- إذا ظهرت شبكة صور (CAPTCHA)، حاول اختيار ما يطلبه الموقع (مثلاً "السيارات" أو "إشارات المرور").
+- إذا طُلب منك إدخال رمز SMS، أعلن الفشل فوراً بـ {"action": "fail", "reason": "مطلوب إدخال رمز SMS يدوياً"}
+
 **قواعد:**
 - لا تختر "made for kids" أبداً.
 - إذا شفت "Next" مفعّل → اضغطه.
@@ -191,7 +199,13 @@ SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات عل
 - إذا شفت "Publish" مفعّل → اضغطه.
 - إذا الشاشة لا تحتاج فعل → {"action": "wait"}
 - إذا انتهى الرفع بنجاح → {"action": "done"}
-**الإخراج:** JSON فقط، مثل: {"action": "click", "id": 5} أو {"action": "type", "id": 2, "text": "..."}
+
+**الإخراج:** JSON فقط، بأحد هذه الأشكال:
+- {"action": "click", "id": 5}
+- {"action": "type", "id": 2, "text": "المحتوى"}
+- {"action": "wait", "seconds": 3}
+- {"action": "done"}
+- {"action": "fail", "reason": "..."}
 """
 
 def _call_gemini(model: str, body: dict, key: str) -> tuple[bool, dict | str]:
@@ -395,23 +409,26 @@ def upload_video_ai(
     with sync_playwright() as p:
         device = p.devices['Pixel 5']
         launch_kwargs = {
-    "headless": headless, 
-    "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]
-}
-if proxy_config:
-    launch_kwargs["proxy"] = proxy_config
-    _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
-else:
-    _log("⚠️  بدون بروكسي — IP افتراضي + محاكاة جوال")
+            "headless": headless, 
+            "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]
+        }
+        if proxy_config:
+            launch_kwargs["proxy"] = proxy_config
+            _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
+        else:
+            _log("⚠️  بدون بروكسي — IP افتراضي + محاكاة جوال")
 
-browser = p.chromium.launch(**launch_kwargs)
-context = browser.new_context(
-    **device, 
-    locale="ar-SA", 
-    timezone_id="Asia/Damascus",
-    ignore_https_errors=True  # ← السطر السحري
-)
-        # ═══ 💡 حقن التخفي يدوياً بدون مكتبات خارجية ═══
+        browser = p.chromium.launch(**launch_kwargs)
+        
+        # ═══ حل مشكلة المسافات هنا ═══
+        context = browser.new_context(
+            **device, 
+            locale="ar-SA", 
+            timezone_id="Asia/Damascus",
+            ignore_https_errors=True
+        )
+        
+        # ═══ حقن التخفي يدوياً بدون مكتبات خارجية ═══
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'languages', { get: () => ['ar-SA', 'ar', 'en-US', 'en'] });
