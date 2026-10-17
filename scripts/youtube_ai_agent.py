@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — Mobile Web Interface (m.youtube.com)."""
+"""رفع فيديو على يوتيوب — Mobile Web Interface (User's Hardcoded Path)."""
 from __future__ import annotations
 
 import base64
@@ -140,12 +140,10 @@ def _screenshot_b64(page) -> str:
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على واجهة الجوال لموقع يوتيوب (m.youtube.com).
 أنت ترى لقطة شاشة وتتخذ قراراً.
-**المسار:**
-1. إذا رأيت الصفحة الرئيسية لليوتيوب (فيها فيديوهات)، اضغط على أيقونة "إنشاء" (الكاميرا) في الأعلى.
-2. إذا ظهرت قائمة، اختر "رفع فيديو" (Upload video).
-3. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
-4. اضغط "التالي" أو "Next" حتى تصل لزر "نشر" (Publish).
-5. اضغط "نشر".
+**أنت الآن في شاشة رفع الفيديو (Upload Dialog).**
+1. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
+2. اضغط "التالي" أو "Next" حتى تصل لزر "نشر" (Publish).
+3. اضغط "نشر".
 
 **قواعد:**
 - إذا كان هناك شريط تحميل، استخدم {"action": "wait_long", "seconds": 20}
@@ -171,7 +169,7 @@ def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
     img_b64 = _screenshot_b64(page)
     feedback = memory.get_feedback()
     
-    context = f"**الخطوة:** {step}\n**التغذية الراجعة:** {feedback}\n**السؤال:** ما الإجراء التالي؟ (أنت في واجهة الجوال)"
+    context = f"**الخطوة:** {step}\n**التغذية الراجعة:** {feedback}\n**السؤال:** ما الإجراء التالي؟"
     
     body = {"contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": context}, {"inlineData": {"mimeType": "image/png", "data": img_b64}}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300, "responseMimeType": "application/json"}}
     
@@ -190,16 +188,32 @@ def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
             else: p.fail(20); continue
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
+# ═══════════════════════════════════════════════════════
+#  دالة OTP الذكية
+# ═══════════════════════════════════════════════════════
 def _handle_otp(page) -> bool:
     try:
-        has_input = page.evaluate("""() => document.querySelectorAll('input[type="text"], input[type="tel"], input[type="password"]').length > 0""")
+        url = page.url.lower()
+        body_text = page.locator("body").inner_text(timeout=2000).lower()
+        
+        is_otp_screen = (
+            "accounts.google.com" in url or 
+            "verify it's you" in body_text or 
+            "رمز التحقق" in body_text or 
+            "ادخل الرمز" in body_text or
+            "Enter the code" in body_text
+        )
+
+        if not is_otp_screen: return False
+
+        has_input = page.evaluate("""() => document.querySelectorAll('input[type="text"], input[type="tel"]').length > 0""")
         if has_input:
-            _log("🔐 [خارق] اكتشفت حقل كود التحقق — سأستخدم TOTP...")
+            _log("🔐 [خارق] اكتشفت شاشة تحقق حقيقية — سأستخدم TOTP...")
             code = get_totp_code()
             if code:
                 _log(f"🔑 كود TOTP: {code}")
                 page.evaluate("""() => {
-                    const inputs = document.querySelectorAll('input[type="text"], input[type="tel"], input[type="password"]');
+                    const inputs = document.querySelectorAll('input[type="text"], input[type="tel"]');
                     if (inputs.length > 0) { inputs[0].focus(); return true; }
                     return false;
                 }""")
@@ -211,6 +225,45 @@ def _handle_otp(page) -> bool:
     except Exception:
         pass
     return False
+
+# ═══════════════════════════════════════════════════════
+#  🎯 المسار اليدوي المبرمج (حسب صور الدكتور)
+# ═══════════════════════════════════════════════════════
+def _navigate_to_upload_mobile(page) -> bool:
+    try:
+        # 1. الضغط على "أنت" (أسفل اليمين)
+        _log("📱 [مسار] 1. الضغط على 'أنت'...")
+        you_btn = page.locator('a[href*="feed/you"], text="أنت", text="You"').first
+        if you_btn.count() > 0 and you_btn.is_visible():
+            you_btn.click(force=True)
+            page.wait_for_timeout(3000)
+
+        # 2. الضغط على "مشاهدة القناة"
+        _log("📱 [مسار] 2. الضغط على 'مشاهدة القناة'...")
+        view_ch_btn = page.locator('text="مشاهدة القناة", text="View channel"').first
+        if view_ch_btn.count() > 0 and view_ch_btn.is_visible():
+            view_ch_btn.click(force=True)
+            page.wait_for_timeout(4000)
+
+        # 3. الضغط على زر '+' (الإنشاء) في الأسفل
+        _log("📱 [مسار] 3. الضغط على زر '+' (إنشاء)...")
+        plus_btn = page.locator('button[aria-label*="إنشاء"], button[aria-label*="Create"], c3-icon[icon-name="add"]').first
+        if plus_btn.count() > 0 and plus_btn.is_visible():
+            plus_btn.click(force=True)
+            page.wait_for_timeout(3000)
+            
+        # 4. اختيار "رفع فيديو"
+        _log("📱 [مسار] 4. اختيار 'رفع فيديو'...")
+        upload_btn = page.locator('text="رفع فيديو", text="Upload video"').first
+        if upload_btn.count() > 0 and upload_btn.is_visible():
+            upload_btn.click(force=True)
+            page.wait_for_timeout(4000)
+            return True
+            
+        return False
+    except Exception as e:
+        _log(f"⚠️ خطأ في المسار اليدوي: {e}")
+        return False
 
 def _execute_smart(page, decision: dict, screenshot_dir: str, step: int, memory: BotMemory) -> str:
     action = decision.get("action", "wait")
@@ -291,7 +344,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             else: _log("⚠️ بدون بروكسي")
             browser = p.chromium.launch(**launch_kwargs)
             
-            # ═══ محاكاة جهاز جوال حقيقي (iPhone) ═══
             iphone_13 = p.devices['iPhone 13']
             context = browser.new_context(**iphone_13, locale="ar-SA", timezone_id="Asia/Damascus", ignore_https_errors=True)
             
@@ -306,7 +358,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
 
         browser = None
         try:
-            # ═══ التوجيه إلى واجهة الجوال ═══
             url = "https://m.youtube.com/"
             if proxy_config:
                 try:
@@ -326,17 +377,32 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                 raise RuntimeError("❌ فشل تسجيل الدخول")
 
             _log("✅ دخلنا واجهة الجوال — البوت الخارق يبدأ")
+            
+            # 🎯 تطبيق المسار المبرمج
+            _navigate_to_upload_mobile(page)
+            
+            # ننتظر ظهور زر الرفع
+            _log("⏳ انتظار شاشة الرفع...")
             file_uploaded = False
+            for _ in range(10):
+                if page.locator('input[type="file"]').count() > 0:
+                    _log("📁 وجدنا حقل الرفع! جاري رفع الملف...")
+                    page.locator('input[type="file"]').first.set_input_files(video_path)
+                    page.wait_for_timeout(30000)
+                    file_uploaded = True
+                    break
+                page.wait_for_timeout(2000)
+
+            if not file_uploaded:
+                _log("⚠️ لم نجد شاشة الرفع، سنستخدم Gemini للبحث...")
 
             for step in range(1, max_steps + 1):
                 _log(f"\n{'═' * 50}\n🎯 خطوة {step}")
                 
-                # 1. إدخال كود TOTP (إذا وجد)
                 if _handle_otp(page):
                     if recorder: recorder.record(step, "handle_otp", "TOTP", "success")
                     continue
 
-                # 2. رفع الفيديو (يتم اكتشافه إذا فتحنا نافذة الرفع)
                 if not file_uploaded and page.locator('input[type="file"]').count() > 0:
                     _log("📁 رفع الفيديو...")
                     page.locator('input[type="file"]').first.set_input_files(video_path)
@@ -345,7 +411,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                     if recorder: recorder.record(step, "upload_file", "FILE", "success")
                     continue
 
-                # 3. استشارة Gemini للتفاعل مع واجهة الجوال
                 try: decision = _gemini_decide(page, step, memory)
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
