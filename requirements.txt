@@ -27,3 +27,4 @@ google-auth-httplib2==0.2.0
 
 # --- HuggingFace (للوصول للمصادر) ---
 huggingface_hub
+playwright-stealth
