@@ -394,16 +394,23 @@ def upload_video_ai(
 
     with sync_playwright() as p:
         device = p.devices['Pixel 5']
-        launch_kwargs = {"headless": headless, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
-        if proxy_config:
-            launch_kwargs["proxy"] = proxy_config
-            _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
-        else:
-            _log("⚠️  بدون بروكسي — IP افتراضي + محاكاة جوال")
+        launch_kwargs = {
+    "headless": headless, 
+    "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]
+}
+if proxy_config:
+    launch_kwargs["proxy"] = proxy_config
+    _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
+else:
+    _log("⚠️  بدون بروكسي — IP افتراضي + محاكاة جوال")
 
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(**device, locale="ar-SA", timezone_id="Asia/Damascus")
-        
+browser = p.chromium.launch(**launch_kwargs)
+context = browser.new_context(
+    **device, 
+    locale="ar-SA", 
+    timezone_id="Asia/Damascus",
+    ignore_https_errors=True  # ← السطر السحري
+)
         # ═══ 💡 حقن التخفي يدوياً بدون مكتبات خارجية ═══
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
