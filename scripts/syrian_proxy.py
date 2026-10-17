@@ -29,7 +29,7 @@ PROXY_SOURCES = [
 ]
 
 def _is_syrian_ip(ip: str) -> bool:
-    # تم تعطيل الفلتر لأن الـ API يضمن الدولة، والفلتر القديم كان يرفض كل شي
+    # معطّل مؤقتاً لأن API يضمن الدولة
     return True
 
 CACHE_FILE = Path("state/working-proxy.json")
