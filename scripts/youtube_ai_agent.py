@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + Stealth يدوي + محاكاة جوال."""
+"""رفع فيديو على يوتيوب — AI Vision + OTP + وضع الكمبيوتر."""
 from __future__ import annotations
 
 import base64
@@ -12,15 +12,21 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-# ═══ استيراد مدير البروكسي ═══
+# ═══ استيراد الملفات المحلية ═══
 sys.path.insert(0, str(Path(__file__).parent))
 try:
     from syrian_proxy import find_working_proxy
     HAS_PROXY = True
-except ImportError as e:
-    print(f"⚠️  لم أستطع استيراد syrian_proxy: {e}", flush=True)
+except ImportError:
     HAS_PROXY = False
     def find_working_proxy(): return None
+
+try:
+    from email_reader import get_youtube_otp
+    HAS_EMAIL = True
+except ImportError:
+    HAS_EMAIL = False
+    def get_youtube_otp(): return None
 
 
 def _log(msg: str) -> None:
@@ -57,19 +63,11 @@ class GeminiPool:
         self.cooldowns[k] = time.time() + sec
         self.idx = (self.idx + 1) % len(self.keys)
 
-
 _pool: GeminiPool | None = None
-
 def pool() -> GeminiPool:
     global _pool
-    if _pool is None:
-        _pool = GeminiPool()
+    if _pool is None: _pool = GeminiPool()
     return _pool
-
-
-# ═══════════════════════════════════════════════════════
-#  اكتشاف الموديلات تلقائياً
-# ═══════════════════════════════════════════════════════
 
 _MODEL_CACHE: list[str] | None = None
 
@@ -90,43 +88,25 @@ def _rank_model(name: str) -> tuple:
 
 def discover_models(force_refresh: bool = False) -> list[str]:
     global _MODEL_CACHE
-    if _MODEL_CACHE is not None and not force_refresh:
-        return _MODEL_CACHE
-
+    if _MODEL_CACHE is not None and not force_refresh: return _MODEL_CACHE
     p = pool()
     key = p.get()
     _log("🔍 نسأل Gemini عن الموديلات المتاحة...")
     try:
         r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=30)
     except Exception:
-        return ["gemini-3.8-flash", "gemini-2.5-flash-latest", "gemini-flash-latest"]
-
-    if r.status_code != 200:
-        return ["gemini-3.8-flash", "gemini-2.5-flash-latest", "gemini-flash-latest"]
-
-    data = r.json()
-    models_raw = data.get("models", [])
-    _log(f"📋 وجدنا {len(models_raw)} موديل إجمالي")
-
-    candidates = []
-    for m in models_raw:
-        name = m.get("name", "").replace("models/", "")
-        if "generateContent" in m.get("supportedGenerationMethods", []):
-            candidates.append(name)
-
-    _log(f"🎯 منها {len(candidates)} تدعم generateContent")
-    if not candidates:
         return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
 
+    if r.status_code != 200: return ["gemini-3.8-flash", "gemini-2.5-flash-latest"]
+    
+    candidates = [m.get("name", "").replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+    if not candidates: return ["gemini-3.8-flash"]
+    
     candidates.sort(key=_rank_model)
     top = candidates[:10]
-    _log("✅ ترتيبنا النهائي:")
-    for i, m in enumerate(top):
-        _log(f"   {i + 1}. {m}")
-
+    _log(f"✅ ترتيبنا النهائي: {top}")
     _MODEL_CACHE = top
     return top
-
 
 # ═══════════════════════════════════════════════════════
 #  استخراج عناصر الصفحة
@@ -169,41 +149,29 @@ def _collect_elements(page) -> list[dict]:
 def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
 
-
 # ═══════════════════════════════════════════════════════
-#  Gemini Vision (مع تعليمات التحقق)
+#  Gemini Vision
 # ═══════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """أنت مساعد أتمتة رفع الفيديوهات على YouTube Studio.
 مهمتك: تنظر إلى لقطة شاشة + قائمة العناصر القابلة للتفاعل، وتقرر الخطوة التالية لرفع فيديو.
+أنت الآن في بداية العملية. قد ترى لوحة التحكم (Dashboard)، أو شاشة تحقق (Verify)، أو نافذة رفع الفيديو.
 
-**المسار الطبيعي:**
-1. Details: اكتب العنوان والوصف
-2. Video elements: تخطَّ
-3. Checks: تخطَّ
-4. Made for Kids: اختر "ليس للأطفال" (NOT_MFK)
-5. Visibility: اختر "Public"
-6. اضغط "Next" حتى الشاشة الأخيرة
-7. اضغط "Publish"
-
-**ماذا تفعل إذا ظهرت شاشة تحقق (Verify it's you / CAPTCHA / تأكيد الهوية):**
-- إذا رأيت زر "Try another way" أو "جرب طريقة أخرى"، اضغط عليه فوراً.
-- إذا رأيت خيار "Confirm" أو "Next" أو "التالي" أو "Verify"، اضغط عليه.
-- إذا ظهرت شبكة صور (CAPTCHA)، حاول اختيار ما يطلبه الموقع (مثلاً "السيارات" أو "إشارات المرور").
-- إذا طُلب منك إدخال رمز SMS، أعلن الفشل فوراً بـ {"action": "fail", "reason": "مطلوب إدخال رمز SMS يدوياً"}
-
-**قواعد:**
-- لا تختر "made for kids" أبداً.
-- إذا شفت "Next" مفعّل → اضغطه.
-- إذا شفت "Public" غير محدد → حدده.
-- إذا شفت "Publish" مفعّل → اضغطه.
-- إذا الشاشة لا تحتاج فعل → {"action": "wait"}
-- إذا انتهى الرفع بنجاح → {"action": "done"}
+**ماذا تفعل:**
+1. إذا كنت في لوحة التحكم ولم تفتح نافذة الرفع: ابحث عن زر "Create" أو "إنشاء" واضغطه. ثم اضغط "Upload videos" أو "رفع فيديوهات".
+2. إذا ظهرت شاشة رفع (فيها مساحة لسحب الملفات أو زر Select Files): أعلن التوقف بـ {"action": "wait"} لكي يقوم النظام برفع الملف.
+3. إذا ظهرت شاشة تطلب كود تحقق (Verify it's you) أو (Enter the code sent to your email): أعلن التوقف بـ {"action": "get_email_otp"}.
+4. إذا ظهرت شاشة تطلب "Try another way": اضغط عليه.
+5. إذا ظهرت شاشة التفاصيل: اكتب العنوان والوصف.
+6. إذا ظهرت شاشة Made for Kids: اختر "ليس للأطفال" (NOT_MFK).
+7. إذا ظهرت شاشة Visibility: اختر "Public".
+8. اضغط "Next" حتى الشاشة الأخيرة، ثم "Publish".
 
 **الإخراج:** JSON فقط، بأحد هذه الأشكال:
 - {"action": "click", "id": 5}
 - {"action": "type", "id": 2, "text": "المحتوى"}
 - {"action": "wait", "seconds": 3}
+- {"action": "get_email_otp"}
 - {"action": "done"}
 - {"action": "fail", "reason": "..."}
 """
@@ -258,7 +226,6 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
             else: p.fail(20); continue
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
-
 # ═══════════════════════════════════════════════════════
 #  تنفيذ القرار
 # ═══════════════════════════════════════════════════════
@@ -272,26 +239,61 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         return None
 
     if action == "done": _log("✅ Gemini أعلن الانتهاء"); return "done"
+    
     if action == "fail":
         reason = decision.get("reason", "?")
         _log(f"❌ Gemini أعلن الفشل: {reason}")
         return f"fail: {reason}"
+        
     if action == "wait":
         sec = int(decision.get("seconds", 3)); _log(f"⏸️  انتظار {sec}ث"); page.wait_for_timeout(sec * 1000); return "wait"
+        
+    # 🆕 أمر قراءة الإيميل
+    if action == "get_email_otp":
+        _log("📧 Gemini اكتشف شاشة تحقق! جاري قراءة الإيميل...")
+        if not HAS_EMAIL:
+            _log("❌ email_reader.py غير متاح")
+            return "err: email reader missing"
+        
+        code = get_youtube_otp(timeout_seconds=120)
+        if not code:
+            _log("❌ لم يصل كود التحقق.")
+            return "fail: no otp"
+            
+        _log(f"🔑 الكود: {code} — جاري كتابته في الشاشة...")
+        try:
+            # محاولة الكتابة في أول حقل إدخال متاح
+            inputs = page.locator('input[type="text"], input[type="tel"], input:not([type])')
+            if inputs.count() > 0:
+                inputs.first.click(force=True)
+                page.keyboard.type(code, delay=100)
+                page.wait_for_timeout(1000)
+                # بعض الشاشات تحتاج ضغط Enter
+                page.keyboard.press("Enter")
+                _log("✅ تم كتابة الكود والضغط على Enter")
+                return "otp_entered"
+            else:
+                _log("⚠️ لم أجد حقل إدخال")
+                return "err: no input field"
+        except Exception as e:
+            _log(f"⚠️ خطأ أثناء الكتابة: {e}")
+            return f"err: {e}"
+
     if action == "click":
         eid = decision.get("id")
         el = find_el(eid)
-        if not el: _log(f"⚠️  عنصر {eid} غير موجود"); return f"err: element {eid} not found"
+        if not el: return f"err: element {eid} not found"
         _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
         clicked = False
         try: page.mouse.click(el["x"], el["y"]); clicked = True
-        except Exception as e: _log(f"   ⚠️  mouse: {e}")
+        except Exception as e: _log(f"   ⚠️ mouse: {e}")
         if not clicked and el.get("name"):
             try: page.locator(f'[name="{el["name"]}"]').first.click(force=True, timeout=5000); clicked = True
             except Exception: pass
         page.wait_for_timeout(2500)
         page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
         return f"clicked '{el['text'][:40]}'"
+        
     if action == "type":
         eid = decision.get("id")
         text = decision.get("text", "")
@@ -304,11 +306,11 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
             page.keyboard.type(text, delay=15); page.wait_for_timeout(800)
         except Exception as e: return f"err: {e}"
         return f"typed '{text[:30]}'"
+        
     return "unknown"
 
-
 # ═══════════════════════════════════════════════════════
-#  الكوكيز والمسار البشري
+#  الكوكيز والدالة الرئيسية
 # ═══════════════════════════════════════════════════════
 
 def _parse_cookies(raw: str) -> list[dict]:
@@ -331,83 +333,20 @@ def _parse_cookies(raw: str) -> list[dict]:
         return [{"name": k, "value": v, "domain": ".youtube.com", "path": "/"} for k, v in data.items()]
     raise ValueError("صيغة غير معروفة")
 
-def _navigate_like_human(page, screenshot_dir: str) -> bool:
-    _log("🌐 فتح youtube.com الرئيسية...")
-    page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(5000)
-    page.screenshot(path=f"{screenshot_dir}/01_home.png")
-
-    if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
-        raise RuntimeError("❌ فشل تسجيل الدخول")
-
-    _log("✅ مسجّل — نبدأ سلوك بشري")
-    page.mouse.move(200, 400); page.wait_for_timeout(700)
-    page.mouse.move(180, 350); page.wait_for_timeout(500)
-    page.mouse.move(300, 500); page.wait_for_timeout(600)
-
-    try:
-        page.mouse.wheel(0, 300); page.wait_for_timeout(1500)
-        page.mouse.wheel(0, -200); page.wait_for_timeout(1000)
-    except Exception: pass
-
-    _log("👤 ضغط على صورة الحساب...")
-    avatar_clicked = False
-    for sel in ['button#avatar-btn', 'yt-img-shadow#avatar', '#avatar-btn', 'ytd-topbar-menu-button-renderer #avatar-btn', 'button[aria-label*="الحساب"]', 'button[aria-label*="Account"]']:
-        try: page.click(sel, timeout=5000); _log(f"   ✅ نجح: {sel}"); avatar_clicked = True; break
-        except Exception: continue
-
-    if not avatar_clicked:
-        _log("⚠️  ما لقيت صورة الحساب — نروح مباشرة للرفع")
-        page.goto("https://www.youtube.com/upload", wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(6000); return True
-
-    page.wait_for_timeout(2500)
-    page.screenshot(path=f"{screenshot_dir}/02_avatar_menu.png")
-
-    _log("➕ البحث عن زر الرفع...")
-    create_clicked = False
-    for sel in ['ytd-compact-link-renderer a[href="/upload"]', 'a[href="/upload"]', 'yt-formatted-string:has-text("رفع فيديو")', 'yt-formatted-string:has-text("Upload video")', 'tp-yt-paper-item:has-text("رفع فيديو")', 'tp-yt-paper-item:has-text("Upload video")', 'tp-yt-paper-item:has-text("رفع")', 'tp-yt-paper-item:has-text("Upload")']:
-        try: page.click(sel, timeout=5000); _log(f"   ✅ نجح: {sel}"); create_clicked = True; break
-        except Exception: continue
-
-    if not create_clicked:
-        _log("⚠️  ما لقيت زر الرفع — نروح مباشرة")
-        page.goto("https://www.youtube.com/upload", wait_until="domcontentloaded", timeout=60000)
-
-    page.wait_for_timeout(8000)
-    page.screenshot(path=f"{screenshot_dir}/03_after_create.png")
-    _log(f"📍 الرابط: {page.url}")
-    return True
-
-
-# ═══════════════════════════════════════════════════════
-#  الدالة الرئيسية
-# ═══════════════════════════════════════════════════════
-
 def upload_video_ai(
     video_path: str, title: str, description: str, cookies_raw: str,
-    headless: bool = True, screenshot_dir: str = "out/screenshots", max_steps: int = 40,
+    headless: bool = True, screenshot_dir: str = "out/screenshots", max_steps: int = 50,
 ) -> bool:
     video_path = str(Path(video_path).resolve())
-    if not Path(video_path).exists(): raise FileNotFoundError(video_path)
-
     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
     cookies_list = _parse_cookies(cookies_raw)
-    _log(f"🍪 {len(cookies_list)} كوكي")
-
-    _log("═" * 50)
-    models = discover_models()
-    if not models: raise RuntimeError("❌ لا موديلات")
-    _log(f"🎯 سأستخدم: {models[0]}")
-
-    _log("═" * 50)
+    
     proxy_config = None
     if HAS_PROXY:
         try: proxy_config = find_working_proxy()
-        except Exception as e: _log(f"⚠️  فشل مدير البروكسي: {e}")
+        except Exception: pass
 
     with sync_playwright() as p:
-        device = p.devices['Pixel 5']
         launch_kwargs = {
             "headless": headless, 
             "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]
@@ -416,86 +355,82 @@ def upload_video_ai(
             launch_kwargs["proxy"] = proxy_config
             _log(f"🌐 سأرفع عبر بروكسي: {proxy_config.get('server')}")
         else:
-            _log("⚠️  بدون بروكسي — IP افتراضي + محاكاة جوال")
+            _log("⚠️ بدون بروكسي")
 
         browser = p.chromium.launch(**launch_kwargs)
         
-        # ═══ حل مشكلة المسافات هنا ═══
+        # وضع الكمبيوتر
         context = browser.new_context(
-            **device, 
-            locale="ar-SA", 
+            viewport={"width": 1440, "height": 900},
+            locale="ar-SA",
             timezone_id="Asia/Damascus",
-            ignore_https_errors=True
+            ignore_https_errors=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         )
         
-        # ═══ حقن التخفي يدوياً بدون مكتبات خارجية ═══
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['ar-SA', 'ar', 'en-US', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             window.chrome = { runtime: {} };
         """)
         
         context.add_cookies(cookies_list)
         page = context.new_page()
-        _log("🛡️  تم تفعيل وضع التخفي (حقن يدوي)")
 
         history: list[str] = []
         try:
-            _navigate_like_human(page, screenshot_dir)
+            _log("🌐 فتح YouTube Studio...")
+            page.goto("https://studio.youtube.com", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(6000)
+            
+            if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
+                raise RuntimeError("❌ فشل تسجيل الدخول")
 
-            _log(f"📁 رفع: {Path(video_path).name}")
-            file_input = None
-            for _ in range(10):
-                c = page.locator('input[type="file"]')
-                if c.count() > 0: file_input = c.first; break
-                page.wait_for_timeout(3000)
-
-            if file_input is None: raise RuntimeError("❌ ما لقيت input الفيديو")
-
-            file_input.set_input_files(video_path)
-            _log("⏳ انتظار 30 ثانية لبدء المعالجة...")
-            page.wait_for_timeout(30000)
-            page.screenshot(path=f"{screenshot_dir}/04_uploaded.png")
-
-            _log("═" * 50)
-            _log("🧠 حلقة Gemini Vision")
-            _log(f"📝 العنوان: {title}")
-            history.append(f"العنوان: {title}")
-            history.append(f"الوصف: {description[:200]}")
-
-            done = False
+            _log("✅ مسجّل — نبدأ حلقة Gemini")
+            
+            file_uploaded = False
             for step in range(1, max_steps + 1):
-                _log(f"\n{'─' * 50}")
-                _log(f"🎯 خطوة {step}")
+                _log(f"\n{'─' * 50}\n🎯 خطوة {step}")
                 page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_before.png")
 
-                try: decision = _gemini_decide(page, step, history)
-                except Exception as e: _log(f"❌ فشل Gemini: {e}"); break
+                # فحص وجود input للرفع
+                if not file_uploaded and page.locator('input[type="file"]').count() > 0:
+                    _log("📁 وجدنا نافذة الرفع! جاري رفع الملف...")
+                    page.locator('input[type="file"]').first.set_input_files(video_path)
+                    _log("⏳ انتظار 30 ثانية للمعالجة...")
+                    page.wait_for_timeout(30000)
+                    file_uploaded = True
+                    history.append("تم رفع الفيديو بنجاح")
+                    continue
+
+                try: 
+                    decision = _gemini_decide(page, step, history)
+                except Exception as e: 
+                    _log(f"❌ فشل Gemini: {e}")
+                    break
 
                 action = decision.get("action")
-                model_used = decision.get("_model", "?")
-                _log(f"📋 القرار ({model_used}): {action}")
+                _log(f"📋 القرار ({decision.get('_model', '?')}): {action}")
 
                 result = _execute(page, decision, screenshot_dir, step)
                 history.append(f"خطوة {step}: {action} → {result}")
 
-                if result == "done": done = True; break
-                if result.startswith("fail"): break
+                if result == "done": 
+                    _log("🎉 اكتمل الرفع بنجاح!")
+                    return True
+                if result.startswith("fail"): 
+                    break
+                
                 page.wait_for_timeout(2000)
 
             page.screenshot(path=f"{screenshot_dir}/ai_final.png")
-            if done: _log("🎉 اكتمل الرفع"); return True
-            _log("⚠️  الحلقة انتهت بدون تأكيد"); return False
+            _log("⚠️ الحلقة انتهت بدون تأكيد نهائي")
+            return False
 
         except Exception as e:
-            try: page.screenshot(path=f"{screenshot_dir}/ai_error.png")
-            except Exception: pass
             _log(f"❌ {e}")
-            raise
+            return False
         finally:
             browser.close()
-
 
 if __name__ == "__main__":
     cookies_raw = os.getenv("YOUTUBE_COOKIES", "[]")
