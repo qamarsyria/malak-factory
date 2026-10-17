@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + TOTP + Flight Recorder + Direct Upload URL."""
+"""رفع فيديو على يوتيوب — AI Vision + TOTP + Flight Recorder + Shadow DOM Bypass."""
 from __future__ import annotations
 
 import base64
@@ -52,6 +52,9 @@ def get_totp_code() -> str | None:
     try: return pyotp.TOTP(secret).now()
     except Exception: return None
 
+# ═══════════════════════════════════════════════════════
+#  إدارة مفاتيح Gemini
+# ═══════════════════════════════════════════════════════
 class GeminiPool:
     def __init__(self):
         raw = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
@@ -194,6 +197,9 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
             else: p.fail(20); continue
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
+# ═══════════════════════════════════════════════════════
+#  تنفيذ القرار (مع النقرة الذكية)
+# ═══════════════════════════════════════════════════════
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
     action = decision.get("action", "wait"); elements = decision.get("_elements", [])
     def find_el(eid):
@@ -224,15 +230,33 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         eid = decision.get("id"); el = find_el(eid)
         if not el: return f"err: element {eid} not found"
         _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
+        
         clicked = False
-        try: page.mouse.click(el["x"], el["y"]); clicked = True
-        except Exception as e: _log(f"   ⚠️ mouse: {e}")
-            
-        if el['text'] in ["التالي", "Next", "Verify", "تأكيد"]:
-            _log(f"   ⚡ ضغط زر Enter للتفاعل مع نافذة جوجل...")
-            try: page.keyboard.press("Enter"); clicked = True
+        # 1. الطريقة السحرية: البحث عن النص مباشرة (يخترق الـ Shadow DOM)
+        try:
+            if el['text'] in ["التالي", "Next", "Verify", "تأكيد", "Confirm"]:
+                _log(f"   🎯 محاولة النقر على النص '{el['text']}' مباشرة...")
+                page.locator(f'text="{el["text"]}"').first.click(timeout=5000)
+                clicked = True
+        except Exception as e:
+            _log(f"   ⚠️ فشل النقر على النص: {e}")
+
+        # 2. إذا فشل، نجرب ضغط الماوس العادي
+        if not clicked:
+            try: 
+                page.mouse.click(el["x"], el["y"]); 
+                clicked = True
+                _log(f"   ✅ نقر ماوس عادي @({el['x']},{el['y']})")
+            except Exception as e: 
+                _log(f"   ⚠️ mouse: {e}")
+                
+        # 3. إذا فشل، نجرب Enter
+        if not clicked or el['text'] in ["التالي", "Next"]:
+            try: page.keyboard.press("Enter")
             except Exception: pass
-        page.wait_for_timeout(2500); page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
+
+        page.wait_for_timeout(3000) # ننتظر 3 ثواني بعد كل نقرة
+        page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
         return f"clicked '{el['text'][:40]}'"
         
     if action == "type":
