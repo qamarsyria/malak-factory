@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — Mobile Web Interface (User's Hardcoded Path)."""
+"""رفع فيديو على يوتيوب — Mobile Web + VPN + Hardcoded Path + TOTP."""
 from __future__ import annotations
 
 import base64
@@ -13,15 +13,6 @@ from pathlib import Path
 import requests
 import pyotp
 from playwright.sync_api import sync_playwright
-
-# ═══ استيراد الملفات المحلية ═══
-sys.path.insert(0, str(Path(__file__).parent))
-try:
-    from syrian_proxy import find_working_proxy
-    HAS_PROXY = True
-except ImportError:
-    HAS_PROXY = False
-    def find_working_proxy(): return None
 
 def _log(msg: str) -> None:
     print(f"[ai-agent] {msg}", flush=True)
@@ -189,7 +180,7 @@ def _gemini_decide(page, step: int, memory: BotMemory) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  دالة OTP الذكية
+#  دالة OTP الذكية (مقيدة بشروط صارمة)
 # ═══════════════════════════════════════════════════════
 def _handle_otp(page) -> bool:
     try:
@@ -332,16 +323,13 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
     recorder = FlightRecorder(screenshot_dir)
     memory = BotMemory()
     cookies_list = _parse_cookies(cookies_raw)
-    proxy_config = None
-    if HAS_PROXY:
-        try: proxy_config = find_working_proxy()
-        except Exception: pass
+    
+    # لا نحتاج البروكسي الآن لأننا نستخدم VPN على مستوى النظام
 
     with sync_playwright() as p:
-        def run_browser(proxy_cfg):
+        def run_browser():
             launch_kwargs = {"headless": headless, "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]}
-            if proxy_cfg: launch_kwargs["proxy"] = proxy_cfg; _log(f"🌐 بروكسي: {proxy_cfg.get('server')}")
-            else: _log("⚠️ بدون بروكسي")
+            _log("🌐 فتح المتصفح (بدون بروكسي، VPN يعمل على مستوى السيرفر)")
             browser = p.chromium.launch(**launch_kwargs)
             
             iphone_13 = p.devices['iPhone 13']
@@ -358,19 +346,9 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
 
         browser = None
         try:
+            browser, context, page = run_browser()
             url = "https://m.youtube.com/"
-            if proxy_config:
-                try:
-                    browser, context, page = run_browser(proxy_config)
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                except Exception as e:
-                    _log(f"⚠️ بروكسي فشل: {str(e)[:100]}")
-                    if browser: browser.close()
-                    browser, context, page = run_browser(None)
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            else:
-                browser, context, page = run_browser(None)
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             page.wait_for_timeout(6000)
             if "signin" in page.url.lower() or "accounts.google" in page.url.lower():
