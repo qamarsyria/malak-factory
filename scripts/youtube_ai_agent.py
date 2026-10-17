@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — AI Vision + TOTP + Flight Recorder + Shadow DOM Bypass."""
+"""رفع فيديو على يوتيوب — AI Vision + TOTP + Flight Recorder + Shadow DOM Pierce."""
 from __future__ import annotations
 
 import base64
@@ -112,30 +112,58 @@ def discover_models(force_refresh: bool = False) -> list[str]:
         return _MODEL_CACHE
     except Exception: return ["gemini-3.8-flash"]
 
+# ═══════════════════════════════════════════════════════
+#  قراءة العناصر مع اختراق Shadow DOM
+# ═══════════════════════════════════════════════════════
 JS_COLLECT_INTERACTIVE = r"""
 () => {
     const results = []; const seen = new Set();
-    const selectors = ['button','a','input','textarea','select','[role="button"]','[role="radio"]','[role="checkbox"]','[role="tab"]','[role="menuitem"]','[role="option"]','tp-yt-paper-radio-button','ytcp-button','ytcp-radio-button','tp-yt-paper-item','tp-yt-paper-button','[contenteditable="true"]','div[role="checkbox"]'];
-    const all = document.querySelectorAll(selectors.join(','));
-    let idx = 0;
-    for (const el of all) {
-        try {
-            const rect = el.getBoundingClientRect(); const style = window.getComputedStyle(el);
-            if (rect.width < 3 || rect.height < 3 || style.visibility === 'hidden' || style.display === 'none' || parseFloat(style.opacity) < 0.1) continue;
-            if (rect.top < 0 || rect.left < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
-            let text = (el.innerText || el.textContent || '').trim().slice(0, 120) || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || '';
-            const key = `${el.tagName}|${text}|${Math.round(rect.top)}|${Math.round(rect.left)}`;
-            if (seen.has(key)) continue; seen.add(key);
-            results.push({ id: idx++, tag: el.tagName.toLowerCase(), text: text, aria: el.getAttribute('aria-label') || '', name: el.getAttribute('name') || '', type: el.getAttribute('type') || '', disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true', checked: el.checked === true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), w: Math.round(rect.width), h: Math.round(rect.height) });
-        } catch (e) {}
+    const selectors = 'button, a, input, textarea, select, [role="button"], [role="radio"], [role="checkbox"], [role="tab"], [role="menuitem"], [role="option"], tp-yt-paper-radio-button, ytcp-button, ytcp-radio-button, tp-yt-paper-item, tp-yt-paper-button, [contenteditable="true"], div[role="checkbox"]';
+
+    function walk(node) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            if (node.matches(selectors)) {
+                try {
+                    const rect = node.getBoundingClientRect();
+                    const style = window.getComputedStyle(node);
+                    if (rect.width > 3 && rect.height > 3 && style.visibility !== 'hidden' && style.display !== 'none' && parseFloat(style.opacity) > 0.1) {
+                        if (rect.top >= 0 && rect.left >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth) {
+                            let text = (node.innerText || node.textContent || '').trim().slice(0, 120) || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('title') || '';
+                            const key = `${node.tagName}|${text}|${Math.round(rect.top)}|${Math.round(rect.left)}`;
+                            if (!seen.has(key)) {
+                                seen.add(key);
+                                results.push({
+                                    id: results.length, tag: node.tagName.toLowerCase(), text: text, aria: node.getAttribute('aria-label') || '',
+                                    name: node.getAttribute('name') || '', type: node.getAttribute('type') || '',
+                                    disabled: node.disabled === true || node.getAttribute('aria-disabled') === 'true',
+                                    checked: node.checked === true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2),
+                                    w: Math.round(rect.width), h: Math.round(rect.height)
+                                });
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+            if (node.shadowRoot) {
+                walk(node.shadowRoot);
+            }
+            let child = node.firstElementChild;
+            while (child) {
+                walk(child);
+                child = child.nextElementSibling;
+            }
+        }
     }
+    walk(document.body);
     return results.slice(0, 80);
 }
 """
 
 def _collect_elements(page) -> list[dict]:
     try: return page.evaluate(JS_COLLECT_INTERACTIVE)
-    except Exception: return []
+    except Exception as e:
+        _log(f"⚠️ خطأ في قراءة العناصر: {e}")
+        return []
 
 def _screenshot_b64(page) -> str:
     return base64.b64encode(page.screenshot(type="png", full_page=False)).decode()
@@ -198,7 +226,7 @@ def _gemini_decide(page, step: int, history: list[str]) -> dict:
     raise RuntimeError(f"فشلت كل الموديلات: {last_error}")
 
 # ═══════════════════════════════════════════════════════
-#  تنفيذ القرار (مع النقرة الذكية)
+#  تنفيذ القرار
 # ═══════════════════════════════════════════════════════
 def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
     action = decision.get("action", "wait"); elements = decision.get("_elements", [])
@@ -232,7 +260,6 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         _log(f"👆 ضغط [{eid}] '{el['text'][:50]}' @({el['x']},{el['y']})")
         
         clicked = False
-        # 1. الطريقة السحرية: البحث عن النص مباشرة (يخترق الـ Shadow DOM)
         try:
             if el['text'] in ["التالي", "Next", "Verify", "تأكيد", "Confirm"]:
                 _log(f"   🎯 محاولة النقر على النص '{el['text']}' مباشرة...")
@@ -241,7 +268,6 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
         except Exception as e:
             _log(f"   ⚠️ فشل النقر على النص: {e}")
 
-        # 2. إذا فشل، نجرب ضغط الماوس العادي
         if not clicked:
             try: 
                 page.mouse.click(el["x"], el["y"]); 
@@ -250,12 +276,11 @@ def _execute(page, decision: dict, screenshot_dir: str, step: int) -> str:
             except Exception as e: 
                 _log(f"   ⚠️ mouse: {e}")
                 
-        # 3. إذا فشل، نجرب Enter
         if not clicked or el['text'] in ["التالي", "Next"]:
             try: page.keyboard.press("Enter")
             except Exception: pass
 
-        page.wait_for_timeout(3000) # ننتظر 3 ثواني بعد كل نقرة
+        page.wait_for_timeout(3000)
         page.screenshot(path=f"{screenshot_dir}/ai_step_{step}_after.png")
         return f"clicked '{el['text'][:40]}'"
         
@@ -315,7 +340,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
 
         browser = None
         try:
-            # ═══ التوجيه المباشر لصفحة الرفع ═══
             url = "https://www.youtube.com/upload"
             if proxy_config:
                 try:
