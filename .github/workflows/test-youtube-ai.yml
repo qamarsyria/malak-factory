@@ -26,43 +26,53 @@ jobs:
           pip install requests playwright aiohttp pyotp beautifulsoup4
           playwright install chromium
           playwright install-deps chromium
-          sudo apt-get update && sudo apt-get install -y ffmpeg wireguard-tools
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg wireguard-tools
 
-      - name: Setup VPN (Raw WireGuard, No wg-quick)
+      - name: Setup VPN (Mullvad) - FINAL VERSION
         run: |
+          set -x
+          
+          # 1. تجهيز الإعدادات (حذف سطر DNS نهائياً)
           sudo mkdir -p /etc/wireguard
-          echo "${{ secrets.WIREGUARD_CONFIG }}" | sudo tee /etc/wireguard/wg0.conf > /dev/null
+          echo "${{ secrets.WIREGUARD_CONFIG }}" | grep -v '^DNS' | sudo tee /etc/wireguard/wg0.conf > /dev/null
           sudo chmod 600 /etc/wireguard/wg0.conf
           
-          # 1. إيقاف خدمة DNS المتعارضة
+          echo "=== Config after DNS removal ==="
+          sudo sed 's/PrivateKey = .*/PrivateKey = [REDACTED]/' /etc/wireguard/wg0.conf
+          echo "================================="
+          
+          # 2. تعطيل نظام DNS المتعارض
           sudo systemctl stop systemd-resolved || true
           sudo systemctl disable systemd-resolved || true
           
-          # 2. إنشاء النفق يدوياً (بدون wg-quick)
-          sudo ip link add dev wg0 type wireguard
-          sudo wg setconf wg0 /etc/wireguard/wg0.conf
-          
-          # استخراج الـ IP من الإعدادات وإضافته
-          ADDR=$(grep "^Address" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' | cut -d',' -f1)
-          sudo ip -4 address add "$ADDR" dev wg0
-          sudo ip link set mtu 1420 up dev wg0
-          
-          # 3. توجيه كل الترافيك عبر النفق
-          sudo ip -4 route add 0.0.0.0/0 dev wg0 table 51820
-          sudo ip -4 rule add not fwmark 51820 table 51820
-          sudo ip -4 rule add table main suppress_prefixlength 0
-          sudo sysctl -q net.ipv4.conf.all.src_valid_mark=1
-          
-          # 4. إعداد الـ DNS يدوياً (Cloudflare + Google - متاحان عالمياً)
+          # 3. جعل /etc/resolv.conf ملفاً عادياً (ليس symlink)
           sudo rm -f /etc/resolv.conf
-          sudo sh -c 'echo "nameserver 1.1.1.1" > /etc/resolv.conf'
-          sudo sh -c 'echo "nameserver 8.8.8.8" >> /etc/resolv.conf'
+          echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
           
-          echo "✅ VPN Connected."
-          echo "🔍 Testing DNS resolution:"
-          nslookup m.youtube.com || echo "⚠️ DNS still failing..."
-          echo "🔍 Testing external IP (should show Netherlands):"
-          curl -s --max-time 15 https://ipinfo.io/ip || echo "⚠️ curl failed..."
+          # 4. تشغيل النفق (لن يلمس DNS لأننا حذفناه)
+          sudo wg-quick up wg0
+          
+          # 5. الآن نضع DNS الخاص بـ Mullvad يدوياً
+          sudo sh -c 'echo "nameserver 10.64.0.1" > /etc/resolv.conf'
+          sudo sh -c 'echo "nameserver 1.1.1.1" >> /etc/resolv.conf'
+          
+          # 6. الاختبارات
+          echo ""
+          echo "=== Tunnel Status ==="
+          sudo wg show
+          echo ""
+          echo "=== Routes ==="
+          ip route | head -10
+          echo ""
+          echo "=== Ping Mullvad DNS (10.64.0.1) ==="
+          ping -c 2 -W 3 10.64.0.1 || echo "❌ Ping failed"
+          echo ""
+          echo "=== External IP (should be Netherlands) ==="
+          curl -s --max-time 15 https://ipinfo.io/ip || echo "❌ curl failed"
+          echo ""
+          echo "=== DNS Resolution Test ==="
+          nslookup m.youtube.com || echo "❌ DNS failed"
 
       - name: Generate test video
         run: |
@@ -81,18 +91,13 @@ jobs:
           YT_DESC: ${{ github.event.inputs.description }}
         run: python scripts/youtube_ai_agent.py
 
-      - name: Shutdown VPN & Restore DNS
+      - name: Shutdown VPN
         if: always()
         run: |
-          # 1. حذف النفق
-          sudo ip link delete dev wg0 || true
-          sudo ip -4 rule delete table 51820 || true
-          sudo ip -4 rule delete table main suppress_prefixlength 0 || true
-          
-          # 2. إعادة DNS إلى الوضع الافتراضي (لكي يعمل رفع الـ Artifact)
+          sudo wg-quick down wg0 || true
+          # استعادة DNS الافتراضي لـ GitHub Actions
           sudo rm -f /etc/resolv.conf
           sudo sh -c 'echo "nameserver 8.8.8.8" > /etc/resolv.conf'
-          sudo sh -c 'echo "nameserver 1.1.1.1" >> /etc/resolv.conf'
 
       - uses: actions/upload-artifact@v4
         if: always()
