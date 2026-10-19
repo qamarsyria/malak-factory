@@ -31,43 +31,35 @@ jobs:
 
       - name: Setup VPN (Manual & Clean)
         run: |
-          set -x
-          
-          # 1. تنظيف الملف من أحرف \r وحذف سطر DNS
           echo "${{ secrets.WIREGUARD_CONFIG }}" | sed 's/\r$//' | grep -v '^DNS' > /tmp/wg.conf
           
-          # 2. استخراج القيم (تم إضافة - لضمان أخذ المفتاح كاملاً)
           PRIVATE_KEY=$(grep '^PrivateKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
           ADDRESS=$(grep '^Address' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ' | cut -d',' -f1)
           PUBLIC_KEY=$(grep '^PublicKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
           ENDPOINT=$(grep '^Endpoint' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
           
-          echo "IP: $ADDRESS"
-          echo "Endpoint: $ENDPOINT"
-          
-          # 3. إنشاء النفق يدوياً
           sudo ip link add dev wg0 type wireguard
           
-          # حفظ المفتاح في ملف وقراءته لضمان عدم وجود مشاكل
           echo "$PRIVATE_KEY" > /tmp/privatekey
           sudo wg set wg0 private-key /tmp/privatekey
           
           sudo wg set wg0 peer "$PUBLIC_KEY" endpoint "$ENDPOINT" allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25
+          
+          # 👇 السطر السحري الذي كان ناقصاً (يمنع ضياع الحزم)
+          sudo wg set wg0 fwmark 51820
+          
           sudo ip address add "$ADDRESS" dev wg0
           sudo ip link set mtu 1420 up dev wg0
           
-          # 4. إعداد التوجيه
           sudo ip route add default dev wg0 table 51820
           sudo ip rule add not fwmark 51820 table 51820
           sudo ip rule add table main suppress_prefixlength 0
           sudo sysctl -q net.ipv4.conf.all.src_valid_mark=1
           
-          # 5. إعداد DNS
           sudo rm -f /etc/resolv.conf
           printf "nameserver 10.64.0.1\n" | sudo tee /etc/resolv.conf
           printf "nameserver 1.1.1.1\n" | sudo tee -a /etc/resolv.conf
           
-          # 6. الاختبار
           echo "=== Tunnel Status ==="
           sudo wg show
           echo "=== External IP ==="
@@ -78,10 +70,7 @@ jobs:
       - name: Generate test video
         run: |
           mkdir -p out
-          ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=8 \
-            -f lavfi -i sine=frequency=440:duration=8 \
-            -vf "drawtext=text='AI Agent Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" \
-            -c:v libx264 -c:a aac -shortest out/video.mp4
+          ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=8 -f lavfi -i sine=frequency=440:duration=8 -vf "drawtext=text='AI Agent Test':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2" -c:v libx264 -c:a aac -shortest out/video.mp4
 
       - name: Run AI Agent
         env:
@@ -98,7 +87,6 @@ jobs:
           sudo ip link delete dev wg0 || true
           sudo ip route flush table 51820 || true
           sudo ip rule delete table 51820 || true
-          # استعادة DNS الافتراضي
           sudo rm -f /etc/resolv.conf
           printf "nameserver 8.8.8.8\n" | sudo tee /etc/resolv.conf
 
