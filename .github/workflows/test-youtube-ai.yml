@@ -47,7 +47,7 @@ jobs:
           
           # 3. إنشاء النفق يدوياً (بدون wg-quick)
           sudo ip link add dev wg0 type wireguard
-          echo "$PRIVATE_KEY" | sudo wg set wg0 private-key /dev/stdin
+          printf "%s" "$PRIVATE_KEY" | sudo wg set wg0 private-key /dev/stdin
           sudo wg set wg0 peer "$PUBLIC_KEY" endpoint "$ENDPOINT" allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25
           sudo ip address add "$ADDRESS" dev wg0
           sudo ip link set mtu 1420 up dev wg0
@@ -60,8 +60,8 @@ jobs:
           
           # 5. إعداد DNS
           sudo rm -f /etc/resolv.conf
-          echo "nameserver 10.64.0.1" | sudo tee /etc/resolv.conf
-          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+          printf "nameserver 10.64.0.1\n" | sudo tee /etc/resolv.conf
+          printf "nameserver 1.1.1.1\n" | sudo tee -a /etc/resolv.conf
           
           # 6. الاختبار
           echo "=== Tunnel Status ==="
@@ -96,7 +96,7 @@ jobs:
           sudo ip rule delete table 51820 || true
           # استعادة DNS الافتراضي
           sudo rm -f /etc/resolv.conf
-          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          printf "nameserver 8.8.8.8\n" | sudo tee /etc/resolv.conf
 
       - uses: actions/upload-artifact@v4
         if: always()
