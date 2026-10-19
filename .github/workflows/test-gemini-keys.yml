@@ -1,0 +1,41 @@
+name: Test Gemini Keys
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-keys:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test each key
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+        run: |
+          python3 -c "
+          import os, requests
+          keys = os.getenv('GEMINI_API_KEYS', '').split(',')
+          print(f'Testing {len(keys)} keys...')
+          for i, key in enumerate(keys):
+              key = key.strip()
+              if not key: continue
+              print(f'--- Key {i+1}: {key[:10]}... ---')
+              # نختبر موديل نصي خفيف جداً
+              url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}'
+              body = {'contents': [{'parts': [{'text': 'Say OK'}]}]}
+              try:
+                  r = requests.post(url, json=body, timeout=30)
+                  if r.status_code == 200:
+                      print('✅ Key VALID and working!')
+                  elif r.status_code == 429:
+                      print('❌ Key hit rate limit (quota exhausted)')
+                  elif r.status_code == 404:
+                      print('❌ Model not found (try different model)')
+                  else:
+                      print(f'❌ Error {r.status_code}: {r.text[:100]}')
+              except Exception as e:
+                  print(f'❌ Connection failed: {e}')
+          "
