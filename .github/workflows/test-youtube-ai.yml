@@ -26,29 +26,37 @@ jobs:
           pip install requests playwright aiohttp pyotp beautifulsoup4
           playwright install chromium
           playwright install-deps chromium
-          sudo apt-get update && sudo apt-get install -y ffmpeg wireguard-tools resolvconf
+          sudo apt-get update && sudo apt-get install -y ffmpeg wireguard-tools
 
-      - name: Setup VPN (Mullvad) & Fix DNS
+      - name: Setup VPN (Raw WireGuard, No wg-quick)
         run: |
           sudo mkdir -p /etc/wireguard
           echo "${{ secrets.WIREGUARD_CONFIG }}" | sudo tee /etc/wireguard/wg0.conf > /dev/null
           sudo chmod 600 /etc/wireguard/wg0.conf
           
-          # 1. حذف سطر DNS من ملف الـ VPN (لكي لا يتدخل في إعداداتنا)
-          sudo sed -i '/^DNS =/d' /etc/wireguard/wg0.conf
-          
-          # 2. إيقاف خدمة الـ DNS المتعارضة في GitHub
+          # 1. إيقاف خدمة DNS المتعارضة
           sudo systemctl stop systemd-resolved || true
           sudo systemctl disable systemd-resolved || true
           
-          # 3. إعداد الـ DNS يدوياً (Mullvad + Google + Cloudflare)
-          sudo rm -f /etc/resolv.conf
-          echo "nameserver 10.64.0.1" | sudo tee /etc/resolv.conf
-          echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf
-          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+          # 2. إنشاء النفق يدوياً (بدون wg-quick)
+          sudo ip link add dev wg0 type wireguard
+          sudo wg setconf wg0 /etc/wireguard/wg0.conf
           
-          # 4. تشغيل الـ VPN الآن (بدون مشاكل DNS)
-          sudo wg-quick up wg0
+          # استخراج الـ IP من الإعدادات وإضافته
+          ADDR=$(grep "^Address" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' | cut -d',' -f1)
+          sudo ip -4 address add "$ADDR" dev wg0
+          sudo ip link set mtu 1420 up dev wg0
+          
+          # 3. توجيه كل الترافيك عبر النفق
+          sudo ip -4 route add 0.0.0.0/0 dev wg0 table 51820
+          sudo ip -4 rule add not fwmark 51820 table 51820
+          sudo ip -4 rule add table main suppress_prefixlength 0
+          sudo sysctl -q net.ipv4.conf.all.src_valid_mark=1
+          
+          # 4. إعداد الـ DNS يدوياً (Cloudflare + Google - متاحان عالمياً)
+          sudo rm -f /etc/resolv.conf
+          sudo sh -c 'echo "nameserver 1.1.1.1" > /etc/resolv.conf'
+          sudo sh -c 'echo "nameserver 8.8.8.8" >> /etc/resolv.conf'
           
           echo "✅ VPN Connected."
           echo "🔍 Testing DNS resolution:"
@@ -73,9 +81,18 @@ jobs:
           YT_DESC: ${{ github.event.inputs.description }}
         run: python scripts/youtube_ai_agent.py
 
-      - name: Shutdown VPN
+      - name: Shutdown VPN & Restore DNS
         if: always()
-        run: sudo wg-quick down wg0 || true
+        run: |
+          # 1. حذف النفق
+          sudo ip link delete dev wg0 || true
+          sudo ip -4 rule delete table 51820 || true
+          sudo ip -4 rule delete table main suppress_prefixlength 0 || true
+          
+          # 2. إعادة DNS إلى الوضع الافتراضي (لكي يعمل رفع الـ Artifact)
+          sudo rm -f /etc/resolv.conf
+          sudo sh -c 'echo "nameserver 8.8.8.8" > /etc/resolv.conf'
+          sudo sh -c 'echo "nameserver 1.1.1.1" >> /etc/resolv.conf'
 
       - uses: actions/upload-artifact@v4
         if: always()
