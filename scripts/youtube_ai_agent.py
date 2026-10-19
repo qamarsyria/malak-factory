@@ -1,4 +1,4 @@
-"""رفع فيديو على يوتيوب — Mobile Web + Auto Proxy + Hardcoded Path."""
+"""رفع فيديو على يوتيوب — Mobile Web + Auto Proxy + Fixed Navigation."""
 from __future__ import annotations
 
 import base64
@@ -211,32 +211,52 @@ def _handle_otp(page) -> bool:
     return False
 
 # ═══════════════════════════════════════════════════════
-#  🎯 المسار اليدوي المبرمج
+#  🎯 المسار اليدوي المبرمج (تم إصلاح الخطأ)
 # ═══════════════════════════════════════════════════════
 def _navigate_to_upload_mobile(page) -> bool:
     try:
         _log("📱 [مسار] 1. الضغط على 'أنت'...")
-        you_btn = page.locator('a[href*="feed/you"], text="أنت"').first
-        if you_btn.count() > 0 and you_btn.is_visible():
-            you_btn.click(force=True)
+        you_btn = page.get_by_text("أنت", exact=True)
+        if you_btn.count() == 0:
+             you_btn = page.locator('a[href*="feed/you"]')
+             
+        if you_btn.count() > 0:
+            you_btn.last.click(force=True)
             page.wait_for_timeout(3000)
+        else:
+            _log("⚠️ لم يجد زر 'أنت'")
 
         _log("📱 [مسار] 2. الضغط على 'مشاهدة القناة'...")
-        view_ch_btn = page.locator('text="مشاهدة القناة", text="View channel"').first
-        if view_ch_btn.count() > 0 and view_ch_btn.is_visible():
-            view_ch_btn.click(force=True)
+        view_ch_btn = page.get_by_text("مشاهدة القناة", exact=True)
+        if view_ch_btn.count() == 0:
+             view_ch_btn = page.get_by_text("View channel", exact=True)
+             
+        if view_ch_btn.count() > 0:
+            view_ch_btn.first.click(force=True)
             page.wait_for_timeout(4000)
+        else:
+            _log("⚠️ لم يجد زر 'مشاهدة القناة'")
 
         _log("📱 [مسار] 3. الضغط على زر '+' (إنشاء)...")
-        plus_btn = page.locator('button[aria-label*="إنشاء"], button[aria-label*="Create"], c3-icon[icon-name="add"]').first
-        if plus_btn.count() > 0 and plus_btn.is_visible():
-            plus_btn.click(force=True)
-            page.wait_for_timeout(3000)
+        plus_btn = page.locator('button[aria-label*="إنشاء"]')
+        if plus_btn.count() == 0:
+            plus_btn = page.locator('button[aria-label*="Create"]')
+        if plus_btn.count() == 0:
+            plus_btn = page.locator('c3-icon[icon-name="add"]')
             
+        if plus_btn.count() > 0:
+            plus_btn.first.click(force=True)
+            page.wait_for_timeout(3000)
+        else:
+            _log("⚠️ لم يجد زر '+'")
+
         _log("📱 [مسار] 4. اختيار 'رفع فيديو'...")
-        upload_btn = page.locator('text="رفع فيديو", text="Upload video"').first
-        if upload_btn.count() > 0 and upload_btn.is_visible():
-            upload_btn.click(force=True)
+        upload_btn = page.get_by_text("رفع فيديو", exact=True)
+        if upload_btn.count() == 0:
+             upload_btn = page.get_by_text("Upload video", exact=True)
+             
+        if upload_btn.count() > 0:
+            upload_btn.first.click(force=True)
             page.wait_for_timeout(4000)
             return True
             
@@ -325,7 +345,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
             _log("⚠️ لم يتم العثور على بروكسي، سأحاول بدون بروكسي.")
 
     with sync_playwright() as p:
-        # ═══ إعدادات المتصفح ═══
         launch_args = {"headless": headless, "args": ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-certificate-errors"]}
         if proxy_config:
             launch_args["proxy"] = proxy_config
@@ -333,7 +352,6 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
         _log("🌐 فتح المتصفح...")
         browser = p.chromium.launch(**launch_args)
         
-        # محاكاة جهاز جوال
         iphone_13 = p.devices['iPhone 13']
         context = browser.new_context(**iphone_13, locale="ar-SA", timezone_id="Asia/Damascus", ignore_https_errors=True)
         
@@ -392,6 +410,8 @@ def upload_video_ai(video_path: str, title: str, description: str, cookies_raw: 
                 except Exception as e: 
                     _log(f"❌ فشل Gemini: {e}")
                     if recorder: recorder.record(step, "gemini_fail", str(e), "error")
+                    # إذا فشل Gemini، نلتقط صورة ونغلق
+                    page.screenshot(path=f"{screenshot_dir}/failure_state.png")
                     break
 
                 action = decision.get("action")
