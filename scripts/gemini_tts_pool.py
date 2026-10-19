@@ -41,7 +41,7 @@ class GeminiKeyPool:
         if not key:
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
-            if wait > 300: # إذا كان الانتظار أكثر من 5 دقائق
+            if wait > 300:
                 raise RuntimeError("🚫 كل المفاتيح مستنفدة لليوم!")
             _log(f"⏳ كل المفاتيح في تبريد — أنتظر {wait}ث")
             time.sleep(wait)
@@ -103,10 +103,8 @@ def discover_tts_models() -> list[str]:
         ]
         
         if not tts_models:
-            _log("⚠️ لم نجد موديلات TTS جديدة، نستخدم الافتراضي.")
             return ["gemini-2.5-flash-preview-tts"]
         
-        # نرتب: الأحدث أولاً
         def rank(name):
             m = re.search(r'(\d+\.\d+)', name)
             version = float(m.group(1)) if m else 0
@@ -148,7 +146,7 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
     return chunks
 
 # ═══════════════════════════════════════════════════════
-#  TTS لطلب واحد (يجرب كل الموديلات المتاحة)
+#  TTS لطلب واحد
 # ═══════════════════════════════════════════════════════
 def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
     models = discover_tts_models()
@@ -172,9 +170,14 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
             if r.status_code == 429:
                 return "RATE_LIMIT"
             
+            if r.status_code == 400:
+                # خطأ 400 يعني أن البيانات المرسلة خاطئة (مثل اسم صوت غير مدعوم)، لا نحرق المفتاح!
+                _log(f"   ❌ خطأ 400 (بيانات خاطئة) مع {model}: {r.text[:100]}")
+                return False
+                
             if r.status_code == 404:
                 _log(f"   ⚠️ الموديل {model} غير متاح، جرب الذي بعده...")
-                continue # جرب الموديل التالي
+                continue
                 
             if r.status_code != 200:
                 _log(f"   ⚠️ HTTP {r.status_code} من {model}")
@@ -182,17 +185,14 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
 
             data = r.json()
             cands = data.get("candidates") or []
-            if not cands:
-                continue
+            if not cands: continue
 
             parts = (cands[0].get("content") or {}).get("parts") or []
-            if not parts:
-                continue
+            if not parts: continue
 
             inline = parts[0].get("inlineData") or {}
             audio_b64 = inline.get("data")
-            if not audio_b64:
-                continue
+            if not audio_b64: continue
 
             raw = base64.b64decode(audio_b64)
             with wave.open(str(out_wav), "wb") as wf:
@@ -206,7 +206,7 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
             _log(f"   ⚠️ استثناء مع {model}: {str(e)[:100]}")
             continue
             
-    return False # فشلت كل الموديلات
+    return False
 
 # ═══════════════════════════════════════════════════════
 #  الواجهة العامة
@@ -274,9 +274,6 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
     _log(f"🎉 تم: {out_mp3_path}")
     return str(out_mp3_path)
 
-# ═══════════════════════════════════════════════════════
-#  اختبار سريع (للتأكد من عمل السكربت)
-# ═══════════════════════════════════════════════════════
 if __name__ == "__main__":
     sample = "بسم الله الرحمن الرحيم. الحمد لله رب العالمين."
     gemini_tts_with_pool(sample, "out/test_pool.mp3", voice="Charon")
