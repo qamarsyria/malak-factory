@@ -37,10 +37,10 @@ jobs:
           echo "${{ secrets.WIREGUARD_CONFIG }}" | sed 's/\r$//' | grep -v '^DNS' > /tmp/wg.conf
           
           # 2. استخراج القيم
-          PRIVATE_KEY=$(grep '^PrivateKey' /tmp/wg.conf | cut -d'=' -f2 | tr -d ' ')
-          ADDRESS=$(grep '^Address' /tmp/wg.conf | cut -d'=' -f2 | tr -d ' ' | cut -d',' -f1)
-          PUBLIC_KEY=$(grep '^PublicKey' /tmp/wg.conf | cut -d'=' -f2 | tr -d ' ')
-          ENDPOINT=$(grep '^Endpoint' /tmp/wg.conf | cut -d'=' -f2 | tr -d ' ')
+          PRIVATE_KEY=$(grep '^PrivateKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
+ADDRESS=$(grep '^Address' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ' | cut -d',' -f1)
+PUBLIC_KEY=$(grep '^PublicKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
+ENDPOINT=$(grep '^Endpoint' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
           
           echo "IP: $ADDRESS"
           echo "Endpoint: $ENDPOINT"
