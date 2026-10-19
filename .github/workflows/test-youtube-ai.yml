@@ -1,14 +1,7 @@
-name: Test YouTube AI Agent with VPN
+name: Test YouTube AI Agent with Auto-Proxy
 
 on:
   workflow_dispatch:
-    inputs:
-      title:
-        description: 'عنوان الفيديو'
-        default: 'اختبار AI Agent — مالك فاكتوري'
-      description:
-        description: 'الوصف'
-        default: 'رفع تجريبي عبر Gemini Vision.'
 
 jobs:
   upload:
@@ -16,56 +9,16 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install deps & WireGuard
+      - name: Install deps
         run: |
           pip install requests playwright aiohttp pyotp beautifulsoup4
           playwright install chromium
           playwright install-deps chromium
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg wireguard-tools
-
-      - name: Setup VPN (Manual & Clean)
-        run: |
-          echo "${{ secrets.WIREGUARD_CONFIG }}" | sed 's/\r$//' | grep -v '^DNS' > /tmp/wg.conf
-          
-          PRIVATE_KEY=$(grep '^PrivateKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
-          ADDRESS=$(grep '^Address' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ' | cut -d',' -f1)
-          PUBLIC_KEY=$(grep '^PublicKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
-          ENDPOINT=$(grep '^Endpoint' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
-          
-          sudo ip link add dev wg0 type wireguard
-          
-          echo "$PRIVATE_KEY" > /tmp/privatekey
-          sudo wg set wg0 private-key /tmp/privatekey
-          
-          sudo wg set wg0 peer "$PUBLIC_KEY" endpoint "$ENDPOINT" allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25
-          
-          # 👇 السطر السحري الذي كان ناقصاً (يمنع ضياع الحزم)
-          sudo wg set wg0 fwmark 51820
-          
-          sudo ip address add "$ADDRESS" dev wg0
-          sudo ip link set mtu 1420 up dev wg0
-          
-          sudo ip route add default dev wg0 table 51820
-          sudo ip rule add not fwmark 51820 table 51820
-          sudo ip rule add table main suppress_prefixlength 0
-          sudo sysctl -q net.ipv4.conf.all.src_valid_mark=1
-          
-          sudo rm -f /etc/resolv.conf
-          printf "nameserver 10.64.0.1\n" | sudo tee /etc/resolv.conf
-          printf "nameserver 1.1.1.1\n" | sudo tee -a /etc/resolv.conf
-          
-          echo "=== Tunnel Status ==="
-          sudo wg show
-          echo "=== External IP ==="
-          curl -s --max-time 15 https://ipinfo.io/ip || echo "❌ curl failed"
-          echo "=== DNS Test ==="
-          nslookup m.youtube.com || echo "❌ DNS failed"
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg
 
       - name: Generate test video
         run: |
@@ -77,18 +30,9 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           GOOGLE_TOTP_SECRET: ${{ secrets.GOOGLE_TOTP_SECRET }}
-          YT_TITLE: ${{ github.event.inputs.title }}
-          YT_DESC: ${{ github.event.inputs.description }}
+          YT_TITLE: "اختبار AI Agent مع بروكسي تلقائي"
+          YT_DESC: "رفع تجريبي عبر Gemini Vision ونظام بروكسي ذكي."
         run: python scripts/youtube_ai_agent.py
-
-      - name: Shutdown VPN
-        if: always()
-        run: |
-          sudo ip link delete dev wg0 || true
-          sudo ip route flush table 51820 || true
-          sudo ip rule delete table 51820 || true
-          sudo rm -f /etc/resolv.conf
-          printf "nameserver 8.8.8.8\n" | sudo tee /etc/resolv.conf
 
       - uses: actions/upload-artifact@v4
         if: always()
