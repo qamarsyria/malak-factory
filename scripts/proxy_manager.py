@@ -7,9 +7,8 @@ def _log(msg):
     print(f"[ProxyManager] {msg}", flush=True)
 
 def get_working_proxy() -> str | None:
-    """يجلب ويختبر البروكسيات ويعيد أول بروكسي صالح."""
+    """يجلب ويختبر البروكسيات ويعيد أول بروكسي صالح وسريع."""
     
-    # قائمة بالمصادر الموثوقة التي يتم تحديثها باستمرار
     sources = [
         "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
         "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/https/data.txt",
@@ -26,7 +25,6 @@ def get_working_proxy() -> str | None:
                 if '://' in line:
                     all_proxies.add(line.strip())
                 else:
-                    # إضافة البروتوكول إذا كان مفقوداً
                     all_proxies.add(f"http://{line.strip()}")
         except Exception as e:
             _log(f"⚠️ فشل جلب من {url}: {e}")
@@ -38,24 +36,29 @@ def get_working_proxy() -> str | None:
 
     proxy_list = list(all_proxies)
     random.shuffle(proxy_list)
-    _log(f"تم جمع {len(proxy_list)} بروكسي. جاري اختبارها...")
+    _log(f"تم جمع {len(proxy_list)} بروكسي. جاري اختبارها (أول 30 فقط)...")
 
-    # اختبار أول 50 بروكسي (لتوفير الوقت)
-    for proxy in proxy_list[:50]:
+    # اختبار أول 30 بروكسي فقط (لتوفير الوقت)
+    for proxy in proxy_list[:30]:
         try:
             _log(f"  -> اختبار: {proxy}")
-            # اختبار الوصول إلى يوتيوب
-            test_url = "https://www.youtube.com/generate_204"
+            # اختبار حقيقي: تحميل صفحة يوتيوب
+            test_url = "https://www.youtube.com/"
             proxies = {"http": proxy, "https": proxy}
-            r = requests.get(test_url, proxies=proxies, timeout=10, allow_redirects=False)
             
-            if r.status_code in [204, 200]:
-                _log(f"✅ نجح البروكسي: {proxy}")
+            # شرط: يجب أن يستغرق أقل من 8 ثوانٍ
+            start_time = time.time()
+            r = requests.get(test_url, proxies=proxies, timeout=8, allow_redirects=True)
+            elapsed = time.time() - start_time
+            
+            if r.status_code == 200 and elapsed < 8:
+                _log(f"✅ نجح البروكسي: {proxy} (زمن: {elapsed:.1f}ث)")
                 return proxy
             else:
-                _log(f"  -> فشل (رمز الحالة: {r.status_code})")
-        except Exception:
+                _log(f"  -> فشل (رمز: {r.status_code}, زمن: {elapsed:.1f}ث)")
+        except Exception as e:
+            _log(f"  -> فشل: {str(e)[:60]}")
             continue
             
-    _log("❌ لم يتم العثور على أي بروكسي صالح من القائمة المختبرة.")
+    _log("❌ لم يتم العثور على أي بروكسي صالح.")
     return None
