@@ -41,7 +41,7 @@ class GeminiKeyPool:
         if not key:
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
-            if wait > 300: # إذا كان الانتظار أكثر من 5 دقائق (يعني يوم كامل)
+            if wait > 300: # إذا كان الانتظار أكثر من 5 دقائق
                 raise RuntimeError("🚫 كل المفاتيح مستنفدة لليوم!")
             _log(f"⏳ كل المفاتيح في تبريد — أنتظر {wait}ث")
             time.sleep(wait)
@@ -273,3 +273,10 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
 
     _log(f"🎉 تم: {out_mp3_path}")
     return str(out_mp3_path)
+
+# ═══════════════════════════════════════════════════════
+#  اختبار سريع (للتأكد من عمل السكربت)
+# ═══════════════════════════════════════════════════════
+if __name__ == "__main__":
+    sample = "بسم الله الرحمن الرحيم. الحمد لله رب العالمين."
+    gemini_tts_with_pool(sample, "out/test_pool.mp3", voice="Charon")
