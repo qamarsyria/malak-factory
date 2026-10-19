@@ -36,18 +36,22 @@ jobs:
           # 1. تنظيف الملف من أحرف \r وحذف سطر DNS
           echo "${{ secrets.WIREGUARD_CONFIG }}" | sed 's/\r$//' | grep -v '^DNS' > /tmp/wg.conf
           
-          # 2. استخراج القيم
+          # 2. استخراج القيم (تم إضافة - لضمان أخذ المفتاح كاملاً)
           PRIVATE_KEY=$(grep '^PrivateKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
-ADDRESS=$(grep '^Address' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ' | cut -d',' -f1)
-PUBLIC_KEY=$(grep '^PublicKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
-ENDPOINT=$(grep '^Endpoint' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
+          ADDRESS=$(grep '^Address' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ' | cut -d',' -f1)
+          PUBLIC_KEY=$(grep '^PublicKey' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
+          ENDPOINT=$(grep '^Endpoint' /tmp/wg.conf | cut -d'=' -f2- | tr -d ' ')
           
           echo "IP: $ADDRESS"
           echo "Endpoint: $ENDPOINT"
           
-          # 3. إنشاء النفق يدوياً (بدون wg-quick)
+          # 3. إنشاء النفق يدوياً
           sudo ip link add dev wg0 type wireguard
-          printf "%s" "$PRIVATE_KEY" | sudo wg set wg0 private-key /dev/stdin
+          
+          # حفظ المفتاح في ملف وقراءته لضمان عدم وجود مشاكل
+          echo "$PRIVATE_KEY" > /tmp/privatekey
+          sudo wg set wg0 private-key /tmp/privatekey
+          
           sudo wg set wg0 peer "$PUBLIC_KEY" endpoint "$ENDPOINT" allowed-ips 0.0.0.0/0,::/0 persistent-keepalive 25
           sudo ip address add "$ADDRESS" dev wg0
           sudo ip link set mtu 1420 up dev wg0
