@@ -34,23 +34,25 @@ jobs:
           echo "${{ secrets.WIREGUARD_CONFIG }}" | sudo tee /etc/wireguard/wg0.conf > /dev/null
           sudo chmod 600 /etc/wireguard/wg0.conf
           
-          # 1. إيقاف خدمة DNS المتعارضة في GitHub
+          # 1. حذف سطر DNS من ملف الـ VPN (لكي لا يتدخل في إعداداتنا)
+          sudo sed -i '/^DNS =/d' /etc/wireguard/wg0.conf
+          
+          # 2. إيقاف خدمة الـ DNS المتعارضة في GitHub
           sudo systemctl stop systemd-resolved || true
           sudo systemctl disable systemd-resolved || true
-          sudo rm -f /etc/resolv.conf
           
-          # 2. إعداد DNS يدوي (Mullvad + Google)
+          # 3. إعداد الـ DNS يدوياً (Mullvad + Google + Cloudflare)
+          sudo rm -f /etc/resolv.conf
           echo "nameserver 10.64.0.1" | sudo tee /etc/resolv.conf
           echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf
           echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
           
-          # 3. تشغيل الـ VPN
+          # 4. تشغيل الـ VPN الآن (بدون مشاكل DNS)
           sudo wg-quick up wg0
           
           echo "✅ VPN Connected."
-          echo "🔍 Testing DNS resolution (should return an IP):"
+          echo "🔍 Testing DNS resolution:"
           nslookup m.youtube.com || echo "⚠️ DNS still failing..."
-          echo ""
           echo "🔍 Testing external IP (should show Netherlands):"
           curl -s --max-time 15 https://ipinfo.io/ip || echo "⚠️ curl failed..."
 
