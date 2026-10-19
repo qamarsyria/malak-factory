@@ -8,9 +8,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          
+      - name: Install requests
+        run: pip install requests
+
       - name: Test each key
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -33,7 +38,7 @@ jobs:
                   elif r.status_code == 429:
                       print('❌ Key hit rate limit (quota exhausted)')
                   elif r.status_code == 404:
-                      print('❌ Model not found (try different model)')
+                      print('❌ Model not found')
                   else:
                       print(f'❌ Error {r.status_code}: {r.text[:100]}')
               except Exception as e:
