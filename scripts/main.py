@@ -2,6 +2,8 @@
 import sys
 import traceback
 import random
+import re
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,10 +19,53 @@ from config import SITE_URL, VOICE_MAP
 from update_feed import add_video_to_feed
 
 
+def get_narrator(item):
+    """استخراج اسم الراوي من البيانات أو من dorar.net"""
+    # 1. من حقل narrator إذا كان موجوداً
+    narrator = item.get("narrator", "").strip()
+    if narrator:
+        return narrator
+
+    # 2. من حقل attribution إذا كان يحتوي "عن"
+    attr = item.get("attribution", "")
+    if "عن" in attr:
+        match = re.search(r"عن\s+([^\s،,\.]+(?:\s+[^\s،,\.]+){0,5})", attr)
+        if match:
+            return match.group(1).strip()
+
+    # 3. من dorar.net (احتياطي)
+    try:
+        text = item.get("text", "")[:100]
+        if text and item.get("source_type") == "hadith":
+            print(f"🔎 محاولة استخراج الراوي من dorar.net...")
+            r = requests.get(
+                "https://dorar.net/dorar_api.json",
+                params={"skey": text},
+                timeout=15,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                ahadith = data.get("ahadith", {}).get("result", [])
+                if ahadith:
+                    rawi = ahadith[0].get("rawi", "").strip()
+                    if rawi:
+                        print(f"✅ الراوي: {rawi}")
+                        return rawi
+    except Exception as e:
+        print(f"⚠️ فشل استخراج الراوي من dorar.net: {e}")
+
+    return ""
+
+
 def build_caption(item, script):
     q = script["question"].strip()
     a = script["answer"].strip()
     attr = item.get("attribution", "").strip()
+    narrator = script.get("narrator", "").strip()
+
+    if narrator and "عن" not in attr:
+        attr = f"{attr} — عن {narrator}" if attr else f"عن {narrator}"
+
     parts = []
     if q:
         parts += [q, ""]
@@ -36,9 +81,9 @@ def run():
 
     item, state = pick_next()
     print(f"📖 العنصر: {item['id']} | نوع={item['source_type']}")
-    
+
     voice_name = item.get("voice") or VOICE_MAP.get(item["source_type"], "Charon")
-    
+
     if item["source_type"] == "ruqyah":
         script = {
             "question": item.get("question", ""),
@@ -51,6 +96,14 @@ def run():
         script["voice"] = voice_name
 
     script["attribution"] = item.get("attribution", "")
+
+    narrator = ""
+    if item.get("source_type") == "hadith":
+        narrator = get_narrator(item)
+        if narrator:
+            print(f"👤 الراوي: {narrator}")
+    script["narrator"] = narrator
+
     check = verify(script)
     print(f"🔎 التحقق: ok={check['ok']}, تحذيرات={len(check['warnings'])}")
 
@@ -59,7 +112,14 @@ def run():
         sys.exit(1)
 
     voice_text = script["answer"] if not script["question"] else f"{script['question']}. {script['answer']}"
-    voice_path = generate(voice_text, "out/voice.mp3", voice=voice_name)
+
+    voice_path = generate(
+        voice_text,
+        "out/voice.mp3",
+        voice=voice_name,
+        item_type=item["source_type"],
+    )
+
     video_path = build(script, voice_path, "out/video.mp4")
 
     caption = build_caption(item, script)
@@ -70,8 +130,7 @@ def run():
     try:
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
-        
-        # إضافة الفيديو إلى ملف videos.json برقم الرسالة (mid) مع أرقام تحفيزية
+
         add_video_to_feed(
             title=title,
             description=caption,
@@ -79,10 +138,10 @@ def run():
             category=item.get("source_type", "عام"),
             views=random.randint(100, 500),
             likes=random.randint(50, 300),
-            shares=random.randint(10, 80)
+            shares=random.randint(10, 80),
         )
         print("📱 تمت إضافة الفيديو إلى واجهة المنصة بنجاح!")
-            
+
     except Exception as e:
         results["telegram"] = f"❌ {e}"
 
