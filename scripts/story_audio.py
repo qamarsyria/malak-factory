@@ -3,13 +3,14 @@ import os
 import subprocess
 import tempfile
 import json
+import re
 from pathlib import Path
 
 import requests
 
-from config import QURAN_BASE, STORY_RECITER, SCENE_MAP
+from config import QURAN_BASE, STORY_RECITER
 from voice import generate as gemini_generate
-from scene_detector import detect_scene
+from story_director import direct_scene
 from sfx_manager import fetch_sfx
 
 TARGET_SR = "44100"
@@ -25,13 +26,23 @@ def normalize(input_path: str, output_path: str):
         output_path,
     ], check=True, capture_output=True, timeout=120)
 
-def fetch_ayah(surah: int, ayah: int, out_path: str):
+def fetch_ayah_audio(surah: int, ayah: int, out_path: str):
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{STORY_RECITER}/{filename}"
     r = requests.get(url, timeout=60)
     if r.status_code != 200:
         raise RuntimeError(f"فشل جلب الآية {surah}:{ayah} - HTTP {r.status_code}")
     Path(out_path).write_bytes(r.content)
+
+def fetch_ayah_text(surah: int, ayah: int) -> str:
+    try:
+        url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/ar.alafasy"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()['data']['text']
+    except Exception:
+        pass
+    return ""
 
 def get_duration(path: str) -> float:
     probe = subprocess.run([
@@ -44,7 +55,7 @@ def get_duration(path: str) -> float:
         return 0.0
 
 def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
-    """يمزج السرد مع المؤثر الصوتي (بنسبة 30% للمؤثر)."""
+    """يمزج السرد مع المؤثر الصوتي (بنسبة 30% للمؤثر فقط للسرد)."""
     if not sfx_path or not os.path.exists(sfx_path):
         subprocess.run(["ffmpeg", "-y", "-i", voice_path, "-c", "copy", output_path], check=True, capture_output=True)
         return
@@ -60,6 +71,10 @@ def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
         output_path
     ], check=True, capture_output=True, timeout=120)
 
+def split_into_sentences(text):
+    parts = re.split(r'(?<=[.!؟])\s+', text)
+    return [p.strip() for p in parts if p.strip()]
+
 def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.mp3"):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
     surah = ep.get("surah", 12)
@@ -70,72 +85,91 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
     parts = []
     meta_segments = []
+    idx_counter = 0
 
-    for i, seg in enumerate(segments):
+    for seg in segments:
         seg_type = seg.get("type")
-        raw_path = work_dir / f"raw_{i:03d}.mp3"
-        norm_path = work_dir / f"norm_{i:03d}.mp3"
-        mixed_path = work_dir / f"mixed_{i:03d}.mp3"
+        
+        if seg_type == "narration":
+            full_text = seg.get("text", "").strip()
+            if not full_text: continue
+            
+            sentences = split_into_sentences(full_text)
+            merged_sentences = []
+            buf = ""
+            for s in sentences:
+                if len(s) < 15:
+                    buf += " " + s
+                else:
+                    if buf:
+                        merged_sentences.append(buf.strip())
+                        buf = ""
+                    merged_sentences.append(s)
+            if buf:
+                merged_sentences.append(buf.strip())
 
-        try:
-            if seg_type == "narration":
-                text = seg.get("text", "").strip()
-                if not text: continue
+            for s in merged_sentences:
+                raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
+                norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
+                mixed_path = work_dir / f"mixed_{idx_counter:03d}.mp3"
                 
-                print(f"[{i}] سرد ({len(text)} حرف)...")
+                print(f"[{idx_counter}] سرد: {s[:40]}...")
                 
-                scene = detect_scene(text)
-                gemini_generate(text, str(raw_path), voice="Charon", item_type="story")
+                scene_data = direct_scene(s)
+                gemini_generate(s, str(raw_path), voice="Charon", item_type="story")
                 
-                sfx_query = SCENE_MAP.get(scene, {}).get("sfx_queries", ["wind"])[0]
-                sfx_path = fetch_sfx(sfx_query)
-                
+                # ✅ إضافة المؤثر الصوتي للسرد فقط
+                sfx_path = fetch_sfx(scene_data["sfx"])
                 mix_audio_with_sfx(str(raw_path), sfx_path, str(mixed_path))
                 raw_path = mixed_path
                 
-                meta_text = text
-                meta_title = ""
-                meta_scene = scene
-
-            elif seg_type == "quran":
-                ayah_nums = seg.get("ayah_numbers", [])
-                if not ayah_nums: continue
+                normalize(str(raw_path), str(norm_path))
                 
-                print(f"[{i}] آية ({len(ayah_nums)})...")
-                if len(ayah_nums) == 1:
-                    fetch_ayah(surah, ayah_nums[0], str(raw_path))
-                else:
-                    sub_parts = []
-                    for j, ay in enumerate(ayah_nums):
-                        sub_p = work_dir / f"sub_{i:03d}_{j:02d}.mp3"
-                        fetch_ayah(surah, ay, str(sub_p))
-                        sub_parts.append(str(sub_p))
-                    list_file = work_dir / f"list_{i:03d}.txt"
-                    with open(list_file, "w") as f:
-                        for sp in sub_parts: f.write(f"file '{sp}'\n")
-                    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw_path)], check=True)
-                
-                meta_text = ""
-                meta_title = f"سورة يوسف — الآيات {ayah_nums[0]}-{ayah_nums[-1]}" if len(ayah_nums) > 1 else f"سورة يوسف — الآية {ayah_nums[0]}"
-                meta_scene = "calm"
+                dur = get_duration(str(norm_path))
+                meta_segments.append({
+                    "index": idx_counter, "type": "narration",
+                    "text": s, "visual": scene_data["visual"], "duration": round(dur, 3)
+                })
+                parts.append(str(norm_path))
+                idx_counter += 1
 
+        elif seg_type == "quran":
+            ayah_nums = seg.get("ayah_numbers", [])
+            if not ayah_nums: continue
+            
+            raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
+            norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
+            
+            print(f"[{idx_counter}] آية: {ayah_nums}")
+            
+            if len(ayah_nums) == 1:
+                fetch_ayah_audio(surah, ayah_nums[0], str(raw_path))
+                txt = fetch_ayah_text(surah, ayah_nums[0])
             else:
-                continue
-
+                sub_parts = []
+                txt_list = []
+                for j, ay in enumerate(ayah_nums):
+                    sub_p = work_dir / f"sub_{idx_counter:03d}_{j:02d}.mp3"
+                    fetch_ayah_audio(surah, ay, str(sub_p))
+                    sub_parts.append(str(sub_p))
+                    txt_list.append(fetch_ayah_text(surah, ay))
+                txt = " ".join(txt_list)
+                
+                list_file = work_dir / f"list_{idx_counter:03d}.txt"
+                with open(list_file, "w") as f:
+                    for sp in sub_parts: f.write(f"file '{sp}'\n")
+                subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw_path)], check=True)
+                
+            # ✅ هنا لا نمرر الصوت إلى mix_audio_with_sfx مطلقاً
             normalize(str(raw_path), str(norm_path))
             
-            seg_duration = get_duration(str(norm_path))
+            dur = get_duration(str(norm_path))
             meta_segments.append({
-                "index": i, "type": seg_type, "text": meta_text,
-                "title": meta_title, "duration": round(seg_duration, 3),
-                "scene": meta_scene
+                "index": idx_counter, "type": "quran",
+                "text": txt, "visual": "ancient quran book or mosque architecture", "duration": round(dur, 3)
             })
             parts.append(str(norm_path))
-            print(f"   ✅ [{i}] جاهز ({seg_duration:.1f} ث)")
-
-        except Exception as e:
-            print(f"   ❌ [{i}] فشل: {e}")
-            raise
+            idx_counter += 1
 
     print(f"\n🔗 دمج {len(parts)} مقطع...")
     list_file = work_dir / "final.txt"
