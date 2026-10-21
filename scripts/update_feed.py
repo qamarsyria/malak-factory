@@ -3,44 +3,8 @@ import json
 import base64
 import requests
 
-def upload_video_to_github(file_path, filename):
-    """رفع ملف الفيديو إلى مستودع المنصة مباشرة"""
-    REPO = "qamarsyria/qamar-malak"
-    GITHUB_TOKEN = os.environ.get("GH_PAT")
-    
-    if not GITHUB_TOKEN:
-        print("❌ GH_PAT غير موجود")
-        return None
-
-    url = f"https://api.github.com/repos/{REPO}/contents/{filename}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-
-    try:
-        with open(file_path, "rb") as f:
-            content = base64.b64encode(f.read()).decode("utf-8")
-
-        data = {
-            "message": f"🎬 رفع فيديو جديد: {filename}",
-            "content": content
-        }
-        r = requests.put(url, headers=headers, json=data)
-        if r.status_code in [200, 201]:
-            direct_url = f"https://raw.githubusercontent.com/{REPO}/main/{filename}"
-            print(f"✅ تم رفع الفيديو إلى GitHub: {direct_url}")
-            return direct_url
-        else:
-            print(f"❌ فشل رفع الفيديو: {r.status_code} - {r.text}")
-            return None
-    except Exception as e:
-        print(f"❌ خطأ: {e}")
-        return None
-
-
 def add_video_to_feed(title, description, video_url, category="عام"):
-    REPO = "qamarsyria/qamar-malak"
+    REPO = "qamarsyria/qamar-malak" # مستودع المنصة
     FILE_PATH = "videos.json"
     GITHUB_TOKEN = os.environ.get("GH_PAT")
 
