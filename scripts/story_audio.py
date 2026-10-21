@@ -49,7 +49,6 @@ def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
         subprocess.run(["ffmpeg", "-y", "-i", voice_path, "-c", "copy", output_path], check=True, capture_output=True)
         return
 
-    # نكرر المؤثر ليطابق مدة السرد، ونخفض صوته لـ 30%
     subprocess.run([
         "ffmpeg", "-y",
         "-i", voice_path,
@@ -85,17 +84,12 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                 
                 print(f"[{i}] سرد ({len(text)} حرف)...")
                 
-                # 1. كشف المشهد
                 scene = detect_scene(text)
-                
-                # 2. توليد السرد
                 gemini_generate(text, str(raw_path), voice="Charon", item_type="story")
                 
-                # 3. جلب مؤثر صوتي
                 sfx_query = SCENE_MAP.get(scene, {}).get("sfx_queries", ["wind"])[0]
                 sfx_path = fetch_sfx(sfx_query)
                 
-                # 4. الدمج
                 mix_audio_with_sfx(str(raw_path), sfx_path, str(mixed_path))
                 raw_path = mixed_path
                 
@@ -123,7 +117,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                 
                 meta_text = ""
                 meta_title = f"سورة يوسف — الآيات {ayah_nums[0]}-{ayah_nums[-1]}" if len(ayah_nums) > 1 else f"سورة يوسف — الآية {ayah_nums[0]}"
-                meta_scene = "calm" # الآيات لا ترافقها مؤثرات
+                meta_scene = "calm"
 
             else:
                 continue
@@ -164,7 +158,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
     print(f"\n✅ الحلقة: {output_mp3} | ⏱️ المدة: {duration/60:.1f} دقيقة")
     return output_mp3
-    if __name__ == "__main__":
+
+if __name__ == "__main__":
     build_episode_audio(
         "data/stories/yusuf/episode-01.json",
         "out/episode-01.mp3",
