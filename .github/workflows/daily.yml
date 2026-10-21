@@ -42,6 +42,9 @@ jobs:
           node scripts/parse_riyad.js
           echo "✅ JSON جاهز"
 
+      # ============================================================
+      # 1. بناء صوت القصة (السرد + الآيات + المؤثرات)
+      # ============================================================
       - name: Build Story Audio (with SFX)
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -57,6 +60,9 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+      # ============================================================
+      # 2. بناء فيديو القصة (الصور + النصوص + الخلفيات)
+      # ============================================================
       - name: Build Story Video
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -71,6 +77,9 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+      # ============================================================
+      # 3. الفيديو اليومي (الحديث / المسألة)
+      # ============================================================
       - name: Run factory (Daily Short)
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
