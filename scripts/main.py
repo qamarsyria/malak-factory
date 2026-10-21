@@ -1,6 +1,7 @@
 """المنسّق: من المحتوى إلى النشر على 3 منصات."""
 import sys
 import traceback
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,8 +15,31 @@ from video import build
 from uploaders import telegram, facebook, youtube
 from config import SITE_URL, VOICE_MAP
 
-# استيراد السكريبت الجديد الذي يرسل الفيديو للمنصة
+# استيراد السكريبت الذي يرسل الفيديو للمنصة
 from update_feed import add_video_to_feed
+
+
+def upload_to_catbox(file_path):
+    """رفع الفيديو إلى موقع Catbox للحصول على رابط MP4 مباشر"""
+    try:
+        print("☁️ جاري رفع الفيديو إلى Catbox للحصول على رابط مباشر...")
+        with open(file_path, 'rb') as f:
+            r = requests.post(
+                'https://catbox.moe/user/api.php',
+                data={'reqtype': 'fileupload'},
+                files={'fileToUpload': f},
+                timeout=300 # مهلة 5 دقائق للرفع
+            )
+        if r.status_code == 200 and r.text.startswith('https'):
+            url = r.text.strip()
+            print(f"✅ تم الرفع بنجاح: {url}")
+            return url
+        else:
+            print(f"❌ فشل الرفع: {r.status_code} - {r.text}")
+            return ""
+    except Exception as e:
+        print(f"❌ خطأ أثناء الرفع: {e}")
+        return ""
 
 
 def build_caption(item, script):
@@ -37,13 +61,9 @@ def run():
 
     item, state = pick_next()
     print(f"📖 العنصر: {item['id']} | نوع={item['source_type']}")
-    print(f"📝 النص الأصلي: {item['text'][:120]}...")
-
-    # تحديد الصوت حسب النوع
+    
     voice_name = item.get("voice") or VOICE_MAP.get(item["source_type"], "Charon")
-    print(f"🎙️  الصوت: {voice_name}")
-
-    # الرقية لا تُعاد صياغتها (نصوص قرآنية)
+    
     if item["source_type"] == "ruqyah":
         script = {
             "question": item.get("question", ""),
@@ -54,10 +74,6 @@ def run():
     else:
         script = reformulate(item)
         script["voice"] = voice_name
-
-    print(f"✍️  السؤال: {script['question'] or '(بدون)'}")
-    print(f"✍️  الجواب: {script['answer'][:120]}...")
-    print(f"🔁 استُخدم النص الأصلي؟ {script['used_original']}")
 
     script["attribution"] = item.get("attribution", "")
     check = verify(script)
@@ -77,37 +93,35 @@ def run():
 
     results = {}
 
+    # 1. النشر على تلغرام
     try:
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
         
-        # ═══════════════════════════════════════════════════════════════
-        # إضافة الفيديو إلى واجهة المنصة (feed.html)
-        # ═══════════════════════════════════════════════════════════════
-        try:
-            # ملاحظة: رابط الفيديو فارغ حالياً لأن تلغرام لا يعطي رابط MP4 مباشر.
-            # سيتم تحديثه لاحقاً عند ربط مساحة تخزين (مثل Supabase Storage).
-            video_url_placeholder = "" 
-            
+        # 2. الرفع على Catbox (للحصول على رابط للمنصة)
+        video_url = upload_to_catbox(video_path)
+        
+        # 3. تحديث المنصة (feed)
+        if video_url:
             add_video_to_feed(
                 title=title,
                 description=caption,
-                video_url=video_url_placeholder,
+                video_url=video_url,
                 category=item.get("source_type", "عام")
             )
-            print("📱 تمت إضافة الفيديو إلى واجهة المنصة (Feed)")
-        except Exception as feed_err:
-            print(f"⚠️ فشلت إضافة الفيديو للمنصة: {feed_err}")
-        
+            print("📱 تمت إضافة الفيديو إلى واجهة المنصة بنجاح!")
+            
     except Exception as e:
         results["telegram"] = f"❌ {e}"
 
+    # النشر على فيسبوك (إذا كان يعمل)
     try:
         vid = facebook.upload(video_path, caption)
         results["facebook"] = f"✅ video_id={vid}"
     except Exception as e:
         results["facebook"] = f"❌ {e}"
 
+    # النشر على يوتيوب (إذا كان يعمل)
     try:
         yid = youtube.upload(video_path, title=title, description=caption)
         results["youtube"] = f"✅ id={yid} (خاص)"
@@ -123,9 +137,6 @@ def run():
     if results.get("telegram", "").startswith("✅"):
         mark_published(item, state)
         print("💾 تم تحديث الحالة")
-    else:
-        print("⚠️  لم يتم تحديث الحالة")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
