@@ -29,17 +29,6 @@ GEMINI_VOICE_FEMALE = "Kore"     # نسائي (احتياطي)
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "eastus")
 AZURE_VOICE = "ar-EG-ShakirNeural"   # رجل مصري
-# خيارات Azure العربية:
-#   ar-EG-ShakirNeural  → مصري - رجل
-#   ar-EG-SalmaNeural   → مصري - امرأة
-#   ar-SA-HamedNeural   → سعودي - رجل
-#   ar-SA-ZariyahNeural → سعودي - امرأة
-#   ar-SY-LaithNeural   → سوري - رجل
-#   ar-SY-AmanyNeural   → سوري - امرأة
-#   ar-JO-TaimNeural    → أردني - رجل
-#   ar-JO-SanaNeural    → أردني - امرأة
-#   ar-AE-HamdanNeural  → إماراتي - رجل
-#   ar-AE-FatimaNeural  → إماراتي - امرأة
 AZURE_RATE = "-10%"              # تباطؤ 10% من المصدر
 
 # Piper TTS (الاحتياطي الأخير)
@@ -63,14 +52,6 @@ TARGET_BITRATE = "128k"
 # القرآن (everyayah)
 # ============================================================
 QURAN_RECITER = "Alafasy_128kbps"    # مشاري العفاسي
-# خيارات أخرى:
-#   "Husary_128kbps"                 → الحصري
-#   "Minshawy_Murattal_128kbps"      → المنشاوي
-#   "Abdul_Basit_Murattal_192kbps"   → عبد الباسط
-#   "Abdurrahmaan_As-Sudais_192kbps" → السديس
-#   "Hudhaify_128kbps"               → الحذيفي
-#   "Nasser_Alqatami_128kbps"        → القطامي
-#   "Yasser_Ad-Dussary_128kbps"      → الدوسري
 QURAN_BASE = "https://everyayah.com/data"
 
 # ============================================================
@@ -171,13 +152,12 @@ SITE_URL = "https://qamarsyria.github.io/qamar-malak/"
 # ============================================================
 # توزيع المصادر اليومية (7 أيام)
 # ============================================================
-# السبت=0 الأحد=1 الاثنين=2 الثلاثاء=3 الأربعاء=4 الخميس=5 الجمعة=6
 SOURCE_ROTATION = [
     "riyad",    # السبت
-    "story",    # الأحد - قصة الأنبياء
+    "story",    # الأحد
     "faq",      # الاثنين
     "hadith",   # الثلاثاء
-    "story",    # الأربعاء - قصة الأنبياء
+    "story",    # الأربعاء
     "faq",      # الخميس
     "hadith",   # الجمعة
 ]
@@ -185,65 +165,46 @@ SOURCE_ROTATION = [
 # ============================================================
 # إعدادات القصص
 # ============================================================
-# القصص المتاحة
 STORIES_AVAILABLE = [
-    "yusuf",     # يوسف
-    "adam",      # آدم
-    "nuh",       # نوح
-    "ibrahim",   # إبراهيم
-    "musa",      # موسى
+    "yusuf", "adam", "nuh", "ibrahim", "musa",
 ]
 
-# تقسيم سورة يوسف (111 آية) لحلقات درامية
 YUSUF_EPISODES = [
-    (1, 3),      # مقدمة السورة
-    (4, 6),      # الرؤيا وبشارة يعقوب
-    (7, 10),     # حسد الإخوة والمؤامرة
-    (11, 14),    # طلب الإخوة وقلق يعقوب
-    (15, 18),    # إلقاء يوسف في الجب
-    (19, 22),    # التقاطه وبيعه
-    (23, 29),    # مراودة امرأة العزيز
-    (30, 35),    # نسوة المدينة والسجن
-    (36, 42),    # دعوته في السجن
-    (43, 49),    # رؤيا الملك وتفسيرها
-    (50, 53),    # براءة يوسف
-    (54, 57),    # تمكينه على خزائن مصر
-    (58, 62),    # أول لقاء مع إخوته
-    (63, 68),    # العودة إلى يعقوب
-    (69, 76),    # بنيامين والسقاية
-    (77, 82),    # اتهام بنيامين
-    (83, 87),    # حزن يعقوب
-    (88, 92),    # عودة الإخوة والتعارف
-    (93, 98),    # القميص والبشارة
-    (99, 101),   # اللقاء الكبير والدعاء
-    (102, 111),  # الخاتمة والعبر
+    (1, 3), (4, 6), (7, 10), (11, 14), (15, 18), (19, 22), (23, 29),
+    (30, 35), (36, 42), (43, 49), (50, 53), (54, 57), (58, 62), (63, 68),
+    (69, 76), (77, 82), (83, 87), (88, 92), (93, 98), (99, 101), (102, 111),
 ]
 
-# ============================================================
-# إعدادات الفيديو (المزيد)
-# ============================================================
-# معايير الحلقة
-EPISODE_MIN_DURATION = 600       # 10 دقائق
-EPISODE_MAX_DURATION = 1200      # 20 دقيقة
-NARRATION_MIN_SENTENCES = 8      # 8 جمل لكل مقطع سرد
+EPISODE_MIN_DURATION = 600
+EPISODE_MAX_DURATION = 1200
+NARRATION_MIN_SENTENCES = 8
 NARRATION_MAX_SENTENCES = 12
 
 # ============================================================
 # إعدادات شرعية (لا تُغيَّر)
 # ============================================================
 FORBIDDEN_VISUALS = [
-    "prophets",          # الأنبياء - لا تصوير
-    "companions",        # الصحابة
-    "mothers_of_believers",  # أمهات المؤمنين
-    "ahl_al_bayt",       # آل البيت
-    "angels",            # الملائكة
-    "khalifa_rashidun",  # الخلفاء الراشدون
+    "prophets", "companions", "mothers_of_believers", "ahl_al_bayt", "angels", "khalifa_rashidun",
 ]
 
-# القرآن: لا موسيقى، لا مؤثرات، لا قطع
 QURAN_RULES = {
-    "no_music": True,
-    "no_sfx": True,
-    "no_cut": True,           # لا قطع آية أبداً
-    "complete_ayah_only": True,
+    "no_music": True, "no_sfx": True, "no_cut": True, "complete_ayah_only": True,
 }
+
+# ============================================================
+# التوجيه العاطفي (Gemini TTS Style Hints)
+# ============================================================
+STYLE_HINTS = {
+    "hadith":  "(in a calm, solemn, and dignified tone)",
+    "faq":     "(in a clear, educational, and friendly tone)",
+    "riyad":   "(in a spiritual, moving, and humble tone)",
+    "ruqyah":  "(in a strong, firm, and authoritative tone)",
+    "story":   "(in a narrative, engaging, and warm tone)",
+}
+
+# ============================================================
+# قص الصمت الزائد من نهاية الصوت (ffmpeg)
+# ============================================================
+TRIM_SILENCE_ENABLED = True
+TRIM_SILENCE_THRESHOLD = "-40dB"   # كل صوت أضعف من -40dB يعتبر صمتاً
+TRIM_SILENCE_MIN_LENGTH = 0.3      # الحد الأدنى لطول الصمت (ثواني)
