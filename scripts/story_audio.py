@@ -164,3 +164,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
     print(f"\n✅ الحلقة: {output_mp3} | ⏱️ المدة: {duration/60:.1f} دقيقة")
     return output_mp3
+    if __name__ == "__main__":
+    build_episode_audio(
+        "data/stories/yusuf/episode-01.json",
+        "out/episode-01.mp3",
+    )
