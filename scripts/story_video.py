@@ -3,19 +3,18 @@ import json
 import os
 import subprocess
 import tempfile
+import random
+import requests
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 
-from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR, SCENE_MAP
+from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR, SCENE_MAP, PIXABAY_KEY
 from video import _find_arabic_font, _shape, _wrap
 
 def fetch_scene_bg(scene: str, work_dir: Path) -> str:
     """جلب خلفية تناسب المشهد من Pixabay."""
-    import requests, random
-    from config import PIXABAY_KEY
-    
     query = SCENE_MAP.get(scene, {}).get("bg_query", "islamic nature")
     out_path = work_dir / f"bg_{scene}.jpg"
     
@@ -36,7 +35,6 @@ def fetch_scene_bg(scene: str, work_dir: Path) -> str:
         except Exception as e:
             print(f"⚠️ فشل جلب خلفية {scene}: {e}")
             
-    # احتياطي: خلفية سوداء
     img = Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10))
     img.save(out_path)
     return str(out_path)
@@ -45,19 +43,16 @@ def make_segment_image(bg_path: str, text: str, title: str, scene: str,
                        output_path: str, is_quran: bool = False):
     bg = Image.open(bg_path).convert("RGB")
     
-    # قص وتكبير
     ratio = max(VIDEO_W / bg.width, VIDEO_H / bg.height)
     bg = bg.resize((int(bg.width * ratio), int(bg.height * ratio)), Image.LANCZOS)
     left = (bg.width - VIDEO_W) // 2
     top = (bg.height - VIDEO_H) // 2
     bg = bg.crop((left, top, left + VIDEO_W, top + VIDEO_H))
 
-    # فلتر الألوان (حسب المشهد)
     tint = SCENE_MAP.get(scene, {}).get("color_tint", (0, 0, 0, 120))
     overlay = Image.new("RGBA", bg.size, tint)
     bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
 
-    # تعتيم إضافي لضمان وضوح النص
     overlay_dark = Image.new("RGBA", bg.size, (0, 0, 0, 80))
     bg = Image.alpha_composite(bg.convert("RGBA"), overlay_dark).convert("RGB")
 
@@ -67,7 +62,7 @@ def make_segment_image(bg_path: str, text: str, title: str, scene: str,
     try:
         font_main = ImageFont.truetype(font_path, 55, layout_engine=ImageFont.Layout.RAQM)
         font_title = ImageFont.truetype(font_path, 45, layout_engine=ImageFont.Layout.RAQM)
-    except:
+    except Exception:
         font_main = ImageFont.truetype(font_path, 55)
         font_title = ImageFont.truetype(font_path, 45)
 
@@ -88,10 +83,9 @@ def make_segment_image(bg_path: str, text: str, title: str, scene: str,
         draw.text((x, y), line, font=font_use, fill=color, stroke_width=TEXT_STROKE_W, stroke_fill=TEXT_STROKE)
         y += line_h
 
-    # علامة تجارية
     try:
         font_brand = ImageFont.truetype(font_path, 32, layout_engine=ImageFont.Layout.RAQM)
-    except:
+    except Exception:
         font_brand = ImageFont.truetype(font_path, 32)
 
     brand_text = _shape("ملاك المعرفة")
@@ -138,7 +132,8 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
 
     print(f"✅ الفيديو: {output_mp4} ({os.path.getsize(output_mp4)/1024/1024:.1f} MB)")
     return output_mp4
-    if __name__ == "__main__":
+
+if __name__ == "__main__":
     build_episode_video(
         "out/episode-01.mp3",
         "out/episode-01_meta.json",
