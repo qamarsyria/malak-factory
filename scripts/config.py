@@ -63,6 +63,7 @@ VOICE_MAP = {
 # الخلفيات
 # ============================================================
 PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "")
+PIXABAY_QUERY = "mosque,islamic,nature,sky,clouds,desert,stars"
 BG_FALLBACK = "assets/bg/default.jpg"
 BG_OVERLAY_OPACITY = 0.45
 KEN_BURNS_ZOOM = 1.05
@@ -105,46 +106,45 @@ FREESOUND_CACHE_DIR = "assets/audio/sfx_cache"
 # ============================================================
 # خريطة المشاهد (الخلفية + المؤثرات الصوتية)
 # ============================================================
-# كل نوع مشهد له خلفية (للبحث في بيكسابي) ومؤثرات (للبحث في فري ساوند)
 SCENE_MAP = {
     "conspiracy": {
         "bg_query": "dark forest fog",
-        "color_tint": (20, 30, 60, 100),  # أزرق داكن
+        "color_tint": (20, 30, 60, 100),
         "sfx_queries": ["whisper", "wind", "owl hoot"]
     },
     "fear": {
         "bg_query": "storm sky dark clouds",
-        "color_tint": (40, 40, 50, 120),  # رمادي داكن
+        "color_tint": (40, 40, 50, 120),
         "sfx_queries": ["rain", "thunder distant", "wind strong"]
     },
     "sadness": {
         "bg_query": "rain autumn leaves",
-        "color_tint": (60, 70, 90, 80),   # أزرق رمادي
+        "color_tint": (60, 70, 90, 80),
         "sfx_queries": ["sad bird", "stream water", "light rain"]
     },
     "calm": {
         "bg_query": "peaceful nature sunrise",
-        "color_tint": (200, 180, 100, 20), # ذهبي دافئ
+        "color_tint": (200, 180, 100, 20),
         "sfx_queries": ["birds chirping", "gentle breeze", "water spring"]
     },
     "battle": {
         "bg_query": "desert sand dunes",
-        "color_tint": (100, 50, 20, 80),   # برتقالي ترابي
+        "color_tint": (100, 50, 20, 80),
         "sfx_queries": ["sword clash", "horse gallop", "battle cry"]
     },
     "royal": {
         "bg_query": "ancient stone palace architecture",
-        "color_tint": (150, 100, 50, 80),  # برونزي
+        "color_tint": (150, 100, 50, 80),
         "sfx_queries": ["crowd distant", "wind light", "stone echo"]
     },
     "night": {
         "bg_query": "starry night sky desert",
-        "color_tint": (10, 10, 40, 100),   # أزرق ليلي
+        "color_tint": (10, 10, 40, 100),
         "sfx_queries": ["crickets night", "gentle wind", "owl"]
     },
     "sea": {
         "bg_query": "ocean waves horizon",
-        "color_tint": (30, 60, 100, 80),   # أزرق بحري
+        "color_tint": (30, 60, 100, 80),
         "sfx_queries": ["ocean waves", "seagulls", "wind sea"]
     }
 }
