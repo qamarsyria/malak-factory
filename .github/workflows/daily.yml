@@ -26,26 +26,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0
-          echo "✅ تم التثبيت"
-          fc-list :lang=ar | head -10
 
       - name: Install Python deps
         run: pip install -r requirements.txt
-
-      - name: Verify Pillow RAQM
-        run: |
-          python -c "from PIL import features; print('RAQM:', features.check('raqm'))"
 
       - name: Prepare JSON from sources
         run: |
           node scripts/parse_content.js
           node scripts/parse_riyad.js
-          echo "✅ JSON جاهز"
 
-      # ============================================================
-      # 1. بناء صوت القصة (السرد + الآيات + المؤثرات)
-      # ============================================================
-      - name: Build Story Audio (with SFX)
+      - name: Build Story Audio
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -57,12 +47,8 @@ jobs:
         with:
           name: story-episode-01-audio
           path: out/episode-01.mp3
-          retention-days: 7
           if-no-files-found: warn
 
-      # ============================================================
-      # 2. بناء فيديو القصة (الصور + النصوص + الخلفيات)
-      # ============================================================
       - name: Build Story Video
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -74,23 +60,14 @@ jobs:
         with:
           name: story-episode-01-video
           path: out/episode-01.mp4
-          retention-days: 7
           if-no-files-found: warn
 
-      # ============================================================
-      # 3. الفيديو اليومي (الحديث / المسألة)
-      # ============================================================
       - name: Run factory (Daily Short)
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GH_PAT: ${{ secrets.GH_PAT }}
-          FACEBOOK_PAGE_TOKEN: ${{ secrets.FACEBOOK_PAGE_TOKEN }}
-          FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python scripts/main.py
 
@@ -100,8 +77,6 @@ jobs:
         with:
           name: video-${{ github.run_number }}
           path: out/video.mp4
-          retention-days: 7
-          if-no-files-found: ignore
 
       - name: Upload composite image artifact
         if: always()
@@ -109,8 +84,6 @@ jobs:
         with:
           name: composite-${{ github.run_number }}
           path: out/composite.png
-          retention-days: 7
-          if-no-files-found: ignore
 
       - name: Commit state
         if: success()
