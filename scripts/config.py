@@ -19,7 +19,6 @@ ACCENT_COLOR = "#FFD700"
 # الصوت
 # ============================================================
 VOICE_ENGINE_PRIORITY = ["gemini", "azure", "piper"]
-
 GEMINI_VOICE = "Charon"
 GEMINI_VOICE_FEMALE = "Kore"
 
@@ -64,7 +63,6 @@ VOICE_MAP = {
 # الخلفيات
 # ============================================================
 PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "")
-PIXABAY_QUERY = "mosque,islamic,nature,sky,clouds,desert,stars"
 BG_FALLBACK = "assets/bg/default.jpg"
 BG_OVERLAY_OPACITY = 0.45
 KEN_BURNS_ZOOM = 1.05
@@ -80,7 +78,6 @@ FAQ_JSON = "data/faq-data.json"
 HADITH_JSON = "data/hadith-db.json"
 RIYAD_JSON = "data/riyad-salihin.json"
 RUQYAH_JSON = "data/ruqyah/ruqyah.json"
-
 STORIES_DIR = "data/stories"
 STATE_FILE = "state/published.json"
 FONT_DIR = "assets/fonts"
@@ -100,10 +97,57 @@ GEMINI_MODELS_TO_TRY = [
 ]
 
 # ============================================================
-# التحقق
+# Freesound API (المؤثرات الصوتية)
 # ============================================================
-DORAR_API = "https://dorar.net/dorar_api.json"
-QURAN_API = "https://api.alquran.cloud/v1"
+FREESOUND_API_KEY = "mctCOs0Xtos88jMekujyo8r9e0dDenmKAOhjiGzD"
+FREESOUND_CACHE_DIR = "assets/audio/sfx_cache"
+
+# ============================================================
+# خريطة المشاهد (الخلفية + المؤثرات الصوتية)
+# ============================================================
+# كل نوع مشهد له خلفية (للبحث في بيكسابي) ومؤثرات (للبحث في فري ساوند)
+SCENE_MAP = {
+    "conspiracy": {
+        "bg_query": "dark forest fog",
+        "color_tint": (20, 30, 60, 100),  # أزرق داكن
+        "sfx_queries": ["whisper", "wind", "owl hoot"]
+    },
+    "fear": {
+        "bg_query": "storm sky dark clouds",
+        "color_tint": (40, 40, 50, 120),  # رمادي داكن
+        "sfx_queries": ["rain", "thunder distant", "wind strong"]
+    },
+    "sadness": {
+        "bg_query": "rain autumn leaves",
+        "color_tint": (60, 70, 90, 80),   # أزرق رمادي
+        "sfx_queries": ["sad bird", "stream water", "light rain"]
+    },
+    "calm": {
+        "bg_query": "peaceful nature sunrise",
+        "color_tint": (200, 180, 100, 20), # ذهبي دافئ
+        "sfx_queries": ["birds chirping", "gentle breeze", "water spring"]
+    },
+    "battle": {
+        "bg_query": "desert sand dunes",
+        "color_tint": (100, 50, 20, 80),   # برتقالي ترابي
+        "sfx_queries": ["sword clash", "horse gallop", "battle cry"]
+    },
+    "royal": {
+        "bg_query": "ancient stone palace architecture",
+        "color_tint": (150, 100, 50, 80),  # برونزي
+        "sfx_queries": ["crowd distant", "wind light", "stone echo"]
+    },
+    "night": {
+        "bg_query": "starry night sky desert",
+        "color_tint": (10, 10, 40, 100),   # أزرق ليلي
+        "sfx_queries": ["crickets night", "gentle wind", "owl"]
+    },
+    "sea": {
+        "bg_query": "ocean waves horizon",
+        "color_tint": (30, 60, 100, 80),   # أزرق بحري
+        "sfx_queries": ["ocean waves", "seagulls", "wind sea"]
+    }
+}
 
 # ============================================================
 # الهاشتاجات
@@ -111,20 +155,12 @@ QURAN_API = "https://api.alquran.cloud/v1"
 HASHTAGS = "#إسلاميات #قرآن #حديث #قصص_الأنبياء #رقية_شرعية #دين #تذكير #قمر_الشام #ملاك_المعرفة"
 
 # ============================================================
-# تيليجرام
+# تيليجرام، فيسبوك، يوتيوب
 # ============================================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-# ============================================================
-# فيسبوك
-# ============================================================
 FACEBOOK_PAGE_TOKEN = os.getenv("FACEBOOK_PAGE_TOKEN", "")
 FACEBOOK_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "")
-
-# ============================================================
-# يوتيوب
-# ============================================================
 YT_CLIENT_ID = os.getenv("YT_CLIENT_ID", "")
 YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET", "")
 YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN", "")
@@ -155,8 +191,6 @@ YUSUF_EPISODES = [
 
 EPISODE_MIN_DURATION = 600
 EPISODE_MAX_DURATION = 1200
-NARRATION_MIN_SENTENCES = 8
-NARRATION_MAX_SENTENCES = 12
 
 # ============================================================
 # إعدادات شرعية
