@@ -1,7 +1,6 @@
-"""المنسّق: من المحتوى إلى النشر على 3 منصات."""
+"""المنسّق: من المحتوى إلى النشر."""
 import sys
 import traceback
-import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,32 +13,7 @@ from voice import generate
 from video import build
 from uploaders import telegram, facebook, youtube
 from config import SITE_URL, VOICE_MAP
-
-# استيراد السكريبت الذي يرسل الفيديو للمنصة
-from update_feed import add_video_to_feed
-
-
-def upload_to_catbox(file_path):
-    """رفع الفيديو إلى 0x0.st للحصول على رابط MP4 مباشر يعمل في المتصفح"""
-    try:
-        print("☁️ جاري رفع الفيديو إلى 0x0.st...")
-        with open(file_path, 'rb') as f:
-            r = requests.post(
-                'https://0x0.st',
-                files={'file': f},
-                timeout=300,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-        if r.status_code == 200:
-            url = r.text.strip()
-            print(f"✅ تم الرفع بنجاح: {url}")
-            return url
-        else:
-            print(f"❌ فشل الرفع: {r.status_code} - {r.text}")
-            return ""
-    except Exception as e:
-        print(f"❌ خطأ أثناء الرفع: {e}")
-        return ""
+from update_feed import add_video_to_feed, upload_video_to_github
 
 
 def build_caption(item, script):
@@ -47,11 +21,9 @@ def build_caption(item, script):
     a = script["answer"].strip()
     attr = item.get("attribution", "").strip()
     parts = []
-    if q:
-        parts += [q, ""]
+    if q: parts += [q, ""]
     parts.append(a)
-    if attr:
-        parts += ["", f"📚 {attr}"]
+    if attr: parts += ["", f"📚 {attr}"]
     parts += ["", f"🌐 {SITE_URL}"]
     return "\n".join(parts)[:950]
 
@@ -85,7 +57,6 @@ def run():
 
     voice_text = script["answer"] if not script["question"] else f"{script['question']}. {script['answer']}"
     voice_path = generate(voice_text, "out/voice.mp3", voice=voice_name)
-
     video_path = build(script, voice_path, "out/video.mp4")
 
     caption = build_caption(item, script)
@@ -93,15 +64,15 @@ def run():
 
     results = {}
 
-    # 1. النشر على تلغرام
     try:
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
         
-        # 2. الرفع على 0x0.st (للحصول على رابط للمنصة)
-        video_url = upload_to_catbox(video_path)
+        # رفع الفيديو إلى GitHub
+        filename = f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        video_url = upload_video_to_github(video_path, filename)
         
-        # 3. تحديث المنصة (feed)
+        # إضافة الفيديو إلى ملف videos.json
         if video_url:
             add_video_to_feed(
                 title=title,
@@ -114,14 +85,12 @@ def run():
     except Exception as e:
         results["telegram"] = f"❌ {e}"
 
-    # النشر على فيسبوك (إذا كان يعمل)
     try:
         vid = facebook.upload(video_path, caption)
         results["facebook"] = f"✅ video_id={vid}"
     except Exception as e:
         results["facebook"] = f"❌ {e}"
 
-    # النشر على يوتيوب (إذا كان يعمل)
     try:
         yid = youtube.upload(video_path, title=title, description=caption)
         results["youtube"] = f"✅ id={yid} (خاص)"
