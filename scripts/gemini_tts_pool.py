@@ -1,4 +1,4 @@
-"""محرك Gemini TTS — المصدر الوحيد للصوت (مع اكتشاف تلقائي للموديلات)."""
+"""محرك Gemini TTS — المصدر الوحيد للصوت (مع اكتشاف تلقائي للموديلات + إزالة الخشيش)."""
 from __future__ import annotations
 
 import base64
@@ -13,6 +13,7 @@ import requests
 
 def _log(msg: str) -> None:
     print(f"[gemini-tts] {msg}", flush=True)
+
 
 # ═══════════════════════════════════════════════════════
 #  إدارة مفاتيح Gemini
@@ -72,6 +73,7 @@ def get_pool() -> GeminiKeyPool:
         _pool = GeminiKeyPool()
     return _pool
 
+
 # ═══════════════════════════════════════════════════════
 #  اكتشاف موديلات الصوت المتاحة (تلقائياً)
 # ═══════════════════════════════════════════════════════
@@ -118,6 +120,7 @@ def discover_tts_models() -> list[str]:
         _log(f"⚠️ فشل اكتشاف الموديلات: {e}")
         return ["gemini-2.5-flash-preview-tts"]
 
+
 # ═══════════════════════════════════════════════════════
 #  تقسيم النص
 # ═══════════════════════════════════════════════════════
@@ -145,6 +148,48 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
         chunks.append(buf)
     return chunks
 
+
+# ═══════════════════════════════════════════════════════
+#  🔥 تنظيف المقطع (إزالة الخشيش من النهاية + Fade Out)
+# ═══════════════════════════════════════════════════════
+def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 250) -> bool:
+    """قص آخر trim_ms مللي ثانية من المقطع (لإزالة الخشيش) + fade out سلس."""
+    try:
+        # الحصول على مدة المقطع
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(input_wav)],
+            capture_output=True, text=True, timeout=10,
+        )
+        duration = float(probe.stdout.strip() or 0)
+        
+        if duration <= 0.4:
+            # مقطع قصير جداً - ننسخه كما هو
+            import shutil
+            shutil.copy(str(input_wav), str(output_wav))
+            return True
+        
+        # حساب وقت القص
+        cut_duration = duration - (trim_ms / 1000.0)
+        fade_start = max(0, cut_duration - 0.15)
+        
+        # تطبيق القص + fade out
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", str(input_wav),
+                "-t", str(cut_duration),  # قص آخر trim_ms
+                "-af", f"afade=t=out:st={fade_start}:d=0.15",  # fade out سلس
+                "-ar", "24000", "-ac", "1",
+                str(output_wav),
+            ],
+            check=True, capture_output=True, timeout=60,
+        )
+        return output_wav.exists() and output_wav.stat().st_size > 1000
+    except Exception as e:
+        _log(f"⚠️ فشل تنظيف المقطع: {e}")
+        return False
+
+
 # ═══════════════════════════════════════════════════════
 #  TTS لطلب واحد
 # ═══════════════════════════════════════════════════════
@@ -171,7 +216,6 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
                 return "RATE_LIMIT"
             
             if r.status_code == 400:
-                # خطأ 400 يعني أن البيانات المرسلة خاطئة (مثل اسم صوت غير مدعوم)، لا نحرق المفتاح!
                 _log(f"   ❌ خطأ 400 (بيانات خاطئة) مع {model}: {r.text[:100]}")
                 return False
                 
@@ -207,6 +251,7 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
             continue
             
     return False
+
 
 # ═══════════════════════════════════════════════════════
 #  الواجهة العامة
@@ -246,8 +291,14 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
         if not success:
             raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}/{len(chunks)} بجميع الموديلات")
 
-        wav_parts.append(wav_path)
-        _log(f"✅ مقطع {idx + 1}/{len(chunks)}")
+        # 🔥 تنظيف المقطع من الخشيش
+        cleaned_path = work_dir / f"part_{idx:03d}_clean.wav"
+        if _clean_chunk(wav_path, cleaned_path):
+            wav_parts.append(cleaned_path)
+            _log(f"✅ مقطع {idx + 1}/{len(chunks)} (نظيف)")
+        else:
+            wav_parts.append(wav_path)
+            _log(f"⚠️ مقطع {idx + 1}/{len(chunks)} (بدون تنظيف)")
 
     # دمج الملفات
     merged_wav = work_dir / "merged.wav"
@@ -273,6 +324,7 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
 
     _log(f"🎉 تم: {out_mp3_path}")
     return str(out_mp3_path)
+
 
 if __name__ == "__main__":
     sample = "بسم الله الرحمن الرحيم. الحمد لله رب العالمين."
