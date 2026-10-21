@@ -14,6 +14,9 @@ from video import build
 from uploaders import telegram, facebook, youtube
 from config import SITE_URL, VOICE_MAP
 
+# استيراد السكريبت الجديد الذي يرسل الفيديو للمنصة
+from update_feed import add_video_to_feed
+
 
 def build_caption(item, script):
     q = script["question"].strip()
@@ -77,6 +80,25 @@ def run():
     try:
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
+        
+        # ═══════════════════════════════════════════════════════════════
+        # إضافة الفيديو إلى واجهة المنصة (feed.html)
+        # ═══════════════════════════════════════════════════════════════
+        try:
+            # ملاحظة: رابط الفيديو فارغ حالياً لأن تلغرام لا يعطي رابط MP4 مباشر.
+            # سيتم تحديثه لاحقاً عند ربط مساحة تخزين (مثل Supabase Storage).
+            video_url_placeholder = "" 
+            
+            add_video_to_feed(
+                title=title,
+                description=caption,
+                video_url=video_url_placeholder,
+                category=item.get("source_type", "عام")
+            )
+            print("📱 تمت إضافة الفيديو إلى واجهة المنصة (Feed)")
+        except Exception as feed_err:
+            print(f"⚠️ فشلت إضافة الفيديو للمنصة: {feed_err}")
+        
     except Exception as e:
         results["telegram"] = f"❌ {e}"
 
