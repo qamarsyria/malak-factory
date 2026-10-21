@@ -75,7 +75,7 @@ def get_pool() -> GeminiKeyPool:
 
 
 # ═══════════════════════════════════════════════════════
-#  اكتشاف موديلات الصوت المتاحة (تلقائياً)
+#  اكتشاف موديلات الصوت (نستبعد lite)
 # ═══════════════════════════════════════════════════════
 _MODEL_CACHE: list[str] | None = None
 
@@ -87,7 +87,7 @@ def discover_tts_models() -> list[str]:
     p = get_pool()
     key = p.get_current()
     _log("🔍 نسأل Gemini عن موديلات الصوت المتاحة...")
-    
+
     try:
         r = requests.get(
             f"https://generativelanguage.googleapis.com/v1beta/models?key={key}",
@@ -95,25 +95,28 @@ def discover_tts_models() -> list[str]:
         )
         if r.status_code != 200:
             return ["gemini-2.5-flash-preview-tts"]
-        
+
         models = r.json().get("models", [])
         tts_models = [
             m.get("name", "").replace("models/", "")
             for m in models
             if "generateContent" in m.get("supportedGenerationMethods", [])
             and any(x in m.get("name", "").lower() for x in ["tts", "speech", "audio"])
+            and "lite" not in m.get("name", "").lower()
         ]
-        
+
         if not tts_models:
+            _log("⚠️ لم نجد موديلات TTS بدون lite — سنستخدم الاحتياطي")
             return ["gemini-2.5-flash-preview-tts"]
-        
+
         def rank(name):
             m = re.search(r'(\d+\.\d+)', name)
             version = float(m.group(1)) if m else 0
-            return (-version, name)
-        
+            is_preview = 1 if "preview" in name.lower() else 0
+            return (-version, is_preview, name)
+
         tts_models.sort(key=rank)
-        _log(f"✅ موديلات TTS المتاحة: {tts_models[:3]}")
+        _log(f"✅ موديلات TTS المتاحة (بدون lite): {tts_models[:3]}")
         _MODEL_CACHE = tts_models
         return tts_models
     except Exception as e:
@@ -150,35 +153,30 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
 
 
 # ═══════════════════════════════════════════════════════
-#  🔥 تنظيف المقطع (إزالة الخشيش من النهاية + Fade Out)
+#  تنظيف المقطع (إزالة الخشيش + Fade Out)
 # ═══════════════════════════════════════════════════════
 def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 250) -> bool:
-    """قص آخر trim_ms مللي ثانية من المقطع (لإزالة الخشيش) + fade out سلس."""
     try:
-        # الحصول على مدة المقطع
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(input_wav)],
             capture_output=True, text=True, timeout=10,
         )
         duration = float(probe.stdout.strip() or 0)
-        
+
         if duration <= 0.4:
-            # مقطع قصير جداً - ننسخه كما هو
             import shutil
             shutil.copy(str(input_wav), str(output_wav))
             return True
-        
-        # حساب وقت القص
+
         cut_duration = duration - (trim_ms / 1000.0)
         fade_start = max(0, cut_duration - 0.15)
-        
-        # تطبيق القص + fade out
+
         subprocess.run(
             [
                 "ffmpeg", "-y", "-i", str(input_wav),
-                "-t", str(cut_duration),  # قص آخر trim_ms
-                "-af", f"afade=t=out:st={fade_start}:d=0.15",  # fade out سلس
+                "-t", str(cut_duration),
+                "-af", f"afade=t=out:st={fade_start}:d=0.15",
                 "-ar", "24000", "-ac", "1",
                 str(output_wav),
             ],
@@ -195,7 +193,7 @@ def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 250) -> bool:
 # ═══════════════════════════════════════════════════════
 def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
     models = discover_tts_models()
-    
+
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         body = {
@@ -211,18 +209,18 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
         }
         try:
             r = requests.post(url, json=body, timeout=180)
-            
+
             if r.status_code == 429:
                 return "RATE_LIMIT"
-            
+
             if r.status_code == 400:
                 _log(f"   ❌ خطأ 400 (بيانات خاطئة) مع {model}: {r.text[:100]}")
                 return False
-                
+
             if r.status_code == 404:
                 _log(f"   ⚠️ الموديل {model} غير متاح، جرب الذي بعده...")
                 continue
-                
+
             if r.status_code != 200:
                 _log(f"   ⚠️ HTTP {r.status_code} من {model}")
                 continue
@@ -245,11 +243,11 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
                 wf.setframerate(24000)
                 wf.writeframes(raw)
             return True
-            
+
         except Exception as e:
             _log(f"   ⚠️ استثناء مع {model}: {str(e)[:100]}")
             continue
-            
+
     return False
 
 
@@ -291,7 +289,6 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
         if not success:
             raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}/{len(chunks)} بجميع الموديلات")
 
-        # 🔥 تنظيف المقطع من الخشيش
         cleaned_path = work_dir / f"part_{idx:03d}_clean.wav"
         if _clean_chunk(wav_path, cleaned_path):
             wav_parts.append(cleaned_path)
@@ -300,7 +297,6 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
             wav_parts.append(wav_path)
             _log(f"⚠️ مقطع {idx + 1}/{len(chunks)} (بدون تنظيف)")
 
-    # دمج الملفات
     merged_wav = work_dir / "merged.wav"
     with wave.open(str(merged_wav), "wb") as out:
         out.setnchannels(1)
@@ -310,14 +306,12 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
             with wave.open(str(part), "rb") as inp:
                 out.writeframes(inp.readframes(inp.getnframes()))
 
-    # تحويل إلى MP3
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(merged_wav),
-         "-codec:a", "libmp3lame", "-q:a", "4", str(out_mp3_path)],
+         "-codec:a", "libmp3lame", "-b:a", "192k", str(out_mp3_path)],
         check=True, capture_output=True, timeout=180,
     )
 
-    # تنظيف
     for f in work_dir.glob("*"):
         f.unlink(missing_ok=True)
     work_dir.rmdir()
