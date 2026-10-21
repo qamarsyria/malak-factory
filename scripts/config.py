@@ -7,8 +7,8 @@ import os
 VIDEO_W = 1080
 VIDEO_H = 1920
 VIDEO_FPS = 30
-VIDEO_DURATION_MAX = 1200        # 20 دقيقة للحلقات القصصية
-FONT_PATH = ""                   # سيُكتشف تلقائياً
+VIDEO_DURATION_MAX = 1200
+FONT_PATH = ""
 FONT_SIZE = 70
 TEXT_COLOR = "white"
 TEXT_STROKE = "black"
@@ -16,42 +16,37 @@ TEXT_STROKE_W = 3
 ACCENT_COLOR = "#FFD700"
 
 # ============================================================
-# الصوت - النظام الهجين (Gemini → Azure → Piper)
+# الصوت
 # ============================================================
-# ترتيب المحركات
 VOICE_ENGINE_PRIORITY = ["gemini", "azure", "piper"]
 
-# Gemini TTS (الأساسي)
-GEMINI_VOICE = "Charon"          # رجل عميق
-GEMINI_VOICE_FEMALE = "Kore"     # نسائي (احتياطي)
+GEMINI_VOICE = "Charon"
+GEMINI_VOICE_FEMALE = "Kore"
 
-# Azure TTS (الاحتياطي الأول)
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "eastus")
-AZURE_VOICE = "ar-EG-ShakirNeural"   # رجل مصري
-AZURE_RATE = "-10%"              # تباطؤ 10% من المصدر
+AZURE_VOICE = "ar-EG-ShakirNeural"
+AZURE_RATE = "-10%"
 
-# Piper TTS (الاحتياطي الأخير)
 PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
 PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
-PIPER_LENGTH_SCALE = 1.0         # 1.0 طبيعي | 1.2 بطيء 20%
+PIPER_LENGTH_SCALE = 1.0
 
-# إعدادات عامة للصوت
-TTS_VOICE = GEMINI_VOICE         # للتوافق مع الكود القديم
+TTS_VOICE = GEMINI_VOICE
 TTS_VOICE_FEMALE = GEMINI_VOICE_FEMALE
 TTS_RATE = "-10%"
 TTS_VOLUME = "+0%"
-TTS_DELAY_BETWEEN_SEGMENTS = 3   # ثواني بين طلبات TTS
+TTS_DELAY_BETWEEN_SEGMENTS = 3
 
-# صيغة الصوت الموحّدة (للدمج)
 TARGET_SAMPLE_RATE = "44100"
 TARGET_CHANNELS = "1"
-TARGET_BITRATE = "128k"
+TARGET_BITRATE = "192k"
 
 # ============================================================
 # القرآن (everyayah)
 # ============================================================
-QURAN_RECITER = "Alafasy_128kbps"    # مشاري العفاسي
+QURAN_RECITER = "Alafasy_128kbps"
+STORY_RECITER = "Abdurrahmaan_As-Sudais_192kbps"
 QURAN_BASE = "https://everyayah.com/data"
 
 # ============================================================
@@ -66,7 +61,7 @@ VOICE_MAP = {
 }
 
 # ============================================================
-# الخلفيات (Pixabay)
+# الخلفيات
 # ============================================================
 PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "")
 PIXABAY_QUERY = "mosque,islamic,nature,sky,clouds,desert,stars"
@@ -74,7 +69,6 @@ BG_FALLBACK = "assets/bg/default.jpg"
 BG_OVERLAY_OPACITY = 0.45
 KEN_BURNS_ZOOM = 1.05
 
-# مجلدات الخلفيات
 BACKGROUNDS_DIR = "assets/backgrounds"
 BG_IMAGES_DIR = "assets/backgrounds/images"
 BG_VIDEOS_DIR = "assets/backgrounds/videos"
@@ -82,22 +76,14 @@ BG_VIDEOS_DIR = "assets/backgrounds/videos"
 # ============================================================
 # المسارات
 # ============================================================
-# مصادر المحتوى
 FAQ_JSON = "data/faq-data.json"
 HADITH_JSON = "data/hadith-db.json"
 RIYAD_JSON = "data/riyad-salihin.json"
 RUQYAH_JSON = "data/ruqyah/ruqyah.json"
 
-# القصص
 STORIES_DIR = "data/stories"
-
-# الحالة
 STATE_FILE = "state/published.json"
-
-# الخطوط
 FONT_DIR = "assets/fonts"
-
-# الصوتيات
 AUDIO_DIR = "assets/audio"
 MUSIC_DIR = "assets/audio/music"
 SFX_DIR = "assets/audio/sfx"
@@ -150,24 +136,16 @@ YT_PRIVACY = "public"
 SITE_URL = "https://qamarsyria.github.io/qamar-malak/"
 
 # ============================================================
-# توزيع المصادر اليومية (7 أيام)
+# توزيع المصادر اليومية
 # ============================================================
 SOURCE_ROTATION = [
-    "riyad",    # السبت
-    "story",    # الأحد
-    "faq",      # الاثنين
-    "hadith",   # الثلاثاء
-    "story",    # الأربعاء
-    "faq",      # الخميس
-    "hadith",   # الجمعة
+    "riyad", "story", "faq", "hadith", "story", "faq", "hadith",
 ]
 
 # ============================================================
 # إعدادات القصص
 # ============================================================
-STORIES_AVAILABLE = [
-    "yusuf", "adam", "nuh", "ibrahim", "musa",
-]
+STORIES_AVAILABLE = ["yusuf", "adam", "nuh", "ibrahim", "musa"]
 
 YUSUF_EPISODES = [
     (1, 3), (4, 6), (7, 10), (11, 14), (15, 18), (19, 22), (23, 29),
@@ -181,7 +159,7 @@ NARRATION_MIN_SENTENCES = 8
 NARRATION_MAX_SENTENCES = 12
 
 # ============================================================
-# إعدادات شرعية (لا تُغيَّر)
+# إعدادات شرعية
 # ============================================================
 FORBIDDEN_VISUALS = [
     "prophets", "companions", "mothers_of_believers", "ahl_al_bayt", "angels", "khalifa_rashidun",
@@ -192,19 +170,19 @@ QURAN_RULES = {
 }
 
 # ============================================================
-# التوجيه العاطفي (Gemini TTS Style Hints)
+# التوجيه العاطفي
 # ============================================================
 STYLE_HINTS = {
     "hadith":  "(in a calm, solemn, and dignified tone)",
     "faq":     "(in a clear, educational, and friendly tone)",
     "riyad":   "(in a spiritual, moving, and humble tone)",
     "ruqyah":  "(in a strong, firm, and authoritative tone)",
-    "story":   "(in a narrative, engaging, and warm tone)",
+    "story":   "(in a narrative, engaging, and warm tone, with slight pauses between sentences)",
 }
 
 # ============================================================
-# قص الصمت الزائد من نهاية الصوت (ffmpeg)
+# قص الصمت
 # ============================================================
 TRIM_SILENCE_ENABLED = True
-TRIM_SILENCE_THRESHOLD = "-40dB"   # كل صوت أضعف من -40dB يعتبر صمتاً
-TRIM_SILENCE_MIN_LENGTH = 0.3      # الحد الأدنى لطول الصمت (ثواني)
+TRIM_SILENCE_THRESHOLD = "-40dB"
+TRIM_SILENCE_MIN_LENGTH = 0.3
