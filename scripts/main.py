@@ -20,40 +20,70 @@ from update_feed import add_video_to_feed
 
 
 def get_narrator(item):
-    """استخراج اسم الراوي من البيانات أو من dorar.net"""
-    # 1. من حقل narrator إذا كان موجوداً
+    """محاولة استخراج اسم الراوي من عدة مصادر، مع طباعة تشخيصية"""
+    
+    # المصدر 1: الحقل المباشر في البيانات
     narrator = item.get("narrator", "").strip()
     if narrator:
+        print(f"✅ الراوي (من البيانات): {narrator}")
         return narrator
+    print(f"🔎 المصدر 1 (حقل narrator): فارغ")
 
-    # 2. من حقل attribution إذا كان يحتوي "عن"
+    # المصدر 2: من حقل attribution
     attr = item.get("attribution", "")
-    if "عن" in attr:
-        match = re.search(r"عن\s+([^\s،,\.]+(?:\s+[^\s،,\.]+){0,5})", attr)
+    patterns = [
+        r"عن\s+([^\s،,\.\d]+(?:\s+[^\s،,\.\d]+){0,6})",
+        r"رواه\s+([^\s،,\.\d]+(?:\s+[^\s،,\.\d]+){0,4})",
+    ]
+    for p in patterns:
+        match = re.search(p, attr)
         if match:
-            return match.group(1).strip()
+            found = match.group(1).strip()
+            print(f"✅ الراوي (من attribution): {found}")
+            return found
+    print(f"🔎 المصدر 2 (attribution): لا يوجد 'عن' — القيمة: '{attr}'")
 
-    # 3. من dorar.net (احتياطي)
-    try:
-        text = item.get("text", "")[:100]
-        if text and item.get("source_type") == "hadith":
-            print(f"🔎 محاولة استخراج الراوي من dorar.net...")
+    # المصدر 3: من نص الحديث نفسه (السلسلة)
+    text = item.get("text", "")
+    if text:
+        text_patterns = [
+            r"عن\s+([^\s،,\.\d]+(?:\s+[^\s،,\.\d]+){0,6})\s+رضي",
+            r"عن\s+([^\s،,\.\d]+(?:\s+[^\s،,\.\d]+){0,6})\s+قال",
+            r"حدثنا\s+([^\s،,\.\d]+(?:\s+[^\s،,\.\d]+){0,4})",
+        ]
+        for p in text_patterns:
+            match = re.search(p, text)
+            if match:
+                found = match.group(1).strip()
+                print(f"✅ الراوي (من نص الحديث): {found}")
+                return found
+    print(f"🔎 المصدر 3 (نص الحديث): لا يوجد نمط مطابق")
+
+    # المصدر 4: dorar.net (احتياطي، قد يحظر GitHub)
+    if item.get("source_type") == "hadith":
+        try:
+            search_key = attr if attr else text[:80]
+            print(f"🔎 المصدر 4 (dorar.net): البحث عن '{search_key[:60]}'")
             r = requests.get(
                 "https://dorar.net/dorar_api.json",
-                params={"skey": text},
-                timeout=15,
+                params={"skey": search_key},
+                timeout=20,
+                headers={"User-Agent": "Mozilla/5.0"},
             )
+            print(f"   استجابة dorar: HTTP {r.status_code}")
             if r.status_code == 200:
                 data = r.json()
-                ahadith = data.get("ahadith", {}).get("result", [])
-                if ahadith:
-                    rawi = ahadith[0].get("rawi", "").strip()
+                results = data.get("ahadith", {}).get("result", [])
+                print(f"   نتائج dorar: {len(results)}")
+                if results:
+                    rawi = results[0].get("rawi", "").strip()
                     if rawi:
-                        print(f"✅ الراوي: {rawi}")
+                        print(f"✅ الراوي (من dorar): {rawi}")
                         return rawi
-    except Exception as e:
-        print(f"⚠️ فشل استخراج الراوي من dorar.net: {e}")
+        except Exception as e:
+            print(f"⚠️ dorar.net فشل: {type(e).__name__}: {e}")
 
+    print("❌ لم يتم العثور على راوٍ من أي مصدر")
     return ""
 
 
@@ -101,7 +131,7 @@ def run():
     if item.get("source_type") == "hadith":
         narrator = get_narrator(item)
         if narrator:
-            print(f"👤 الراوي: {narrator}")
+            print(f"👤 الراوي النهائي: {narrator}")
     script["narrator"] = narrator
 
     check = verify(script)
