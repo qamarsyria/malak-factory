@@ -1,6 +1,7 @@
 """المنسّق: من المحتوى إلى النشر."""
 import sys
 import traceback
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,12 +71,15 @@ def run():
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
         
-        # إضافة الفيديو إلى ملف videos.json برقم الرسالة (mid)
+        # إضافة الفيديو إلى ملف videos.json برقم الرسالة (mid) مع أرقام تحفيزية
         add_video_to_feed(
             title=title,
             description=caption,
             video_url=str(mid),
-            category=item.get("source_type", "عام")
+            category=item.get("source_type", "عام"),
+            views=random.randint(100, 500),
+            likes=random.randint(50, 300),
+            shares=random.randint(10, 80)
         )
         print("📱 تمت إضافة الفيديو إلى واجهة المنصة بنجاح!")
             
