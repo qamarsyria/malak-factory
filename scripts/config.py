@@ -60,7 +60,7 @@ VOICE_MAP = {
 }
 
 # ============================================================
-# الخلفيات
+# الخلفيات (Pixabay)
 # ============================================================
 PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "")
 PIXABAY_QUERY = "mosque,islamic,nature,sky,clouds,desert,stars"
@@ -79,6 +79,7 @@ FAQ_JSON = "data/faq-data.json"
 HADITH_JSON = "data/hadith-db.json"
 RIYAD_JSON = "data/riyad-salihin.json"
 RUQYAH_JSON = "data/ruqyah/ruqyah.json"
+
 STORIES_DIR = "data/stories"
 STATE_FILE = "state/published.json"
 FONT_DIR = "assets/fonts"
@@ -96,6 +97,12 @@ GEMINI_MODELS_TO_TRY = [
     "gemini-3.8-flash",
     "gemini-flash-latest",
 ]
+
+# ============================================================
+# التحقق (verifier.py) — مهم جداً
+# ============================================================
+DORAR_API = "https://dorar.net/dorar_api.json"
+QURAN_API = "https://api.alquran.cloud/v1"
 
 # ============================================================
 # Freesound API (المؤثرات الصوتية)
@@ -155,12 +162,20 @@ SCENE_MAP = {
 HASHTAGS = "#إسلاميات #قرآن #حديث #قصص_الأنبياء #رقية_شرعية #دين #تذكير #قمر_الشام #ملاك_المعرفة"
 
 # ============================================================
-# تيليجرام، فيسبوك، يوتيوب
+# تيليجرام
 # ============================================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# ============================================================
+# فيسبوك
+# ============================================================
 FACEBOOK_PAGE_TOKEN = os.getenv("FACEBOOK_PAGE_TOKEN", "")
 FACEBOOK_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "")
+
+# ============================================================
+# يوتيوب
+# ============================================================
 YT_CLIENT_ID = os.getenv("YT_CLIENT_ID", "")
 YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET", "")
 YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN", "")
@@ -191,9 +206,11 @@ YUSUF_EPISODES = [
 
 EPISODE_MIN_DURATION = 600
 EPISODE_MAX_DURATION = 1200
+NARRATION_MIN_SENTENCES = 8
+NARRATION_MAX_SENTENCES = 12
 
 # ============================================================
-# إعدادات شرعية
+# إعدادات شرعية (لا تُغيَّر)
 # ============================================================
 FORBIDDEN_VISUALS = [
     "prophets", "companions", "mothers_of_believers", "ahl_al_bayt", "angels", "khalifa_rashidun",
