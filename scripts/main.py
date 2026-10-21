@@ -13,7 +13,7 @@ from voice import generate
 from video import build
 from uploaders import telegram, facebook, youtube
 from config import SITE_URL, VOICE_MAP
-from update_feed import add_video_to_feed, upload_video_to_github
+from update_feed import add_video_to_feed
 
 
 def build_caption(item, script):
@@ -21,9 +21,11 @@ def build_caption(item, script):
     a = script["answer"].strip()
     attr = item.get("attribution", "").strip()
     parts = []
-    if q: parts += [q, ""]
+    if q:
+        parts += [q, ""]
     parts.append(a)
-    if attr: parts += ["", f"📚 {attr}"]
+    if attr:
+        parts += ["", f"📚 {attr}"]
     parts += ["", f"🌐 {SITE_URL}"]
     return "\n".join(parts)[:950]
 
@@ -68,19 +70,14 @@ def run():
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
         
-        # رفع الفيديو إلى GitHub
-        filename = f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-        video_url = upload_video_to_github(video_path, filename)
-        
-        # إضافة الفيديو إلى ملف videos.json
-        if video_url:
-            add_video_to_feed(
-                title=title,
-                description=caption,
-                video_url=video_url,
-                category=item.get("source_type", "عام")
-            )
-            print("📱 تمت إضافة الفيديو إلى واجهة المنصة بنجاح!")
+        # إضافة الفيديو إلى ملف videos.json برقم الرسالة (mid)
+        add_video_to_feed(
+            title=title,
+            description=caption,
+            video_url=str(mid),
+            category=item.get("source_type", "عام")
+        )
+        print("📱 تمت إضافة الفيديو إلى واجهة المنصة بنجاح!")
             
     except Exception as e:
         results["telegram"] = f"❌ {e}"
