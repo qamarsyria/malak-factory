@@ -138,3 +138,9 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
 
     print(f"✅ الفيديو: {output_mp4} ({os.path.getsize(output_mp4)/1024/1024:.1f} MB)")
     return output_mp4
+    if __name__ == "__main__":
+    build_episode_video(
+        "out/episode-01.mp3",
+        "out/episode-01_meta.json",
+        "out/episode-01.mp4",
+    )
