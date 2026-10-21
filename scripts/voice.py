@@ -12,7 +12,6 @@ from config import (
 
 
 def trim_silence(input_path: str) -> str:
-    """قص الصمت الزائد من نهاية الصوت باستخدام ffmpeg."""
     if not TRIM_SILENCE_ENABLED:
         return input_path
 
@@ -23,12 +22,11 @@ def trim_silence(input_path: str) -> str:
                 "ffmpeg", "-y", "-i", input_path,
                 "-af",
                 f"silenceremove=stop_periods=-1:stop_duration={TRIM_SILENCE_MIN_LENGTH}:stop_threshold={TRIM_SILENCE_THRESHOLD}",
-                "-codec:a", "libmp3lame", "-q:a", "2",
+                "-codec:a", "libmp3lame", "-b:a", "192k",
                 output_path,
             ],
             check=True, capture_output=True, timeout=60,
         )
-        # تحقق من أن الملف الجديد ليس فارغاً
         if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
             os.replace(output_path, input_path)
             print("✂️ تم قص الصمت الزائد من نهاية الصوت")
@@ -48,30 +46,19 @@ def trim_silence(input_path: str) -> str:
 
 
 def generate(text: str, output_path: str, voice="Charon", item_type: str = None) -> str:
-    """
-    يولد الصوت باستخدام Gemini TTS فقط.
-    - item_type: نوع المحتوى (hadith/faq/riyad/ruqyah/story) لضبط النبرة العاطفية.
-    """
-    # استخراج اسم الصوت
     if isinstance(voice, dict):
         voice_name = voice.get("gemini", "Charon")
     else:
         voice_name = str(voice)
 
-    # إضافة التوجيه العاطفي
     text_with_style = text
     if item_type and item_type in STYLE_HINTS:
         text_with_style = f"{STYLE_HINTS[item_type]} {text}"
 
     print(f"🎙️ توليد الصوت عبر Gemini (صوت: {voice_name}, نوع: {item_type or 'عام'})...")
 
-    # التأكد من وجود مجلد المخرجات
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # استدعاء Gemini TTS
     result = gemini_tts_with_pool(text_with_style, output_path, voice_name)
-
-    # قص الصمت الزائد من النهاية
     result = trim_silence(result)
-
     return result
