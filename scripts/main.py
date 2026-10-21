@@ -20,23 +20,20 @@ from update_feed import add_video_to_feed
 
 
 def upload_to_catbox(file_path):
-    """رفع الفيديو إلى tmpfiles.org للحصول على رابط MP4 مباشر"""
+    """رفع الفيديو إلى 0x0.st للحصول على رابط MP4 مباشر يعمل في المتصفح"""
     try:
-        print("☁️ جاري رفع الفيديو إلى tmpfiles.org...")
+        print("☁️ جاري رفع الفيديو إلى 0x0.st...")
         with open(file_path, 'rb') as f:
             r = requests.post(
-                'https://tmpfiles.org/api/v1/upload',
+                'https://0x0.st',
                 files={'file': f},
-                timeout=300
+                timeout=300,
+                headers={'User-Agent': 'Mozilla/5.0'}
             )
         if r.status_code == 200:
-            data = r.json()
-            # الرابط يعود بصيغة https://tmpfiles.org/12345/name.mp4
-            # نحتاج تحويله إلى رابط مباشر: https://tmpfiles.org/dl/12345/name.mp4
-            raw_url = data['data']['url']
-            direct_url = raw_url.replace('https://tmpfiles.org/', 'https://tmpfiles.org/dl/')
-            print(f"✅ تم الرفع بنجاح: {direct_url}")
-            return direct_url
+            url = r.text.strip()
+            print(f"✅ تم الرفع بنجاح: {url}")
+            return url
         else:
             print(f"❌ فشل الرفع: {r.status_code} - {r.text}")
             return ""
@@ -101,7 +98,7 @@ def run():
         mid = telegram.upload(video_path, caption)
         results["telegram"] = f"✅ msg_id={mid}"
         
-        # 2. الرفع على tmpfiles (للحصول على رابط للمنصة)
+        # 2. الرفع على 0x0.st (للحصول على رابط للمنصة)
         video_url = upload_to_catbox(video_path)
         
         # 3. تحديث المنصة (feed)
