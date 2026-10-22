@@ -87,7 +87,7 @@ def add_fade_in_out(input_path: str, output_path: str):
 
 def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.mp3"):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
-    surah = ep.get("surah", 12)
+    surah_default = ep.get("surah", 12)  # ← سورة الحلقة الافتراضية (backward-compat)
     segments = ep.get("segments", [])
 
     Path("out").mkdir(exist_ok=True)
@@ -98,70 +98,134 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     for seg in segments:
         seg_type = seg.get("type")
 
-        if seg_type == "narration":
+        # ══════════════════════════════════════════════════════════
+        # narration / teaser — كلاهما يُعالج بنفس منطق TTS
+        # الفرق: teaser يحمل emotion_hint مخصص + teaser_data
+        # ══════════════════════════════════════════════════════════
+        if seg_type in ("narration", "teaser"):
             full_text = seg.get("text", "").strip()
-            if not full_text: continue
+            if not full_text:
+                continue
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             mixed_path = work_dir / f"mixed_{idx_counter:03d}.mp3"
             fade_path = work_dir / f"fade_{idx_counter:03d}.mp3"
             norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
 
-            print(f"[{idx_counter}] سرد: {full_text[:60]}...")
+            print(f"[{idx_counter}] {seg_type}: {full_text[:60]}...")
 
-            direction = direct_scene(full_text)
+            # ═══ Smart Director (كما هو) — إلا إذا مرّر segment تلميحاً مخصصاً ═══
+            if seg.get("emotion_hint"):
+                # teaser: تلميح مُخصّص من المولّد
+                direction = {
+                    "visual": seg.get("visual", "islamic architecture mosque"),
+                    "sfx": seg.get("sfx", ""),
+                    "voice_style": seg["emotion_hint"],
+                }
+            else:
+                # narration عادي: Smart Director (كما هو تماماً)
+                direction = direct_scene(full_text)
+
             voice_style = direction.get("voice_style", "")
 
-            gemini_generate(full_text, str(raw_path), voice="Charon", item_type="story", emotion_hint=voice_style)
+            # ═══ Gemini TTS (كما هو تماماً) ═══
+            gemini_generate(
+                full_text, str(raw_path),
+                voice="Charon", item_type="story",
+                emotion_hint=voice_style,
+            )
 
+            # ═══ SFX خافت 5% (كما هو) ═══
             sfx_path = ""
-            if direction["sfx"]:
+            if direction.get("sfx"):
                 sfx_path = fetch_sfx(direction["sfx"])
 
+            # ═══ Mix + Fade + Normalize (كما هو) ═══
             mix_audio_with_sfx(str(raw_path), sfx_path, str(mixed_path))
             add_fade_in_out(str(mixed_path), str(fade_path))
             normalize(str(fade_path), str(norm_path))
 
             dur = get_duration(str(norm_path))
-            meta_segments.append({"index": idx_counter, "type": "narration", "text": full_text, "visual": direction["visual"], "duration": round(dur, 3)})
+
+            meta_entry = {
+                "index": idx_counter,
+                "type": seg_type,
+                "text": full_text,
+                "visual": direction.get("visual", "islamic architecture mosque"),
+                "duration": round(dur, 3),
+            }
+
+            # ═══ teaser: تمرير بيانات إضافية لـ story_video.py ═══
+            if seg_type == "teaser":
+                meta_entry["teaser_data"] = {
+                    "next_episode_title": seg.get("next_episode_title", ""),
+                    "url": seg.get("url", ""),
+                    "platform_name": seg.get("platform_name", "ملاك المعرفة"),
+                }
+
+            meta_segments.append(meta_entry)
             parts.append(str(norm_path))
             idx_counter += 1
 
+        # ══════════════════════════════════════════════════════════
+        # quran — آيات قرآنية كاملة بصوت السديس (everyayah)
+        # كل segment له surah خاص (وإلا يستخدم surah_default)
+        # ══════════════════════════════════════════════════════════
         elif seg_type == "quran":
             ayah_nums = seg.get("ayah_numbers", [])
-            if not ayah_nums: continue
+            if not ayah_nums:
+                continue
+
+            seg_surah = seg.get("surah", surah_default)  # ← سورة كل segment
+            surah_name = seg.get("surah_name", "")
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
 
-            print(f"[{idx_counter}] آية: {ayah_nums} (بدون مؤثرات)")
+            print(f"[{idx_counter}] آية: {surah_name} {ayah_nums} (بدون مؤثرات)")
 
             if len(ayah_nums) == 1:
-                fetch_ayah_audio(surah, ayah_nums[0], str(raw_path))
-                txt = fetch_ayah_text(surah, ayah_nums[0])
+                fetch_ayah_audio(seg_surah, ayah_nums[0], str(raw_path))
+                txt = fetch_ayah_text(seg_surah, ayah_nums[0])
             else:
                 sub_parts, txt_list = [], []
                 for j, ay in enumerate(ayah_nums):
                     sub_p = work_dir / f"sub_{idx_counter:03d}_{j:02d}.mp3"
-                    fetch_ayah_audio(surah, ay, str(sub_p))
+                    fetch_ayah_audio(seg_surah, ay, str(sub_p))
                     sub_parts.append(str(sub_p))
-                    txt_list.append(fetch_ayah_text(surah, ay))
+                    txt_list.append(fetch_ayah_text(seg_surah, ay))
                 txt = " ".join(txt_list)
                 list_file = work_dir / f"list_{idx_counter:03d}.txt"
                 with open(list_file, "w") as f:
-                    for sp in sub_parts: f.write(f"file '{sp}'\n")
-                subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw_path)], check=True)
+                    for sp in sub_parts:
+                        f.write(f"file '{sp}'\n")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                     "-i", str(list_file), "-c", "copy", str(raw_path)],
+                    check=True,
+                )
 
             normalize(str(raw_path), str(norm_path))
             dur = get_duration(str(norm_path))
-            meta_segments.append({"index": idx_counter, "type": "quran", "text": txt, "visual": "ancient quran book mosque", "duration": round(dur, 3)})
+
+            meta_segments.append({
+                "index": idx_counter,
+                "type": "quran",
+                "text": txt,
+                "surah": seg_surah,
+                "surah_name": surah_name,
+                "ayah_numbers": ayah_nums,
+                "visual": "ancient quran book mosque",
+                "duration": round(dur, 3),
+            })
             parts.append(str(norm_path))
             idx_counter += 1
 
     print(f"\n🔗 دمج {len(parts)} مقطع...")
     list_file = work_dir / "final.txt"
     with open(list_file, "w") as f:
-        for p in parts: f.write(f"file '{p}'\n")
+        for p in parts:
+            f.write(f"file '{p}'\n")
 
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
@@ -171,7 +235,13 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     duration = get_duration(output_mp3)
     meta_path = output_mp3.replace(".mp3", "_meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump({"episode": ep.get("episode_number", 1), "surah": surah, "title": ep.get("title", ""), "total_duration": round(duration, 3), "segments": meta_segments}, f, ensure_ascii=False, indent=2)
+        json.dump({
+            "episode": ep.get("episode_number", 1),
+            "surah": surah_default,
+            "title": ep.get("title", ""),
+            "total_duration": round(duration, 3),
+            "segments": meta_segments,
+        }, f, ensure_ascii=False, indent=2)
 
     print(f"\n✅ الحلقة: {output_mp3} | ⏱️ المدة: {duration/60:.1f} دقيقة")
     return output_mp3
