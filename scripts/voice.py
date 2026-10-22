@@ -1,4 +1,4 @@
-"""مولد الصوت — يعتمد حصرياً على Gemini TTS + قص الصمت."""
+"""مولد الصوت — يعتمد حصرياً على Gemini TTS + قص الصمت + نبرة ديناميكية."""
 import os
 import subprocess
 from pathlib import Path
@@ -14,51 +14,54 @@ from config import (
 def trim_silence(input_path: str) -> str:
     if not TRIM_SILENCE_ENABLED:
         return input_path
-
     output_path = input_path.replace(".mp3", "_trim.mp3")
     try:
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
-                "-af",
-                f"silenceremove=stop_periods=-1:stop_duration={TRIM_SILENCE_MIN_LENGTH}:stop_threshold={TRIM_SILENCE_THRESHOLD}",
-                "-codec:a", "libmp3lame", "-b:a", "192k",
-                output_path,
-            ],
-            check=True, capture_output=True, timeout=60,
-        )
+        subprocess.run([
+            "ffmpeg", "-y", "-i", input_path,
+            "-af", f"silenceremove=stop_periods=-1:stop_duration={TRIM_SILENCE_MIN_LENGTH}:stop_threshold={TRIM_SILENCE_THRESHOLD}",
+            "-codec:a", "libmp3lame", "-b:a", "192k", output_path,
+        ], check=True, capture_output=True, timeout=60)
         if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
             os.replace(output_path, input_path)
             print("✂️ تم قص الصمت الزائد من نهاية الصوت")
         else:
-            if os.path.exists(output_path):
-                os.remove(output_path)
+            if os.path.exists(output_path): os.remove(output_path)
             print("⚠️ الصوت بعد القص فارغ، تم تخطي القص")
         return input_path
     except Exception as e:
         print(f"⚠️ فشل قص الصمت: {e}")
         if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except Exception:
-                pass
+            try: os.remove(output_path)
+            except Exception: pass
         return input_path
 
 
-def generate(text: str, output_path: str, voice="Charon", item_type: str = None) -> str:
+def generate(text: str, output_path: str, voice="Charon",
+             item_type: str = None, emotion_hint: str = None,
+             prefer_lite: bool = False) -> str:
+    """
+    يولد الصوت باستخدام Gemini TTS.
+    - emotion_hint: تلميح نبرة مخصص (له الأولوية).
+    - item_type: نوع المحتوى (fallback: STYLE_HINTS).
+    - prefer_lite: يفضل الموديلات الخفيفة (حصة أكبر).
+    """
     if isinstance(voice, dict):
         voice_name = voice.get("gemini", "Charon")
     else:
         voice_name = str(voice)
 
-    text_with_style = text
-    if item_type and item_type in STYLE_HINTS:
-        text_with_style = f"{STYLE_HINTS[item_type]} {text}"
+    style = ""
+    if emotion_hint and emotion_hint.strip():
+        style = emotion_hint.strip()
+    elif item_type and item_type in STYLE_HINTS:
+        style = STYLE_HINTS[item_type]
 
-    print(f"🎙️ توليد الصوت عبر Gemini (صوت: {voice_name}, نوع: {item_type or 'عام'})...")
+    text_with_style = f"{style} {text}" if style else text
+
+    print(f"🎙️ توليد الصوت عبر Gemini (صوت: {voice_name}, نوع: {item_type or 'عام'}, تلميح: {style[:50] or 'لا يوجد'})...")
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    result = gemini_tts_with_pool(text_with_style, output_path, voice_name)
+    result = gemini_tts_with_pool(text_with_style, output_path, voice_name, prefer_lite=prefer_lite)
     result = trim_silence(result)
     return result
