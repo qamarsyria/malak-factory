@@ -6,6 +6,7 @@ import tempfile
 import random
 import requests
 from pathlib import Path
+import sys
 
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
@@ -21,9 +22,8 @@ SAFE_FALLBACKS = [
     "mosque minaret sky",
 ]
 
-# ═══ إعدادات العلامة التجارية ═══
 WATERMARK_TEXT = "ملاك المعرفة"
-WATERMARK_OPACITY = 0.5  # 50% شفافية
+WATERMARK_OPACITY = 0.5
 
 
 def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
@@ -68,14 +68,7 @@ def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
     return str(out_path)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# العلامة التجارية (Watermark) — تُرسم دائماً على كل مقطع
-# ═══════════════════════════════════════════════════════════════════════════
 def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
-    """يرسم نص 'ملاك المعرفة' شفافاً 50% في الزاوية السفلية اليمنى.
-    
-    RTL: الزاوية اليمنى في الفيديو = بداية القراءة العربية (الأنسب بصرياً).
-    """
     watermark_layer = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     wm_draw = ImageDraw.Draw(watermark_layer)
 
@@ -90,7 +83,6 @@ def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
     th = bbox[3] - bbox[1]
 
     margin = 40
-    # RTL: اليمين في الفيديو = البداية العربية
     x = VIDEO_W - tw - margin
     y = VIDEO_H - th - margin
 
@@ -98,23 +90,15 @@ def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
     wm_draw.text(
         (x, y), shaped,
         font=font,
-        fill=(212, 175, 55, alpha),           # ذهبي شفاف
+        fill=(212, 175, 55, alpha),
         stroke_width=1,
-        stroke_fill=(0, 0, 0, alpha),         # حدود سوداء شفافة
+        stroke_fill=(0, 0, 0, alpha),
     )
 
     return Image.alpha_composite(bg_img.convert("RGBA"), watermark_layer).convert("RGB")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Overlay خاص بـ teaser (شريط سفلي: الحلقة القادمة + الرابط + اسم المنصة)
-# ═══════════════════════════════════════════════════════════════════════════
 def _add_teaser_overlay(bg_img: Image.Image, draw: ImageDraw.Draw, font_path: str, teaser_data: dict):
-    """يضيف شريطاً داكناً في الأسفل يحوي:
-    - عنوان الحلقة القادمة
-    - الرابط
-    - اسم المنصة
-    """
     strip_h = 340
     strip = Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 210))
     bg_img.paste(strip, (0, VIDEO_H - strip_h), strip)
@@ -132,49 +116,29 @@ def _add_teaser_overlay(bg_img: Image.Image, draw: ImageDraw.Draw, font_path: st
 
     y = VIDEO_H - strip_h + 40
 
-    # ─── السطر 1: "⏭ الحلقة القادمة" ───
     label_next = _shape("⏭ الحلقة القادمة")
     bbox = draw.textbbox((0, 0), label_next, font=font_next)
     x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-    draw.text(
-        (x, y), label_next,
-        font=font_next, fill=ACCENT_COLOR,
-        stroke_width=2, stroke_fill="black",
-    )
+    draw.text((x, y), label_next, font=font_next, fill=ACCENT_COLOR, stroke_width=2, stroke_fill="black")
     y += 70
 
-    # ─── السطر 2: عنوان الحلقة القادمة ───
     if next_title:
         bbox = draw.textbbox((0, 0), next_title, font=font_next)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text(
-            (x, y), next_title,
-            font=font_next, fill=TEXT_COLOR,
-            stroke_width=2, stroke_fill="black",
-        )
+        draw.text((x, y), next_title, font=font_next, fill=TEXT_COLOR, stroke_width=2, stroke_fill="black")
         y += 80
 
-    # ─── السطر 3: الرابط ───
     if url_text:
         label_url = _shape(f"🌐 {url_text}")
         bbox = draw.textbbox((0, 0), label_url, font=font_url)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text(
-            (x, y), label_url,
-            font=font_url, fill=ACCENT_COLOR,
-            stroke_width=1, stroke_fill="black",
-        )
+        draw.text((x, y), label_url, font=font_url, fill=ACCENT_COLOR, stroke_width=1, stroke_fill="black")
         y += 55
 
-    # ─── السطر 4: اسم المنصة ───
     if platform:
         bbox = draw.textbbox((0, 0), platform, font=font_url)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text(
-            (x, y), platform,
-            font=font_url, fill=TEXT_COLOR,
-            stroke_width=1, stroke_fill="black",
-        )
+        draw.text((x, y), platform, font=font_url, fill=TEXT_COLOR, stroke_width=1, stroke_fill="black")
 
 
 def make_segment_image(
@@ -199,7 +163,6 @@ def make_segment_image(
     draw = ImageDraw.Draw(bg)
     font_path = _find_arabic_font()
 
-    # ═══ نص المقطع (آية أو سرد) ═══
     if is_quran:
         try:
             font_main = ImageFont.truetype(font_path, 45, layout_engine=ImageFont.Layout.RAQM)
@@ -223,18 +186,12 @@ def make_segment_image(
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font_main)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text(
-            (x, y), line,
-            font=font_main, fill=color,
-            stroke_width=TEXT_STROKE_W, stroke_fill=TEXT_STROKE,
-        )
+        draw.text((x, y), line, font=font_main, fill=color, stroke_width=TEXT_STROKE_W, stroke_fill=TEXT_STROKE)
         y += line_h
 
-    # ═══ Watermark (دائماً — على كل مقطع) ═══
     bg = _add_watermark(bg, font_path)
-    draw = ImageDraw.Draw(bg)  # ← إعادة البناء بعد alpha_composite
+    draw = ImageDraw.Draw(bg)
 
-    # ═══ Overlay خاص بـ teaser (شريط سفلي) ═══
     if is_teaser and teaser_data:
         _add_teaser_overlay(bg, draw, font_path, teaser_data)
 
@@ -286,9 +243,7 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
         concat_lines.append(f"file '{img_path}'")
         concat_lines.append(f"duration {seg['duration']}")
 
-    concat_lines.append(
-        f"file '{work_dir / ('seg_' + str(segments[-1]['index']).zfill(3) + '.png')}'"
-    )
+    concat_lines.append(f"file '{work_dir / ('seg_' + str(segments[-1]['index']).zfill(3) + '.png')}'")
 
     concat_file = work_dir / "concat.txt"
     concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
@@ -303,10 +258,8 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
     print(f"✅ الفيديو: {output_mp4} ({os.path.getsize(output_mp4)/1024/1024:.1f} MB)")
     return output_mp4
 
-
 if __name__ == "__main__":
-    build_episode_video(
-        "out/episode-01.mp3",
-        "out/episode-01_meta.json",
-        "out/episode-01.mp4",
-    )
+    if len(sys.argv) > 3:
+        build_episode_video(sys.argv[1], sys.argv[2], sys.argv[3])
+    else:
+        build_episode_video("out/episode-01.mp3", "out/episode-01_meta.json", "out/episode-01.mp4")
