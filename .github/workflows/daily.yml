@@ -50,6 +50,20 @@ jobs:
           mkdir -p videos
           python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
+      # ⬇️ هذا هو الكود الجديد الذي يرسل الفيديو إلى تلغرام ⬇️
+      - name: Upload to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EP_NAME: ${{ steps.gen.outputs.EP_NAME }}
+        run: |
+          echo "📤 جاري إرسال الفيديو إلى تلغرام..."
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "video=@videos/${EP_NAME}.mp4" \
+            -F "caption=🎬 حلقة جديدة من ملاك المعرفة! %0A #قصص_الأنبياء" \
+            -F "supports_streaming=true"
+
       - name: Commit Changes
         run: |
           git config user.name "github-actions[bot]"
