@@ -1,0 +1,124 @@
+name: 📦 Extract Sources (One-Time / Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force re-extraction even if sources.json exists'
+        required: false
+        default: 'false'
+        type: string
+
+jobs:
+  extract:
+    name: Extract platform sources → sources.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ═══════════════════════════════════════════════════════════
+      # 1. جلب malak-factory (مستودعنا)
+      # ═══════════════════════════════════════════════════════════
+      - name: 📥 Checkout malak-factory
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          path: factory
+
+      # ═══════════════════════════════════════════════════════════
+      # 2. جلب qamar-malak (المنصة — مستودع شقيق)
+      # ═══════════════════════════════════════════════════════════
+      - name: 📥 Checkout qamar-malak (Platform)
+        uses: actions/checkout@v4
+        with:
+          repository: qamarsyria/qamar-malak
+          token: ${{ secrets.GH_PAT }}
+          path: platform
+
+      # ═══════════════════════════════════════════════════════════
+      # 3. تجهيز Node.js
+      # ═══════════════════════════════════════════════════════════
+      - name: 🟢 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ═══════════════════════════════════════════════════════════
+      # 4. التحقق من وجود الملفات الحرجة
+      # ═══════════════════════════════════════════════════════════
+      - name: 🔍 Verify platform files exist
+        run: |
+          cd platform
+          echo "الملفات الموجودة في المنصة:"
+          ls -la *.html 2>/dev/null | head -20
+          echo ""
+          echo "ملفات women-data:"
+          ls -la women-data/*.js 2>/dev/null | head -15
+          echo ""
+          for f in prophets.html sahaba.html quranic-stories.html ghazawat.html seerah.html shuhada.html fadail.html fiqh.html zuhd.html sihr.html; do
+            if [ ! -f "$f" ]; then
+              echo "❌ مفقود: $f"
+            fi
+          done
+
+      # ═══════════════════════════════════════════════════════════
+      # 5. تشغيل الاستخراج
+      # ═══════════════════════════════════════════════════════════
+      - name: 🚀 Extract sources
+        working-directory: factory
+        env:
+          PLATFORM_ROOT: ${{ github.workspace }}/platform
+        run: |
+          node scripts/extract_sources.js
+
+      # ═══════════════════════════════════════════════════════════
+      # 6. عرض ملخص النتائج (للتأكد)
+      # ═══════════════════════════════════════════════════════════
+      - name: 📊 Show extraction summary
+        working-directory: factory
+        run: |
+          python3 - <<'EOF'
+          import json
+          with open('data/auto-generated/sources.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+          
+          meta = data['meta']
+          print('═══════════════════════════════════════════════')
+          print(f'✅ إجمالي المواضيع: {meta["total_topics"]}')
+          print(f'⏱️  وقت الاستخراج: {meta["extracted_at"]}')
+          print('═══════════════════════════════════════════════')
+          print('التفصيل:')
+          for source, count in meta['sources_breakdown'].items():
+              status = '✅' if count > 0 else '⚠️'
+              print(f'  {status} {source:<20} {count}')
+          print('═══════════════════════════════════════════════')
+          EOF
+
+      # ═══════════════════════════════════════════════════════════
+      # 7. حفظ sources.json في المستودع
+      # ═══════════════════════════════════════════════════════════
+      - name: 💾 Commit and push sources.json
+        working-directory: factory
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/auto-generated/sources.json
+          if git diff --staged --quiet; then
+            echo "ℹ️ لا تغييرات — sources.json لم يتغير"
+          else
+            git commit -m "📦 استخراج مصادر المنصة — $(date +%Y-%m-%d) — $(python3 -c "import json; print(json.load(open('data/auto-generated/sources.json'))['meta']['total_topics'])") موضوع"
+            git push
+            echo "✅ تم دفع sources.json"
+          fi
+
+      # ═══════════════════════════════════════════════════════════
+      # 8. رفع artifact (نسخة احتياطية — للمراجعة)
+      # ═══════════════════════════════════════════════════════════
+      - name: 📎 Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sources-json-${{ github.run_number }}
+          path: factory/data/auto-generated/sources.json
+          retention-days: 14
+          if-no-files-found: warn
