@@ -78,10 +78,18 @@ def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
 
 
 def add_fade_in_out(input_path: str, output_path: str):
-    """يضيف fade-in (0.1ث) و fade-out (0.15ث) لإزالة القطشة بين المقاطع."""
+    """يضيف fade-in (0.1ث) و fade-out (0.15ث) بطريقة آمنة مع جميع إصدارات ffmpeg."""
+    duration = get_duration(input_path)
+    if duration <= 0.5:
+        subprocess.run(["ffmpeg", "-y", "-i", input_path, "-c", "copy", output_path], check=True, capture_output=True)
+        return
+
+    # حساب وقت بدء الـ fade-out رياضياً (رقم موجب دائماً)
+    fade_out_start = max(0.0, duration - 0.15)
+
     subprocess.run([
         "ffmpeg", "-y", "-i", input_path,
-        "-af", "afade=t=in:st=0:d=0.1,afade=t=out:st=-0.15:d=0.15",
+        "-af", f"afade=t=in:st=0:d=0.1,afade=t=out:st={fade_out_start:.3f}:d=0.15",
         "-c:a", "libmp3lame", "-b:a", "192k",
         output_path,
     ], check=True, capture_output=True, timeout=60)
@@ -109,7 +117,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
         if seg_type == "narration":
             full_text = seg.get("text", "").strip()
-            if not full_text: continue
+            if not full_text:
+                continue
 
             sentences = split_into_sentences(full_text)
             merged_sentences = []
@@ -139,7 +148,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                 sfx_path = fetch_sfx(scene_data["sfx"])
                 mix_audio_with_sfx(str(raw_path), sfx_path, str(mixed_path))
 
-                # إضافة fade in/out لإزالة القطشة
+                # إضافة fade in/out لإزالة القطشة (بطريقة آمنة)
                 add_fade_in_out(str(mixed_path), str(fade_path))
 
                 normalize(str(fade_path), str(norm_path))
@@ -154,7 +163,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
         elif seg_type == "quran":
             ayah_nums = seg.get("ayah_numbers", [])
-            if not ayah_nums: continue
+            if not ayah_nums:
+                continue
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
@@ -176,10 +186,11 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
                 list_file = work_dir / f"list_{idx_counter:03d}.txt"
                 with open(list_file, "w") as f:
-                    for sp in sub_parts: f.write(f"file '{sp}'\n")
+                    for sp in sub_parts:
+                        f.write(f"file '{sp}'\n")
                 subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw_path)], check=True)
 
-            # الآيات: بدون مؤثرات، بدون fade-out (احتراماً للقرآن)
+            # الآيات: بدون مؤثرات، بدون fade (احتراماً للقرآن)
             normalize(str(raw_path), str(norm_path))
 
             dur = get_duration(str(norm_path))
@@ -193,7 +204,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     print(f"\n🔗 دمج {len(parts)} مقطع...")
     list_file = work_dir / "final.txt"
     with open(list_file, "w") as f:
-        for p in parts: f.write(f"file '{p}'\n")
+        for p in parts:
+            f.write(f"file '{p}'\n")
 
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
