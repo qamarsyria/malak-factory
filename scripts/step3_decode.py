@@ -4,7 +4,6 @@ import re
 import requests
 from gemini_tts_pool import get_pool
 
-# تعليمات صارمة (System Prompt) لا يمكن خرقها
 DIRECTOR_PROMPT = """You are a STRICT Islamic cinematic director for a documentary about Quranic stories.
 
 You will receive ONE sentence from the Arabic narration. Your job is to return a JSON object with:
@@ -33,7 +32,6 @@ Return ONLY valid JSON (no markdown, no explanation):
 Sentence: @@@{text}@@@
 """
 
-# كلمات محظورة (إذا ظهرت في رد Gemini، نستبدل الرد فوراً)
 FORBIDDEN_VISUAL = [
     "woman", "women", "man", "men", "girl", "boy", "child", "face",
     "prophet", "messenger", "companion", "angel", "human", "person",
@@ -45,7 +43,6 @@ FORBIDDEN_SFX = [
     "flute", "drum", "melody", "tune", "orchestra", "band",
 ]
 
-# الاحتياطي الآمن (الكلمات المفتاحية)
 SCENE_MAP = {
     "mecca": (["مكة", "الكعبة", "الحرم", "بيت الله"], "kaaba mecca ancient"),
     "egypt": (["مصر", "فرعون", "القصر", "العزيز", "الملك"], "ancient egypt palace"),
@@ -77,7 +74,6 @@ DEFAULT_VOICE = "(in a calm, dignified tone)"
 
 
 def _safe_fallback(text: str) -> dict:
-    """احتياطي: الكلمات المفتاحية (آمنة 100%)."""
     visual = DEFAULT_VISUAL
     for name, (keywords, query) in SCENE_MAP.items():
         if any(kw in text for kw in keywords):
@@ -92,7 +88,6 @@ def _safe_fallback(text: str) -> dict:
     elif any(kw in text for kw in CONSPIRACY_KEYWORDS):
         sfx = "whisper quiet"
 
-    # نبرة افتراضية
     voice_style = DEFAULT_VOICE
     if any(kw in text for kw in FEAR_KEYWORDS):
         voice_style = "(in a trembling, anxious tone)"
@@ -105,25 +100,20 @@ def _safe_fallback(text: str) -> dict:
 
 
 def _is_safe(visual: str, sfx: str, voice_style: str) -> bool:
-    """التحقق من أن الرد آمن شرعياً."""
     v_lower = visual.lower()
     s_lower = sfx.lower()
-
     if any(bad in v_lower for bad in FORBIDDEN_VISUAL):
         return False
     if any(bad in s_lower for bad in FORBIDDEN_SFX):
         return False
     if not voice_style.startswith("("):
         return False
-
     return True
 
 
 def direct_scene(text: str) -> dict:
-    """يرجع dict: {'visual': ..., 'sfx': ..., 'voice_style': ...}"""
     if not text.strip():
         return _safe_fallback("")
-
     try:
         pool = get_pool()
     except Exception:
@@ -131,59 +121,39 @@ def direct_scene(text: str) -> dict:
 
     safe_text = text[:500].replace("@@@", "")
     full_prompt = DIRECTOR_PROMPT.replace("@@@{text}@@@", f"@@@{safe_text}@@@")
-
     models = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash"]
 
     for model in models:
         try:
             key = pool.get_current()
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            body = {
-                "contents": [{"parts": [{"text": full_prompt}]}],
-                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 120},
-            }
+            body = {"contents": [{"parts": [{"text": full_prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 120}}
             r = requests.post(url, json=body, timeout=25)
-
-            if r.status_code != 200:
-                continue
-
+            if r.status_code != 200: continue
             cands = r.json().get("candidates") or []
             if not cands: continue
             parts = (cands[0].get("content") or {}).get("parts") or []
             if not parts: continue
             raw = (parts[0].get("text") or "").strip()
-
             m = re.search(r"@@@\s*(\{.*?\})\s*@@@", raw, re.DOTALL)
             if not m:
                 m = re.search(r"(\{.*?\})", raw, re.DOTALL)
             if not m: continue
-
             parsed = json.loads(m.group(1))
             visual = str(parsed.get("visual", "")).strip()[:60]
             sfx = str(parsed.get("sfx", "")).strip()[:40]
             voice_style = str(parsed.get("voice_style", "")).strip()[:80]
-
-            if not visual:
-                continue
-
-            # فلترة أمنية
+            if not visual: continue
             if _is_safe(visual, sfx, voice_style):
                 print(f"      🎬 Director (AI): visual='{visual}', sfx='{sfx or 'بدون'}', voice='{voice_style}'")
                 return {"visual": visual, "sfx": sfx, "voice_style": voice_style}
             else:
                 print(f"      ⚠️ Director: AI response rejected (unsafe), using fallback")
                 continue
-
         except Exception as e:
             print(f"      ⚠️ Director: {model} exception: {str(e)[:80]}")
             continue
 
-    # احتياطي
     result = _safe_fallback(text)
     print(f"      🎬 Director (fallback): visual='{result['visual']}', sfx='{result['sfx'] or 'بدون'}'")
     return result
-
-
-if __name__ == "__main__":
-    print(direct_scene("وابيضت عيناه من الحزن فهو كظيم"))
-    print(direct_scene("قالوا تالله تفتأ تذكر يوسف"))
