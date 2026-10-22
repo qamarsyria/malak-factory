@@ -67,7 +67,6 @@ def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
         except Exception as e:
             print(f"⚠️ فشل جلب صورة {prompt}: {e}")
 
-    # احتياطي آمن
     fallback = random.choice(SAFE_FALLBACKS)
     img = Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10))
     img.save(out_path)
@@ -93,10 +92,9 @@ def fetch_video_for_prompt(prompt: str, work_dir: Path) -> str:
         except Exception as e:
             print(f"⚠️ فشل جلب فيديو {prompt}: {e}")
             
-    # إذا فشل الفيديو، نرجع صورة كاحتياطي
     return fetch_image_for_prompt(prompt, work_dir)
 
-def make_overlay(seg, width, height):
+def make_overlay(seg, width, height, work_dir):
     """يرسم طبقة شفافة تحتوي على النصوص والعلامة المائية لدمجها مع الخلفية"""
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -138,7 +136,7 @@ def make_overlay(seg, width, height):
     # إضافة طبقة ظل خفيفة خلف النص ليكون مقروءاً على أي خلفية
     text_bg = Image.new("RGBA", (width, total_h + 60), (0, 0, 0, 130))
     overlay.paste(text_bg, (0, y - 30), text_bg)
-    draw = ImageDraw.Draw(overlay) # إعادة التعيين بعد paste
+    draw = ImageDraw.Draw(overlay)
 
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font_main)
@@ -168,7 +166,7 @@ def make_overlay(seg, width, height):
         strip_h = 340
         strip = Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 210))
         overlay.paste(strip, (0, VIDEO_H - strip_h), strip)
-        draw = ImageDraw.Draw(overlay) # إعادة تعيين
+        draw = ImageDraw.Draw(overlay)
 
         try:
             font_next = ImageFont.truetype(font_path, 42, layout_engine=ImageFont.Layout.RAQM)
@@ -219,7 +217,6 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
         # اختيار الخلفية بناءً على نوع المقطع
         use_video = False
         if is_quran:
-            # 50% فيديو طبيعة و 50% صورة (مصحف/مسجد)
             if random.random() < 0.5:
                 use_video = True
                 scene = random.choice(NATURE_VIDEO_QUERIES)
@@ -235,13 +232,11 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
             print(f"🖼️ جلب صورة للمشهد: {scene}...")
             bg_path = fetch_image_for_prompt(scene, work_dir)
 
-        # صنع طبقة النص الشفافة
-        overlay_path = make_overlay(seg, VIDEO_W, VIDEO_H)
+        overlay_path = make_overlay(seg, VIDEO_W, VIDEO_H, work_dir)
         
         print(f"🎬 تجهيز المقطع {idx}...")
         out_seg = work_dir / f"seg_{idx:03d}.mp4"
         
-        # دمج الخلفية (فيديو أو صورة) مع النص
         if bg_path.endswith(".mp4"):
             cmd = [
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", bg_path, "-i", overlay_path,
@@ -264,7 +259,6 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
     concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
 
     print(f"🔗 تركيب الفيديو النهائي...")
-    # دمج كل المقاطع مع الصوت
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
         "-i", audio_path, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_mp4,
