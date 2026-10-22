@@ -2,8 +2,8 @@ name: Daily
 
 on:
   schedule:
-    - cron: '0 8 * * *' # يعمل يومياً الساعة 8 صباحاً
-  workflow_dispatch:      # يسمح بالتشغيل اليدوي
+    - cron: '0 8 * * *'
+  workflow_dispatch:
 
 jobs:
   generate-and-produce:
@@ -31,7 +31,6 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
           python scripts/generate_story.py
-          # البحث عن أحدث ملف تم إنشاؤه
           FILE=$(ls -t data/stories/generated/episode-*.json | head -1)
           echo "EP_FILE=$FILE" >> $GITHUB_OUTPUT
           EP_NAME=$(basename $FILE .json)
@@ -42,20 +41,13 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
         run: |
-          python scripts/story_audio.py ${{ steps.gen.outputs.EP_FILE }} out/${{ steps.gen.outputs.EP_NAME }}.mp3
+          python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
       - name: Build Video
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
-          python scripts/story_video.py out/${{ steps.gen.outputs.EP_NAME }}.mp3 out/${{ steps.gen.outputs.EP_NAME }}_meta.json out/${{ steps.gen.outputs.EP_NAME }}.mp4
-
-      - name: Upload to Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          echo "تخطي الرفع مؤقتاً للتركيز على بناء الفيديو..."
+          python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "out/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
       - name: Commit Changes
         run: |
