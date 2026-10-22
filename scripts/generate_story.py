@@ -8,7 +8,7 @@ from gemini_tts_pool import get_pool
 STATE_FILE = "state/story_state.json"
 SOURCES_FILE = "data/auto-generated/sources.json"
 OUTPUT_DIR = Path("data/stories/generated")
-START_WITH_STORY = "مريم" # 🌟 القصة التي سنبدأ بها
+START_WITH_STORY = "مريم"
 
 PROMPT_TEMPLATE = """
 أنت كاتب سيناريو إسلامي محترف على منهج أهل السنة والجماعة.
@@ -39,9 +39,18 @@ PROMPT_TEMPLATE = """
 """
 
 def load_state():
+    default_state = {"last_processed_index": -1, "current_story_id": "", "story_episode_num": 0}
     if Path(STATE_FILE).exists():
-        return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
-    return {"last_processed_index": -1, "current_story_id": "", "story_episode_num": 0}
+        try:
+            saved = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
+            # دمج المفاتيح الجديدة مع الملف القديم لتجنب خطأ KeyError
+            for k, v in default_state.items():
+                if k not in saved:
+                    saved[k] = v
+            return saved
+        except Exception:
+            return default_state
+    return default_state
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -104,7 +113,6 @@ def main():
     state = load_state()
     topics = flatten_sources()
     
-    # البحث عن قصة مريم للبدء منها في أول مرة
     if state["last_processed_index"] == -1:
         for i, t in enumerate(topics):
             if START_WITH_STORY in t.get('name', '') or START_WITH_STORY in t.get('title', ''):
@@ -114,7 +122,6 @@ def main():
 
     next_idx = state["last_processed_index"] + 1
     
-    # إذا انتهت كل القصص، نعود للبداية (Loop)
     if next_idx >= len(topics):
         print("🎉 تم إنجاز جميع المواضيع! سنعيد البدء من القصة الأولى.")
         next_idx = 0
@@ -122,13 +129,12 @@ def main():
     topic = topics[next_idx]
     next_topic = topics[next_idx + 1] if next_idx + 1 < len(topics) else topics[0]
     
-    # إدارة ترقيم الحلقات داخل القصة الواحدة
     story_id = topic['source_id']
-    if state["current_story_id"] != story_id:
+    if state.get("current_story_id") != story_id:
         state["current_story_id"] = story_id
         state["story_episode_num"] = 1
     else:
-        state["story_episode_num"] += 1
+        state["story_episode_num"] = state.get("story_episode_num", 0) + 1
         
     ep_num = state["story_episode_num"]
 
@@ -170,10 +176,8 @@ def main():
         else:
             final_segments.append(seg)
 
-    # إضافة السؤال التشويقي
     if next_topic and result.get("teaser_text"):
         next_name = next_topic.get('title', 'الحلقة القادمة')
-        # إذا كانت القصة القادمة مختلفة، نذكر اسمها
         if next_topic['source_id'] != story_id:
             next_name = f"قصة {next_name}"
             
@@ -190,7 +194,6 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    # اسم الملف يحتوي على اسم القصة ورقم الحلقة لتجنب التداخل
     safe_name = topic.get('name', 'story').replace(' ', '_')[:20]
     out_file = OUTPUT_DIR / f"{topic['source_type']}-{safe_name}-{ep_num:02d}.json"
     
@@ -203,7 +206,6 @@ def main():
     
     out_file.write_text(json.dumps(episode_data, ensure_ascii=False, indent=2), encoding="utf-8")
     
-    # حفظ مسار الملف لكي يقرأه الـ Workflow
     Path("out").mkdir(exist_ok=True)
     Path("out/latest_episode.txt").write_text(str(out_file), encoding="utf-8")
     
