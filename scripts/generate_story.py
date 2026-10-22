@@ -25,7 +25,7 @@ PROMPT_TEMPLATE = """
 4. استخرج الأحاديث الصحيحة التي تدعم النص، وأعدها كنصوص حرفية.
 5. صغ سؤالاً تشويقياً في النهاية للحلقة القادمة يثير فضول المستمع.
 
-أعد النتيجة بصيغة JSON فقط:
+أعد النتيجة بصيغة JSON فقط (بدون أي نصوص إضافية أو علامات markdown):
 {{
   "episode_title": "عنوان الحلقة",
   "segments": [
@@ -71,27 +71,46 @@ def verify_quran(surah, ayahs):
 
 def call_gemini(prompt):
     pool = get_pool()
-    key = pool.get_current()
-    models = ["gemini-1.5-flash-latest", "gemini-flash-latest", "gemini-2.0-flash"]
     
+    # جلب الموديلات المتاحة تلقائياً لتجنب خطأ 404
+    key = pool.get_current()
+    models = []
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            available = [m["name"].replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+            models = [m for m in available if "flash" in m.lower()]
+    except Exception:
+        pass
+        
+    if not models:
+        models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
+
+    print(f"🔄 سيتم تجربة الموديلات التالية: {models[:3]}")
+
     for model in models:
+        key = pool.get_current()
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"}
         }
         try:
-            r = requests.post(url, json=body, timeout=60)
+            r = requests.post(url, json=body, timeout=90)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
                 # تنظيف أي علامات markdown قد يضيفها النموذج
                 text = text.replace("```json", "").replace("```", "").strip()
                 return json.loads(text)
-            elif r.status_code == 429:
-                pool.mark_daily_exhausted()
-                key = pool.get_current()
+            else:
+                print(f"⚠️ فشل النموذج {model}: HTTP {r.status_code}")
+                print(f"تفاصيل الخطأ: {r.text[:300]}")
+                if r.status_code == 429:
+                    pool.mark_daily_exhausted()
         except Exception as e:
-            print(f"⚠️ خطأ في {model}: {e}")
+            print(f"⚠️ خطأ في الاتصال بـ {model}: {e}")
+            
     return None
 
 def main():
@@ -120,7 +139,7 @@ def main():
     
     if not result or "segments" not in result:
         print("❌ فشل Gemini في إنتاج النص أو الصيغة غير صحيحة. إيقاف العملية.")
-        sys.exit(1) # إيقاف الـ Workflow بالفشل
+        sys.exit(1)
 
     final_segments = []
     for seg in result.get("segments", []):
