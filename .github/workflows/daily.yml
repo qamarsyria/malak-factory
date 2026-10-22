@@ -1,97 +1,32 @@
-name: Daily Video Factory
-
+name: Daily
 on:
-  schedule:
-    - cron: '0 5 * * *'
   workflow_dispatch:
-
-permissions:
-  contents: write
-
 jobs:
-  produce:
+  extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
+          token: ${{ secrets.GH_PAT }}
+          path: factory
+      - uses: actions/checkout@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install FFmpeg + Arabic fonts
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-hosny-amiri fonts-noto-core libraqm0
-
-      - name: Install Python deps
-        run: pip install -r requirements.txt
-
-      - name: Prepare JSON from sources
-        run: |
-          node scripts/parse_content.js
-          node scripts/parse_riyad.js
-
-      - name: Build Story Audio
+          repository: qamarsyria/qamar-malak
+          token: ${{ secrets.GH_PAT }}
+          path: platform
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Extract
+        run: node scripts/extract_sources.js
+        working-directory: factory
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python scripts/story_audio.py
-
-      - name: Upload story audio artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: story-episode-01-audio
-          path: out/episode-01.mp3
-          if-no-files-found: warn
-
-      - name: Build Story Video
-        env:
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python scripts/story_video.py
-
-      - name: Upload story video artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: story-episode-01-video
-          path: out/episode-01.mp4
-          if-no-files-found: warn
-
-      - name: Run factory (Daily Short)
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GH_PAT: ${{ secrets.GH_PAT }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python scripts/main.py
-
-      - name: Upload video artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: video-${{ github.run_number }}
-          path: out/video.mp4
-
-      - name: Upload composite image artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: composite-${{ github.run_number }}
-          path: out/composite.png
-
-      - name: Commit state
-        if: success()
+          PLATFORM_ROOT: ${{ github.workspace }}/platform
+      - name: Push
         run: |
+          cd factory
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/published.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update published state [skip ci]"
-            git push
-          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/auto-generated/sources.json
+          git commit -m "Extract sources" || echo "No changes"
+          git push
