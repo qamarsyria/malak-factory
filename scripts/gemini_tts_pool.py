@@ -1,7 +1,8 @@
-"""محرك Gemini TTS — المصدر الوحيد للصوت (مع اكتشاف تلقائي للموديلات + إزالة الخشيش)."""
+"""محرك Gemini TTS — المصدر الوحيد للصوت (مع Cache للموديلات)."""
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import subprocess
@@ -11,19 +12,20 @@ from pathlib import Path
 
 import requests
 
+MODEL_CACHE_FILE = "out/tts_models_cache.json"
+MODEL_CACHE_TTL = 24 * 3600  # 24 ساعة
+
+
 def _log(msg: str) -> None:
     print(f"[gemini-tts] {msg}", flush=True)
 
 
-# ═══════════════════════════════════════════════════════
-#  إدارة مفاتيح Gemini
-# ═══════════════════════════════════════════════════════
 class GeminiKeyPool:
     def __init__(self) -> None:
         raw = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
         self.keys = [k.strip() for k in raw.split(",") if k.strip()]
         if not self.keys:
-            raise RuntimeError("❌ لا مفاتيح Gemini. أضف GEMINI_API_KEYS أو GEMINI_API_KEY")
+            raise RuntimeError("لا مفاتيح Gemini. أضف GEMINI_API_KEYS أو GEMINI_API_KEY")
         self.current_index = 0
         self.cooldowns: dict[str, float] = {}
         _log(f"🔑 محمّل {len(self.keys)} مفتاح Gemini")
@@ -66,6 +68,7 @@ class GeminiKeyPool:
         _log(f"🚫 مفتاح {key[:12]}... → مستنفد لليوم")
         self._advance()
 
+
 _pool: GeminiKeyPool | None = None
 def get_pool() -> GeminiKeyPool:
     global _pool
@@ -74,19 +77,47 @@ def get_pool() -> GeminiKeyPool:
     return _pool
 
 
-# ═══════════════════════════════════════════════════════
-#  اكتشاف موديلات الصوت (نستبعد lite)
-# ═══════════════════════════════════════════════════════
 _MODEL_CACHE: list[str] | None = None
+
+
+def _load_model_cache() -> list[str] | None:
+    try:
+        if Path(MODEL_CACHE_FILE).exists():
+            data = json.loads(Path(MODEL_CACHE_FILE).read_text(encoding="utf-8"))
+            if time.time() - data.get("timestamp", 0) < MODEL_CACHE_TTL:
+                _log(f"✅ موديلات TTS (من الكاش): {data['models'][:3]}")
+                return data["models"]
+    except Exception:
+        pass
+    return None
+
+
+def _save_model_cache(models: list[str]):
+    try:
+        Path(MODEL_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(MODEL_CACHE_FILE).write_text(json.dumps({
+            "timestamp": time.time(),
+            "models": models,
+        }, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
 
 def discover_tts_models() -> list[str]:
     global _MODEL_CACHE
     if _MODEL_CACHE is not None:
         return _MODEL_CACHE
 
+    # 1. حاول من الكاش
+    cached = _load_model_cache()
+    if cached:
+        _MODEL_CACHE = cached
+        return cached
+
+    # 2. اكتشف من API
     p = get_pool()
     key = p.get_current()
-    _log("🔍 نسأل Gemini عن موديلات الصوت المتاحة...")
+    _log("🔍 نسأل Gemini عن موديلات الصوت المتاحة (أول مرة)...")
 
     try:
         r = requests.get(
@@ -106,7 +137,6 @@ def discover_tts_models() -> list[str]:
         ]
 
         if not tts_models:
-            _log("⚠️ لم نجد موديلات TTS بدون lite — سنستخدم الاحتياطي")
             return ["gemini-2.5-flash-preview-tts"]
 
         def rank(name):
@@ -116,18 +146,17 @@ def discover_tts_models() -> list[str]:
             return (-version, is_preview, name)
 
         tts_models.sort(key=rank)
-        _log(f"✅ موديلات TTS المتاحة (بدون lite): {tts_models[:3]}")
+        _log(f"✅ موديلات TTS المتاحة: {tts_models[:3]}")
         _MODEL_CACHE = tts_models
+        _save_model_cache(tts_models)
         return tts_models
     except Exception as e:
         _log(f"⚠️ فشل اكتشاف الموديلات: {e}")
         return ["gemini-2.5-flash-preview-tts"]
 
 
-# ═══════════════════════════════════════════════════════
-#  تقسيم النص
-# ═══════════════════════════════════════════════════════
 MAX_CHARS_PER_REQUEST = 1800
+
 
 def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
     text = text.strip()
@@ -152,9 +181,6 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
     return chunks
 
 
-# ═══════════════════════════════════════════════════════
-#  تنظيف المقطع (إزالة الخشيش + Fade Out)
-# ═══════════════════════════════════════════════════════
 def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 250) -> bool:
     try:
         probe = subprocess.run(
@@ -188,9 +214,6 @@ def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 250) -> bool:
         return False
 
 
-# ═══════════════════════════════════════════════════════
-#  TTS لطلب واحد
-# ═══════════════════════════════════════════════════════
 def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
     models = discover_tts_models()
 
@@ -214,15 +237,13 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
                 return "RATE_LIMIT"
 
             if r.status_code == 400:
-                _log(f"   ❌ خطأ 400 (بيانات خاطئة) مع {model}: {r.text[:100]}")
+                _log(f"   ❌ خطأ 400 مع {model}: {r.text[:100]}")
                 return False
 
             if r.status_code == 404:
-                _log(f"   ⚠️ الموديل {model} غير متاح، جرب الذي بعده...")
                 continue
 
             if r.status_code != 200:
-                _log(f"   ⚠️ HTTP {r.status_code} من {model}")
                 continue
 
             data = r.json()
@@ -251,9 +272,6 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
     return False
 
 
-# ═══════════════════════════════════════════════════════
-#  الواجهة العامة
-# ═══════════════════════════════════════════════════════
 def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
     out_mp3_path = Path(out_mp3)
     out_mp3_path.parent.mkdir(parents=True, exist_ok=True)
@@ -295,7 +313,6 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
             _log(f"✅ مقطع {idx + 1}/{len(chunks)} (نظيف)")
         else:
             wav_parts.append(wav_path)
-            _log(f"⚠️ مقطع {idx + 1}/{len(chunks)} (بدون تنظيف)")
 
     merged_wav = work_dir / "merged.wav"
     with wave.open(str(merged_wav), "wb") as out:
