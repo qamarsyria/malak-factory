@@ -71,8 +71,6 @@ def verify_quran(surah, ayahs):
 
 def call_gemini(prompt):
     pool = get_pool()
-    
-    # جلب الموديلات المتاحة تلقائياً لتجنب خطأ 404
     key = pool.get_current()
     models = []
     try:
@@ -100,17 +98,14 @@ def call_gemini(prompt):
             r = requests.post(url, json=body, timeout=90)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
-                # تنظيف أي علامات markdown قد يضيفها النموذج
                 text = text.replace("```json", "").replace("```", "").strip()
                 return json.loads(text)
             else:
                 print(f"⚠️ فشل النموذج {model}: HTTP {r.status_code}")
-                print(f"تفاصيل الخطأ: {r.text[:300]}")
                 if r.status_code == 429:
                     pool.mark_daily_exhausted()
         except Exception as e:
             print(f"⚠️ خطأ في الاتصال بـ {model}: {e}")
-            
     return None
 
 def main():
