@@ -1,4 +1,4 @@
-"""بناء فيديو القصة: صورة لكل مشهد (ليس لكل جملة)."""
+"""بناء فيديو القصة: صورة لكل مشهد + نص + علامة تجارية."""
 import json
 import os
 import subprocess
@@ -12,6 +12,15 @@ import arabic_reshaper
 
 from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR, PIXABAY_KEY
 from video import _find_arabic_font, _shape, _wrap
+
+SAFE_FALLBACKS = [
+    "islamic mosque architecture",
+    "kaaba mecca",
+    "sand dunes desert",
+    "starry night sky",
+    "mosque minaret sky",
+]
+
 
 def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
     safe_prompt = "".join(c if c.isalnum() else "_" for c in prompt)[:30]
@@ -35,9 +44,26 @@ def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
         except Exception as e:
             print(f"⚠️ فشل جلب صورة {prompt}: {e}")
 
+    # احتياطي
+    fallback = random.choice(SAFE_FALLBACKS)
+    if PIXABAY_KEY:
+        try:
+            r = requests.get("https://pixabay.com/api/", params={
+                "key": PIXABAY_KEY, "q": fallback, "image_type": "photo",
+                "orientation": "vertical", "per_page": 5, "safesearch": "true",
+            }, timeout=20)
+            hits = r.json().get("hits", [])
+            if hits:
+                url = random.choice(hits)["largeImageURL"]
+                out_path.write_bytes(requests.get(url, timeout=30).content)
+                return str(out_path)
+        except Exception:
+            pass
+
     img = Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10))
     img.save(out_path)
     return str(out_path)
+
 
 def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool = False):
     bg = Image.open(bg_path).convert("RGB")
@@ -92,6 +118,7 @@ def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool
     bg.save(output_path, "PNG")
     return output_path
 
+
 def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/episode.mp4"):
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     segments = meta.get("segments", [])
@@ -102,7 +129,6 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
     Path("out").mkdir(exist_ok=True)
     work_dir = Path(tempfile.mkdtemp(prefix="ep_video_"))
 
-    # إدارة الصور: صورة واحدة لكل "مشهد"
     current_scene = None
     current_bg_path = None
     bg_cache = {}
@@ -113,14 +139,12 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
         scene = seg.get("visual", "islamic architecture mosque")
         is_quran = (seg["type"] == "quran")
 
-        # إذا تغير المشهد، جلب صورة جديدة
         if scene != current_scene:
             current_scene = scene
             if scene not in bg_cache:
                 print(f"🖼️ جلب صورة للمشهد: {scene}...")
                 bg_cache[scene] = fetch_image_for_prompt(scene, work_dir)
             current_bg_path = bg_cache[scene]
-        # وإلا، استخدم الصورة نفسها
 
         print(f"🖼️ المقطع {idx} (المشهد: {scene})...")
         img_path = work_dir / f"seg_{idx:03d}.png"
@@ -144,6 +168,7 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
 
     print(f"✅ الفيديو: {output_mp4} ({os.path.getsize(output_mp4)/1024/1024:.1f} MB)")
     return output_mp4
+
 
 if __name__ == "__main__":
     build_episode_video(
