@@ -69,9 +69,35 @@ def verify_quran(surah, ayahs):
         pass
     return False, ""
 
+def discover_models(key):
+    """يكتشف الموديلات المتاحة تلقائياً لتجنب خطأ 404"""
+    models = []
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            for m in r.json().get("models", []):
+                if "generateContent" in m.get("supportedGenerationMethods", []):
+                    name = m["name"].replace("models/", "")
+                    if "gemini" in name and ("flash" in name or "pro" in name):
+                        models.append(name)
+    except Exception as e:
+        print(f"⚠️ فشل اكتشاف الموديلات: {e}")
+    
+    # ترتيب الموديلات لتكون الأفضل أولاً (flash أولاً، ثم pro)
+    models.sort(key=lambda x: (0 if "flash" in x else 1, -len(x)))
+    return models
+
 def call_gemini(prompt):
     pool = get_pool()
-    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash"]
+    key = pool.get_current()
+    
+    # اكتشاف الموديلات المتاحة
+    models = discover_models(key)
+    if not models:
+        models = ["gemini-1.5-flash", "gemini-pro"] # احتياطي
+        
+    print(f"🔄 الموديلات المتاحة: {models[:3]}")
 
     for model in models:
         key = pool.get_current()
@@ -86,7 +112,7 @@ def call_gemini(prompt):
             }
         }
         try:
-            r = requests.post(url, json=body, timeout=30)
+            r = requests.post(url, json=body, timeout=45)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
                 text = text.replace("```json", "").replace("```", "").strip()
@@ -96,7 +122,7 @@ def call_gemini(prompt):
                 if r.status_code == 429:
                     pool.mark_daily_exhausted()
         except Exception as e:
-            print(f"⚠️ انتهى وقت الاتصال بـ {model}: {e}")
+            print(f"⚠️ خطأ في الاتصال: {e}")
     return None
 
 def main():
