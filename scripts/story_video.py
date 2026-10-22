@@ -1,3 +1,4 @@
+"""بناء فيديو القصة: دعم الصور والفيديوهات + علامة تجارية + حماية شرعية."""
 import json
 import os
 import subprocess
@@ -19,155 +20,125 @@ SAFE_FALLBACKS = [
     "sand dunes desert",
     "starry night sky",
     "mosque minaret sky",
+    "quran book",
+    "nature landscape"
+]
+
+# مقاطع الفيديو الطبيعية التي سنستخدمها للآيات القرآنية
+NATURE_VIDEO_QUERIES = [
+    "waterfall nature",
+    "birds flying sky",
+    "ocean waves",
+    "river flowing",
+    "clouds sky",
+    "sunset desert"
 ]
 
 WATERMARK_TEXT = "ملاك المعرفة"
 WATERMARK_OPACITY = 0.5
 
+# 🛡️ كلمات ممنوعة (لا نقبل أي صورة تحتوي عليها)
+FORBIDDEN_TAGS = [
+    "woman", "women", "girl", "female", "child", "boy", "man", "men", 
+    "people", "person", "face", "human", "body", "hand", "skin"
+]
+
+def is_image_safe(tags_str):
+    tags = str(tags_str).lower()
+    return not any(forbidden in tags for forbidden in FORBIDDEN_TAGS)
+
 def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
     safe_prompt = "".join(c if c.isalnum() else "_" for c in prompt)[:30]
     out_path = work_dir / f"bg_{safe_prompt}.jpg"
-
-    if out_path.exists():
-        return str(out_path)
+    if out_path.exists(): return str(out_path)
 
     if PIXABAY_KEY:
         try:
             r = requests.get("https://pixabay.com/api/", params={
                 "key": PIXABAY_KEY, "q": prompt, "image_type": "photo",
-                "orientation": "vertical", "per_page": 5, "safesearch": "true",
-                "min_width": 1080,
+                "orientation": "vertical", "per_page": 15, "safesearch": "true", "min_width": 1080
             }, timeout=20)
-            hits = r.json().get("hits", [])
-            if hits:
-                url = random.choice(hits)["largeImageURL"]
-                out_path.write_bytes(requests.get(url, timeout=30).content)
-                return str(out_path)
+            for hit in r.json().get("hits", []):
+                if is_image_safe(hit.get("tags", "")) and hit.get("largeImageURL"):
+                    out_path.write_bytes(requests.get(hit["largeImageURL"], timeout=30).content)
+                    return str(out_path)
+                else:
+                    print(f"🛡️ تم رفض صورة غير لائقة: {hit.get('tags')}")
         except Exception as e:
             print(f"⚠️ فشل جلب صورة {prompt}: {e}")
 
+    # احتياطي آمن
     fallback = random.choice(SAFE_FALLBACKS)
-    if PIXABAY_KEY:
-        try:
-            r = requests.get("https://pixabay.com/api/", params={
-                "key": PIXABAY_KEY, "q": fallback, "image_type": "photo",
-                "orientation": "vertical", "per_page": 5, "safesearch": "true",
-            }, timeout=20)
-            hits = r.json().get("hits", [])
-            if hits:
-                url = random.choice(hits)["largeImageURL"]
-                out_path.write_bytes(requests.get(url, timeout=30).content)
-                return str(out_path)
-        except Exception:
-            pass
-
     img = Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10))
     img.save(out_path)
     return str(out_path)
 
-def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
-    watermark_layer = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
-    wm_draw = ImageDraw.Draw(watermark_layer)
+def fetch_video_for_prompt(prompt: str, work_dir: Path) -> str:
+    safe_prompt = "".join(c if c.isalnum() else "_" for c in prompt)[:30]
+    out_path = work_dir / f"bg_{safe_prompt}.mp4"
+    if out_path.exists(): return str(out_path)
 
-    try:
-        font = ImageFont.truetype(font_path, 30, layout_engine=ImageFont.Layout.RAQM)
-    except Exception:
-        font = ImageFont.truetype(font_path, 30)
+    if PIXABAY_KEY:
+        try:
+            r = requests.get("https://pixabay.com/api/videos/", params={
+                "key": PIXABAY_KEY, "q": prompt, "per_page": 15, "safesearch": "true"
+            }, timeout=20)
+            for hit in r.json().get("hits", []):
+                if is_image_safe(hit.get("tags", "")):
+                    videos = hit.get("videos", {})
+                    url = videos.get("medium", {}).get("url") or videos.get("small", {}).get("url")
+                    if url:
+                        out_path.write_bytes(requests.get(url, timeout=60).content)
+                        return str(out_path)
+        except Exception as e:
+            print(f"⚠️ فشل جلب فيديو {prompt}: {e}")
+            
+    # إذا فشل الفيديو، نرجع صورة كاحتياطي
+    return fetch_image_for_prompt(prompt, work_dir)
 
-    shaped = _shape(WATERMARK_TEXT)
-    bbox = wm_draw.textbbox((0, 0), shaped, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-
-    margin = 40
-    x = VIDEO_W - tw - margin
-    y = VIDEO_H - th - margin
-
-    alpha = int(255 * WATERMARK_OPACITY)
-    wm_draw.text(
-        (x, y), shaped, font=font,
-        fill=(212, 175, 55, alpha),
-        stroke_width=1, stroke_fill=(0, 0, 0, alpha),
-    )
-
-    return Image.alpha_composite(bg_img.convert("RGBA"), watermark_layer).convert("RGB")
-
-def _add_teaser_overlay(bg_img: Image.Image, draw: ImageDraw.Draw, font_path: str, teaser_data: dict):
-    strip_h = 340
-    strip = Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 210))
-    bg_img.paste(strip, (0, VIDEO_H - strip_h), strip)
-
-    try:
-        font_next = ImageFont.truetype(font_path, 42, layout_engine=ImageFont.Layout.RAQM)
-        font_url = ImageFont.truetype(font_path, 32, layout_engine=ImageFont.Layout.RAQM)
-    except Exception:
-        font_next = ImageFont.truetype(font_path, 42)
-        font_url = ImageFont.truetype(font_path, 32)
-
-    next_title = _shape(teaser_data.get("next_episode_title", ""))
-    url_text = teaser_data.get("url", "").replace("https://", "").replace("http://", "").rstrip("/")
-    platform = _shape(teaser_data.get("platform_name", "ملاك المعرفة"))
-
-    y = VIDEO_H - strip_h + 40
-
-    label_next = _shape("⏭ الحلقة القادمة")
-    bbox = draw.textbbox((0, 0), label_next, font=font_next)
-    x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-    draw.text((x, y), label_next, font=font_next, fill=ACCENT_COLOR, stroke_width=2, stroke_fill="black")
-    y += 70
-
-    if next_title:
-        bbox = draw.textbbox((0, 0), next_title, font=font_next)
-        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), next_title, font=font_next, fill=TEXT_COLOR, stroke_width=2, stroke_fill="black")
-        y += 80
-
-    if url_text:
-        label_url = _shape(f"🌐 {url_text}")
-        bbox = draw.textbbox((0, 0), label_url, font=font_url)
-        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), label_url, font=font_url, fill=ACCENT_COLOR, stroke_width=1, stroke_fill="black")
-        y += 55
-
-    if platform:
-        bbox = draw.textbbox((0, 0), platform, font=font_url)
-        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), platform, font=font_url, fill=TEXT_COLOR, stroke_width=1, stroke_fill="black")
-
-def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool = False, is_teaser: bool = False, teaser_data: dict = None):
-    bg = Image.open(bg_path).convert("RGB")
-
-    ratio = max(VIDEO_W / bg.width, VIDEO_H / bg.height)
-    bg = bg.resize((int(bg.width * ratio), int(bg.height * ratio)), Image.LANCZOS)
-    left = (bg.width - VIDEO_W) // 2
-    top = (bg.height - VIDEO_H) // 2
-    bg = bg.crop((left, top, left + VIDEO_W, top + VIDEO_H))
-
-    overlay_dark = Image.new("RGBA", bg.size, (0, 0, 0, 150))
-    bg = Image.alpha_composite(bg.convert("RGBA"), overlay_dark).convert("RGB")
-
-    draw = ImageDraw.Draw(bg)
+def make_overlay(seg, width, height):
+    """يرسم طبقة شفافة تحتوي على النصوص والعلامة المائية لدمجها مع الخلفية"""
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
+    is_quran = seg.get("type") == "quran"
+    text = seg.get("text", "")
+    display = seg.get("display", "")
 
+    # 1. لفظ الجلالة للقرآن (شفاف وخلف النص)
+    if is_quran:
+        try: font_allah = ImageFont.truetype(font_path, 450, layout_engine=ImageFont.Layout.RAQM)
+        except: font_allah = ImageFont.truetype(font_path, 450)
+        allah_shaped = _shape("ﷲ")
+        bbox = draw.textbbox((0, 0), allah_shaped, font=font_allah)
+        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
+        y = (VIDEO_H - (bbox[3] - bbox[1])) // 2
+        draw.text((x, y), allah_shaped, font=font_allah, fill=(212, 175, 55, 60))
+
+    # 2. النص (سرد أو آية)
     if is_quran:
         try:
             font_main = ImageFont.truetype(font_path, 45, layout_engine=ImageFont.Layout.RAQM)
-        except Exception:
+            font_display = ImageFont.truetype(font_path, 35, layout_engine=ImageFont.Layout.RAQM)
+        except: 
             font_main = ImageFont.truetype(font_path, 45)
+            font_display = ImageFont.truetype(font_path, 35)
         color = ACCENT_COLOR
     else:
-        try:
-            font_main = ImageFont.truetype(font_path, 55, layout_engine=ImageFont.Layout.RAQM)
-        except Exception:
-            font_main = ImageFont.truetype(font_path, 55)
+        try: font_main = ImageFont.truetype(font_path, 55, layout_engine=ImageFont.Layout.RAQM)
+        except: font_main = ImageFont.truetype(font_path, 55)
         color = TEXT_COLOR
 
     shaped = _shape(text)
     lines = _wrap(shaped, font_main, VIDEO_W - 120, draw)
-
     line_h = int(font_main.size * 1.6)
     total_h = len(lines) * line_h
     y = max(120, (VIDEO_H - total_h) // 2)
+
+    # إضافة طبقة ظل خفيفة خلف النص ليكون مقروءاً على أي خلفية
+    text_bg = Image.new("RGBA", (width, total_h + 60), (0, 0, 0, 130))
+    overlay.paste(text_bg, (0, y - 30), text_bg)
+    draw = ImageDraw.Draw(overlay) # إعادة التعيين بعد paste
 
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font_main)
@@ -175,70 +146,131 @@ def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool
         draw.text((x, y), line, font=font_main, fill=color, stroke_width=TEXT_STROKE_W, stroke_fill=TEXT_STROKE)
         y += line_h
 
-    bg = _add_watermark(bg, font_path)
-    draw = ImageDraw.Draw(bg)
+    # 3. اسم السورة ورقم الآية
+    if is_quran and display:
+        display_shaped = _shape(f"📖 {display}")
+        bbox = draw.textbbox((0, 0), display_shaped, font=font_display)
+        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y + 20), display_shaped, font=font_display, fill="#D4AF37", stroke_width=2, stroke_fill="black")
 
-    if is_teaser and teaser_data:
-        _add_teaser_overlay(bg, draw, font_path, teaser_data)
+    # 4. العلامة المائية (ملاك المعرفة)
+    try: font_wm = ImageFont.truetype(font_path, 30, layout_engine=ImageFont.Layout.RAQM)
+    except: font_wm = ImageFont.truetype(font_path, 30)
+    wm_shaped = _shape(WATERMARK_TEXT)
+    bbox = draw.textbbox((0, 0), wm_shaped, font=font_wm)
+    x = VIDEO_W - (bbox[2] - bbox[0]) - 40
+    y_wm = VIDEO_H - (bbox[3] - bbox[1]) - 40
+    draw.text((x, y_wm), wm_shaped, font=font_wm, fill=(212, 175, 55, 128), stroke_width=1, stroke_fill=(0,0,0,128))
 
-    bg.save(output_path, "PNG")
-    return output_path
+    # 5. Teaser Overlay
+    if seg.get("type") == "teaser":
+        td = seg.get("teaser_data", {})
+        strip_h = 340
+        strip = Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 210))
+        overlay.paste(strip, (0, VIDEO_H - strip_h), strip)
+        draw = ImageDraw.Draw(overlay) # إعادة تعيين
+
+        try:
+            font_next = ImageFont.truetype(font_path, 42, layout_engine=ImageFont.Layout.RAQM)
+            font_url = ImageFont.truetype(font_path, 32, layout_engine=ImageFont.Layout.RAQM)
+        except: 
+            font_next = ImageFont.truetype(font_path, 42)
+            font_url = ImageFont.truetype(font_path, 32)
+
+        next_title = _shape(td.get("next_episode_title", ""))
+        url_text = td.get("url", "").replace("https://", "").replace("http://", "").rstrip("/")
+        platform = _shape(td.get("platform_name", "ملاك المعرفة"))
+        
+        y = VIDEO_H - strip_h + 40
+        label_next = _shape("⏭ الحلقة القادمة")
+        bbox = draw.textbbox((0, 0), label_next, font=font_next)
+        draw.text(((VIDEO_W - (bbox[2] - bbox[0])) // 2, y), label_next, font=font_next, fill=ACCENT_COLOR, stroke_width=2, stroke_fill="black")
+        y += 70
+        if next_title:
+            bbox = draw.textbbox((0, 0), next_title, font=font_next)
+            draw.text(((VIDEO_W - (bbox[2] - bbox[0])) // 2, y), next_title, font=font_next, fill=TEXT_COLOR, stroke_width=2, stroke_fill="black")
+            y += 80
+        if url_text:
+            label_url = _shape(f"🌐 {url_text}")
+            bbox = draw.textbbox((0, 0), label_url, font=font_url)
+            draw.text(((VIDEO_W - (bbox[2] - bbox[0])) // 2, y), label_url, font=font_url, fill=ACCENT_COLOR, stroke_width=1, stroke_fill="black")
+            y += 55
+        if platform:
+            bbox = draw.textbbox((0, 0), platform, font=font_url)
+            draw.text(((VIDEO_W - (bbox[2] - bbox[0])) // 2, y), platform, font=font_url, fill=TEXT_COLOR, stroke_width=1, stroke_fill="black")
+
+    overlay_path = work_dir / f"overlay_{seg['index']:03d}.png"
+    overlay.save(overlay_path)
+    return str(overlay_path)
 
 def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/episode.mp4"):
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     segments = meta.get("segments", [])
+    if not segments: raise RuntimeError("لا مقاطع في الميتا")
 
-    if not segments:
-        raise RuntimeError("لا مقاطع في الميتا")
-
-    Path("out").mkdir(exist_ok=True)
     work_dir = Path(tempfile.mkdtemp(prefix="ep_video_"))
-
-    current_scene = None
-    current_bg_path = None
-    bg_cache = {}
-
     concat_lines = []
+
     for seg in segments:
         idx = seg["index"]
-        scene = seg.get("visual", "islamic architecture mosque")
-        is_quran = (seg["type"] == "quran")
-        is_teaser = (seg["type"] == "teaser")
-        teaser_data = seg.get("teaser_data") if is_teaser else None
+        duration = seg["duration"]
+        is_quran = seg.get("type") == "quran"
+        
+        # اختيار الخلفية بناءً على نوع المقطع
+        use_video = False
+        if is_quran:
+            # 50% فيديو طبيعة و 50% صورة (مصحف/مسجد)
+            if random.random() < 0.5:
+                use_video = True
+                scene = random.choice(NATURE_VIDEO_QUERIES)
+            else:
+                scene = random.choice(["quran book", "mosque architecture", "kaaba mecca"])
+        else:
+            scene = seg.get("visual", "islamic architecture mosque")
 
-        if scene != current_scene:
-            current_scene = scene
-            if scene not in bg_cache:
-                print(f"🖼️ جلب صورة للمشهد: {scene}...")
-                bg_cache[scene] = fetch_image_for_prompt(scene, work_dir)
-            current_bg_path = bg_cache[scene]
+        if use_video:
+            print(f"🎥 جلب فيديو طبيعي للآية: {scene}...")
+            bg_path = fetch_video_for_prompt(scene, work_dir)
+        else:
+            print(f"🖼️ جلب صورة للمشهد: {scene}...")
+            bg_path = fetch_image_for_prompt(scene, work_dir)
 
-        print(f"🖼️ المقطع {idx} (المشهد: {scene}, teaser: {is_teaser})...")
-        img_path = work_dir / f"seg_{idx:03d}.png"
-
-        make_segment_image(
-            current_bg_path, seg.get("text", ""), str(img_path),
-            is_quran=is_quran, is_teaser=is_teaser, teaser_data=teaser_data,
-        )
-
-        concat_lines.append(f"file '{img_path}'")
-        concat_lines.append(f"duration {seg['duration']}")
-
-    concat_lines.append(f"file '{work_dir / ('seg_' + str(segments[-1]['index']).zfill(3) + '.png')}'")
+        # صنع طبقة النص الشفافة
+        overlay_path = make_overlay(seg, VIDEO_W, VIDEO_H)
+        
+        print(f"🎬 تجهيز المقطع {idx}...")
+        out_seg = work_dir / f"seg_{idx:03d}.mp4"
+        
+        # دمج الخلفية (فيديو أو صورة) مع النص
+        if bg_path.endswith(".mp4"):
+            cmd = [
+                "ffmpeg", "-y", "-stream_loop", "-1", "-i", bg_path, "-i", overlay_path,
+                "-filter_complex", "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[bg];[bg][1:v]overlay",
+                "-t", str(duration), "-c:v", "libx264", "-preset", "ultrafast", "-threads", "4", "-crf", "28",
+                "-pix_fmt", "yuv420p", str(out_seg)
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y", "-loop", "1", "-i", bg_path, "-i", overlay_path,
+                "-filter_complex", "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[bg];[bg][1:v]overlay",
+                "-t", str(duration), "-c:v", "libx264", "-preset", "ultrafast", "-threads", "4", "-crf", "28",
+                "-pix_fmt", "yuv420p", str(out_seg)
+            ]
+            
+        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+        concat_lines.append(f"file '{out_seg}'")
 
     concat_file = work_dir / "concat.txt"
     concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
 
-    print(f"🎬 تركيب الفيديو ({len(segments)} مقطع)...")
-    
-    # ⚡ تسريع الضغط هنا (ultrafast)
+    print(f"🔗 تركيب الفيديو النهائي...")
+    # دمج كل المقاطع مع الصوت
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
-        "-i", audio_path, "-c:v", "libx264", "-preset", "ultrafast", "-threads", "4", "-crf", "28",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", output_mp4,
+        "-i", audio_path, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_mp4,
     ], check=True, capture_output=True, timeout=1800)
 
-    print(f"✅ الفيديو: {output_mp4} ({os.path.getsize(output_mp4)/1024/1024:.1f} MB)")
+    print(f"✅ الفيديو: {output_mp4}")
     return output_mp4
 
 if __name__ == "__main__":
