@@ -26,43 +26,41 @@ jobs:
           pip install -r requirements.txt
 
       - name: Generate Episode JSON
+        id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-        run: python scripts/generate_story.py
-
-      - name: Find Latest Episode
-        id: find_ep
         run: |
-          LATEST=$(ls -t data/stories/generated/episode-*.json | head -1)
-          EP_NAME=$(basename $LATEST .json)
+          python scripts/generate_story.py
+          # البحث عن أحدث ملف تم إنشاؤه
+          FILE=$(ls -t data/stories/generated/episode-*.json | head -1)
+          echo "EP_FILE=$FILE" >> $GITHUB_OUTPUT
+          EP_NAME=$(basename $FILE .json)
           echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
-          echo "تم العثور على الحلقة: $EP_NAME"
 
       - name: Build Audio
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
         run: |
-          python scripts/story_audio.py data/stories/generated/${{ steps.find_ep.outputs.EP_NAME }}.json out/${{ steps.find_ep.outputs.EP_NAME }}.mp3
+          python scripts/story_audio.py ${{ steps.gen.outputs.EP_FILE }} out/${{ steps.gen.outputs.EP_NAME }}.mp3
 
       - name: Build Video
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
-          python scripts/story_video.py out/${{ steps.find_ep.outputs.EP_NAME }}.mp3 out/${{ steps.find_ep.outputs.EP_NAME }}_meta.json out/${{ steps.find_ep.outputs.EP_NAME }}.mp4
+          python scripts/story_video.py out/${{ steps.gen.outputs.EP_NAME }}.mp3 out/${{ steps.gen.outputs.EP_NAME }}_meta.json out/${{ steps.gen.outputs.EP_NAME }}.mp4
 
       - name: Upload to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # كود رفع التلغرام (يجب أن يكون موجوداً في السكربتات الخاصة بك، إذا لم يكن أضفه لاحقاً)
-          echo "سيتم الرفع إلى تلغرام هنا..."
+          echo "تخطي الرفع مؤقتاً للتركيز على بناء الفيديو..."
 
-      - name: Commit Changes (State & Episodes)
+      - name: Commit Changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/story_state.json data/stories/generated/
-          git commit -m "🎬 توليد الحلقة اليومية: ${{ steps.find_ep.outputs.EP_NAME }}" || echo "لا تغييرات"
+          git add -A
+          git commit -m "🎬 توليد الحلقة اليومية: ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push
