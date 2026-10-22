@@ -1,4 +1,4 @@
-"""بناء فيديو القصة: صورة لكل مشهد + نص + علامة تجارية."""
+"""بناء فيديو القصة: صورة لكل مشهد + نص + علامة تجارية + teaser overlay."""
 import json
 import os
 import subprocess
@@ -20,6 +20,10 @@ SAFE_FALLBACKS = [
     "starry night sky",
     "mosque minaret sky",
 ]
+
+# ═══ إعدادات العلامة التجارية ═══
+WATERMARK_TEXT = "ملاك المعرفة"
+WATERMARK_OPACITY = 0.5  # 50% شفافية
 
 
 def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
@@ -44,7 +48,6 @@ def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
         except Exception as e:
             print(f"⚠️ فشل جلب صورة {prompt}: {e}")
 
-    # احتياطي
     fallback = random.choice(SAFE_FALLBACKS)
     if PIXABAY_KEY:
         try:
@@ -65,7 +68,123 @@ def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
     return str(out_path)
 
 
-def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool = False):
+# ═══════════════════════════════════════════════════════════════════════════
+# العلامة التجارية (Watermark) — تُرسم دائماً على كل مقطع
+# ═══════════════════════════════════════════════════════════════════════════
+def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
+    """يرسم نص 'ملاك المعرفة' شفافاً 50% في الزاوية السفلية اليمنى.
+    
+    RTL: الزاوية اليمنى في الفيديو = بداية القراءة العربية (الأنسب بصرياً).
+    """
+    watermark_layer = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
+    wm_draw = ImageDraw.Draw(watermark_layer)
+
+    try:
+        font = ImageFont.truetype(font_path, 30, layout_engine=ImageFont.Layout.RAQM)
+    except Exception:
+        font = ImageFont.truetype(font_path, 30)
+
+    shaped = _shape(WATERMARK_TEXT)
+    bbox = wm_draw.textbbox((0, 0), shaped, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+
+    margin = 40
+    # RTL: اليمين في الفيديو = البداية العربية
+    x = VIDEO_W - tw - margin
+    y = VIDEO_H - th - margin
+
+    alpha = int(255 * WATERMARK_OPACITY)
+    wm_draw.text(
+        (x, y), shaped,
+        font=font,
+        fill=(212, 175, 55, alpha),           # ذهبي شفاف
+        stroke_width=1,
+        stroke_fill=(0, 0, 0, alpha),         # حدود سوداء شفافة
+    )
+
+    return Image.alpha_composite(bg_img.convert("RGBA"), watermark_layer).convert("RGB")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Overlay خاص بـ teaser (شريط سفلي: الحلقة القادمة + الرابط + اسم المنصة)
+# ═══════════════════════════════════════════════════════════════════════════
+def _add_teaser_overlay(bg_img: Image.Image, draw: ImageDraw.Draw, font_path: str, teaser_data: dict):
+    """يضيف شريطاً داكناً في الأسفل يحوي:
+    - عنوان الحلقة القادمة
+    - الرابط
+    - اسم المنصة
+    """
+    strip_h = 340
+    strip = Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 210))
+    bg_img.paste(strip, (0, VIDEO_H - strip_h), strip)
+
+    try:
+        font_next = ImageFont.truetype(font_path, 42, layout_engine=ImageFont.Layout.RAQM)
+        font_url = ImageFont.truetype(font_path, 32, layout_engine=ImageFont.Layout.RAQM)
+    except Exception:
+        font_next = ImageFont.truetype(font_path, 42)
+        font_url = ImageFont.truetype(font_path, 32)
+
+    next_title = _shape(teaser_data.get("next_episode_title", ""))
+    url_text = teaser_data.get("url", "").replace("https://", "").replace("http://", "").rstrip("/")
+    platform = _shape(teaser_data.get("platform_name", "ملاك المعرفة"))
+
+    y = VIDEO_H - strip_h + 40
+
+    # ─── السطر 1: "⏭ الحلقة القادمة" ───
+    label_next = _shape("⏭ الحلقة القادمة")
+    bbox = draw.textbbox((0, 0), label_next, font=font_next)
+    x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
+    draw.text(
+        (x, y), label_next,
+        font=font_next, fill=ACCENT_COLOR,
+        stroke_width=2, stroke_fill="black",
+    )
+    y += 70
+
+    # ─── السطر 2: عنوان الحلقة القادمة ───
+    if next_title:
+        bbox = draw.textbbox((0, 0), next_title, font=font_next)
+        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
+        draw.text(
+            (x, y), next_title,
+            font=font_next, fill=TEXT_COLOR,
+            stroke_width=2, stroke_fill="black",
+        )
+        y += 80
+
+    # ─── السطر 3: الرابط ───
+    if url_text:
+        label_url = _shape(f"🌐 {url_text}")
+        bbox = draw.textbbox((0, 0), label_url, font=font_url)
+        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
+        draw.text(
+            (x, y), label_url,
+            font=font_url, fill=ACCENT_COLOR,
+            stroke_width=1, stroke_fill="black",
+        )
+        y += 55
+
+    # ─── السطر 4: اسم المنصة ───
+    if platform:
+        bbox = draw.textbbox((0, 0), platform, font=font_url)
+        x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
+        draw.text(
+            (x, y), platform,
+            font=font_url, fill=TEXT_COLOR,
+            stroke_width=1, stroke_fill="black",
+        )
+
+
+def make_segment_image(
+    bg_path: str,
+    text: str,
+    output_path: str,
+    is_quran: bool = False,
+    is_teaser: bool = False,
+    teaser_data: dict = None,
+):
     bg = Image.open(bg_path).convert("RGB")
 
     ratio = max(VIDEO_W / bg.width, VIDEO_H / bg.height)
@@ -80,6 +199,7 @@ def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool
     draw = ImageDraw.Draw(bg)
     font_path = _find_arabic_font()
 
+    # ═══ نص المقطع (آية أو سرد) ═══
     if is_quran:
         try:
             font_main = ImageFont.truetype(font_path, 45, layout_engine=ImageFont.Layout.RAQM)
@@ -103,17 +223,20 @@ def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font_main)
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), line, font=font_main, fill=color, stroke_width=TEXT_STROKE_W, stroke_fill=TEXT_STROKE)
+        draw.text(
+            (x, y), line,
+            font=font_main, fill=color,
+            stroke_width=TEXT_STROKE_W, stroke_fill=TEXT_STROKE,
+        )
         y += line_h
 
-    try:
-        font_brand = ImageFont.truetype(font_path, 32, layout_engine=ImageFont.Layout.RAQM)
-    except Exception:
-        font_brand = ImageFont.truetype(font_path, 32)
+    # ═══ Watermark (دائماً — على كل مقطع) ═══
+    bg = _add_watermark(bg, font_path)
+    draw = ImageDraw.Draw(bg)  # ← إعادة البناء بعد alpha_composite
 
-    brand_text = _shape("ملاك المعرفة")
-    bbox = draw.textbbox((0, 0), brand_text, font=font_brand)
-    draw.text(((VIDEO_W - (bbox[2] - bbox[0])) // 2, VIDEO_H - 80), brand_text, font=font_brand, fill="#D4AF37", stroke_width=2, stroke_fill="black")
+    # ═══ Overlay خاص بـ teaser (شريط سفلي) ═══
+    if is_teaser and teaser_data:
+        _add_teaser_overlay(bg, draw, font_path, teaser_data)
 
     bg.save(output_path, "PNG")
     return output_path
@@ -138,6 +261,8 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
         idx = seg["index"]
         scene = seg.get("visual", "islamic architecture mosque")
         is_quran = (seg["type"] == "quran")
+        is_teaser = (seg["type"] == "teaser")
+        teaser_data = seg.get("teaser_data") if is_teaser else None
 
         if scene != current_scene:
             current_scene = scene
@@ -146,15 +271,24 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
                 bg_cache[scene] = fetch_image_for_prompt(scene, work_dir)
             current_bg_path = bg_cache[scene]
 
-        print(f"🖼️ المقطع {idx} (المشهد: {scene})...")
+        print(f"🖼️ المقطع {idx} (المشهد: {scene}, teaser: {is_teaser})...")
         img_path = work_dir / f"seg_{idx:03d}.png"
 
-        make_segment_image(current_bg_path, seg.get("text", ""), str(img_path), is_quran=is_quran)
+        make_segment_image(
+            current_bg_path,
+            seg.get("text", ""),
+            str(img_path),
+            is_quran=is_quran,
+            is_teaser=is_teaser,
+            teaser_data=teaser_data,
+        )
 
         concat_lines.append(f"file '{img_path}'")
         concat_lines.append(f"duration {seg['duration']}")
 
-    concat_lines.append(f"file '{work_dir / ('seg_' + str(segments[-1]['index']).zfill(3) + '.png')}'")
+    concat_lines.append(
+        f"file '{work_dir / ('seg_' + str(segments[-1]['index']).zfill(3) + '.png')}'"
+    )
 
     concat_file = work_dir / "concat.txt"
     concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
