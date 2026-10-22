@@ -4,64 +4,38 @@ on:
   workflow_dispatch:
 
 jobs:
-  extract:
+  run-extraction:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
-      - name: Checkout malak-factory
+      - name: Checkout Factory
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           path: factory
 
-      - name: Checkout qamar-malak Platform
+      - name: Checkout Platform
         uses: actions/checkout@v4
         with:
           repository: qamarsyria/qamar-malak
           token: ${{ secrets.GH_PAT }}
           path: platform
 
-      - name: Setup Node.js 20
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Extract sources
+      - name: Run Extraction
+        run: node scripts/extract_sources.js
         working-directory: factory
         env:
           PLATFORM_ROOT: ${{ github.workspace }}/platform
-        run: |
-          node scripts/extract_sources.js
 
-      - name: Show summary
-        working-directory: factory
+      - name: Commit Changes
         run: |
-          python3 - <<'EOF'
-          import json
-          with open('data/auto-generated/sources.json', 'r', encoding='utf-8') as f:
-              data = json.load(f)
-          print(f"Total topics: {data['meta']['total_topics']}")
-          for k, v in data['meta']['sources_breakdown'].items():
-              print(f"  {k}: {v}")
-          EOF
-
-      - name: Commit sources.json
-        working-directory: factory
-        run: |
+          cd factory
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/auto-generated/sources.json
-          if git diff --staged --quiet; then
-            echo "No changes"
-          else
-            git commit -m "Extract platform sources"
-            git push
-          fi
-
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sources-json
-          path: factory/data/auto-generated/sources.json
+          git commit -m "Extract sources" || echo "No changes"
+          git push
