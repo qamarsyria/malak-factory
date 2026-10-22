@@ -1,4 +1,3 @@
-"""بناء صوت حلقة قصة: سرد بنبرة ديناميكية + آيات + مؤثرات خافتة (5%)."""
 import os
 import subprocess
 import tempfile
@@ -19,7 +18,6 @@ TARGET_CH = "1"
 TARGET_BR = "192k"
 SFX_VOLUME = 0.05
 
-
 def normalize(input_path: str, output_path: str):
     subprocess.run([
         "ffmpeg", "-y", "-i", input_path,
@@ -29,7 +27,6 @@ def normalize(input_path: str, output_path: str):
         output_path,
     ], check=True, capture_output=True, timeout=120)
 
-
 def fetch_ayah_audio(surah: int, ayah: int, out_path: str):
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{STORY_RECITER}/{filename}"
@@ -37,7 +34,6 @@ def fetch_ayah_audio(surah: int, ayah: int, out_path: str):
     if r.status_code != 200:
         raise RuntimeError(f"فشل جلب الآية {surah}:{ayah} - HTTP {r.status_code}")
     Path(out_path).write_bytes(r.content)
-
 
 def fetch_ayah_text(surah: int, ayah: int) -> str:
     try:
@@ -49,7 +45,6 @@ def fetch_ayah_text(surah: int, ayah: int) -> str:
         pass
     return ""
 
-
 def get_duration(path: str) -> float:
     probe = subprocess.run([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -59,7 +54,6 @@ def get_duration(path: str) -> float:
         return float(probe.stdout.strip() or 0)
     except Exception:
         return 0.0
-
 
 def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
     if not sfx_path or not os.path.exists(sfx_path):
@@ -72,7 +66,6 @@ def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
         "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "192k", output_path
     ], check=True, capture_output=True, timeout=120)
 
-
 def add_fade_in_out(input_path: str, output_path: str):
     duration = get_duration(input_path)
     if duration <= 0.5:
@@ -84,7 +77,6 @@ def add_fade_in_out(input_path: str, output_path: str):
         "-af", f"afade=t=in:st=0:d=0.1,afade=t=out:st={fade_out_start:.3f}:d=0.15",
         "-c:a", "libmp3lame", "-b:a", "192k", output_path,
     ], check=True, capture_output=True, timeout=60)
-
 
 def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.mp3"):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
