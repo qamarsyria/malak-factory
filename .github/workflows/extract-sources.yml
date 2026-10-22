@@ -1,10 +1,9 @@
 name: Extract Sources
-
 on:
   workflow_dispatch:
 
 jobs:
-  run-extraction:
+  extract:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Factory
@@ -31,7 +30,7 @@ jobs:
         env:
           PLATFORM_ROOT: ${{ github.workspace }}/platform
 
-      - name: Commit Changes
+      - name: Commit
         run: |
           cd factory
           git config user.name "github-actions[bot]"
