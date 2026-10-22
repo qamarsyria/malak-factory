@@ -1,17 +1,8 @@
-"""
-generate_story.py — يولد حلقة قصصية غنية بالاعتماد على sources.json
-- يختار الموضوع التالي.
-- يستخدم Gemini لإثراء النص (مع فرض قيود أهل السنة).
-- يتحقق من الآيات عبر alquran.cloud.
-- يبني episode-XX.json ويضيف السؤال التشويقي للحلقة القادمة.
-"""
 import os
 import json
 import requests
-import random
-import re
+import sys
 from pathlib import Path
-from datetime import datetime
 from gemini_tts_pool import get_pool
 
 STATE_FILE = "state/story_state.json"
@@ -30,8 +21,8 @@ PROMPT_TEMPLATE = """
 قواعد صارمة (لا تكسرها أبداً):
 1. لا تذكر مذاهب فقهية، ولا فرقاً، ولا علماء معاصرين.
 2. أضف إثراءً أدبياً ووصفاً للمشاعر والأحداث (دون اختلاق أحداث تاريخية غير موجودة).
-3. استخرج الآيات القرآنية التي تدعم النص، وأعدها كأرقام سور وآيات فقط (مثال: "surah": 2, "ayah": 30). لا تكتب النص القرآني بنفسك.
-4. استخرج الأحاديث الصحيحة التي تدعم النص، وأعدها كنصوص حرفية من الصحيحين أو السنن (البخاري، مسلم، أبو داود، الترمذي، النسائي، ابن ماجه، أحمد).
+3. استخرج الآيات القرآنية التي تدعم النص، وأعدها كأرقام سور وآيات فقط (مثال: "surah": 2, "ayah_numbers": [30]). لا تكتب النص القرآني بنفسك.
+4. استخرج الأحاديث الصحيحة التي تدعم النص، وأعدها كنصوص حرفية.
 5. صغ سؤالاً تشويقياً في النهاية للحلقة القادمة يثير فضول المستمع.
 
 أعد النتيجة بصيغة JSON فقط:
@@ -58,17 +49,13 @@ def save_state(state):
 def flatten_sources():
     data = json.loads(Path(SOURCES_FILE).read_text(encoding="utf-8"))
     topics = []
-    # نجمع كل المواضيع في قائمة واحدة متسلسلة
     for key, items in data.items():
         if key == 'meta' or key == 'women': continue
         if isinstance(items, list):
             for item in items: topics.append(item)
-    
-    # إضافة مواضيع النساء
     for sec_key, sec_data in data.get('women', {}).get('sections', {}).items():
         for item in sec_data.get('items', []):
             topics.append(item)
-            
     return topics
 
 def verify_quran(surah, ayahs):
@@ -85,7 +72,7 @@ def verify_quran(surah, ayahs):
 def call_gemini(prompt):
     pool = get_pool()
     key = pool.get_current()
-    models = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-1.5-flash-latest"]
+    models = ["gemini-1.5-flash-latest", "gemini-flash-latest", "gemini-2.0-flash"]
     
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -97,6 +84,8 @@ def call_gemini(prompt):
             r = requests.post(url, json=body, timeout=60)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
+                # تنظيف أي علامات markdown قد يضيفها النموذج
+                text = text.replace("```json", "").replace("```", "").strip()
                 return json.loads(text)
             elif r.status_code == 429:
                 pool.mark_daily_exhausted()
@@ -119,7 +108,6 @@ def main():
     
     print(f"📖 بدء توليد الحلقة: {topic['title']} ({topic['source_id']})")
     
-    # 1. تجهيز النص
     sections_text = "\n".join([f"{s.get('h','')}: {s.get('p','')}" for s in topic['sections']])
     prompt = PROMPT_TEMPLATE.format(
         title=topic['title'],
@@ -127,19 +115,20 @@ def main():
         sections=sections_text
     )
     
-    # 2. توليد النص عبر Gemini
     print("🤖 جاري الإثراء عبر Gemini...")
     result = call_gemini(prompt)
-    if not result:
-        print("❌ فشل Gemini في إنتاج النص.")
-        return
+    
+    if not result or "segments" not in result:
+        print("❌ فشل Gemini في إنتاج النص أو الصيغة غير صحيحة. إيقاف العملية.")
+        sys.exit(1) # إيقاف الـ Workflow بالفشل
 
-    # 3. التحقق من الآيات وبناء المقاطع
     final_segments = []
     for seg in result.get("segments", []):
         if seg.get("type") == "quran":
             surah = seg.get("surah")
             ayahs = seg.get("ayah_numbers", [])
+            if not surah or not ayahs: continue
+            
             is_valid, surah_name = verify_quran(surah, ayahs)
             if is_valid:
                 display = f"{surah_name}: {ayahs[0]}" if len(ayahs) == 1 else f"{surah_name}: {ayahs[0]}-{ayahs[-1]}"
@@ -151,7 +140,6 @@ def main():
         else:
             final_segments.append(seg)
 
-    # 4. إضافة السؤال التشويقي (Teaser)
     if next_topic and result.get("teaser_text"):
         teaser = {
             "type": "teaser",
@@ -164,7 +152,6 @@ def main():
         }
         final_segments.append(teaser)
 
-    # 5. حفظ الحلقة
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ep_num = next_idx + 1
     out_file = OUTPUT_DIR / f"episode-{ep_num:03d}.json"
@@ -179,7 +166,6 @@ def main():
     out_file.write_text(json.dumps(episode_data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"✅ تم إنشاء الحلقة: {out_file}")
     
-    # 6. تحديث الحالة
     state["last_processed_index"] = next_idx
     save_state(state)
     print("💾 تم تحديث الحالة لليوم التالي.")
