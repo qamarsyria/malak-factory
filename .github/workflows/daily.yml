@@ -1,32 +1,68 @@
 name: Daily
+
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * *' # يعمل يومياً الساعة 8 صباحاً
+  workflow_dispatch:      # يسمح بالتشغيل اليدوي
+
 jobs:
-  extract:
+  generate-and-produce:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Factory
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-          path: factory
-      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          repository: qamarsyria/qamar-malak
-          token: ${{ secrets.GH_PAT }}
-          path: platform
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Extract
-        run: node scripts/extract_sources.js
-        working-directory: factory
-        env:
-          PLATFORM_ROOT: ${{ github.workspace }}/platform
-      - name: Push
+          python-version: '3.10'
+
+      - name: Install Dependencies
         run: |
-          cd factory
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
+          pip install -r requirements.txt
+
+      - name: Generate Episode JSON
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+        run: python scripts/generate_story.py
+
+      - name: Find Latest Episode
+        id: find_ep
+        run: |
+          LATEST=$(ls -t data/stories/generated/episode-*.json | head -1)
+          EP_NAME=$(basename $LATEST .json)
+          echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
+          echo "تم العثور على الحلقة: $EP_NAME"
+
+      - name: Build Audio
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
+        run: |
+          python scripts/story_audio.py data/stories/generated/${{ steps.find_ep.outputs.EP_NAME }}.json out/${{ steps.find_ep.outputs.EP_NAME }}.mp3
+
+      - name: Build Video
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          python scripts/story_video.py out/${{ steps.find_ep.outputs.EP_NAME }}.mp3 out/${{ steps.find_ep.outputs.EP_NAME }}_meta.json out/${{ steps.find_ep.outputs.EP_NAME }}.mp4
+
+      - name: Upload to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # كود رفع التلغرام (يجب أن يكون موجوداً في السكربتات الخاصة بك، إذا لم يكن أضفه لاحقاً)
+          echo "سيتم الرفع إلى تلغرام هنا..."
+
+      - name: Commit Changes (State & Episodes)
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/auto-generated/sources.json
-          git commit -m "Extract sources" || echo "No changes"
+          git add state/story_state.json data/stories/generated/
+          git commit -m "🎬 توليد الحلقة اليومية: ${{ steps.find_ep.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push
