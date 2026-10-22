@@ -1,27 +1,39 @@
-"""المخرج السينمائي: يحلل السرد ويختار الصور والأصوات (مع Cache)."""
+"""المخرج السينمائي: يحلل السرد ويختار الصور والأصوات (بدون استهلاك جمني)."""
+import hashlib
 import json
-import re
-import requests
-from gemini_tts_pool import get_pool
-from scene_cache import get_cached, set_cache
+from pathlib import Path
 
-PROMPT = """You are an expert cinematic director for an Islamic documentary.
+CACHE_FILE = "out/director_cache.json"
+_cache = {}
+_loaded = False
 
-I will give you ONE sentence from the Arabic narration. Return a JSON object with:
-- "visual": 2-4 English words for a Pixabay image
-- "sfx": 1-3 English words for a Freesound sound effect
+def _load():
+    global _cache, _loaded
+    if _loaded: return
+    try:
+        if Path(CACHE_FILE).exists():
+            _cache = json.loads(Path(CACHE_FILE).read_text(encoding="utf-8"))
+    except Exception:
+        _cache = {}
+    _loaded = True
 
-STRICT RULES:
-1. NO humans, NO faces, NO women, NO men, NO children, NO hands, NO eyes. This is ISLAMIC content.
-2. Only: mosques, minarets, desert, sand dunes, sky, stars, clouds, water, trees, mountains, stone architecture, ancient ruins, books, manuscripts, lanterns, prayer beads.
-3. Visual must match the sentence's mood (grief -> rainy window; joy -> sunrise; danger -> storm; night -> stars).
-4. SFX must be from nature only: wind, rain, birds, water, fire, crickets, thunder. NO music.
-5. If in doubt, use: "islamic architecture mosque" + "wind".
+def _save():
+    try:
+        Path(CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(CACHE_FILE).write_text(json.dumps(_cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
-Return ONLY JSON: @@@{"visual": "...", "sfx": "..."}@@@
+def _get_cached(text: str):
+    _load()
+    key = hashlib.md5(text.strip()[:200].encode("utf-8")).hexdigest()
+    return _cache.get(key)
 
-Sentence: @@@{text}@@@
-"""
+def _set_cache(text: str, visual: str, sfx: str):
+    _load()
+    key = hashlib.md5(text.strip()[:200].encode("utf-8")).hexdigest()
+    _cache[key] = {"visual": visual, "sfx": sfx}
+    _save()
 
 KEYWORD_MAP = [
     (["مكة", "الكعبة", "الحرم"], "kaaba mecca", "wind"),
@@ -56,32 +68,23 @@ KEYWORD_MAP = [
 DEFAULT_VISUAL = "islamic architecture mosque"
 DEFAULT_SFX = "wind"
 
-
-def keyword_fallback(text: str) -> dict:
-    for keywords, visual, sfx in KEYWORD_MAP:
-        if any(kw in text for kw in keywords):
-            print(f"      🎬 director (keyword): visual='{visual}', sfx='{sfx}'")
-            return {"visual": visual, "sfx": sfx}
-    print(f"      🎬 director (default): {DEFAULT_VISUAL}")
-    return {"visual": DEFAULT_VISUAL, "sfx": DEFAULT_SFX}
-
-
 def direct_scene(text: str) -> dict:
     if not text.strip():
-        return keyword_fallback("")
+        return {"visual": DEFAULT_VISUAL, "sfx": DEFAULT_SFX}
 
-    # 1. تحقق من الكاش
-    cached = get_cached(text)
+    cached = _get_cached(text)
     if cached:
-        print(f"      🎬 director (cache): visual='{cached['visual']}', sfx='{cached['sfx']}'")
         return cached
 
-    # 2. الكلمات المفتاحية (بدون استهلاك جمني)
-    # نستخدم الكلمات المفتاحية أولاً لأنها مضمونة ولا تستهلك حصة
-    result = keyword_fallback(text)
-    set_cache(text, result["visual"], result["sfx"])
-    return result
+    for keywords, visual, sfx in KEYWORD_MAP:
+        if any(kw in text for kw in keywords):
+            result = {"visual": visual, "sfx": sfx}
+            _set_cache(text, visual, sfx)
+            return result
 
+    result = {"visual": DEFAULT_VISUAL, "sfx": DEFAULT_SFX}
+    _set_cache(text, result["visual"], result["sfx"])
+    return result
 
 if __name__ == "__main__":
     print(direct_scene("في مكة، بعد عام الحزن."))
