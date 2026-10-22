@@ -8,6 +8,7 @@ from gemini_tts_pool import get_pool
 STATE_FILE = "state/story_state.json"
 SOURCES_FILE = "data/auto-generated/sources.json"
 OUTPUT_DIR = Path("data/stories/generated")
+START_WITH_STORY = "مريم" # 🌟 القصة التي سنبدأ بها
 
 PROMPT_TEMPLATE = """
 أنت كاتب سيناريو إسلامي محترف على منهج أهل السنة والجماعة.
@@ -27,7 +28,7 @@ PROMPT_TEMPLATE = """
 
 أعد النتيجة بصيغة JSON فقط (بدون أي نصوص إضافية أو علامات markdown):
 {{
-  "episode_title": "عنوان الحلقة",
+  "episode_title": "{title} - الحلقة {ep_num}",
   "segments": [
     {{"type": "narration", "text": "النص السردي الأول..."}},
     {{"type": "quran", "surah": 2, "ayah_numbers": [30]}},
@@ -40,7 +41,7 @@ PROMPT_TEMPLATE = """
 def load_state():
     if Path(STATE_FILE).exists():
         return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
-    return {"last_processed_index": -1}
+    return {"last_processed_index": -1, "current_story_id": "", "story_episode_num": 0}
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -69,36 +70,10 @@ def verify_quran(surah, ayahs):
         pass
     return False, ""
 
-def discover_models(key):
-    """يكتشف الموديلات المتاحة تلقائياً لتجنب خطأ 404"""
-    models = []
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            for m in r.json().get("models", []):
-                if "generateContent" in m.get("supportedGenerationMethods", []):
-                    name = m["name"].replace("models/", "")
-                    if "gemini" in name and ("flash" in name or "pro" in name):
-                        models.append(name)
-    except Exception as e:
-        print(f"⚠️ فشل اكتشاف الموديلات: {e}")
-    
-    # ترتيب الموديلات لتكون الأفضل أولاً (flash أولاً، ثم pro)
-    models.sort(key=lambda x: (0 if "flash" in x else 1, -len(x)))
-    return models
-
 def call_gemini(prompt):
     pool = get_pool()
-    key = pool.get_current()
+    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
     
-    # اكتشاف الموديلات المتاحة
-    models = discover_models(key)
-    if not models:
-        models = ["gemini-1.5-flash", "gemini-pro"] # احتياطي
-        
-    print(f"🔄 الموديلات المتاحة: {models[:3]}")
-
     for model in models:
         key = pool.get_current()
         print(f"🔄 محاولة باستخدام {model}...")
@@ -112,7 +87,7 @@ def call_gemini(prompt):
             }
         }
         try:
-            r = requests.post(url, json=body, timeout=45)
+            r = requests.post(url, json=body, timeout=15)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
                 text = text.replace("```json", "").replace("```", "").strip()
@@ -122,22 +97,42 @@ def call_gemini(prompt):
                 if r.status_code == 429:
                     pool.mark_daily_exhausted()
         except Exception as e:
-            print(f"⚠️ خطأ في الاتصال: {e}")
+            print(f"⚠️ انتهى وقت الاتصال بـ {model} (تجاوز 15 ثانية)...")
     return None
 
 def main():
     state = load_state()
     topics = flatten_sources()
     
+    # البحث عن قصة مريم للبدء منها في أول مرة
+    if state["last_processed_index"] == -1:
+        for i, t in enumerate(topics):
+            if START_WITH_STORY in t.get('name', '') or START_WITH_STORY in t.get('title', ''):
+                state["last_processed_index"] = i - 1
+                print(f"🌟 تم العثور على قصة {START_WITH_STORY} عند الفهرس {i}. سنبدأ منها.")
+                break
+
     next_idx = state["last_processed_index"] + 1
+    
+    # إذا انتهت كل القصص، نعود للبداية (Loop)
     if next_idx >= len(topics):
-        print("🎉 تم إنجاز جميع المواضيع الـ 300!")
-        return
+        print("🎉 تم إنجاز جميع المواضيع! سنعيد البدء من القصة الأولى.")
+        next_idx = 0
         
     topic = topics[next_idx]
-    next_topic = topics[next_idx + 1] if next_idx + 1 < len(topics) else None
+    next_topic = topics[next_idx + 1] if next_idx + 1 < len(topics) else topics[0]
     
-    print(f"📖 بدء توليد الحلقة: {topic['title']} ({topic['source_id']})")
+    # إدارة ترقيم الحلقات داخل القصة الواحدة
+    story_id = topic['source_id']
+    if state["current_story_id"] != story_id:
+        state["current_story_id"] = story_id
+        state["story_episode_num"] = 1
+    else:
+        state["story_episode_num"] += 1
+        
+    ep_num = state["story_episode_num"]
+
+    print(f"📖 بدء توليد الحلقة: {topic['title']} - الحلقة {ep_num} ({story_id})")
     
     sections_text = "\n".join([f"{s.get('h','')}: {s.get('p','')}" for s in topic['sections']])
     if len(sections_text) > 4000:
@@ -146,7 +141,8 @@ def main():
     prompt = PROMPT_TEMPLATE.format(
         title=topic['title'],
         brief=topic.get('brief', ''),
-        sections=sections_text
+        sections=sections_text,
+        ep_num=ep_num
     )
     
     print("🤖 جاري الإثراء عبر Gemini...")
@@ -174,12 +170,18 @@ def main():
         else:
             final_segments.append(seg)
 
+    # إضافة السؤال التشويقي
     if next_topic and result.get("teaser_text"):
+        next_name = next_topic.get('title', 'الحلقة القادمة')
+        # إذا كانت القصة القادمة مختلفة، نذكر اسمها
+        if next_topic['source_id'] != story_id:
+            next_name = f"قصة {next_name}"
+            
         teaser = {
             "type": "teaser",
             "text": result["teaser_text"],
             "emotion_hint": "(in a mysterious, inviting tone, with a slight pause before the question)",
-            "next_episode_title": next_topic['title'],
+            "next_episode_title": next_name,
             "next_episode_source": next_topic['source_id'],
             "url": "https://qamarsyria.github.io/qamar-malak/",
             "platform_name": "ملاك المعرفة"
@@ -187,22 +189,29 @@ def main():
         final_segments.append(teaser)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ep_num = next_idx + 1
-    out_file = OUTPUT_DIR / f"episode-{ep_num:03d}.json"
+    
+    # اسم الملف يحتوي على اسم القصة ورقم الحلقة لتجنب التداخل
+    safe_name = topic.get('name', 'story').replace(' ', '_')[:20]
+    out_file = OUTPUT_DIR / f"{topic['source_type']}-{safe_name}-{ep_num:02d}.json"
     
     episode_data = {
         "episode_number": ep_num,
-        "title": result.get("episode_title", topic['title']),
-        "source": topic['source_id'],
+        "title": result.get("episode_title", f"{topic['title']} - الحلقة {ep_num}"),
+        "source": story_id,
         "segments": final_segments
     }
     
     out_file.write_text(json.dumps(episode_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+    # حفظ مسار الملف لكي يقرأه الـ Workflow
+    Path("out").mkdir(exist_ok=True)
+    Path("out/latest_episode.txt").write_text(str(out_file), encoding="utf-8")
+    
     print(f"✅ تم إنشاء الحلقة: {out_file}")
     
     state["last_processed_index"] = next_idx
     save_state(state)
-    print("💾 تم تحديث الحالة لليوم التالي.")
+    print("💾 تم تحديث الحالة للحلقة التالية.")
 
 if __name__ == "__main__":
     main()
