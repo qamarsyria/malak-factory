@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import json
 import re
+import sys
 from pathlib import Path
 
 import requests
@@ -87,7 +88,7 @@ def add_fade_in_out(input_path: str, output_path: str):
 
 def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.mp3"):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
-    surah_default = ep.get("surah", 12)  # ← سورة الحلقة الافتراضية (backward-compat)
+    surah_default = ep.get("surah", 12)
     segments = ep.get("segments", [])
 
     Path("out").mkdir(exist_ok=True)
@@ -98,14 +99,9 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     for seg in segments:
         seg_type = seg.get("type")
 
-        # ══════════════════════════════════════════════════════════
-        # narration / teaser — كلاهما يُعالج بنفس منطق TTS
-        # الفرق: teaser يحمل emotion_hint مخصص + teaser_data
-        # ══════════════════════════════════════════════════════════
         if seg_type in ("narration", "teaser"):
             full_text = seg.get("text", "").strip()
-            if not full_text:
-                continue
+            if not full_text: continue
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             mixed_path = work_dir / f"mixed_{idx_counter:03d}.mp3"
@@ -114,33 +110,27 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
             print(f"[{idx_counter}] {seg_type}: {full_text[:60]}...")
 
-            # ═══ Smart Director (كما هو) — إلا إذا مرّر segment تلميحاً مخصصاً ═══
             if seg.get("emotion_hint"):
-                # teaser: تلميح مُخصّص من المولّد
                 direction = {
                     "visual": seg.get("visual", "islamic architecture mosque"),
                     "sfx": seg.get("sfx", ""),
                     "voice_style": seg["emotion_hint"],
                 }
             else:
-                # narration عادي: Smart Director (كما هو تماماً)
                 direction = direct_scene(full_text)
 
             voice_style = direction.get("voice_style", "")
 
-            # ═══ Gemini TTS (كما هو تماماً) ═══
             gemini_generate(
                 full_text, str(raw_path),
                 voice="Charon", item_type="story",
                 emotion_hint=voice_style,
             )
 
-            # ═══ SFX خافت 5% (كما هو) ═══
             sfx_path = ""
             if direction.get("sfx"):
                 sfx_path = fetch_sfx(direction["sfx"])
 
-            # ═══ Mix + Fade + Normalize (كما هو) ═══
             mix_audio_with_sfx(str(raw_path), sfx_path, str(mixed_path))
             add_fade_in_out(str(mixed_path), str(fade_path))
             normalize(str(fade_path), str(norm_path))
@@ -155,7 +145,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                 "duration": round(dur, 3),
             }
 
-            # ═══ teaser: تمرير بيانات إضافية لـ story_video.py ═══
             if seg_type == "teaser":
                 meta_entry["teaser_data"] = {
                     "next_episode_title": seg.get("next_episode_title", ""),
@@ -167,16 +156,11 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
             parts.append(str(norm_path))
             idx_counter += 1
 
-        # ══════════════════════════════════════════════════════════
-        # quran — آيات قرآنية كاملة بصوت السديس (everyayah)
-        # كل segment له surah خاص (وإلا يستخدم surah_default)
-        # ══════════════════════════════════════════════════════════
         elif seg_type == "quran":
             ayah_nums = seg.get("ayah_numbers", [])
-            if not ayah_nums:
-                continue
+            if not ayah_nums: continue
 
-            seg_surah = seg.get("surah", surah_default)  # ← سورة كل segment
+            seg_surah = seg.get("surah", surah_default)
             surah_name = seg.get("surah_name", "")
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
@@ -246,9 +230,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     print(f"\n✅ الحلقة: {output_mp3} | ⏱️ المدة: {duration/60:.1f} دقيقة")
     return output_mp3
 
-
 if __name__ == "__main__":
-    build_episode_audio(
-        "data/stories/yusuf/episode-01.json",
-        "out/episode-01.mp3",
-    )
+    if len(sys.argv) > 2:
+        build_episode_audio(sys.argv[1], sys.argv[2])
+    else:
+        build_episode_audio("data/stories/yusuf/episode-01.json", "out/episode-01.mp3")
