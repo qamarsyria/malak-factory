@@ -71,41 +71,32 @@ def verify_quran(surah, ayahs):
 
 def call_gemini(prompt):
     pool = get_pool()
-    key = pool.get_current()
-    models = []
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            available = [m["name"].replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
-            models = [m for m in available if "flash" in m.lower()]
-    except Exception:
-        pass
-        
-    if not models:
-        models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
-
-    print(f"🔄 سيتم تجربة الموديلات التالية: {models[:3]}")
+    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash"]
 
     for model in models:
         key = pool.get_current()
+        print(f"🔄 محاولة باستخدام {model}...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"}
+            "generationConfig": {
+                "temperature": 0.4, 
+                "responseMimeType": "application/json",
+                "maxOutputTokens": 2500
+            }
         }
         try:
-            r = requests.post(url, json=body, timeout=90)
+            r = requests.post(url, json=body, timeout=30)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
                 text = text.replace("```json", "").replace("```", "").strip()
                 return json.loads(text)
             else:
-                print(f"⚠️ فشل النموذج {model}: HTTP {r.status_code}")
+                print(f"⚠️ فشل {model}: HTTP {r.status_code}")
                 if r.status_code == 429:
                     pool.mark_daily_exhausted()
         except Exception as e:
-            print(f"⚠️ خطأ في الاتصال بـ {model}: {e}")
+            print(f"⚠️ انتهى وقت الاتصال بـ {model}: {e}")
     return None
 
 def main():
@@ -123,6 +114,9 @@ def main():
     print(f"📖 بدء توليد الحلقة: {topic['title']} ({topic['source_id']})")
     
     sections_text = "\n".join([f"{s.get('h','')}: {s.get('p','')}" for s in topic['sections']])
+    if len(sections_text) > 4000:
+        sections_text = sections_text[:4000] + "..."
+
     prompt = PROMPT_TEMPLATE.format(
         title=topic['title'],
         brief=topic.get('brief', ''),
@@ -133,7 +127,7 @@ def main():
     result = call_gemini(prompt)
     
     if not result or "segments" not in result:
-        print("❌ فشل Gemini في إنتاج النص أو الصيغة غير صحيحة. إيقاف العملية.")
+        print("❌ فشل Gemini في إنتاج النص. إيقاف العملية.")
         sys.exit(1)
 
     final_segments = []
