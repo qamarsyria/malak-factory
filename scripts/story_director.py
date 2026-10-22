@@ -1,4 +1,4 @@
-"""المخرج السينمائي: يحلل السرد ويختار الصور والأصوات (بدون استهلاك جمني)."""
+"""المخرج السينمائي: يحدد الصورة (لكل مشهد) والمؤثر (حسب الكلمات المفتاحية)."""
 import hashlib
 import json
 from pathlib import Path
@@ -35,56 +35,78 @@ def _set_cache(text: str, visual: str, sfx: str):
     _cache[key] = {"visual": visual, "sfx": sfx}
     _save()
 
-KEYWORD_MAP = [
-    (["مكة", "الكعبة", "الحرم"], "kaaba mecca", "wind"),
-    (["مصر", "فرعون", "القصر"], "ancient egypt palace", "wind"),
-    (["صحراء", "رمل", "كنعان", "بيداء"], "sand dunes desert", "wind"),
-    (["بئر", "جب", "سجن"], "ancient stone well", "water drip"),
-    (["ليل", "نجوم", "قمر"], "starry night sky", "crickets"),
-    (["بحر", "ماء", "نهر"], "ocean waves", "ocean waves"),
-    (["مطر", "غيوم", "سحاب"], "rain clouds", "rain"),
-    (["حزن", "دمع", "أسى", "حسرة"], "rain window autumn", "sad bird"),
-    (["فرح", "بشر", "سرور", "بهجة"], "sunrise meadow", "birds chirping"),
-    (["رؤيا", "حلم", "كواكب"], "starry desert night", "wind"),
-    (["ملك", "عرش", "خزائن"], "ancient palace", "wind"),
-    (["قمح", "زرع", "سنابل"], "wheat field golden", "birds chirping"),
-    (["حسد", "مكر", "كيد", "تآمر"], "dark forest fog", "whisper"),
-    (["خوف", "رعب", "فزع"], "storm dark clouds", "thunder"),
-    (["غضب", "عذاب", "هلاك"], "volcanic lava", "fire"),
-    (["جبل", "طور", "صخر"], "mountain peak", "wind"),
-    (["جنة", "بستان", "نعيم"], "garden paradise", "birds chirping"),
-    (["نار", "جهنم", "سعير"], "fire flames", "fire"),
-    (["ريح", "عاصفة"], "storm clouds", "wind"),
-    (["شجر", "نخل", "ثمار"], "palm trees oasis", "wind"),
-    (["كهف", "غار"], "dark cave", "water drip"),
-    (["عين", "نبع"], "water spring", "water spring"),
-    (["أذان", "منارة", "مسجد"], "mosque minaret", "wind"),
-    (["كتاب", "مصحف", "آيات"], "ancient quran book", "wind"),
-    (["قافلة", "تجار"], "desert caravan", "wind"),
-    (["يوسف", "يعقوب", "إخوة"], "ancient stone ruins", "wind"),
-    (["غذاء", "طعام", "مائدة"], "ancient stone bowls", "water drip"),
+# --- الكلمات المفتاحية للمشاهد (الصور) ---
+SCENE_KEYWORDS = [
+    (["مكة", "الكعبة", "الحرم", "بيت الله"], "kaaba mecca ancient stone"),
+    (["مصر", "فرعون", "القصر", "العزيز", "الملك"], "ancient egyptian palace"),
+    (["صحراء", "رمل", "قفر", "بيداء", "كنعان", "تيه"], "sand dunes desert"),
+    (["بئر", "جب", "سجن", "ظلام", "ظلمة"], "dark stone well"),
+    (["ليل", "نجوم", "قمر", "منام", "رؤيا", "حلم"], "starry night sky desert"),
+    (["بحر", "ماء", "نهر", "يم", "موج", "سفينة"], "ocean waves horizon"),
+    (["مطر", "غيوم", "سحاب", "رعد", "برق"], "rain clouds sky"),
+    (["جبل", "طور", "صخر", "حجر", "كهف", "غار"], "mountain peak rocky"),
+    (["جنة", "بستان", "روض", "أنهار", "نعيم"], "garden paradise river"),
+    (["نار", "جهنم", "سعير", "حرق", "عذاب"], "fire flames"),
+    (["شجر", "نخل", "زرع", "ثمار", "حديقة"], "palm trees oasis"),
+    (["قمح", "سنابل", "زرع", "خير", "بركة"], "wheat field golden"),
+    (["عين", "نبع", "ماء"], "water spring nature"),
+    (["مسجد", "أذان", "منارة", "صلاة"], "mosque minaret sky"),
+    (["كتاب", "مصحف", "آيات", "ذكر"], "ancient quran book"),
+    (["قافلة", "تجار", "سفر", "طريق"], "desert caravan path"),
+    (["يوسف", "يعقوب", "إخوة", "بنيامين"], "ancient stone ruins"),
+    (["ملك", "عرش", "خزائن", "سلطان"], "ancient palace throne"),
+    (["غذاء", "طعام", "مائدة", "سقاية"], "ancient stone bowls"),
+    (["امرأة", "نساء", "نسوة", "سيدة"], "ancient palace interior"),
 ]
 
+# --- الكلمات المفتاحية للمؤثرات (فقط الخوف، المعركة، المكيدة) ---
+SFX_KEYWORDS = [
+    # الخوف
+    (["خاف", "خوف", "رعب", "فزع", "رهبة", "تهديد", "ظلام", "وحدة", "فزع"], "fear"),
+    # المعركة
+    (["قتل", "حرب", "معركة", "سيف", "طعن", "دم", "صراع", "قتال", "جيش", "سلاح"], "battle"),
+    # المكيدة
+    (["حسد", "مكر", "كيد", "تآمر", "دسيسة", "خدعة", "غدر", "وسوسة"], "conspiracy"),
+]
+
+# المؤثرات المتاحة لكل حالة (سيتم اختيارها عشوائياً)
+SFX_LIBRARY = {
+    "fear": ["heartbeat", "rain", "wind_dark"],
+    "battle": ["sword", "horse_gallop", "battle_cry"],
+    "conspiracy": ["whisper", "wind_light", "owl"],
+}
+
+# المشهد الافتراضي (إذا لم يطابق أي مشهد)
 DEFAULT_VISUAL = "islamic architecture mosque"
-DEFAULT_SFX = "wind"
 
 def direct_scene(text: str) -> dict:
     if not text.strip():
-        return {"visual": DEFAULT_VISUAL, "sfx": DEFAULT_SFX}
+        return {"visual": DEFAULT_VISUAL, "sfx": ""}
 
     cached = _get_cached(text)
     if cached:
         return cached
 
-    for keywords, visual, sfx in KEYWORD_MAP:
+    # 1. تحديد الصورة (بناءً على المشهد)
+    visual = DEFAULT_VISUAL
+    for keywords, scene_visual in SCENE_KEYWORDS:
         if any(kw in text for kw in keywords):
-            result = {"visual": visual, "sfx": sfx}
-            _set_cache(text, visual, sfx)
-            return result
+            visual = scene_visual
+            break
 
-    result = {"visual": DEFAULT_VISUAL, "sfx": DEFAULT_SFX}
-    _set_cache(text, result["visual"], result["sfx"])
-    return result
+    # 2. تحديد المؤثر (فقط إذا طابقت كلمة مفتاحية)
+    sfx = ""
+    for keywords, sfx_type in SFX_KEYWORDS:
+        if any(kw in text for kw in keywords):
+            # اختر مؤثراً عشوائياً من المكتبة
+            import random
+            sfx = random.choice(SFX_LIBRARY[sfx_type])
+            break
+
+    _set_cache(text, visual, sfx)
+    return {"visual": visual, "sfx": sfx}
 
 if __name__ == "__main__":
     print(direct_scene("في مكة، بعد عام الحزن."))
+    print(direct_scene("وخاف يعقوب على ابنه من إخوته."))
+    print(direct_scene("وخطط الإخوة للتخلص من يوسف."))
