@@ -1,4 +1,3 @@
-"""بناء فيديو القصة: صورة لكل مشهد + نص + علامة تجارية + teaser overlay."""
 import json
 import os
 import subprocess
@@ -24,7 +23,6 @@ SAFE_FALLBACKS = [
 
 WATERMARK_TEXT = "ملاك المعرفة"
 WATERMARK_OPACITY = 0.5
-
 
 def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
     safe_prompt = "".join(c if c.isalnum() else "_" for c in prompt)[:30]
@@ -67,7 +65,6 @@ def fetch_image_for_prompt(prompt: str, work_dir: Path) -> str:
     img.save(out_path)
     return str(out_path)
 
-
 def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
     watermark_layer = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     wm_draw = ImageDraw.Draw(watermark_layer)
@@ -88,15 +85,12 @@ def _add_watermark(bg_img: Image.Image, font_path: str) -> Image.Image:
 
     alpha = int(255 * WATERMARK_OPACITY)
     wm_draw.text(
-        (x, y), shaped,
-        font=font,
+        (x, y), shaped, font=font,
         fill=(212, 175, 55, alpha),
-        stroke_width=1,
-        stroke_fill=(0, 0, 0, alpha),
+        stroke_width=1, stroke_fill=(0, 0, 0, alpha),
     )
 
     return Image.alpha_composite(bg_img.convert("RGBA"), watermark_layer).convert("RGB")
-
 
 def _add_teaser_overlay(bg_img: Image.Image, draw: ImageDraw.Draw, font_path: str, teaser_data: dict):
     strip_h = 340
@@ -140,15 +134,7 @@ def _add_teaser_overlay(bg_img: Image.Image, draw: ImageDraw.Draw, font_path: st
         x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
         draw.text((x, y), platform, font=font_url, fill=TEXT_COLOR, stroke_width=1, stroke_fill="black")
 
-
-def make_segment_image(
-    bg_path: str,
-    text: str,
-    output_path: str,
-    is_quran: bool = False,
-    is_teaser: bool = False,
-    teaser_data: dict = None,
-):
+def make_segment_image(bg_path: str, text: str, output_path: str, is_quran: bool = False, is_teaser: bool = False, teaser_data: dict = None):
     bg = Image.open(bg_path).convert("RGB")
 
     ratio = max(VIDEO_W / bg.width, VIDEO_H / bg.height)
@@ -198,7 +184,6 @@ def make_segment_image(
     bg.save(output_path, "PNG")
     return output_path
 
-
 def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/episode.mp4"):
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     segments = meta.get("segments", [])
@@ -232,12 +217,8 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
         img_path = work_dir / f"seg_{idx:03d}.png"
 
         make_segment_image(
-            current_bg_path,
-            seg.get("text", ""),
-            str(img_path),
-            is_quran=is_quran,
-            is_teaser=is_teaser,
-            teaser_data=teaser_data,
+            current_bg_path, seg.get("text", ""), str(img_path),
+            is_quran=is_quran, is_teaser=is_teaser, teaser_data=teaser_data,
         )
 
         concat_lines.append(f"file '{img_path}'")
@@ -249,9 +230,11 @@ def build_episode_video(audio_path: str, meta_path: str, output_mp4: str = "out/
     concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
 
     print(f"🎬 تركيب الفيديو ({len(segments)} مقطع)...")
+    
+    # ⚡ تسريع الضغط هنا (ultrafast)
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
-        "-i", audio_path, "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+        "-i", audio_path, "-c:v", "libx264", "-preset", "ultrafast", "-threads", "4", "-crf", "28",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", output_mp4,
     ], check=True, capture_output=True, timeout=1800)
 
