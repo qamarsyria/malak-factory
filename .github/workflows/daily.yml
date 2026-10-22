@@ -49,6 +49,15 @@ jobs:
         run: |
           python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "out/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
+      # ⬇️ هذا هو السطر السحري الذي سيحفظ الفيديو لكي تحمله ⬇️
+      - name: Upload Video Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video-${{ steps.gen.outputs.EP_NAME }}
+          path: out/${{ steps.gen.outputs.EP_NAME }}.mp4
+          retention-days: 7
+
       - name: Commit Changes
         run: |
           git config user.name "github-actions[bot]"
