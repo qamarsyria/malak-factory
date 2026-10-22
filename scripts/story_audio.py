@@ -65,14 +65,10 @@ def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
         subprocess.run(["ffmpeg", "-y", "-i", voice_path, "-c", "copy", output_path], check=True, capture_output=True)
         return
     subprocess.run([
-        "ffmpeg", "-y",
-        "-i", voice_path,
-        "-stream_loop", "-1", "-i", sfx_path,
+        "ffmpeg", "-y", "-i", voice_path, "-stream_loop", "-1", "-i", sfx_path,
         "-filter_complex",
         f"[1:a]volume={SFX_VOLUME}[sfx];[0:a][sfx]amix=inputs=2:duration=first:dropout_transition=2[out]",
-        "-map", "[out]",
-        "-c:a", "libmp3lame", "-b:a", "192k",
-        output_path
+        "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "192k", output_path
     ], check=True, capture_output=True, timeout=120)
 
 
@@ -85,8 +81,7 @@ def add_fade_in_out(input_path: str, output_path: str):
     subprocess.run([
         "ffmpeg", "-y", "-i", input_path,
         "-af", f"afade=t=in:st=0:d=0.1,afade=t=out:st={fade_out_start:.3f}:d=0.15",
-        "-c:a", "libmp3lame", "-b:a", "192k",
-        output_path,
+        "-c:a", "libmp3lame", "-b:a", "192k", output_path,
     ], check=True, capture_output=True, timeout=60)
 
 
@@ -97,9 +92,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
     Path("out").mkdir(exist_ok=True)
     work_dir = Path(tempfile.mkdtemp(prefix="ep_audio_"))
-
-    parts = []
-    meta_segments = []
+    parts, meta_segments = [], []
     idx_counter = 0
 
     for seg in segments:
@@ -107,8 +100,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
         if seg_type == "narration":
             full_text = seg.get("text", "").strip()
-            if not full_text:
-                continue
+            if not full_text: continue
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             mixed_path = work_dir / f"mixed_{idx_counter:03d}.mp3"
@@ -117,20 +109,11 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
             print(f"[{idx_counter}] سرد: {full_text[:60]}...")
 
-            # المخرج الذكي يحدد المشهد، المؤثر، ونبرة الصوت
             direction = direct_scene(full_text)
             voice_style = direction.get("voice_style", "")
 
-            # توليد الصوت بالنبرة المحددة
-            gemini_generate(
-                full_text,
-                str(raw_path),
-                voice="Charon",
-                item_type="story",
-                emotion_hint=voice_style,
-            )
+            gemini_generate(full_text, str(raw_path), voice="Charon", item_type="story", emotion_hint=voice_style)
 
-            # المؤثر
             sfx_path = ""
             if direction["sfx"]:
                 sfx_path = fetch_sfx(direction["sfx"])
@@ -140,17 +123,13 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
             normalize(str(fade_path), str(norm_path))
 
             dur = get_duration(str(norm_path))
-            meta_segments.append({
-                "index": idx_counter, "type": "narration",
-                "text": full_text, "visual": direction["visual"], "duration": round(dur, 3)
-            })
+            meta_segments.append({"index": idx_counter, "type": "narration", "text": full_text, "visual": direction["visual"], "duration": round(dur, 3)})
             parts.append(str(norm_path))
             idx_counter += 1
 
         elif seg_type == "quran":
             ayah_nums = seg.get("ayah_numbers", [])
-            if not ayah_nums:
-                continue
+            if not ayah_nums: continue
 
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
@@ -161,8 +140,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                 fetch_ayah_audio(surah, ayah_nums[0], str(raw_path))
                 txt = fetch_ayah_text(surah, ayah_nums[0])
             else:
-                sub_parts = []
-                txt_list = []
+                sub_parts, txt_list = [], []
                 for j, ay in enumerate(ayah_nums):
                     sub_p = work_dir / f"sub_{idx_counter:03d}_{j:02d}.mp3"
                     fetch_ayah_audio(surah, ay, str(sub_p))
@@ -174,14 +152,9 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                     for sp in sub_parts: f.write(f"file '{sp}'\n")
                 subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw_path)], check=True)
 
-            # الآيات: بدون مؤثرات، بدون fade (احتراماً للقرآن)
             normalize(str(raw_path), str(norm_path))
-
             dur = get_duration(str(norm_path))
-            meta_segments.append({
-                "index": idx_counter, "type": "quran",
-                "text": txt, "visual": "ancient quran book mosque", "duration": round(dur, 3)
-            })
+            meta_segments.append({"index": idx_counter, "type": "quran", "text": txt, "visual": "ancient quran book mosque", "duration": round(dur, 3)})
             parts.append(str(norm_path))
             idx_counter += 1
 
@@ -198,11 +171,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     duration = get_duration(output_mp3)
     meta_path = output_mp3.replace(".mp3", "_meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "episode": ep.get("episode_number", 1), "surah": surah,
-            "title": ep.get("title", ""), "total_duration": round(duration, 3),
-            "segments": meta_segments,
-        }, f, ensure_ascii=False, indent=2)
+        json.dump({"episode": ep.get("episode_number", 1), "surah": surah, "title": ep.get("title", ""), "total_duration": round(duration, 3), "segments": meta_segments}, f, ensure_ascii=False, indent=2)
 
     print(f"\n✅ الحلقة: {output_mp3} | ⏱️ المدة: {duration/60:.1f} دقيقة")
     return output_mp3
