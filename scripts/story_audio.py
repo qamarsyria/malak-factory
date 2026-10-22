@@ -1,4 +1,4 @@
-"""بناء صوت حلقة قصة: سرد + آيات + مؤثرات صوتية هادئة (بدون موسيقى)."""
+"""بناء صوت حلقة قصة: سرد + آيات + مؤثرات صوتية خافتة جداً (5%) حسب الكلمات المفتاحية."""
 import os
 import subprocess
 import tempfile
@@ -17,6 +17,18 @@ TARGET_SR = "44100"
 TARGET_CH = "1"
 TARGET_BR = "192k"
 
+# المؤثرات المسموحة (من Freesound) - سنستخدم كلمات بحث دقيقة
+SFX_QUERIES = {
+    "heartbeat": "heartbeat slow",
+    "rain": "rain soft",
+    "wind_dark": "wind dark",
+    "sword": "sword clash",
+    "horse_gallop": "horse gallop",
+    "battle_cry": "battle distant",
+    "whisper": "whisper voice",
+    "wind_light": "wind light",
+    "owl": "owl night",
+}
 
 def normalize(input_path: str, output_path: str):
     subprocess.run([
@@ -27,7 +39,6 @@ def normalize(input_path: str, output_path: str):
         output_path,
     ], check=True, capture_output=True, timeout=120)
 
-
 def fetch_ayah_audio(surah: int, ayah: int, out_path: str):
     filename = f"{surah:03d}{ayah:03d}.mp3"
     url = f"{QURAN_BASE}/{STORY_RECITER}/{filename}"
@@ -35,7 +46,6 @@ def fetch_ayah_audio(surah: int, ayah: int, out_path: str):
     if r.status_code != 200:
         raise RuntimeError(f"فشل جلب الآية {surah}:{ayah} - HTTP {r.status_code}")
     Path(out_path).write_bytes(r.content)
-
 
 def fetch_ayah_text(surah: int, ayah: int) -> str:
     try:
@@ -47,7 +57,6 @@ def fetch_ayah_text(surah: int, ayah: int) -> str:
         pass
     return ""
 
-
 def get_duration(path: str) -> float:
     probe = subprocess.run([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -58,9 +67,8 @@ def get_duration(path: str) -> float:
     except Exception:
         return 0.0
 
-
 def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
-    """يمزج السرد مع المؤثر الصوتي (بنسبة 15% للمؤثر فقط للسرد)."""
+    """يمزج السرد مع المؤثر الصوتي بنسبة 5% فقط (خفيف جداً)."""
     if not sfx_path or not os.path.exists(sfx_path):
         subprocess.run(["ffmpeg", "-y", "-i", voice_path, "-c", "copy", output_path], check=True, capture_output=True)
         return
@@ -70,23 +78,18 @@ def mix_audio_with_sfx(voice_path: str, sfx_path: str, output_path: str):
         "-i", voice_path,
         "-stream_loop", "-1", "-i", sfx_path,
         "-filter_complex",
-        "[1:a]volume=0.15[sfx];[0:a][sfx]amix=inputs=2:duration=first:dropout_transition=2[out]",
+        "[1:a]volume=0.05[sfx];[0:a][sfx]amix=inputs=2:duration=first:dropout_transition=2[out]",
         "-map", "[out]",
         "-c:a", "libmp3lame", "-b:a", "192k",
         output_path
     ], check=True, capture_output=True, timeout=120)
 
-
 def add_fade_in_out(input_path: str, output_path: str):
-    """يضيف fade-in (0.1ث) و fade-out (0.15ث) بطريقة آمنة مع جميع إصدارات ffmpeg."""
     duration = get_duration(input_path)
     if duration <= 0.5:
         subprocess.run(["ffmpeg", "-y", "-i", input_path, "-c", "copy", output_path], check=True, capture_output=True)
         return
-
-    # حساب وقت بدء الـ fade-out رياضياً (رقم موجب دائماً)
     fade_out_start = max(0.0, duration - 0.15)
-
     subprocess.run([
         "ffmpeg", "-y", "-i", input_path,
         "-af", f"afade=t=in:st=0:d=0.1,afade=t=out:st={fade_out_start:.3f}:d=0.15",
@@ -94,11 +97,9 @@ def add_fade_in_out(input_path: str, output_path: str):
         output_path,
     ], check=True, capture_output=True, timeout=60)
 
-
 def split_into_sentences(text):
     parts = re.split(r'(?<=[.!؟])\s+', text)
     return [p.strip() for p in parts if p.strip()]
-
 
 def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.mp3"):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
@@ -143,14 +144,18 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                 print(f"[{idx_counter}] سرد: {s[:40]}...")
 
                 scene_data = direct_scene(s)
+                print(f"      🎬 المشهد: {scene_data['visual']}, المؤثر: {scene_data['sfx'] or 'بدون'}")
+
                 gemini_generate(s, str(raw_path), voice="Charon", item_type="story")
 
-                sfx_path = fetch_sfx(scene_data["sfx"])
+                # إذا كان هناك مؤثر محدد
+                sfx_path = ""
+                if scene_data["sfx"]:
+                    sfx_query = SFX_QUERIES.get(scene_data["sfx"], scene_data["sfx"])
+                    sfx_path = fetch_sfx(sfx_query)
+
                 mix_audio_with_sfx(str(raw_path), sfx_path, str(mixed_path))
-
-                # إضافة fade in/out لإزالة القطشة (بطريقة آمنة)
                 add_fade_in_out(str(mixed_path), str(fade_path))
-
                 normalize(str(fade_path), str(norm_path))
 
                 dur = get_duration(str(norm_path))
@@ -169,7 +174,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
             raw_path = work_dir / f"raw_{idx_counter:03d}.mp3"
             norm_path = work_dir / f"norm_{idx_counter:03d}.mp3"
 
-            print(f"[{idx_counter}] آية: {ayah_nums}")
+            print(f"[{idx_counter}] آية: {ayah_nums} (بدون مؤثرات - خط أحمر)")
 
             if len(ayah_nums) == 1:
                 fetch_ayah_audio(surah, ayah_nums[0], str(raw_path))
@@ -183,16 +188,12 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
                     sub_parts.append(str(sub_p))
                     txt_list.append(fetch_ayah_text(surah, ay))
                 txt = " ".join(txt_list)
-
                 list_file = work_dir / f"list_{idx_counter:03d}.txt"
                 with open(list_file, "w") as f:
-                    for sp in sub_parts:
-                        f.write(f"file '{sp}'\n")
+                    for sp in sub_parts: f.write(f"file '{sp}'\n")
                 subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw_path)], check=True)
 
-            # الآيات: بدون مؤثرات، بدون fade (احتراماً للقرآن)
             normalize(str(raw_path), str(norm_path))
-
             dur = get_duration(str(norm_path))
             meta_segments.append({
                 "index": idx_counter, "type": "quran",
@@ -204,8 +205,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
     print(f"\n🔗 دمج {len(parts)} مقطع...")
     list_file = work_dir / "final.txt"
     with open(list_file, "w") as f:
-        for p in parts:
-            f.write(f"file '{p}'\n")
+        for p in parts: f.write(f"file '{p}'\n")
 
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
@@ -223,7 +223,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str = "out/episode.m
 
     print(f"\n✅ الحلقة: {output_mp3} | ⏱️ المدة: {duration/60:.1f} دقيقة")
     return output_mp3
-
 
 if __name__ == "__main__":
     build_episode_audio(
