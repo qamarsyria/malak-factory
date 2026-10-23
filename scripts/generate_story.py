@@ -43,10 +43,8 @@ def load_state():
     if Path(STATE_FILE).exists():
         try:
             saved = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
-            # دمج المفاتيح الجديدة مع الملف القديم لتجنب خطأ KeyError
             for k, v in default_state.items():
-                if k not in saved:
-                    saved[k] = v
+                if k not in saved: saved[k] = v
             return saved
         except Exception:
             return default_state
@@ -79,11 +77,37 @@ def verify_quran(surah, ayahs):
         pass
     return False, ""
 
+def get_working_models(key):
+    """جلب الموديلات المتاحة تلقائياً من جوجل"""
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            models = []
+            for m in r.json().get("models", []):
+                if "generateContent" in m.get("supportedGenerationMethods", []):
+                    name = m["name"].replace("models/", "")
+                    if "gemini" in name:
+                        models.append(name)
+            # ترتيب الموديلات: flash أولاً ثم pro
+            models.sort(key=lambda x: (0 if "flash" in x else 1, len(x)))
+            return models
+    except Exception as e:
+        print(f"⚠️ فشل اكتشاف الموديلات: {e}")
+    return []
+
 def call_gemini(prompt):
     pool = get_pool()
-    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
+    key = pool.get_current()
     
-    for model in models:
+    models = get_working_models(key)
+    if not models:
+        print("❌ لم يتم العثور على أي موديل متاح.")
+        return None
+        
+    print(f"🔄 الموديلات المتاحة: {models[:3]}")
+
+    for model in models[:5]: # نجرب أفضل 5 موديلات فقط
         key = pool.get_current()
         print(f"🔄 محاولة باستخدام {model}...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -96,7 +120,7 @@ def call_gemini(prompt):
             }
         }
         try:
-            r = requests.post(url, json=body, timeout=15)
+            r = requests.post(url, json=body, timeout=20)
             if r.status_code == 200:
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
                 text = text.replace("```json", "").replace("```", "").strip()
@@ -106,13 +130,14 @@ def call_gemini(prompt):
                 if r.status_code == 429:
                     pool.mark_daily_exhausted()
         except Exception as e:
-            print(f"⚠️ انتهى وقت الاتصال بـ {model} (تجاوز 15 ثانية)...")
+            print(f"⚠️ خطأ في الاتصال بـ {model}: {e}")
     return None
 
 def main():
     state = load_state()
     topics = flatten_sources()
     
+    # البحث عن قصة مريم
     if state["last_processed_index"] == -1:
         for i, t in enumerate(topics):
             if START_WITH_STORY in t.get('name', '') or START_WITH_STORY in t.get('title', ''):
