@@ -1,5 +1,4 @@
 name: Daily
-
 on:
   schedule:
     - cron: '0 8 * * *'
@@ -10,13 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Checkout Factory
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -31,17 +28,16 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
           python scripts/generate_story.py
-          FILE=$(ls -t data/stories/generated/episode-*.json | head -1)
-          echo "EP_FILE=$FILE" >> $GITHUB_OUTPUT
-          EP_NAME=$(basename $FILE .json)
+          EP_FILE=$(cat out/latest_episode.txt)
+          echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
+          EP_NAME=$(basename $EP_FILE .json)
           echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
 
       - name: Build Audio
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
-        run: |
-          python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
+        run: python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
       - name: Build Video
         env:
@@ -50,24 +46,40 @@ jobs:
           mkdir -p videos
           python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
-      # ⬇️ هذا هو الكود الجديد الذي يرسل الفيديو إلى تلغرام ⬇️
-      - name: Upload to Telegram
+      - name: Upload to Telegram & Get ID
+        id: tg
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EP_NAME: ${{ steps.gen.outputs.EP_NAME }}
         run: |
-          echo "📤 جاري إرسال الفيديو إلى تلغرام..."
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "video=@videos/${EP_NAME}.mp4" \
+            -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}.mp4" \
             -F "caption=🎬 حلقة جديدة من ملاك المعرفة! %0A #قصص_الأنبياء" \
-            -F "supports_streaming=true"
+            -F "supports_streaming=true")
+          # استخراج message_id لإضافته للمنصة
+          MSG_ID=$(echo $RESPONSE | grep -oP '"message_id":\K[0-9]+')
+          echo "MSG_ID=$MSG_ID" >> $GITHUB_OUTPUT
 
-      - name: Commit Changes
+      - name: Update Platform Feed
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python -c "
+          import json
+          from update_feed import add_video_to_feed
+          meta = json.load(open('out/${{ steps.gen.outputs.EP_NAME }}_meta.json'))
+          add_video_to_feed(
+              title=meta.get('title', 'حلقة جديدة'),
+              description='شاهد الحلقة الجديدة من قصص الأنبياء على ملاك المعرفة.',
+              video_url='${{ steps.tg.outputs.MSG_ID }}'
+          )
+          "
+
+      - name: Commit State and Video
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add state/ data/stories/generated/ videos/
-          git commit -m "🎬 توليد الحلقة اليومية: ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
+          git commit -m "🎬 توليد الحلقة: ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push
