@@ -79,7 +79,6 @@ def verify_quran(surah, ayahs):
     return False, ""
 
 def get_working_models(key):
-    """جلب الموديلات المتاحة تلقائياً من جوجل"""
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         r = requests.get(url, timeout=15)
@@ -90,76 +89,76 @@ def get_working_models(key):
                     name = m["name"].replace("models/", "")
                     if "gemini" in name:
                         models.append(name)
-            # ترتيب الموديلات: flash أولاً ثم pro
             models.sort(key=lambda x: (0 if "flash" in x else 1, len(x)))
             return models
-    except Exception as e:
-        print(f"⚠️ فشل اكتشاف الموديلات: {e}")
+    except Exception:
+        pass
     return []
 
 def call_gemini(prompt):
     pool = get_pool()
-    key = pool.get_current()
     
-    # 1. اكتشاف الموديلات المتاحة
+    # نكتشف الموديلات المتاحة
+    key = pool.get_current()
     models = get_working_models(key)
     if not models:
-        print("❌ لم يتم العثور على أي موديل متاح. سنستخدم الاحتياطي.")
         models = ["gemini-1.5-flash", "gemini-pro"]
         
-    print(f"🔄 الموديلات الشغالة حالياً: {models[:3]}")
+    print(f"🔄 الموديلات المكتشفة: {models[:3]}")
 
-    # 2. تجربة أفضل 5 موديلات
-    for model in models[:5]:
-        # 3. كل موديل نحاول معه 3 مرات بصبر
-        for retry in range(3):
+    for model in models[:4]: # نكتفي بأفضل 4
+        # نجرب الموديل مرتين فقط لعدم إهدار الوقت
+        for retry in range(2):
             key = pool.get_current()
-            print(f"🔄 محاولة {model} (مرة {retry + 1}/3)...")
-            
+            print(f"🔄 محاولة {model} (مرة {retry + 1}/2)...")
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            
             body = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "temperature": 0.4, 
                     "responseMimeType": "application/json",
-                    "maxOutputTokens": 2500
+                    "maxOutputTokens": 8192 # 🌟 زيادة الحجم لكي لا ينقطع النص
                 }
             }
             
             try:
-                # وقت انتظار طويل جداً (90 ثانية) للتعامل مع بطء جوجل
-                r = requests.post(url, json=body, timeout=90)
+                r = requests.post(url, json=body, timeout=60)
                 
                 if r.status_code == 200:
                     text = r.json()['candidates'][0]['content']['parts'][0]['text']
-                    text = text.replace("```json", "").replace("```", "").strip()
+                    
+                    # 🌟 استخراج الـ JSON بأمان حتى لو كان هناك نصوص إضافية
+                    start_idx = text.find('{')
+                    end_idx = text.rfind('}')
+                    if start_idx != -1 and end_idx != -1:
+                        text = text[start_idx:end_idx+1]
+                        
                     return json.loads(text)
                     
                 elif r.status_code == 503:
-                    print(f"   ⏳ جوجل مشغولة جداً (503)، ننتظر 15 ثانية...")
+                    print(f"   ⏳ جوجل مشغولة، ننتظر 15 ثانية...")
                     time.sleep(15)
-                    continue  # إعادة المحاولة
-                    
+                    continue
                 elif r.status_code == 429:
-                    print(f"   🔑 المفتاح استنفد، ننتقل لمفتاح آخر...")
+                    print(f"   🔑 المفتاح استنفد...")
                     pool.mark_failed(60)
-                    continue  # إعادة المحاولة بمفتاح جديد
-                    
+                    continue
                 elif r.status_code == 404:
-                    print(f"   ❌ الموديل غير متاح، ننتقل للموديل التالي")
-                    break  # كسر الحلقة والانتقال للموديل التالي
-                    
+                    print(f"   ❌ الموديل غير متاح...")
+                    break # ننتقل للموديل التالي
                 else:
                     print(f"   ⚠️ خطأ: HTTP {r.status_code}")
                     continue
                     
             except requests.exceptions.Timeout:
-                print(f"   ⏱️ انتهت المهلة (90 ثانية)، نعيد المحاولة...")
-                time.sleep(5)
+                print(f"   ⏱️ انتهت المهلة (60 ثانية)...")
+                continue
+            except json.JSONDecodeError:
+                print(f"   ⚠️ رد Gemini غير مكتمل (تم قطعه)، نعيد المحاولة...")
                 continue
             except Exception as e:
                 print(f"   ⚠️ خطأ في الاتصال: {e}")
-                time.sleep(5)
                 continue
                 
     return None
@@ -168,17 +167,20 @@ def main():
     state = load_state()
     topics = flatten_sources()
     
-    # البحث عن قصة مريم
-    if state["last_processed_index"] == -1:
+    # 🌟 إجبار السكربت على البدء بقصة مريم
+    if state["last_processed_index"] == -1 or not state.get("current_story_id"):
         found = False
         for i, t in enumerate(topics):
             if START_WITH_STORY in t.get('name', '') or START_WITH_STORY in t.get('title', ''):
                 state["last_processed_index"] = i - 1
+                state["current_story_id"] = "" # تصفير القصة
+                state["story_episode_num"] = 0
                 print(f"🌟 تم العثور على قصة {START_WITH_STORY} عند الفهرس {i}. سنبدأ منها.")
                 found = True
                 break
         if not found:
             print(f"⚠️ لم يتم العثور على قصة '{START_WITH_STORY}'، سنبدأ من البداية.")
+            state["last_processed_index"] = -1
 
     next_idx = state["last_processed_index"] + 1
     
@@ -211,7 +213,7 @@ def main():
         ep_num=ep_num
     )
     
-    print("🤖 جاري الإثراء عبر Gemini (قد يستغرق دقيقة أو أكثر)...")
+    print("🤖 جاري الإثراء عبر Gemini...")
     result = call_gemini(prompt)
     
     if not result or "segments" not in result:
