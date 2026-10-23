@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import sys
+import time
 from pathlib import Path
 from gemini_tts_pool import get_pool
 
@@ -100,37 +101,67 @@ def call_gemini(prompt):
     pool = get_pool()
     key = pool.get_current()
     
+    # 1. اكتشاف الموديلات المتاحة
     models = get_working_models(key)
     if not models:
-        print("❌ لم يتم العثور على أي موديل متاح.")
-        return None
+        print("❌ لم يتم العثور على أي موديل متاح. سنستخدم الاحتياطي.")
+        models = ["gemini-1.5-flash", "gemini-pro"]
         
-    print(f"🔄 الموديلات المتاحة: {models[:3]}")
+    print(f"🔄 الموديلات الشغالة حالياً: {models[:3]}")
 
-    for model in models[:5]: # نجرب أفضل 5 موديلات فقط
-        key = pool.get_current()
-        print(f"🔄 محاولة باستخدام {model}...")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.4, 
-                "responseMimeType": "application/json",
-                "maxOutputTokens": 2500
+    # 2. تجربة أفضل 5 موديلات
+    for model in models[:5]:
+        # 3. كل موديل نحاول معه 3 مرات بصبر
+        for retry in range(3):
+            key = pool.get_current()
+            print(f"🔄 محاولة {model} (مرة {retry + 1}/3)...")
+            
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            body = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.4, 
+                    "responseMimeType": "application/json",
+                    "maxOutputTokens": 2500
+                }
             }
-        }
-        try:
-            r = requests.post(url, json=body, timeout=20)
-            if r.status_code == 200:
-                text = r.json()['candidates'][0]['content']['parts'][0]['text']
-                text = text.replace("```json", "").replace("```", "").strip()
-                return json.loads(text)
-            else:
-                print(f"⚠️ فشل {model}: HTTP {r.status_code}")
-                if r.status_code == 429:
-                    pool.mark_daily_exhausted()
-        except Exception as e:
-            print(f"⚠️ خطأ في الاتصال بـ {model}: {e}")
+            
+            try:
+                # وقت انتظار طويل جداً (90 ثانية) للتعامل مع بطء جوجل
+                r = requests.post(url, json=body, timeout=90)
+                
+                if r.status_code == 200:
+                    text = r.json()['candidates'][0]['content']['parts'][0]['text']
+                    text = text.replace("```json", "").replace("```", "").strip()
+                    return json.loads(text)
+                    
+                elif r.status_code == 503:
+                    print(f"   ⏳ جوجل مشغولة جداً (503)، ننتظر 15 ثانية...")
+                    time.sleep(15)
+                    continue  # إعادة المحاولة
+                    
+                elif r.status_code == 429:
+                    print(f"   🔑 المفتاح استنفد، ننتقل لمفتاح آخر...")
+                    pool.mark_failed(60)
+                    continue  # إعادة المحاولة بمفتاح جديد
+                    
+                elif r.status_code == 404:
+                    print(f"   ❌ الموديل غير متاح، ننتقل للموديل التالي")
+                    break  # كسر الحلقة والانتقال للموديل التالي
+                    
+                else:
+                    print(f"   ⚠️ خطأ: HTTP {r.status_code}")
+                    continue
+                    
+            except requests.exceptions.Timeout:
+                print(f"   ⏱️ انتهت المهلة (90 ثانية)، نعيد المحاولة...")
+                time.sleep(5)
+                continue
+            except Exception as e:
+                print(f"   ⚠️ خطأ في الاتصال: {e}")
+                time.sleep(5)
+                continue
+                
     return None
 
 def main():
@@ -139,11 +170,15 @@ def main():
     
     # البحث عن قصة مريم
     if state["last_processed_index"] == -1:
+        found = False
         for i, t in enumerate(topics):
             if START_WITH_STORY in t.get('name', '') or START_WITH_STORY in t.get('title', ''):
                 state["last_processed_index"] = i - 1
                 print(f"🌟 تم العثور على قصة {START_WITH_STORY} عند الفهرس {i}. سنبدأ منها.")
+                found = True
                 break
+        if not found:
+            print(f"⚠️ لم يتم العثور على قصة '{START_WITH_STORY}'، سنبدأ من البداية.")
 
     next_idx = state["last_processed_index"] + 1
     
@@ -166,8 +201,8 @@ def main():
     print(f"📖 بدء توليد الحلقة: {topic['title']} - الحلقة {ep_num} ({story_id})")
     
     sections_text = "\n".join([f"{s.get('h','')}: {s.get('p','')}" for s in topic['sections']])
-    if len(sections_text) > 4000:
-        sections_text = sections_text[:4000] + "..."
+    if len(sections_text) > 3000:
+        sections_text = sections_text[:3000] + "..."
 
     prompt = PROMPT_TEMPLATE.format(
         title=topic['title'],
@@ -176,7 +211,7 @@ def main():
         ep_num=ep_num
     )
     
-    print("🤖 جاري الإثراء عبر Gemini...")
+    print("🤖 جاري الإثراء عبر Gemini (قد يستغرق دقيقة أو أكثر)...")
     result = call_gemini(prompt)
     
     if not result or "segments" not in result:
