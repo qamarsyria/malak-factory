@@ -22,25 +22,24 @@ PROMPT_TEMPLATE = """
 
 قواعد صارمة (لا تكسرها أبداً):
 1. لا تذكر مذاهب فقهية، ولا فرقاً، ولا علماء معاصرين.
-2. أضف إثراءً أدبياً ووصفاً للمشاعر والأحداث (دون اختلاق أحداث تاريخية غير موجودة).
+2. أضف إثراءً أدبياً ووصفاً للمشاعر والأحداث.
 3. استخرج الآيات القرآنية التي تدعم النص، وأعدها كأرقام سور وآيات فقط (مثال: "surah": 2, "ayah_numbers": [30]). لا تكتب النص القرآني بنفسك.
-4. استخرج الأحاديث الصحيحة التي تدعم النص، وأعدها كنصوص حرفية.
-5. صغ سؤالاً تشويقياً في النهاية للحلقة القادمة يثير فضول المستمع.
+4. استخرج الأحاديث الصحيحة التي تدعم النص.
+5. صغ سؤالاً تشويقياً في النهاية.
 
 أعد النتيجة بصيغة JSON فقط (بدون أي نصوص إضافية أو علامات markdown):
 {{
-  "episode_title": "{title} - الحلقة {ep_num}",
   "segments": [
     {{"type": "narration", "text": "النص السردي الأول..."}},
     {{"type": "quran", "surah": 2, "ayah_numbers": [30]}},
     {{"type": "narration", "text": "النص السردي الثاني..."}}
   ],
-  "teaser_text": "النص الصوتي للسؤال التشويقي للحلقة القادمة..."
+  "teaser_text": "النص الصوتي للسؤال التشويقي..."
 }}
 """
 
 def load_state():
-    default_state = {"last_processed_index": -1, "current_story_id": "", "story_episode_num": 0}
+    default_state = {"last_processed_index": -1, "current_story_id": "", "story_episode_num": 0, "started_maryam": False}
     if Path(STATE_FILE).exists():
         try:
             saved = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
@@ -83,12 +82,7 @@ def get_working_models(key):
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
-            models = []
-            for m in r.json().get("models", []):
-                if "generateContent" in m.get("supportedGenerationMethods", []):
-                    name = m["name"].replace("models/", "")
-                    if "gemini" in name:
-                        models.append(name)
+            models = [m["name"].replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", []) and "gemini" in m["name"]]
             models.sort(key=lambda x: (0 if "flash" in x else 1, len(x)))
             return models
     except Exception:
@@ -97,96 +91,50 @@ def get_working_models(key):
 
 def call_gemini(prompt):
     pool = get_pool()
-    
-    # نكتشف الموديلات المتاحة
     key = pool.get_current()
-    models = get_working_models(key)
-    if not models:
-        models = ["gemini-1.5-flash", "gemini-pro"]
-        
+    models = get_working_models(key) or ["gemini-1.5-flash", "gemini-pro"]
     print(f"🔄 الموديلات المكتشفة: {models[:3]}")
 
-    for model in models[:4]: # نكتفي بأفضل 4
-        # نجرب الموديل مرتين فقط لعدم إهدار الوقت
+    for model in models[:4]:
         for retry in range(2):
             key = pool.get_current()
             print(f"🔄 محاولة {model} (مرة {retry + 1}/2)...")
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            
-            body = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.4, 
-                    "responseMimeType": "application/json",
-                    "maxOutputTokens": 8192 # 🌟 زيادة الحجم لكي لا ينقطع النص
-                }
-            }
-            
+            body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json", "maxOutputTokens": 8192}}
             try:
                 r = requests.post(url, json=body, timeout=60)
-                
                 if r.status_code == 200:
                     text = r.json()['candidates'][0]['content']['parts'][0]['text']
-                    
-                    # 🌟 استخراج الـ JSON بأمان حتى لو كان هناك نصوص إضافية
-                    start_idx = text.find('{')
-                    end_idx = text.rfind('}')
-                    if start_idx != -1 and end_idx != -1:
-                        text = text[start_idx:end_idx+1]
-                        
+                    start, end = text.find('{'), text.rfind('}')
+                    if start != -1 and end != -1: text = text[start:end+1]
                     return json.loads(text)
-                    
-                elif r.status_code == 503:
-                    print(f"   ⏳ جوجل مشغولة، ننتظر 15 ثانية...")
-                    time.sleep(15)
-                    continue
-                elif r.status_code == 429:
-                    print(f"   🔑 المفتاح استنفد...")
-                    pool.mark_failed(60)
-                    continue
-                elif r.status_code == 404:
-                    print(f"   ❌ الموديل غير متاح...")
-                    break # ننتقل للموديل التالي
-                else:
-                    print(f"   ⚠️ خطأ: HTTP {r.status_code}")
-                    continue
-                    
-            except requests.exceptions.Timeout:
-                print(f"   ⏱️ انتهت المهلة (60 ثانية)...")
+                elif r.status_code == 503: time.sleep(15); continue
+                elif r.status_code == 429: pool.mark_failed(60); continue
+                elif r.status_code == 404: break
+            except Exception:
                 continue
-            except json.JSONDecodeError:
-                print(f"   ⚠️ رد Gemini غير مكتمل (تم قطعه)، نعيد المحاولة...")
-                continue
-            except Exception as e:
-                print(f"   ⚠️ خطأ في الاتصال: {e}")
-                continue
-                
     return None
 
 def main():
     state = load_state()
     topics = flatten_sources()
     
-    # 🌟 إجبار السكربت على البدء بقصة مريم
-    if state["last_processed_index"] == -1 or not state.get("current_story_id"):
+    # 🌟 إجبار البدء بقصة مريم
+    if not state.get("started_maryam", False):
         found = False
         for i, t in enumerate(topics):
-            if START_WITH_STORY in t.get('name', '') or START_WITH_STORY in t.get('title', ''):
+            if START_WITH_STORY in json.dumps(t, ensure_ascii=False):
                 state["last_processed_index"] = i - 1
-                state["current_story_id"] = "" # تصفير القصة
+                state["current_story_id"] = "" 
                 state["story_episode_num"] = 0
-                print(f"🌟 تم العثور على قصة {START_WITH_STORY} عند الفهرس {i}. سنبدأ منها.")
+                state["started_maryam"] = True
+                print(f"🌟 العثور على قصة {START_WITH_STORY}. سنبدأ منها.")
                 found = True
                 break
-        if not found:
-            print(f"⚠️ لم يتم العثور على قصة '{START_WITH_STORY}'، سنبدأ من البداية.")
-            state["last_processed_index"] = -1
+        if not found: state["last_processed_index"] = -1
 
     next_idx = state["last_processed_index"] + 1
-    
-    if next_idx >= len(topics):
-        print("🎉 تم إنجاز جميع المواضيع! سنعيد البدء من القصة الأولى.")
-        next_idx = 0
+    if next_idx >= len(topics): next_idx = 0
         
     topic = topics[next_idx]
     next_topic = topics[next_idx + 1] if next_idx + 1 < len(topics) else topics[0]
@@ -197,85 +145,48 @@ def main():
         state["story_episode_num"] = 1
     else:
         state["story_episode_num"] = state.get("story_episode_num", 0) + 1
-        
     ep_num = state["story_episode_num"]
 
-    print(f"📖 بدء توليد الحلقة: {topic['title']} - الحلقة {ep_num} ({story_id})")
+    final_title = f"{topic['title']} - الحلقة {ep_num}"
+    print(f"📖 بدء توليد: {final_title}")
     
-    sections_text = "\n".join([f"{s.get('h','')}: {s.get('p','')}" for s in topic['sections']])
-    if len(sections_text) > 3000:
-        sections_text = sections_text[:3000] + "..."
-
-    prompt = PROMPT_TEMPLATE.format(
-        title=topic['title'],
-        brief=topic.get('brief', ''),
-        sections=sections_text,
-        ep_num=ep_num
-    )
+    sections_text = "\n".join([f"{s.get('h','')}: {s.get('p','')}" for s in topic['sections']])[:3000]
+    prompt = PROMPT_TEMPLATE.format(title=topic['title'], brief=topic.get('brief', ''), sections=sections_text)
     
-    print("🤖 جاري الإثراء عبر Gemini...")
     result = call_gemini(prompt)
-    
-    if not result or "segments" not in result:
-        print("❌ فشل Gemini في إنتاج النص. إيقاف العملية.")
-        sys.exit(1)
+    if not result or "segments" not in result: sys.exit(1)
 
     final_segments = []
     for seg in result.get("segments", []):
         if seg.get("type") == "quran":
-            surah = seg.get("surah")
-            ayahs = seg.get("ayah_numbers", [])
+            surah, ayahs = seg.get("surah"), seg.get("ayah_numbers", [])
             if not surah or not ayahs: continue
-            
             is_valid, surah_name = verify_quran(surah, ayahs)
             if is_valid:
-                display = f"{surah_name}: {ayahs[0]}" if len(ayahs) == 1 else f"{surah_name}: {ayahs[0]}-{ayahs[-1]}"
                 seg["surah_name"] = surah_name
-                seg["display"] = display
+                seg["display"] = f"{surah_name}: {ayahs[0]}" if len(ayahs) == 1 else f"{surah_name}: {ayahs[0]}-{ayahs[-1]}"
                 final_segments.append(seg)
-            else:
-                print(f"⚠️ تم تجاهل آية غير صحيحة: {surah}:{ayahs}")
         else:
             final_segments.append(seg)
 
     if next_topic and result.get("teaser_text"):
         next_name = next_topic.get('title', 'الحلقة القادمة')
-        if next_topic['source_id'] != story_id:
-            next_name = f"قصة {next_name}"
-            
-        teaser = {
-            "type": "teaser",
-            "text": result["teaser_text"],
-            "emotion_hint": "(in a mysterious, inviting tone, with a slight pause before the question)",
-            "next_episode_title": next_name,
-            "next_episode_source": next_topic['source_id'],
-            "url": "https://qamarsyria.github.io/qamar-malak/",
-            "platform_name": "ملاك المعرفة"
-        }
-        final_segments.append(teaser)
+        if next_topic['source_id'] != story_id: next_name = f"قصة {next_name}"
+        final_segments.append({
+            "type": "teaser", "text": result["teaser_text"], "emotion_hint": "(in a mysterious tone)",
+            "next_episode_title": next_name, "next_episode_source": next_topic['source_id'],
+            "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"
+        })
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
     safe_name = topic.get('name', 'story').replace(' ', '_')[:20]
     out_file = OUTPUT_DIR / f"{topic['source_type']}-{safe_name}-{ep_num:02d}.json"
     
-    episode_data = {
-        "episode_number": ep_num,
-        "title": result.get("episode_title", f"{topic['title']} - الحلقة {ep_num}"),
-        "source": story_id,
-        "segments": final_segments
-    }
-    
+    episode_data = {"episode_number": ep_num, "title": final_title, "source": story_id, "segments": final_segments}
     out_file.write_text(json.dumps(episode_data, ensure_ascii=False, indent=2), encoding="utf-8")
     
     Path("out").mkdir(exist_ok=True)
     Path("out/latest_episode.txt").write_text(str(out_file), encoding="utf-8")
     
-    print(f"✅ تم إنشاء الحلقة: {out_file}")
-    
     state["last_processed_index"] = next_idx
     save_state(state)
-    print("💾 تم تحديث الحالة للحلقة التالية.")
-
-if __name__ == "__main__":
-    main()
