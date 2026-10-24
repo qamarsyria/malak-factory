@@ -14,6 +14,9 @@ OUTRO_TEXTS = [
     {"text": "قال ﷺ: «مَن دعا إلى هُدًى كان له من الأجرِ مثلُ أجورِ مَن تبِعَه». كل شخص يهتدي بهذه الكلمة، لك مثل أجره. ملاك المعرفة.", "voice_style": "(in a warm tone)"},
 ]
 
+# ═══════════════════════════════════════════════════════════
+# 1. محرك Gemini (الأساسي)
+# ═══════════════════════════════════════════════════════════
 def get_working_models():
     if Path(MODELS_CACHE_FILE).exists():
         try:
@@ -23,7 +26,7 @@ def get_working_models():
         except: pass
     return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
 
-def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
+def call_gemini(prompt, is_json=True, timeout=120, max_tokens=8192):
     pool = get_pool()
     for model in get_working_models()[:3]:
         for attempt in range(2):
@@ -33,6 +36,7 @@ def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
                 body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 
+                print(f"      [Gemini] {model} | محاولة {attempt+1}", flush=True)
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
                     parts = r.json().get('candidates', [{}])[0].get('content', {}).get('parts', [])
@@ -40,13 +44,79 @@ def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
                     text = parts[0].get('text', '')
                     if not text: break
                     if is_json: text = text[text.find('{'):text.rfind('}')+1]
-                    pool._advance() # تدوير المفتاح
+                    pool._advance()
                     return json.loads(text) if is_json else text
                 elif r.status_code == 429:
                     pool.mark_failed(3600)
                 elif r.status_code in [404, 503]:
                     break
             except: pass
+    return None
+
+# ═══════════════════════════════════════════════════════════
+# 2. محرك Hugging Face (الاحتياطي - يعمل في سوريا)
+# ═══════════════════════════════════════════════════════════
+def call_huggingface(prompt, is_json=True):
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        print("      [HF] ⚠️ HF_TOKEN غير موجود في الـ Secrets.", flush=True)
+        return None
+    
+    # استخدام نموذج Mistral القوي (يدعم العربية والـ JSON)
+    model_id = "mistralai/Mistral-7B-Instruct-v0.3"
+    url = f"https://api-inference.huggingface.co/models/{model_id}/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
+    
+    body = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.4,
+        "max_tokens": 4000
+    }
+    
+    try:
+        print(f"      [HF] محاولة {model_id}...", flush=True)
+        r = requests.post(url, headers=headers, json=body, timeout=120)
+        if r.status_code == 200:
+            text = r.json()['choices'][0]['message']['content']
+            if is_json:
+                text = text[text.find('{'):text.rfind('}')+1]
+                return json.loads(text)
+            return text
+        else:
+            print(f"      [HF] ❌ فشل: HTTP {r.status_code} - {r.text[:150]}", flush=True)
+    except Exception as e:
+        print(f"      [HF] ⚠️ خطأ: {str(e)[:100]}", flush=True)
+    return None
+
+# ═══════════════════════════════════════════════════════════
+# 3. الواجهة الموحدة: جرب Gemini ثم HF
+# ═══════════════════════════════════════════════════════════
+def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
+    # المحاولة 1: Gemini
+    res = call_gemini(prompt, is_json, timeout, max_tokens)
+    if res: return res
+    
+    # المحاولة 2: Hugging Face
+    print("⚠️ Gemini فشل، الانتقال إلى Hugging Face...", flush=True)
+    res = call_huggingface(prompt, is_json)
+    if res: return res
+    
+    # المحاولة 3: Groq (إذا أضفته لاحقاً)
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        print("⚠️ HF فشل، تجربة Groq...", flush=True)
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "response_format": {"type": "json_object"} if is_json else None},
+                timeout=60)
+            if r.status_code == 200:
+                text = r.json()['choices'][0]['message']['content']
+                if is_json: text = text[text.find('{'):text.rfind('}')+1]
+                return json.loads(text) if is_json else text
+        except: pass
+        
     return None
 
 def get_surah_name(surah_num):
@@ -81,13 +151,16 @@ def main():
             loaded = json.loads(pending_file.read_text(encoding="utf-8"))
             if "title" in loaded and "summary" in loaded and len(loaded.get("summary", "")) > 50:
                 plan = loaded
+                print("   ✅ خطة صالحة من pending.", flush=True)
         except: pass
 
     if not plan:
         print("📝 توليد خطة الحلقة...", flush=True)
         plan_prompt = f"أنت كاتب سيناريو. ابتكر فكرة للحلقة {ep_num} من {story_name}. أعد JSON: {{\"title\": \"...\", \"summary\": \"ملخص مفصل (300 كلمة)...\"}}"
         plan = call_llm(plan_prompt)
-        if not plan: sys.exit(1)
+        if not plan: 
+            print("❌ فشل كل المحركات في توليد الخطة.", flush=True)
+            sys.exit(1)
         PENDING_DIR.mkdir(parents=True, exist_ok=True)
         pending_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
 
@@ -96,7 +169,11 @@ def main():
     print("✍️ توليد السرد الطويل...", flush=True)
     script_prompt = f"أنت كاتب سيناريو. اكتب نصاً سردياً (1500 كلمة) لهذه الحلقة:\n{plan['summary']}\nاكتب النص فقط بدون رموز."
     script_text = call_llm(script_prompt, is_json=False)
-    if not script_text: sys.exit(1)
+    if not script_text: 
+        print("❌ فشل كل المحركات في توليد السرد.", flush=True)
+        sys.exit(1)
+
+    print(f"📊 كلمات السرد: {len(script_text.split())}", flush=True)
 
     print("🛠️ بناء المقاطع والآيات...", flush=True)
     ayah_prompt = f"استخرج 5 آيات تدعم النص:\n{script_text[:2000]}\nأعد JSON: {{\"ayahs\": [{{\"surah\": 3, \"ayah\": 35}}]}}"
