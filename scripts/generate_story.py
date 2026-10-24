@@ -5,7 +5,7 @@ from gemini_tts_pool import get_pool
 STATE_FILE = "state/story_state.json"
 OUTPUT_DIR = Path("data/stories/generated")
 PENDING_DIR = Path("state/pending")
-MODELS_CACHE_FILE = "state/models_cache.json"
+MODELS_CACHE_FILE = Path("state/models_cache.json")
 
 STORIES_ORDER = ["مريم", "زكريا", "يحيى", "عيسى"]
 MAX_EPISODES_PER_STORY = 40
@@ -28,39 +28,86 @@ def get_working_models():
     if Path(MODELS_CACHE_FILE).exists():
         try:
             cache = json.loads(Path(MODELS_CACHE_FILE).read_text(encoding="utf-8"))
-            if time.time() - cache.get("ts", 0) < CACHE_TTL: return cache["models"]
+            # 🌟 فلترة 2.5 حتى لو كانت في الكاش
+            models = [m for m in cache.get("models", []) if "2.5" not in m]
+            if models and time.time() - cache.get("ts", 0) < CACHE_TTL:
+                return models
         except: pass
+    
     pool = get_pool()
     key = pool.get_current()
     try:
         r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
         if r.status_code == 200:
             raw_models = [m["name"].replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
-            valid_models = [m for m in raw_models if "gemini" in m and "2.5" not in m and "embedding" not in m]
-            valid_models.sort(key=lambda x: (0 if "3.8" in x else 1 if "3.6" in x else 2 if "3.5" in x else 3))
+            valid = [m for m in raw_models if "gemini" in m and "2.5" not in m and "embedding" not in m]
+            valid.sort(key=lambda x: (0 if "3.8" in x else 1 if "3.6" in x else 2 if "3.5" in x else 3))
             Path(MODELS_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
-            Path(MODELS_CACHE_FILE).write_text(json.dumps({"models": valid_models, "ts": time.time()}), encoding="utf-8")
-            return valid_models
+            Path(MODELS_CACHE_FILE).write_text(json.dumps({"models": valid, "ts": time.time()}), encoding="utf-8")
+            return valid
     except: pass
-    return ["gemini-3.8-flash", "gemini-1.5-flash"]
+    return ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-1.5-flash"]
 
 def call_gemini(prompt, is_json=True, timeout=120, max_tokens=8192):
+    """محاولة ذكية: 3 موديلات × 3 مفاتيح، مع تدوير المفاتيح بعد كل نجاح."""
     pool = get_pool()
     models = get_working_models()
-    for model in models[:2]:
-        key = pool.get_current()
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
-        if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
-        try:
-            print(f"      [API] محاولة {model}...", flush=True)
-            r = requests.post(url, json=body, timeout=timeout)
-            if r.status_code == 200:
-                text = r.json()['candidates'][0]['content']['parts'][0]['text']
-                if is_json: text = text[text.find('{'):text.rfind('}')+1]
-                return json.loads(text) if is_json else text
-            if r.status_code == 429: pool.mark_failed(3600)
-        except Exception as e: print(f"      [API Error] {e}", flush=True)
+    print(f"      [API] الموديلات: {models[:3]}", flush=True)
+    
+    for model in models[:3]:
+        for attempt in range(3):
+            try:
+                key = pool.get_current()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
+                if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
+                
+                print(f"      [API] {model} | مفتاح {key[:10]}... | محاولة {attempt+1}", flush=True)
+                r = requests.post(url, json=body, timeout=timeout)
+                
+                if r.status_code == 200:
+                    data = r.json()
+                    cands = data.get("candidates", [])
+                    if not cands:
+                        print(f"      [API] ⚠️ لا يوجد candidates", flush=True)
+                        break
+                    parts = cands[0].get("content", {}).get("parts", [])
+                    if not parts:
+                        print(f"      [API] ⚠️ لا يوجد parts", flush=True)
+                        break
+                    text = parts[0].get("text", "")
+                    if not text:
+                        reason = cands[0].get("finishReason", "?")
+                        print(f"      [API] ⚠️ نص فارغ (السبب: {reason})", flush=True)
+                        break
+                    if is_json: text = text[text.find('{'):text.rfind('}')+1]
+                    pool._advance()  # 🌟 تدوير المفتاح بعد النجاح
+                    return json.loads(text) if is_json else text
+                
+                elif r.status_code == 429:
+                    print(f"      [API] ⚠️ 429 (تجاوز حصة) — تدوير المفتاح", flush=True)
+                    pool.mark_failed(3600)
+                    continue
+                
+                elif r.status_code == 503:
+                    print(f"      [API] ⚠️ 503 (سيرفر مشغول) — انتظار 5 ثوان", flush=True)
+                    time.sleep(5)
+                    continue
+                
+                elif r.status_code == 404:
+                    print(f"      [API] ⚠️ 404 (موديل غير موجود) — الموديل التالي", flush=True)
+                    break
+                
+                else:
+                    print(f"      [API] ⚠️ HTTP {r.status_code}: {r.text[:150]}", flush=True)
+                    break
+                    
+            except requests.exceptions.Timeout:
+                print(f"      [API] ⚠️ Timeout ({timeout}s)", flush=True)
+                continue
+            except Exception as e:
+                print(f"      [API] ⚠️ خطأ: {type(e).__name__}: {str(e)[:100]}", flush=True)
+                continue
     return None
 
 def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
@@ -68,6 +115,7 @@ def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
     if res: return res
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
+        print("      [Fallback] تجربة Groq...", flush=True)
         try:
             r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
                 headers={"Authorization": f"Bearer {groq_key}"},
@@ -99,30 +147,26 @@ def main():
     story_name = STORIES_ORDER[state["story_index"]]
     ep_num = state["episode_num"]
     
-    print(f"🚀 [1/5] بدء معالجة: {story_name} - الحلقة {ep_num}", flush=True)
+    print(f"🚀 [1/5] بدء: {story_name} - الحلقة {ep_num}", flush=True)
 
     pending_file = PENDING_DIR / f"pending-{story_name}-{ep_num}.json"
     plan = None
     
-    # فحص ملف الـ pending (بأمان تام)
     if pending_file.exists():
-        print(f"📂 [2/5] وجدت ملفاً في pending. جاري التحقق...", flush=True)
+        print(f"📂 [2/5] التحقق من pending...", flush=True)
         try:
             loaded = json.loads(pending_file.read_text(encoding="utf-8"))
-            # التأكد من وجود العنوان والملخص (لتفادي خطأ KeyError)
             if "title" in loaded and "summary" in loaded and len(loaded.get("summary", "")) > 50:
                 plan = loaded
-                print(f"   ✅ الخطة صالحة: {plan['title']}", flush=True)
+                print(f"   ✅ خطة صالحة: {plan['title']}", flush=True)
             else:
-                print(f"   ⚠️ الملف ناقص أو قديم، سيتم حذفه وإعادة التوليد.", flush=True)
+                print(f"   ⚠️ خطة ناقصة، حذف وإعادة توليد.", flush=True)
                 pending_file.unlink()
-        except Exception as e:
-            print(f"   ⚠️ خطأ في قراءة الملف: {e}، سيتم حذفه.", flush=True)
+        except:
             pending_file.unlink()
 
-    # توليد خطة جديدة إذا لزم الأمر
     if not plan:
-        print("📝 [2/5] توليد خطة الحلقة الجديدة...", flush=True)
+        print("📝 [2/5] توليد خطة الحلقة...", flush=True)
         plan_prompt = f"""أنت كاتب سيناريو إسلامي.
 المطلوب: ابتكر فكرة للحلقة رقم {ep_num} من قصة {story_name}.
 اعطني عنواناً درامياً جذاباً، وملخصاً موسعاً (لا يقل عن 300 كلمة).
@@ -131,17 +175,16 @@ def main():
         
         plan = call_llm(plan_prompt)
         if not plan or "title" not in plan:
-            print("❌ فشل توليد خطة الحلقة.", flush=True)
+            print("❌ فشل توليد الخطة.", flush=True)
             sys.exit(1)
         
         PENDING_DIR.mkdir(parents=True, exist_ok=True)
         pending_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"💾 تم حفظ الخطة في pending: {plan['title']}", flush=True)
+        print(f"💾 خطة محفوظة: {plan['title']}", flush=True)
 
     print(f"📜 العنوان: {plan['title']}", flush=True)
 
-    # توليد السرد
-    print("✍️ [3/5] توليد السرد الطويل...", flush=True)
+    print("✍️ [3/5] توليد السرد...", flush=True)
     script_prompt = f"""أنت كاتب سيناريو إسلامي.
 اكتب نصاً سردياً درامياً مفصلاً (1500 كلمة) لهذه الحلقة.
 القصة: {story_name}
@@ -153,13 +196,12 @@ def main():
     
     script_text = call_llm(script_prompt, is_json=False, timeout=120, max_tokens=8192)
     if not script_text:
-        print("❌ فشل توليد السرد (النص فارغ).", flush=True)
+        print("❌ فشل توليد السرد.", flush=True)
         sys.exit(1)
 
-    print(f"📊 عدد كلمات السرد: {len(script_text.split())}", flush=True)
+    print(f"📊 كلمات السرد: {len(script_text.split())}", flush=True)
 
-    # بناء المقاطع والآيات
-    print("🛠️ [4/5] بناء المقاطع والتحقق من الآيات...", flush=True)
+    print("🛠️ [4/5] بناء المقاطع والآيات...", flush=True)
     ayah_prompt = f"""استخرج 5 آيات قرآنية تدعم هذا النص:
 {script_text[:2000]}
 أعد JSON: {{"ayahs": [{{"surah": 3, "ayah": 35}}]}}"""
@@ -175,14 +217,12 @@ def main():
         if i < len(ayahs):
             verified.append({"type": "quran", "surah": ayahs[i]["surah"], "ayah_numbers": [ayahs[i]["ayah"]]})
 
-    # إضافة Outro و Teaser
     outro = random.choice(OUTRO_TEXTS)
     verified.append({"type": "outro", "text": outro["text"], "emotion_hint": outro["voice_style"], "visual": "mosque", "sfx": ""})
     
     next_title = f"الحلقة {ep_num + 1}" if ep_num < MAX_EPISODES_PER_STORY else "الحلقة القادمة"
     verified.append({"type": "teaser", "text": f"وهل تعلم ما حدث بعد ذلك؟ الحلقة القادمة: {next_title}.", "emotion_hint": "(mysterious)", "next_episode_title": f"{story_name} - {next_title}", "next_episode_source": story_name, "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
-    # الحفظ النهائي
     print("💾 [5/5] حفظ الملف النهائي...", flush=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = OUTPUT_DIR / f"{story_name}-{ep_num:02d}.json"
@@ -194,7 +234,6 @@ def main():
     state["episode_num"] += 1
     save_state(state)
 
-    # حذف ملف الـ pending بعد النجاح
     if pending_file.exists():
         pending_file.unlink()
 
