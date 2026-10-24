@@ -9,22 +9,20 @@ MODELS_CACHE_FILE = Path("state/models_cache.json")
 STORIES_ORDER = ["مريم", "زكريا", "يحيى", "عيسى"]
 MAX_EPISODES_PER_STORY = 40
 
-# ═══════════════════════════════════════════════════════════
-# نصوص الأووتر (مع تَشكيل صحيح لاسم القناة)
-# ═══════════════════════════════════════════════════════════
 OUTRO_TEXTS = [
-    {"text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». كن أنت الدال على الخير، شارك هذه الحلقة مع من تحب، فلك مثل أجره. مَلَاك المَعْرِفَة.", "voice_style": "(in a gentle, encouraging tone)"},
-    {"text": "قال ﷺ: «مَن دعا إلى هُدًى كان له من الأجرِ مثلُ أجورِ مَن تبِعَه». كل شخص يهتدي بهذه الكلمة، لك مثل أجره. انشر العلم. مَلَاك المَعْرِفَة.", "voice_style": "(in a warm, inviting tone)"},
-    {"text": "قال ﷺ لعلي رضي الله عنه: «لأَنْ يَهدِيَ اللهُ بك رجُلًا واحدًا خيرٌ لك من حُمْرِ النَّعَم». لعل كلمة واحدة منك تكون سبباً في هداية إنسان. مَلَاك المَعْرِفَة.", "voice_style": "(in a hopeful tone)"},
-    {"text": "قال ﷺ: «إذا مات ابنُ آدمَ انقطع عملُه إلا من ثلاثٍ: صدقةٍ جاريةٍ، أو علمٍ يُنتفَعُ به». اجعل لك علماً جارياً. مَلَاك المَعْرِفَة.", "voice_style": "(in a reflective tone)"},
-    {"text": "قال ﷺ: «نَضَّرَ اللهُ امرأً سَمِعَ مِنَّا حديثًا فحَفِظَه حتى يُبَلِّغَه». كن ممن يحفظ العلم ويبلغه. مَلَاك المَعْرِفَة.", "voice_style": "(in a strong tone)"},
-    {"text": "قال ﷺ: «إنَّ اللهَ وملائكتَه... ليُصَلُّونَ على مُعَلِّمِ الناسِ الخيرَ». كن معلمًا للناس الخير. مَلَاك المَعْرِفَة.", "voice_style": "(in a reverent tone)"},
-    {"text": "قال الله تعالى: ﴿وَتَعَاوَنُوا عَلَى الْبِرِّ وَالتَّقْوَىٰ﴾. التعاون على الخير واجب. مَلَاك المَعْرِفَة.", "voice_style": "(in a clear tone)"},
-    {"text": "قال الله تعالى: ﴿وَتَوَاصَوْا بِالْحَقِّ وَتَوَاصَوْا بِالصَّبْرِ﴾. من التواصي بالحق أن تنشر الخير. مَلَاك المَعْرِفَة.", "voice_style": "(in a calm tone)"},
-    {"text": "قال الإمام ابن الجوزي رحمه الله: «من أحب ألا ينقطع عمله بعد موته فلينشر العلم». انشر العلم. مَلَاك المَعْرِفَة.", "voice_style": "(in a philosophical tone)"},
-    {"text": "قال ﷺ: «بَلِّغُوا عَنِّي ولو آية». خير الكلام ما قل ودل. مَلَاك المَعْرِفَة.", "voice_style": "(in a motivating tone)"}
+    {"text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». كن أنت الدال على الخير، شارك هذه الحلقة مع من تحب، فلك مثل أجره. مَلَاك المَعْرِفَة.", "voice_style": "(in a calm, dignified tone)"},
+    {"text": "قال ﷺ: «مَن دعا إلى هُدًى كان له من الأجرِ مثلُ أجورِ مَن تبِعَه». كل شخص يهتدي بهذه الكلمة، لك مثل أجره. انشر العلم. مَلَاك المَعْرِفَة.", "voice_style": "(in a warm, narrative tone)"},
+    {"text": "قال ﷺ لعلي رضي الله عنه: «لأَنْ يَهدِيَ اللهُ بك رجُلًا واحدًا خيرٌ لك من حُمْرِ النَّعَم». لعل كلمة واحدة منك تكون سبباً في هداية إنسان. مَلَاك المَعْرِفَة.", "voice_style": "(in a calm, dignified tone)"},
+    {"text": "قال ﷺ: «إذا مات ابنُ آدمَ انقطع عملُه إلا من ثلاثٍ: صدقةٍ جاريةٍ، أو علمٍ يُنتفَعُ به». اجعل لك علماً جارياً. مَلَاك المَعْرِفَة.", "voice_style": "(in a solemn, respectful tone)"},
+    {"text": "قال ﷺ: «نَضَّرَ اللهُ امرأً سَمِعَ مِنَّا حديثًا فحَفِظَه حتى يُبَلِّغَه». كن ممن يحفظ العلم ويبلغه. مَلَاك المَعْرِفَة.", "voice_style": "(in a warm, narrative tone)"},
+    {"text": "قال ﷺ: «إنَّ اللهَ وملائكتَه... ليُصَلُّونَ على مُعَلِّمِ الناسِ الخيرَ». كن معلمًا للناس الخير. مَلَاك المَعْرِفَة.", "voice_style": "(in a solemn, respectful tone)"},
+    {"text": "قال الله تعالى: ﴿وَتَعَاوَنُوا عَلَى الْبِرِّ وَالتَّقْوَىٰ﴾. التعاون على الخير واجب. مَلَاك المَعْرِفَة.", "voice_style": "(in a calm, dignified tone)"},
+    {"text": "قال الله تعالى: ﴿وَتَوَاصَوْا بِالْحَقِّ وَتَوَاصَوْا بِالصَّبْرِ﴾. من التواصي بالحق أن تنشر الخير. مَلَاك المَعْرِفَة.", "voice_style": "(in a gentle, reflective tone)"},
+    {"text": "قال الإمام ابن الجوزي رحمه الله: «من أحب ألا ينقطع عمله بعد موته فلينشر العلم». انشر العلم. مَلَاك المَعْرِفَة.", "voice_style": "(in a gentle, reflective tone)"},
+    {"text": "قال ﷺ: «بَلِّغُوا عَنِّي ولو آية». خير الكلام ما قل ودل. مَلَاك المَعْرِفَة.", "voice_style": "(in a warm, narrative tone)"}
 ]
 
+# ... (نفس دوال Gemini و HuggingFace السابقة) ...
 def get_working_models():
     if Path(MODELS_CACHE_FILE).exists():
         try:
@@ -77,7 +75,6 @@ def call_huggingface(prompt, is_json=True):
 def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
     res = call_gemini(prompt, is_json, timeout, max_tokens)
     if res: return res
-    print("⚠️ Gemini فشل، تجربة Hugging Face...", flush=True)
     res = call_huggingface(prompt, is_json)
     if res: return res
     return None
@@ -167,13 +164,13 @@ def main():
 3. ضع العلامة **بعد الجملة التي تدعمها الآية مباشرة**.
 4. لا تكتب نص الآية بنفسك.
 5. عدد الآيات: من 5 إلى 8 آيات فقط.
+6. اختر فقط الآيات التي **فعلاً** تدعم ما تقوله في الجملة التي قبلها.
 
 اكتب النص فقط."""
     script_text = call_llm(script_prompt, is_json=False, timeout=120, max_tokens=8192)
     if not script_text:
         print("❌ فشل توليد السرد.", flush=True); sys.exit(1)
 
-    # 🌟 خطوة التدقيق اللغوي (جديدة)
     print("🔍 [4/6] تدقيق لغوي وإملائي...", flush=True)
     review_prompt = f"""أنت مدقق لغوي خبير في اللغة العربية.
 المهمة: راجع النص التالي وصحح أي أخطاء إملائية أو سياقية.
@@ -190,10 +187,8 @@ def main():
         print("   ✅ تم تصحيح النص بنجاح.", flush=True)
         script_text = corrected_text
     else:
-        print("   ⚠️ فشل التدقيق (أو النص قصير)، سنستخدم النص الأصلي بحذر.", flush=True)
+        print("   ⚠️ فشل التدقيق، سنستخدم النص الأصلي.", flush=True)
 
-    print(f"📊 كلمات السرد بعد التدقيق: {len(script_text.split())}", flush=True)
-    
     print("🛠️ [5/6] استخراج المقاطع والتحقق من الآيات...", flush=True)
     verified = parse_script_with_verses(script_text)
 
@@ -201,7 +196,7 @@ def main():
     verified.append({"type": "outro", "text": outro["text"], "emotion_hint": outro["voice_style"], "visual": "mosque", "sfx": ""})
     
     next_title = f"الحلقة {ep_num + 1}"
-    verified.append({"type": "teaser", "text": f"الحلقة القادمة: {next_title}.", "emotion_hint": "(mysterious)", "next_episode_title": next_title, "next_episode_source": story_name, "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
+    verified.append({"type": "teaser", "text": f"الحلقة القادمة: {next_title}.", "emotion_hint": "(in a calm, inviting tone)", "next_episode_title": next_title, "next_episode_source": story_name, "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
     print("💾 [6/6] حفظ...", flush=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
