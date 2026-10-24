@@ -87,7 +87,7 @@ def make_overlay(seg, width, height, work_dir, episode_title=""):
         except: font_next, font_url = ImageFont.truetype(font_path, 42), ImageFont.truetype(font_path, 32)
         
         y = VIDEO_H - strip_h + 40
-        elements = [("⏭ الحلقة القادمة", font_next, ACCENT_COLOR, 0), (td.get("next_episode_title", ""), font_next, TEXT_COLOR, 70), (f"🌐 {td.get('url', '').replace('https://', '')}", font_url, ACCENT_COLOR, 150), (td.get("platform_name", "ملاك المعرفة"), font_url, TEXT_COLOR, 205)]
+        elements = [("⏭ الحلقة القادمة", font_next, ACCENT_COLOR, 0), (td.get("next_episode_title", ""), font_next, TEXT_COLOR, 70), (f"🌐 {td.get('url', '').replace('https://', '')}", font_url, ACCENT_COLOR, 150)]
         for txt, font, color, offset in elements:
             if txt:
                 bbox = draw.textbbox((0, 0), _shape(txt), font=font)
@@ -108,6 +108,7 @@ def build_video(audio_path, meta_path, output_mp4):
         overlay = make_overlay(seg, VIDEO_W, VIDEO_H, work_dir, meta.get("title", ""))
         out_seg = work_dir / f"seg_{seg['index']:03d}.mp4"
 
+        # ضغط ممتاز لتقليل الحجم
         cmd = ["ffmpeg", "-y", "-loop", "1", "-i", bg_path, "-i", overlay, "-filter_complex", "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[bg];[bg][1:v]overlay", "-t", str(duration), "-r", "30", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p", str(out_seg)]
         subprocess.run(cmd, check=True, capture_output=True)
         concat_lines.append(f"file '{out_seg}'")
