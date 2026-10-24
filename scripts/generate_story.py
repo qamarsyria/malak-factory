@@ -104,14 +104,23 @@ def main():
     pending_file = PENDING_DIR / f"pending-{story_name}-{ep_num}.json"
     plan = None
     
-    # هل هناك خطة محفوظة مسبقاً في pending؟
+    # فحص ملف الـ pending (بأمان تام)
     if pending_file.exists():
-        print(f"📂 [2/5] وجدت خطة محفوظة في pending. سنستخدمها.", flush=True)
+        print(f"📂 [2/5] وجدت ملفاً في pending. جاري التحقق...", flush=True)
         try:
-            plan = json.loads(pending_file.read_text(encoding="utf-8"))
-        except: pass
+            loaded = json.loads(pending_file.read_text(encoding="utf-8"))
+            # التأكد من وجود العنوان والملخص (لتفادي خطأ KeyError)
+            if "title" in loaded and "summary" in loaded and len(loaded.get("summary", "")) > 50:
+                plan = loaded
+                print(f"   ✅ الخطة صالحة: {plan['title']}", flush=True)
+            else:
+                print(f"   ⚠️ الملف ناقص أو قديم، سيتم حذفه وإعادة التوليد.", flush=True)
+                pending_file.unlink()
+        except Exception as e:
+            print(f"   ⚠️ خطأ في قراءة الملف: {e}، سيتم حذفه.", flush=True)
+            pending_file.unlink()
 
-    # إذا لم توجد خطة، نولدها
+    # توليد خطة جديدة إذا لزم الأمر
     if not plan:
         print("📝 [2/5] توليد خطة الحلقة الجديدة...", flush=True)
         plan_prompt = f"""أنت كاتب سيناريو إسلامي.
@@ -185,6 +194,7 @@ def main():
     state["episode_num"] += 1
     save_state(state)
 
+    # حذف ملف الـ pending بعد النجاح
     if pending_file.exists():
         pending_file.unlink()
 
