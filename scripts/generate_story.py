@@ -6,14 +6,22 @@ STATE_FILE = "state/story_state.json"
 BIBLES_DIR = Path("state/bibles")
 OUTPUT_DIR = Path("data/stories/generated")
 
-# قائمة القصص بالترتيب (يمكنك إضافة المزيد لاحقاً)
+# قائمة القصص بالترتيب
 STORIES_ORDER = ["مريم", "زكريا", "يحيى", "عيسى"]
 
 def load_state():
+    default = {"story_index": 0, "episode_num": 1}
     if Path(STATE_FILE).exists():
-        try: return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
-        except: pass
-    return {"story_index": 0, "episode_num": 1}
+        try:
+            saved = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
+            # دمج المفاتيح القديمة مع الجديدة لتجنب أي انهيار
+            for k, v in default.items():
+                if k not in saved:
+                    saved[k] = v
+            return saved
+        except:
+            return default
+    return default
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -36,21 +44,24 @@ def call_gemini(prompt, is_json=True):
                     text = text[text.find('{'):text.rfind('}')+1]
                     return json.loads(text)
                 return text
-            elif r.status_code == 429: pool.mark_failed(60); continue
-            elif r.status_code in [503, 404]: time.sleep(5); continue
-        except: continue
+            elif r.status_code == 429: 
+                pool.mark_failed(60)
+                continue
+            elif r.status_code in [503, 404]: 
+                time.sleep(5)
+                continue
+        except Exception as e:
+            print(f"⚠️ خطأ في الاتصال: {e}")
+            continue
     return None
 
 def fetch_full_story_from_ibn_kathir(story_name):
-    """محاولة جلب النص من ابن كثير عبر ketabonline أو إنشاء نص احتياطي مفصل"""
     print(f"📚 جلب المصادر الكاملة لقصة {story_name}...")
-    # (هنا يتم استدعاء دالة الجلب من الموقع، وللتبسيط سنستخدم Gemini لصياغة النص الأصلي بدقة)
     prompt = f"اكتب النص التاريخي الكامل والموثق لقصة {story_name} من كتاب قصص الأنبياء لابن كثير، بالتفصيل الممل وبأمانة تامة، دون أي إضافات من عندك."
     text = call_gemini(prompt, is_json=False)
     return text or f"قصة {story_name} من المصادر الموثوقة."
 
 def build_bible(story_name):
-    """بناء هيكل 40 حلقة (يحدث مرة واحدة فقط لكل قصة)"""
     BIBLES_DIR.mkdir(parents=True, exist_ok=True)
     bible_file = BIBLES_DIR / f"{story_name}.json"
     if bible_file.exists():
@@ -76,7 +87,7 @@ def build_bible(story_name):
     """
     result = call_gemini(prompt)
     if not result or "episodes" not in result:
-        # هيكل احتياطي في حال فشل Gemini
+        print("⚠️ استخدام هيكل احتياطي.")
         result = {"story_name": story_name, "episodes": [{"ep": i, "title": f"الحلقة {i}", "summary": "..."} for i in range(1, 41)]}
     
     bible_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -127,7 +138,7 @@ def main():
         print("❌ فشل توليد الحلقة. سنحاول غداً.")
         sys.exit(1)
 
-    # 4. التحقق من الآيات (نحذف المرفوض ونكمل)
+    # 4. التحقق من الآيات
     final_segments = []
     for seg in result["segments"]:
         if seg.get("type") == "quran":
@@ -152,9 +163,10 @@ def main():
             "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"
         })
 
-    # 6. الحفظ وتحديث الحالة
+    # 6. الحفظ
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = OUTPUT_DIR / f"{story_name}-{ep_num:02d}.json"
+    safe_story_name = story_name.replace(" ", "_")
+    out_file = OUTPUT_DIR / f"{safe_story_name}-{ep_num:02d}.json"
     
     episode_data = {
         "episode_number": ep_num,
