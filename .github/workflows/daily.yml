@@ -29,6 +29,7 @@ jobs:
         id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
           python -u scripts/generate_story.py
           if [ -f out/latest_episode.txt ]; then
@@ -37,7 +38,7 @@ jobs:
             EP_NAME=$(basename $EP_FILE .json)
             echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
           else
-            echo "❌ لم يتم إنشاء حلقة (ربما انتهت القصة الحالية)."
+            echo "❌ لم يتم إنشاء حلقة."
             exit 0
           fi
 
@@ -46,8 +47,7 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
-        run: |
-          python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
+        run: python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
       - name: Build Video
         if: steps.gen.outputs.EP_FILE != ''
@@ -64,10 +64,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          CAPTION=$(printf "🎬 حلقة جديدة من ملاك المعرفة!\n#قصص_الأنبياء")
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}.mp4" \
-            -F "caption=🎬 حلقة جديدة من ملاك المعرفة! %0A #قصص_الأنبياء" \
+            -F "caption=${CAPTION}" \
             -F "supports_streaming=true")
           MSG_ID=$(echo $RESPONSE | grep -oP '"message_id":\K[0-9]+')
           echo "MSG_ID=$MSG_ID" >> $GITHUB_OUTPUT
