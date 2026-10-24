@@ -8,7 +8,7 @@ on:
 jobs:
   generate-and-produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout Factory
         uses: actions/checkout@v4
@@ -25,29 +25,24 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install -r requirements.txt
 
-      - name: Generate Episode JSON
+      - name: Generate Episode
         id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
-          # نستخدم -u لرؤية المخرجات فوراً، ونطبع محتوى الحالة قبل البدء
-          echo "--- حالة السكربت ---"
-          cat state/story_state.json || echo "لا يوجد ملف حالة"
-          echo "--------------------"
-          python -u scripts/generate_story.py
-          
-          # التحقق من وجود الملف
+          python -u scripts/generate_series.py
           if [ -f out/latest_episode.txt ]; then
             EP_FILE=$(cat out/latest_episode.txt)
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             EP_NAME=$(basename $EP_FILE .json)
             echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
           else
-            echo "❌ فشل السكربت في إنشاء ملف out/latest_episode.txt"
-            exit 1
+            echo "❌ لم يتم إنشاء حلقة (ربما انتهت القصة الحالية)."
+            exit 0
           fi
 
       - name: Build Audio
+        if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
@@ -55,30 +50,30 @@ jobs:
           python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
       - name: Build Video
+        if: steps.gen.outputs.EP_FILE != ''
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
           python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
-      - name: Upload to Telegram and Get Message ID
+      - name: Upload to Telegram
+        if: steps.gen.outputs.EP_FILE != ''
         id: tg
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "📤 جاري إرسال الفيديو إلى تلغرام..."
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}.mp4" \
             -F "caption=🎬 حلقة جديدة من ملاك المعرفة! %0A #قصص_الأنبياء" \
             -F "supports_streaming=true")
-            
           MSG_ID=$(echo $RESPONSE | grep -oP '"message_id":\K[0-9]+')
           echo "MSG_ID=$MSG_ID" >> $GITHUB_OUTPUT
-          echo "✅ تم الرفع. رقم الرسالة: $MSG_ID"
 
-      - name: Update Platform Feed
+      - name: Update Platform
+        if: steps.gen.outputs.EP_FILE != ''
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         working-directory: scripts
@@ -99,6 +94,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/ data/stories/generated/ videos/
-          git commit -m "🎬 توليد الحلقة اليومية: ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
+          git add state/ data/stories/ videos/
+          git commit -m "🎬 حلقة جديدة: ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push
