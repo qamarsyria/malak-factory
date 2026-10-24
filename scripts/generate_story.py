@@ -1,4 +1,4 @@
-import os, json, requests, sys, time, re, random
+import os, json, requests, sys, time, random
 from pathlib import Path
 from gemini_tts_pool import get_pool
 
@@ -25,27 +25,14 @@ OUTRO_TEXTS = [
 ]
 
 def check_keys_health():
-    print("=" * 60)
-    print("🔑 فحص صحة المفاتيح...")
-    print("=" * 60)
     pool = get_pool()
-    valid = 0
     for key in pool.keys[:3]:
         try:
             r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=10)
-            if r.status_code == 200:
-                valid += 1
-                print(f"   ✅ مفتاح {key[:15]}... → صالح")
-            else:
-                print(f"   ❌ مفتاح {key[:15]}... → {r.status_code}")
-        except Exception as e:
-            print(f"   ⚠️ {key[:15]}... → {str(e)[:50]}")
-    print(f"📊 الحالة: {valid} صالح من {len(pool.keys[:3])}")
-    print("=" * 60)
+            print(f"   {'✅' if r.status_code == 200 else '❌'} مفتاح {key[:15]}... → {r.status_code}")
+        except: pass
 
 def get_working_models():
-    """اكتشاف ذكي: يسأل جوجل، يستبعد 2.5، ويرتب 3.8 أولاً"""
-    # محاولة القراءة من الكاش
     if Path(MODELS_CACHE_FILE).exists():
         try:
             cache = json.loads(Path(MODELS_CACHE_FILE).read_text(encoding="utf-8"))
@@ -53,108 +40,64 @@ def get_working_models():
                 return cache["models"]
         except: pass
 
-    print("🔍 سؤال جوجل عن الموديلات المتاحة...")
     pool = get_pool()
     key = pool.get_current()
-    
     try:
         r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
         if r.status_code == 200:
             raw_models = [m["name"].replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+            valid_models = [m for m in raw_models if "gemini" in m and "2.5" not in m and "embedding" not in m]
+            # ترتيب: 3.8، 3.6، 3.5، 1.5
+            valid_models.sort(key=lambda x: (0 if "3.8" in x else 1 if "3.6" in x else 2 if "3.5" in x else 3))
             
-            # 🌟 الفلترة الذكية
-            valid_models = []
-            for m in raw_models:
-                if "gemini" not in m or "embedding" in m or "aqa" in m or "vision" in m: continue
-                if "2.5" in m: continue # 🌟 جوجل ألغت 2.5
-                valid_models.append(m)
-            
-            # 🌟 الترتيب الذكي: 3.8 أولاً، ثم 3.6، ثم 3.5، ثم 1.5
-            def score(m):
-                if "3.8" in m: return 0
-                if "3.6" in m: return 1
-                if "3.5" in m: return 2
-                if "3.1" in m: return 3
-                if "1.5" in m: return 4
-                return 5
-                
-            valid_models.sort(key=score)
-            
-            # حفظ في الكاش
             Path(MODELS_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
             Path(MODELS_CACHE_FILE).write_text(json.dumps({"models": valid_models, "ts": time.time()}), encoding="utf-8")
-            print(f"✅ الموديلات المتاحة (بعد الترتيب): {valid_models[:3]}")
+            print(f"✅ الموديلات: {valid_models[:2]}")
             return valid_models
-    except Exception as e:
-        print(f"⚠️ فشل الاكتشاف: {e}")
-        
-    return ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-1.5-flash"] # احتياطي ذكي
+    except: pass
+    return ["gemini-3.8-flash", "gemini-1.5-flash"]
 
-def call_gemini(prompt, is_json=True, timeout=45, max_tokens=4000):
+def call_gemini(prompt, is_json=True, timeout=60, max_tokens=4000):
     pool = get_pool()
     models = get_working_models()
-    
-    for model in models[:3]: # نجرب أفضل 3 موديلات فقط
+    for model in models[:2]:
         key = pool.get_current()
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        config = {"temperature": 0.3, "maxOutputTokens": max_tokens}
-        if is_json: config["responseMimeType"] = "application/json"
-        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config}
-        
+        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
+        if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
         try:
-            print(f"   📤 محاولة {model}...")
             r = requests.post(url, json=body, timeout=timeout)
-            
             if r.status_code == 200:
-                print(f"   ✅ نجح {model}")
                 text = r.json()['candidates'][0]['content']['parts'][0]['text']
-                if is_json:
-                    text = text[text.find('{'):text.rfind('}')+1]
-                    return json.loads(text)
-                return text
-            
-            print(f"   ❌ فشل {model}: HTTP {r.status_code}")
-            if r.status_code == 429:
-                pool.mark_failed(3600)
-                continue
-            elif r.status_code in [404, 503]:
-                continue
-        except Exception as e:
-            print(f"   ⚠️ {model}: {str(e)[:100]}")
-            continue
+                if is_json: text = text[text.find('{'):text.rfind('}')+1]
+                return json.loads(text) if is_json else text
+            if r.status_code == 429: pool.mark_failed(3600)
+        except: pass
     return None
 
-def call_groq(prompt, is_json=True):
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        print("   ⚠️ GROQ_API_KEY غير موجود (يمكن إضافته كاحتياطي)")
-        return None
-    
-    print("   📤 محاولة Groq (احتياطي)...")
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
-            headers={"Authorization": f"Bearer {groq_key}"},
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000, "response_format": {"type": "json_object"}},
-            timeout=45)
-        if r.status_code == 200:
-            print(f"   ✅ نجح Groq")
-            return json.loads(r.json()['choices'][0]['message']['content']) if is_json else r.json()['choices'][0]['message']['content']
-    except: pass
-    return None
-
-def call_llm(prompt, is_json=True, timeout=45, max_tokens=4000):
+def call_llm(prompt, is_json=True, timeout=60, max_tokens=4000):
     res = call_gemini(prompt, is_json, timeout, max_tokens)
     if res: return res
-    print("⚠️ Gemini فشل، تجربة Groq...")
-    return call_groq(prompt, is_json)
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "response_format": {"type": "json_object"} if is_json else None},
+                timeout=45)
+            if r.status_code == 200:
+                text = r.json()['choices'][0]['message']['content']
+                if is_json: text = text[text.find('{'):text.rfind('}')+1]
+                return json.loads(text) if is_json else text
+        except: pass
+    return None
 
 def load_state():
     default = {"story_index": 0, "episode_num": 1}
     if Path(STATE_FILE).exists():
         try:
             saved = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
-            for k, v in default.items():
-                if k not in saved: saved[k] = v
+            for k, v in default.items(): saved.setdefault(k, v)
             return saved
         except: pass
     return default
@@ -163,60 +106,63 @@ def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
     Path(STATE_FILE).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def fetch_story_text(story_name):
-    print(f"📚 جلب ملخص مركز لقصة {story_name}...")
-    prompt = f"أعطني ملخصاً مركزاً لأهم الأحداث في قصة {story_name} كما وردت في القرآن وتفسير ابن كثير، بـ 1000 كلمة."
-    return call_llm(prompt, is_json=False, timeout=45, max_tokens=2000) or f"قصة {story_name}."
-
 def build_bible(story_name):
     BIBLES_DIR.mkdir(parents=True, exist_ok=True)
     bible_file = BIBLES_DIR / f"{story_name}.json"
-    if bible_file.exists():
-        return json.loads(bible_file.read_text(encoding="utf-8"))
+    if bible_file.exists(): return json.loads(bible_file.read_text(encoding="utf-8"))
 
-    print(f"🏗️ بناء هيكل 40 حلقة لـ {story_name}...")
-    summary = fetch_story_text(story_name)
-    
-    prompt = f"""قسّم قصة {story_name} إلى 40 حلقة. كل حلقة: عنوان + ملخص.
-القصة: {summary[:3000]}
-أعد JSON: {{"story_name": "{story_name}", "episodes": [{{"ep": 1, "title": "...", "summary": "..."}}]}}"""
-    
-    result = call_llm(prompt, timeout=60, max_tokens=6000)
-    if not result or "episodes" not in result:
-        result = {"story_name": story_name, "episodes": [{"ep": i, "title": f"الحلقة {i}", "summary": "استكمال القصة"} for i in range(1, 41)]}
-    
+    summary = call_llm(f"ملخص مركز لأهم أحداث قصة {story_name} من القرآن وتفسير ابن كثير بـ 1000 كلمة.", is_json=False, max_tokens=2000) or f"قصة {story_name}."
+    prompt = f"قسّم قصة {story_name} إلى 40 حلقة. كل حلقة: عنوان + ملخص. القصة: {summary[:3000]}\nأعد JSON: {{\"story_name\": \"{story_name}\", \"episodes\": [{{\"ep\": 1, \"title\": \"...\", \"summary\": \"...\"}}]}}"
+    result = call_llm(prompt, max_tokens=6000) or {"story_name": story_name, "episodes": [{"ep": i, "title": f"الحلقة {i}", "summary": "استكمال القصة"} for i in range(1, 41)]}
     bible_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 def main():
+    print("🔑 فحص المفاتيح:")
     check_keys_health()
+    
     state = load_state()
     story_name = STORIES_ORDER[state["story_index"]]
     ep_num = state["episode_num"]
-    
     bible = build_bible(story_name)
+    
     if ep_num > len(bible["episodes"]):
-        state["story_index"] += 1
-        state["episode_num"] = 1
-        save_state(state)
-        sys.exit(0)
+        state["story_index"] += 1; state["episode_num"] = 1
+        save_state(state); sys.exit(0)
 
     ep_plan = bible["episodes"][ep_num - 1]
-    print(f"📖 توليد: {story_name} - الحلقة {ep_num}: {ep_plan['title']}")
+    print(f"📖 توليد: {story_name} - الحلقة {ep_num}")
+
+    # 🌟 البرومبت الصارم (لإجبار Gemini على الطول والآيات)
+    prompt = f"""أنت كاتب سيناريو إسلامي محترف.
+المطلوب: كتابة حلقة صوتية درامية مفصلة جداً.
+القصة: {story_name}
+عنوان الحلقة: {ep_plan['title']}
+ملخص الحلقة: {ep_plan['summary']}
+
+القواعد الصارمة (يجب الالتزام بها حرفياً):
+1. الطول: يجب أن يكون النص السردي طويلاً جداً (لا يقل عن 1500 كلمة). لا تختصر الأحداث أبداً.
+2. الآيات: عندما تريد إدراج آية، لا تكتبها في السرد. بل يجب أن تُدرجها كمقطع منفصل هكذا: {{"type": "quran", "surah": 3, "ayah_numbers": [35]}}.
+3. لا تذكر أرقام الآيات أو أسماء السور في النص السردي إطلاقاً (قل: "قال الله تعالى" فقط، ثم ضع المقطع القرآني).
+4. يجب أن تحتوي الحلقة على 5 إلى 10 مقاطع قرآنية على الأقل.
+
+أعد النتيجة بصيغة JSON فقط:
+{{
+  "segments": [
+    {{"type": "narration", "text": "في بداية القصة..."}},
+    {{"type": "quran", "surah": 3, "ayah_numbers": [35]}},
+    {{"type": "narration", "text": "ثم حدث أن..."}}
+  ]
+}}"""
     
-    prompt = f"""اكتب حلقة سردية عن {story_name}.
-العنوان: {ep_plan['title']}
-الملخص: {ep_plan['summary']}
-القواعد: سرد درامي، آيات (أرقام فقط)، لا اختلاق.
-أعد JSON: {{"segments": [{{"type": "narration", "text": "..."}}]}}"""
-    
-    result = call_llm(prompt, timeout=60, max_tokens=4000)
+    result = call_llm(prompt, timeout=90, max_tokens=8000)
     if not result or "segments" not in result:
+        print("❌ فشل التوليد.")
         PENDING_DIR.mkdir(parents=True, exist_ok=True)
         (PENDING_DIR / f"pending-{story_name}-{ep_num}.json").write_text(json.dumps({"title": ep_plan["title"]}), encoding="utf-8")
         sys.exit(0)
 
-    verified_segments = []
+    verified = []
     for seg in result["segments"]:
         if seg.get("type") == "quran":
             try:
@@ -224,28 +170,26 @@ def main():
                 if r.status_code == 200:
                     seg["surah_name"] = r.json()['data']['name']
                     seg["display"] = f"{seg['surah_name']}: {seg['ayah_numbers'][0]}"
-                    verified_segments.append(seg)
+                    verified.append(seg)
             except: pass
-        else:
-            verified_segments.append(seg)
+        else: verified.append(seg)
 
     outro = random.choice(OUTRO_TEXTS)
-    verified_segments.append({"type": "outro", "text": outro["text"], "emotion_hint": outro["voice_style"], "visual": "mosque", "sfx": ""})
+    verified.append({"type": "outro", "text": outro["text"], "emotion_hint": outro["voice_style"], "visual": "mosque", "sfx": ""})
 
     if ep_num < len(bible["episodes"]):
         next_title = bible["episodes"][ep_num]["title"]
-        verified_segments.append({"type": "teaser", "text": f"وهل تعلم ما حدث بعد ذلك؟ الحلقة القادمة: {next_title}.", "emotion_hint": "(mysterious)", "next_episode_title": f"{story_name} - {next_title}", "next_episode_source": story_name, "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
+        verified.append({"type": "teaser", "text": f"وهل تعلم ما حدث بعد ذلك؟ الحلقة القادمة: {next_title}.", "emotion_hint": "(mysterious)", "next_episode_title": f"{story_name} - {next_title}", "next_episode_source": story_name, "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = OUTPUT_DIR / f"{story_name}-{ep_num:02d}.json"
-    out_file.write_text(json.dumps({"episode_number": ep_num, "title": f"{story_name} - {ep_plan['title']}", "segments": verified_segments}, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_file.write_text(json.dumps({"episode_number": ep_num, "title": f"{story_name} - {ep_plan['title']}", "segments": verified}, ensure_ascii=False, indent=2), encoding="utf-8")
     
     Path("out").mkdir(exist_ok=True)
     Path("out/latest_episode.txt").write_text(str(out_file), encoding="utf-8")
-    
     state["episode_num"] += 1
     save_state(state)
-    print("✅ تم إنشاء الحلقة.")
+    print(f"✅ نجح: {out_file}")
 
 if __name__ == "__main__":
     main()
