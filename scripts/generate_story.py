@@ -22,7 +22,6 @@ OUTRO_TEXTS = [
     {"text": "قال ﷺ: «بَلِّغُوا عَنِّي ولو آية». خير الكلام ما قل ودل. مَلَاك المَعْرِفَة.", "voice_style": "(in a warm, narrative tone)"}
 ]
 
-# ... (نفس دوال Gemini و HuggingFace السابقة) ...
 def get_working_models():
     if Path(MODELS_CACHE_FILE).exists():
         try:
@@ -39,7 +38,7 @@ def call_gemini(prompt, is_json=True, timeout=120, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
@@ -64,7 +63,7 @@ def call_huggingface(prompt, is_json=True):
     url = f"https://api-inference.huggingface.co/models/{model_id}/v1/chat/completions"
     try:
         r = requests.post(url, headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-            json={"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 4000}, timeout=120)
+            json={"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=120)
         if r.status_code == 200:
             text = r.json()['choices'][0]['message']['content']
             if is_json: text = text[text.find('{'):text.rfind('}')+1]
@@ -142,7 +141,13 @@ def main():
 
     if not plan:
         print("📝 [2/5] توليد خطة الحلقة...", flush=True)
-        plan_prompt = f"أنت كاتب سيناريو. ابتكر فكرة للحلقة {ep_num} من {story_name}. أعد JSON: {{\"title\": \"...\", \"summary\": \"ملخص مفصل (300 كلمة)...\"}}"
+        # 🌟 إجبار الذكاء الاصطناعي على المصادر القرآنية
+        plan_prompt = f"""أنت مؤرخ إسلامي. المطلوب: خطة للحلقة {ep_num} من قصة {story_name} (مريم العذراء).
+اعتمد حصرياً على القرآن الكريم (سورة آل عمران، سورة مريم) وتفسير ابن كثير.
+ممنوع منعاً باتاً ذكر أي اسم غير موجود في القرآن (مثل حنة، فاقوذا، يواقيم، إلخ).
+ممنوع منعاً باتاً استخدام الإسرائيليات.
+أعد النتيجة بصيغة JSON:
+{{"title": "عنوان الحلقة", "summary": "ملخص درامي دقيق (300 كلمة) مبني على الآيات والتفسير..."}}"""
         plan = call_llm(plan_prompt)
         if not plan or "title" not in plan or "summary" not in plan or len(str(plan.get("summary", ""))) < 50:
             print("❌ خطة غير صالحة.", flush=True); sys.exit(1)
@@ -152,19 +157,18 @@ def main():
     print(f"📜 العنوان: {plan['title']}", flush=True)
 
     print("✍️ [3/5] توليد السرد...", flush=True)
-    script_prompt = f"""أنت كاتب سيناريو إسلامي محترف.
-اكتب نصاً سردياً درامياً مفصلاً (1500 كلمة) لهذه الحلقة.
-القصة: {story_name}
+    # 🌟 إجبار الذكاء الاصطناعي على السرد القرآني
+    script_prompt = f"""أنت كاتب سيناريو إسلامي.
+اكتب نصاً سردياً درامياً (1500 كلمة) لهذه الحلقة من قصة مريم.
 العنوان: {plan['title']}
 الملخص: {plan['summary']}
 
 قواعد صارمة:
-1. اكتب النص كاملاً في فقرات، بدون أي رموز JSON.
-2. عندما تريد إدراج آية قرآنية تدعم الكلام، ضع علامة بهذا الشكل بالضبط: [آية: 3:35]
-3. ضع العلامة **بعد الجملة التي تدعمها الآية مباشرة**.
-4. لا تكتب نص الآية بنفسك.
-5. عدد الآيات: من 5 إلى 8 آيات فقط.
-6. اختر فقط الآيات التي **فعلاً** تدعم ما تقوله في الجملة التي قبلها.
+1. القصة يجب أن تكون مستمدة حصرياً من القرآن الكريم وتفسير ابن كثير. لا تختلق أحداثاً.
+2. لا تذكر أي أسماء لأشخاص أو أماكن لم يذكرها القرآن.
+3. عندما تريد إدراج آية، ضع علامة بهذا الشكل: [آية: 3:35] (سورة:آية).
+4. ضع العلامة بعد الجملة التي تدعمها الآية مباشرة.
+5. عدد الآيات: من 5 إلى 8 آيات.
 
 اكتب النص فقط."""
     script_text = call_llm(script_prompt, is_json=False, timeout=120, max_tokens=8192)
@@ -172,15 +176,14 @@ def main():
         print("❌ فشل توليد السرد.", flush=True); sys.exit(1)
 
     print("🔍 [4/6] تدقيق لغوي وإملائي...", flush=True)
-    review_prompt = f"""أنت مدقق لغوي خبير في اللغة العربية.
-المهمة: راجع النص التالي وصحح أي أخطاء إملائية أو سياقية.
-انتبه لأخطاء الحروف المتشابهة (مثل: خبز بدلاً من خبر، النغمة بدلاً من النعمة، الضاد والظاء، التاء المربوطة والمفتوحة).
+    review_prompt = f"""أنت مدقق لغوي خبير.
+راجع النص التالي وصحح أي أخطاء إملائية أو سياقية (مثل: خبز بدلاً من خبر، النغمة بدلاً من النعمة، الضاد والظاء).
 لا تغير الأسلوب، فقط صحح الأخطاء. حافظ على علامات الآيات [آية: X:Y] كما هي.
 
 النص:
 {script_text}
 
-أعد النص المصحح فقط، دون أي مقدمات أو شروحات."""
+أعد النص المصحح فقط."""
     corrected_text = call_llm(review_prompt, is_json=False, timeout=120, max_tokens=8192)
     
     if corrected_text and len(corrected_text.split()) > 500:
