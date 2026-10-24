@@ -108,13 +108,13 @@ def build_video(audio_path, meta_path, output_mp4):
         overlay = make_overlay(seg, VIDEO_W, VIDEO_H, work_dir, meta.get("title", ""))
         out_seg = work_dir / f"seg_{seg['index']:03d}.mp4"
 
-        # ضغط ممتاز لتقليل الحجم
-        cmd = ["ffmpeg", "-y", "-loop", "1", "-i", bg_path, "-i", overlay, "-filter_complex", "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[bg];[bg][1:v]overlay", "-t", str(duration), "-r", "30", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p", str(out_seg)]
+        # 🌟 الضغط الأقوى: CRF 33 بدلاً من 28 لتقليل الحجم إلى النصف
+        cmd = ["ffmpeg", "-y", "-loop", "1", "-i", bg_path, "-i", overlay, "-filter_complex", "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[bg];[bg][1:v]overlay", "-t", str(duration), "-r", "24", "-c:v", "libx264", "-preset", "veryfast", "-crf", "33", "-pix_fmt", "yuv420p", str(out_seg)]
         subprocess.run(cmd, check=True, capture_output=True)
         concat_lines.append(f"file '{out_seg}'")
 
     (work_dir / "concat.txt").write_text("\n".join(concat_lines))
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_mp4], check=True)
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-shortest", output_mp4], check=True)
 
 if __name__ == "__main__":
     build_video(sys.argv[1], sys.argv[2], sys.argv[3])
