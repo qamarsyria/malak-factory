@@ -1,25 +1,33 @@
 import os, json, requests, re
 from gemini_tts_pool import get_pool
 
-PROMPT = """You are a movie scene director for an Islamic documentary.
-Read the Arabic text and return ONLY a valid JSON object with these keys:
-1. "visual": 2-4 English words for a background image.
-2. "sfx": 1-3 English words for a sound effect. Leave empty if none.
-3. "voice_style": A short English hint in parentheses for the tone.
+PROMPT = """You are a documentary director for a serious Islamic history channel.
+Read the Arabic text and return ONLY a valid JSON object:
+1. "visual": 2-4 English words for a background image (nature, mosque, desert).
+2. "sfx": 1-3 English words for a natural sound (wind, rain, birds). Leave empty if none.
+3. "voice_style": A short English hint in parentheses for the narrator's tone.
 
-RULES: NO humans, NO music. Return exactly like this: {"visual": "...", "sfx": "...", "voice_style": "..."}
+CRITICAL RULES FOR VOICE_STYLE:
+- It MUST be exactly ONE of these mild, professional tones:
+  "(in a calm, dignified tone)"
+  "(in a warm, narrative tone)"
+  "(in a solemn, respectful tone)"
+  "(in a gentle, reflective tone)"
+- NEVER use words like: crying, tearful, trembling, pleading, raspy, whispering, or angry. The narrator is a calm, professional documentary narrator.
+
+Return exactly like this: {"visual": "...", "sfx": "...", "voice_style": "..."}
 
 Text: "{text}"
 """
 
 FALLBACK_SCENES = {
-    "حزن": {"visual": "rain leaves", "sfx": "light rain", "voice_style": "(in a sad tone)"},
-    "خاف": {"visual": "storm clouds", "sfx": "thunder", "voice_style": "(in a fearful tone)"},
-    "مكر": {"visual": "dark forest", "sfx": "whisper", "voice_style": "(in a secretive tone)"},
-    "معركة": {"visual": "desert dunes", "sfx": "sword clash", "voice_style": "(in an urgent tone)"},
-    "دعاء": {"visual": "starry night", "sfx": "breeze", "voice_style": "(in a humble tone)"},
+    "حزن": {"visual": "rain leaves", "sfx": "light rain", "voice_style": "(in a gentle, reflective tone)"},
+    "خاف": {"visual": "storm clouds", "sfx": "thunder", "voice_style": "(in a solemn, respectful tone)"},
+    "مكر": {"visual": "dark forest", "sfx": "whisper", "voice_style": "(in a calm, dignified tone)"},
+    "معركة": {"visual": "desert dunes", "sfx": "sword clash", "voice_style": "(in a solemn, respectful tone)"},
+    "دعاء": {"visual": "starry night", "sfx": "breeze", "voice_style": "(in a calm, dignified tone)"},
 }
-DEFAULT_SCENE = {"visual": "islamic mosque", "sfx": "", "voice_style": "(in a calm tone)"}
+DEFAULT_SCENE = {"visual": "islamic mosque", "sfx": "", "voice_style": "(in a calm, dignified tone)"}
 
 def direct_scene(text: str) -> dict:
     if not text.strip(): return DEFAULT_SCENE
@@ -32,6 +40,9 @@ def direct_scene(text: str) -> dict:
         if r.status_code == 200:
             parsed = json.loads(r.json()['candidates'][0]['content']['parts'][0]['text'])
             if isinstance(parsed, dict) and "visual" in parsed and "voice_style" in parsed:
+                # تأكد من أن التلميح لا يحتوي على كلمات مبالغ فيها
+                if any(w in parsed["voice_style"].lower() for w in ["cry", "tear", "trembl", "plead", "rasp", "whisper"]):
+                    parsed["voice_style"] = DEFAULT_SCENE["voice_style"]
                 return parsed
     except Exception:
         pass
