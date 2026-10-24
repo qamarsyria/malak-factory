@@ -1,129 +1,75 @@
-"""مخرج سينمائي ذكي (بدون AI): يختار الصور والمؤثرات بناءً على قواميس دقيقة."""
+"""
+smart_director.py — المخرج الذكي لاكتشاف المشاعر والصور
+- يستخدم Gemini Flash لتحليل النص.
+- يعيد: visual (صورة)، sfx (مؤثر)، voice_style (نبرة الصوت).
+- يحتوي على "قاموس احتياطي" في حال فشل Gemini.
+"""
+
+import os
+import json
+import requests
 import re
+from gemini_tts_pool import get_pool
 
-# ============================================================
-# قاموس المشاهد (للصور) — كل مشهد له كلمات مفتاحية وصورة محددة
-# ============================================================
-SCENE_DICT = {
-    "mecca": {
-        "keywords": ["مكة", "الكعبة", "الحرم", "بيت الله", "قريش", "أم القرى"],
-        "query": "kaaba mecca ancient stone"
-    },
-    "egypt": {
-        "keywords": ["مصر", "فرعون", "القصر", "العزيز", "الملك", "العرش", "خزائن", "سنابل"],
-        "query": "ancient egyptian palace nile"
-    },
-    "desert": {
-        "keywords": ["صحراء", "رمل", "قفر", "بيداء", "كنعان", "تيه", "أرض", "سهل"],
-        "query": "sand dunes desert"
-    },
-    "well": {
-        "keywords": ["بئر", "جب", "سجن", "ظلام", "ظلمة", "قاع", "حفرة"],
-        "query": "dark stone well"
-    },
-    "night": {
-        "keywords": ["ليل", "نجوم", "قمر", "منام", "رؤيا", "حلم", "كواكب", "سهاد", "ظلام"],
-        "query": "starry night sky desert"
-    },
-    "sea": {
-        "keywords": ["بحر", "ماء", "نهر", "يم", "موج", "سفينة", "غرق"],
-        "query": "ocean waves horizon"
-    },
-    "rain": {
-        "keywords": ["مطر", "غيوم", "سحاب", "رعد", "برق", "عاصفة"],
-        "query": "rain clouds sky"
-    },
-    "mountain": {
-        "keywords": ["جبل", "طور", "صخر", "حجر", "كهف", "غار"],
-        "query": "mountain peak rocky"
-    },
-    "paradise": {
-        "keywords": ["جنة", "بستان", "روض", "أنهار", "نعيم", "حدائق"],
-        "query": "garden paradise river"
-    },
-    "fire": {
-        "keywords": ["نار", "جهنم", "سعير", "حرق", "عذاب", "لهب"],
-        "query": "fire flames dark"
-    },
-    "wheat": {
-        "keywords": ["قمح", "سنابل", "زرع", "خير", "بركة", "حصاد"],
-        "query": "wheat field golden"
-    },
-    "water": {
-        "keywords": ["عين", "نبع", "ماء", "نهر", "سقاية"],
-        "query": "water spring nature"
-    },
-    "mosque": {
-        "keywords": ["مسجد", "أذان", "منارة", "صلاة", "محراب"],
-        "query": "mosque minaret sky"
-    },
-    "book": {
-        "keywords": ["كتاب", "مصحف", "آيات", "ذكر", "قرآن"],
-        "query": "ancient quran book"
-    },
-    "caravan": {
-        "keywords": ["قافلة", "تجار", "سفر", "طريق", "بضاعة"],
-        "query": "desert caravan path"
-    },
-    "ruins": {
-        "keywords": ["يوسف", "يعقوب", "إخوة", "بنيامين", "أب", "ابن"],
-        "query": "ancient stone ruins"
-    },
-    "palace": {
-        "keywords": ["ملك", "عرش", "خزائن", "سلطان", "قصر", "عزيز"],
-        "query": "ancient palace throne"
-    },
-    "food": {
-        "keywords": ["غذاء", "طعام", "مائدة", "سقاية", "خبز"],
-        "query": "ancient stone bowls"
-    },
-    "woman": {
-        "keywords": ["امرأة", "نساء", "نسوة", "سيدة", "زوجة"],
-        "query": "ancient palace interior"
-    },
+PROMPT = """You are a movie scene director for an Islamic documentary.
+Read the Arabic text and return ONLY a valid JSON object with these keys:
+1. "visual": 2-4 English words for a background image.
+2. "sfx": 1-3 English words for a sound effect (wind, rain, thunder, birds). Leave empty if none.
+3. "voice_style": A short English hint in parentheses for the narrator's tone (e.g., "(in a sad, tearful tone)", "(in a fearful, trembling tone)", "(in a calm, dignified tone)").
+
+ABSOLUTE RULES:
+- NO humans, NO faces, NO prophets, NO angels. Only nature/architecture.
+- NO music. Only natural sounds.
+- Return exactly like this: {"visual": "...", "sfx": "...", "voice_style": "..."}
+
+Text: "{text}"
+"""
+
+# قاموس احتياطي (في حال فشل Gemini)
+FALLBACK_SCENES = {
+    "حزن": {"visual": "rain autumn leaves", "sfx": "light rain", "voice_style": "(in a sad, tearful tone)"},
+    "خاف": {"visual": "storm sky dark clouds", "sfx": "thunder distant", "voice_style": "(in a fearful, trembling tone)"},
+    "مكر": {"visual": "dark forest fog", "sfx": "whisper quiet", "voice_style": "(in a secretive, whispering tone)"},
+    "معركة": {"visual": "desert sand dunes", "sfx": "sword clash", "voice_style": "(in a strong, urgent tone)"},
+    "فرح": {"visual": "peaceful nature sunrise", "sfx": "birds chirping", "voice_style": "(in a joyful, grateful tone)"},
+    "دعاء": {"visual": "starry night sky desert", "sfx": "gentle breeze", "voice_style": "(in a humble, pleading tone)"},
 }
 
-# ============================================================
-# قاموس المؤثرات الصوتية (فقط الخوف، المعركة، المكيدة)
-# ============================================================
-SFX_DICT = {
-    "fear": {
-        "keywords": ["خاف", "خوف", "رعب", "فزع", "رهبة", "تهديد", "خشية", "ارتعب", "فزع", "أشفق", "ظلمة", "وحدة"],
-        "query": "heartbeat slow"  # أو rain / wind
-    },
-    "battle": {
-        "keywords": ["قتل", "حرب", "معركة", "سيف", "طعن", "دم", "صراع", "قتال", "جيش", "سلاح", "رمح", "قوس"],
-        "query": "sword clash"
-    },
-    "conspiracy": {
-        "keywords": ["حسد", "مكر", "كيد", "تآمر", "دسيسة", "خدعة", "غدر", "كاد", "مكيدة", "وسوسة", "دبر", "أسرّ"],
-        "query": "whisper quiet"
-    }
-}
-
-# الصورة الافتراضية (إذا لم يطابق أي مشهد)
-DEFAULT_VISUAL = "islamic architecture mosque"
-
-def _find_scene(text):
-    """يبحث عن المشهد المناسب للنص."""
-    for scene_name, data in SCENE_DICT.items():
-        if any(kw in text for kw in data["keywords"]):
-            return data["query"]
-    return DEFAULT_VISUAL
-
-def _find_sfx(text):
-    """يبحث عن المؤثر المناسب للنص (فقط للخوف/المعركة/المكيدة)."""
-    for sfx_type, data in SFX_DICT.items():
-        if any(kw in text for kw in data["keywords"]):
-            return data["query"]
-    return ""  # لا مؤثر افتراضي
+DEFAULT_SCENE = {"visual": "islamic architecture mosque", "sfx": "", "voice_style": "(in a calm, dignified tone)"}
 
 def direct_scene(text: str) -> dict:
-    """يرجع dict: {'visual': ..., 'sfx': ...}"""
     if not text.strip():
-        return {"visual": DEFAULT_VISUAL, "sfx": ""}
-    
-    visual = _find_scene(text)
-    sfx = _find_sfx(text)
-    
-    return {"visual": visual, "sfx": sfx}
+        return DEFAULT_SCENE
+
+    # 1. محاولة استخدام Gemini Flash
+    try:
+        pool = get_pool()
+        key = pool.get_current()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+        body = {
+            "contents": [{"parts": [{"text": PROMPT.format(text=text[:800])}]}],
+            "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+        }
+        r = requests.post(url, json=body, timeout=20)
+        if r.status_code == 200:
+            data = r.json()
+            txt = data['candidates'][0]['content']['parts'][0]['text']
+            parsed = json.loads(txt)
+            if "visual" in parsed and "voice_style" in parsed:
+                print(f"   🎬 المخرج (AI): {parsed['voice_style']}")
+                return parsed
+    except Exception as e:
+        print(f"   ⚠️ المخرج (AI) فشل: {e}")
+
+    # 2. القاموس الاحتياطي (إذا فشل Gemini)
+    for keyword, scene in FALLBACK_SCENES.items():
+        if keyword in text:
+            print(f"   🎬 المخرج (قاموس): {scene['voice_style']}")
+            return scene
+
+    print("   🎬 المخرج (افتراضي): نبرة هادئة")
+    return DEFAULT_SCENE
+
+if __name__ == "__main__":
+    # اختبار سريع
+    print(direct_scene("فخرج منها خائفاً يترقب"))
