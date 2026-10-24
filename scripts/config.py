@@ -45,8 +45,15 @@ TARGET_BITRATE = "192k"
 # القرآن (everyayah)
 # ============================================================
 QURAN_RECITER = "Alafasy_128kbps"
-STORY_RECITER = "Abdurrahmaan_As-Sudais_192kbps"
 QURAN_BASE = "https://everyayah.com/data"
+
+# 🌟 القراء الآمنون من حقوق النشر (يتم الاختيار عشوائياً لكل حلقة)
+SAFE_RECITERS = [
+    "Yasser_Ad-Dussary_128kbps",   # ياسر الدوسري (الأكثر أماناً)
+    "MaherAlMuaiqly128kbps"        # ماهر المعيقلي (آمن نسبياً)
+]
+# للتوافق مع الكود القديم (في حال استُخدم STORY_RECITER في مكان آخر)
+STORY_RECITER = SAFE_RECITERS[0]
 
 # ============================================================
 # خريطة الأصوات لكل نوع محتوى
