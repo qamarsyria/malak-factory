@@ -2,13 +2,14 @@ name: Daily
 
 on:
   schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+    - cron: '0 0 * * *' # يعمل يومياً الساعة 12 منتصف الليل UTC (3 فجراً بتوقيت السعودية)
+  workflow_dispatch:      # يسمح بالتشغيل اليدوي
 
 jobs:
   generate-and-produce:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    
     steps:
       - name: Checkout Factory
         uses: actions/checkout@v4
@@ -25,20 +26,24 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install -r requirements.txt
 
-      - name: Generate Episode
+      - name: Generate Episode JSON
         id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
           python -u scripts/generate_story.py
+          
+          # التحقق من وجود ملف الحلقة
           if [ -f out/latest_episode.txt ]; then
             EP_FILE=$(cat out/latest_episode.txt)
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
-            EP_NAME=$(basename $EP_FILE .json)
+            EP_NAME=$(basename "$EP_FILE" .json)
             echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
+            echo "✅ تم العثور على الحلقة: $EP_NAME"
           else
-            echo "❌ لم يتم إنشاء حلقة."
+            echo "⚠️ لم يتم إنشاء حلقة (ربما فشل التوليد أو النص قصير). سيتم إيقاف العملية بأمان."
             exit 0
           fi
 
@@ -47,7 +52,8 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
-        run: python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
+        run: |
+          python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
       - name: Build Video
         if: steps.gen.outputs.EP_FILE != ''
@@ -56,6 +62,7 @@ jobs:
         run: |
           mkdir -p videos
           python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
+          ls -lh "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
       - name: Upload to Telegram
         if: steps.gen.outputs.EP_FILE != ''
@@ -64,17 +71,29 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          # إصلاح مشكلة الوصف باستخدام printf لإنشاء أسطر جديدة حقيقية
           CAPTION=$(printf "🎬 حلقة جديدة من ملاك المعرفة!\n#قصص_الأنبياء")
+          
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}.mp4" \
             -F "caption=${CAPTION}" \
             -F "supports_streaming=true")
-          MSG_ID=$(echo $RESPONSE | grep -oP '"message_id":\K[0-9]+')
-          echo "MSG_ID=$MSG_ID" >> $GITHUB_OUTPUT
+            
+          # استخراج رقم الرسالة (message_id) بأمان
+          MSG_ID=$(echo "$RESPONSE" | grep -oP '"message_id":\K[0-9]+' || true)
+          
+          if [ -z "$MSG_ID" ]; then
+            echo "❌ تلغرام رفض الفيديو. تفاصيل الرد:"
+            echo "$RESPONSE"
+            echo "MSG_ID=0" >> $GITHUB_OUTPUT
+          else
+            echo "✅ تم رفع الفيديو إلى تلغرام. رقم الرسالة: $MSG_ID"
+            echo "MSG_ID=$MSG_ID" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Update Platform
-        if: steps.gen.outputs.EP_FILE != ''
+      - name: Update Platform Feed
+        if: steps.gen.outputs.EP_FILE != '' && steps.tg.outputs.MSG_ID != '0'
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         working-directory: scripts
@@ -82,7 +101,9 @@ jobs:
           python -c "
           import json
           from update_feed import add_video_to_feed
+          
           meta = json.load(open('../out/${{ steps.gen.outputs.EP_NAME }}_meta.json'))
+          
           add_video_to_feed(
               title=meta.get('title', 'حلقة جديدة'),
               description='شاهد الحلقة الجديدة من قصص الأنبياء على ملاك المعرفة.',
