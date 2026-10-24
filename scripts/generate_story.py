@@ -47,17 +47,15 @@ def get_working_models():
         if r.status_code == 200:
             raw_models = [m["name"].replace("models/", "") for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
             valid_models = [m for m in raw_models if "gemini" in m and "2.5" not in m and "embedding" not in m]
-            # ترتيب: 3.8، 3.6، 3.5، 1.5
             valid_models.sort(key=lambda x: (0 if "3.8" in x else 1 if "3.6" in x else 2 if "3.5" in x else 3))
             
             Path(MODELS_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
             Path(MODELS_CACHE_FILE).write_text(json.dumps({"models": valid_models, "ts": time.time()}), encoding="utf-8")
-            print(f"✅ الموديلات: {valid_models[:2]}")
             return valid_models
     except: pass
     return ["gemini-3.8-flash", "gemini-1.5-flash"]
 
-def call_gemini(prompt, is_json=True, timeout=60, max_tokens=4000):
+def call_gemini(prompt, is_json=True, timeout=90, max_tokens=8192):
     pool = get_pool()
     models = get_working_models()
     for model in models[:2]:
@@ -75,7 +73,7 @@ def call_gemini(prompt, is_json=True, timeout=60, max_tokens=4000):
         except: pass
     return None
 
-def call_llm(prompt, is_json=True, timeout=60, max_tokens=4000):
+def call_llm(prompt, is_json=True, timeout=90, max_tokens=8192):
     res = call_gemini(prompt, is_json, timeout, max_tokens)
     if res: return res
     groq_key = os.environ.get("GROQ_API_KEY")
@@ -84,7 +82,7 @@ def call_llm(prompt, is_json=True, timeout=60, max_tokens=4000):
             r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
                 headers={"Authorization": f"Bearer {groq_key}"},
                 json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "response_format": {"type": "json_object"} if is_json else None},
-                timeout=45)
+                timeout=60)
             if r.status_code == 200:
                 text = r.json()['choices'][0]['message']['content']
                 if is_json: text = text[text.find('{'):text.rfind('}')+1]
@@ -109,55 +107,107 @@ def save_state(state):
 def build_bible(story_name):
     BIBLES_DIR.mkdir(parents=True, exist_ok=True)
     bible_file = BIBLES_DIR / f"{story_name}.json"
-    if bible_file.exists(): return json.loads(bible_file.read_text(encoding="utf-8"))
+    
+    # إذا كان الهيكل موجوداً، نتحقق من جودته (هل الملخصات طويلة؟)
+    if bible_file.exists():
+        try:
+            data = json.loads(bible_file.read_text(encoding="utf-8"))
+            if len(data.get("episodes", [])) >= 40 and len(data["episodes"][0].get("summary", "")) > 100:
+                return data # الهيكل ممتاز، نستخدمه
+            else:
+                print("⚠️ الهيكل القديم ضعيف، سيتم إعادة بنائه...")
+        except: pass
 
-    summary = call_llm(f"ملخص مركز لأهم أحداث قصة {story_name} من القرآن وتفسير ابن كثير بـ 1000 كلمة.", is_json=False, max_tokens=2000) or f"قصة {story_name}."
-    prompt = f"قسّم قصة {story_name} إلى 40 حلقة. كل حلقة: عنوان + ملخص. القصة: {summary[:3000]}\nأعد JSON: {{\"story_name\": \"{story_name}\", \"episodes\": [{{\"ep\": 1, \"title\": \"...\", \"summary\": \"...\"}}]}}"
-    result = call_llm(prompt, max_tokens=6000) or {"story_name": story_name, "episodes": [{"ep": i, "title": f"الحلقة {i}", "summary": "استكمال القصة"} for i in range(1, 41)]}
+    print(f"🏗️ بناء هيكل غني (40 حلقة) لقصة {story_name}...")
+    
+    # جلب النص الأساسي
+    summary = call_llm(f"أعطني ملخصاً مفصلاً (3000 كلمة) لأهم أحداث قصة {story_name} من القرآن وتفسير ابن كثير.", is_json=False, max_tokens=4000) or f"قصة {story_name}."
+    
+    all_episodes = []
+    # بناء الهيكل على 4 دفعات (10 حلقات في كل مرة) لضمان الطول
+    for batch in range(4):
+        start_ep = batch * 10 + 1
+        end_ep = start_ep + 9
+        print(f"   📝 توليد الحلقات {start_ep} إلى {end_ep}...")
+        
+        prompt = f"""أنت كاتب سيناريو إسلامي.
+لديك قصة {story_name}:
+{summary[:3000]}
+
+المطلوب: اكتب ملخصاً درامياً مفصلاً (لا يقل عن 200 كلمة لكل حلقة) للحلقات من {start_ep} إلى {end_ep}.
+يجب أن يكون الملخص غنياً بالأحداث لكي نتمكن من كتابة سيناريو طويل منه.
+
+أعد النتيجة بصيغة JSON فقط:
+{{
+  "episodes": [
+    {{"ep": {start_ep}, "title": "العنوان", "summary": "ملخص مفصل جداً..."}},
+    ...
+  ]
+}}"""
+        res = call_llm(prompt, max_tokens=6000)
+        if res and "episodes" in res:
+            all_episodes.extend(res["episodes"])
+        else:
+            print(f"   ⚠️ فشلت الدفعة {batch+1}، استخدام احتياطي.")
+            for i in range(start_ep, end_ep + 1):
+                all_episodes.append({"ep": i, "title": f"الحلقة {i}", "summary": "استكمال الأحداث الدرامية للقصة."})
+    
+    result = {"story_name": story_name, "episodes": all_episodes}
     bible_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 def main():
-    print("🔑 فحص المفاتيح:")
     check_keys_health()
     
     state = load_state()
     story_name = STORIES_ORDER[state["story_index"]]
     ep_num = state["episode_num"]
+    
     bible = build_bible(story_name)
     
     if ep_num > len(bible["episodes"]):
-        state["story_index"] += 1; state["episode_num"] = 1
-        save_state(state); sys.exit(0)
+        state["story_index"] += 1
+        state["episode_num"] = 1
+        save_state(state)
+        sys.exit(0)
 
     ep_plan = bible["episodes"][ep_num - 1]
-    print(f"📖 توليد: {story_name} - الحلقة {ep_num}")
+    print(f"📖 توليد: {story_name} - الحلقة {ep_num}: {ep_plan['title']}")
+    print(f"   📜 طول الملخص: {len(ep_plan['summary'])} حرف")
 
-    # 🌟 البرومبت الصارم (لإجبار Gemini على الطول والآيات)
     prompt = f"""أنت كاتب سيناريو إسلامي محترف.
-المطلوب: كتابة حلقة صوتية درامية مفصلة جداً.
+المطلوب: كتابة حلقة صوتية درامية مفصلة جداً (1500 كلمة على الأقل).
 القصة: {story_name}
 عنوان الحلقة: {ep_plan['title']}
-ملخص الحلقة: {ep_plan['summary']}
+ملخص الحلقة (اعتمد عليه كلياً): {ep_plan['summary']}
 
-القواعد الصارمة (يجب الالتزام بها حرفياً):
-1. الطول: يجب أن يكون النص السردي طويلاً جداً (لا يقل عن 1500 كلمة). لا تختصر الأحداث أبداً.
-2. الآيات: عندما تريد إدراج آية، لا تكتبها في السرد. بل يجب أن تُدرجها كمقطع منفصل هكذا: {{"type": "quran", "surah": 3, "ayah_numbers": [35]}}.
-3. لا تذكر أرقام الآيات أو أسماء السور في النص السردي إطلاقاً (قل: "قال الله تعالى" فقط، ثم ضع المقطع القرآني).
-4. يجب أن تحتوي الحلقة على 5 إلى 10 مقاطع قرآنية على الأقل.
+القواعد الصارمة:
+1. الطول: النص السردي يجب أن يكون طويلاً جداً. لا تختصر.
+2. الآيات: لا تكتب الآيات في السرد. بل ضعها كمقطع منفصل: {{"type": "quran", "surah": 3, "ayah_numbers": [35]}}.
+3. لا تذكر أرقام الآيات أو السور في السرد.
+4. ضع 5-10 مقاطع قرآنية على الأقل.
 
-أعد النتيجة بصيغة JSON فقط:
+أعد النتيجة بصيغة JSON:
 {{
   "segments": [
-    {{"type": "narration", "text": "في بداية القصة..."}},
-    {{"type": "quran", "surah": 3, "ayah_numbers": [35]}},
-    {{"type": "narration", "text": "ثم حدث أن..."}}
+    {{"type": "narration", "text": "..."}},
+    {{"type": "quran", "surah": 3, "ayah_numbers": [35]}}
   ]
 }}"""
     
-    result = call_llm(prompt, timeout=90, max_tokens=8000)
+    result = call_llm(prompt, timeout=120, max_tokens=8192)
+    
+    # فحص الطول الآلي
+    if result and "segments" in result:
+        total_words = sum(len(seg.get("text", "").split()) for seg in result["segments"] if seg.get("type") == "narration")
+        print(f"   📊 عدد كلمات السرد التي كتبها Gemini: {total_words}")
+        
+        if total_words < 800:
+            print("   ⚠️ النص قصير جداً! سنرفضه ونعيد المحاولة...")
+            result = None # نفرض الفشل لإعادة المحاولة أو الحفظ في pending
+
     if not result or "segments" not in result:
-        print("❌ فشل التوليد.")
+        print("❌ فشل التوليد أو النص قصير. الحفظ في pending.")
         PENDING_DIR.mkdir(parents=True, exist_ok=True)
         (PENDING_DIR / f"pending-{story_name}-{ep_num}.json").write_text(json.dumps({"title": ep_plan["title"]}), encoding="utf-8")
         sys.exit(0)
