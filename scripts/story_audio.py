@@ -45,35 +45,30 @@ def build_episode_audio(episode_json_path, output_mp3):
         norm_path = work_dir / f"norm_{idx:03d}.mp3"
 
         if seg_type in ("narration", "teaser", "outro"):
-            if seg.get("emotion_hint"):
-                direction = {"visual": "mosque", "sfx": "", "voice_style": seg["emotion_hint"]}
-            else:
-                direction = direct_scene(seg["text"])
-            
+            direction = {"visual": "mosque", "sfx": "", "voice_style": seg["emotion_hint"]} if seg.get("emotion_hint") else direct_scene(seg["text"])
             gemini_generate(seg["text"], str(raw_path), voice="Charon", item_type="story", emotion_hint=direction.get("voice_style", ""))
             
             sfx = fetch_sfx(direction["sfx"]) if direction.get("sfx") else ""
             if sfx and os.path.exists(sfx):
                 subprocess.run(["ffmpeg", "-y", "-i", str(raw_path), "-stream_loop", "-1", "-i", sfx, "-filter_complex", f"[1:a]volume={SFX_VOLUME}[sfx];[0:a][sfx]amix=inputs=2:duration=first:dropout_transition=2[out]", "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "192k", str(mixed_path)], check=True, capture_output=True)
                 add_fade(str(mixed_path), str(fade_path))
-            else:
-                add_fade(str(raw_path), str(fade_path))
+            else: add_fade(str(raw_path), str(fade_path))
             
             normalize(str(fade_path), str(norm_path))
-            actual_dur = get_duration(str(norm_path))
-            
-            meta = {"index": idx, "type": seg_type, "text": seg["text"], "visual": direction.get("visual", "mosque"), "duration": actual_dur}
+            meta = {"index": idx, "type": seg_type, "text": seg["text"], "visual": direction.get("visual", "mosque"), "duration": get_duration(str(norm_path))}
             if seg_type in ("teaser", "outro") and seg.get("next_episode_title"):
-                meta["teaser_data"] = {"next_episode_title": seg.get("next_episode_title", ""), "url": seg.get("url", ""), "platform_name": "ملاك المعرفة"}
+                meta["teaser_data"] = {"next_episode_title": seg.get("next_episode_title"), "url": seg.get("url"), "platform_name": "ملاك المعرفة"}
             meta_segments.append(meta)
             parts.append(str(norm_path))
 
         elif seg_type == "quran":
             surah, ayahs = seg["surah"], seg["ayah_numbers"]
+            s_name = seg.get("surah_name", f"سورة {surah}")
+            
             if len(ayahs) == 1:
                 fetch_ayah_audio(surah, ayahs[0], str(raw_path))
                 txt = fetch_ayah_text(surah, ayahs[0])
-                disp = f"{seg['surah_name']}: {ayahs[0]}"
+                disp = f"{s_name}: {ayahs[0]}"
             else:
                 subs = []
                 for i, a in enumerate(ayahs):
@@ -82,13 +77,12 @@ def build_episode_audio(episode_json_path, output_mp3):
                     subs.append(str(p))
                 (work_dir / f"list_{idx}.txt").write_text("\n".join([f"file '{s}'" for s in subs]))
                 subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / f"list_{idx}.txt"), "-c", "copy", str(raw_path)], check=True)
-                disp = f"{seg['surah_name']}: {ayahs[0]}-{ayahs[-1]}"
+                disp = f"{s_name}: {ayahs[0]}-{ayahs[-1]}"
                 txt = ""
             
             normalize(str(raw_path), str(norm_path))
             meta_segments.append({"index": idx, "type": "quran", "text": txt, "display": disp, "visual": "quran book", "duration": get_duration(str(norm_path))})
             parts.append(str(norm_path))
-
         idx += 1
 
     (work_dir / "final.txt").write_text("\n".join([f"file '{p}'" for p in parts]))
