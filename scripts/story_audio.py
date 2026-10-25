@@ -1,4 +1,4 @@
-"""توليد الصوت: Edge TTS للسرد (مجاني) + Gemini TTS للقرآن (جودة عالية)."""
+"""توليد الصوت: Edge TTS للسرد (مجاني) + Gemini TTS للقرآن (مع circuit breaker)."""
 import os
 import sys
 import json
@@ -19,29 +19,32 @@ from voice import generate as gemini_generate  # noqa: E402
 from sfx_manager import fetch_sfx  # noqa: E402
 from utilities import cleanup_dir, notify_telegram, safe_copy  # noqa: E402
 
+
+# ═════════════════════════════════════════════════════════════
+# الإعدادات
+# ═════════════════════════════════════════════════════════════
 TARGET_BR = "192k"
 SFX_VOLUME = 0.05
 
-# ─────────────────────────────────────────────────────────────
 # Edge TTS: مجاني، بلا حدود، للسرد الطويل
-# ─────────────────────────────────────────────────────────────
-EDGE_VOICE = "ar-SA-HamedNeural"   # صوت سعودي عميق (ذكوري)
-EDGE_RATE = "+0%"                  # سرعة عادية
+EDGE_VOICE = "ar-SA-HamedNeural"
+EDGE_RATE = "+0%"
 EDGE_VOLUME = "+0%"
 
-# ─────────────────────────────────────────────────────────────
-# Gemini TTS: للآيات القرآنية فقط (حصة محدودة: 15 طلب/يوم لكل مفتاح)
-# ─────────────────────────────────────────────────────────────
+# Gemini TTS: للآيات القرآنية فقط (حصة محدودة: ~15 طلب/يوم لكل مفتاح)
 VOICE_QURAN = "Fenrir"
 QURAN_STYLE = (
     "(recite in a slow, solemn, tajweed-compliant tone "
     "with pauses at proper waqf marks and full tashkeel)"
 )
 
-MAX_GEMINI_TTS_PER_EPISODE = 8   # لا تتجاوز هذه الآيات بـ Gemini
-MAX_GEMINI_RETRIES = 2            # إعادة محاولة لكل آية عند الفشل
+MAX_GEMINI_TTS_PER_EPISODE = 8
+MAX_GEMINI_RETRIES = 2
 
 
+# ═════════════════════════════════════════════════════════════
+# أدوات مساعدة
+# ═════════════════════════════════════════════════════════════
 def normalize(input_path, output_path):
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(input_path), "-ar", "44100", "-ac", "1",
@@ -86,9 +89,9 @@ def add_fade(input_path, output_path):
     )
 
 
-# ─────────────────────────────────────────────────────────────
-# Edge TTS: توليد صوت السرد (مجاني)
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# Edge TTS
+# ═════════════════════════════════════════════════════════════
 async def _edge_tts_async(text, output_path):
     communicate = edge_tts.Communicate(
         text, EDGE_VOICE, rate=EDGE_RATE, volume=EDGE_VOLUME,
@@ -97,13 +100,15 @@ async def _edge_tts_async(text, output_path):
 
 
 def edge_tts_generate(text, output_path):
-    """توليد صوت عبر Edge TTS (async داخلياً)."""
     asyncio.run(_edge_tts_async(text, output_path))
     return output_path
 
 
+# ═════════════════════════════════════════════════════════════
+# Gemini TTS (للآيات فقط)
+# ═════════════════════════════════════════════════════════════
 def try_gemini_quran(text, output_path):
-    """محاولة توليد آية عبر Gemini TTS. تعيد True عند النجاح."""
+    """يعيد True عند النجاح، False عند الفشل (أي سبب)."""
     for attempt in range(1, MAX_GEMINI_RETRIES + 1):
         try:
             gemini_generate(
@@ -114,7 +119,7 @@ def try_gemini_quran(text, output_path):
             return True
         except RuntimeError as e:
             if "مستنفدة" in str(e):
-                print(f"   ⚠️ Gemini TTS مستنفد، سنستخدم Edge TTS للآية", flush=True)
+                print(f"   ⚠️ مفاتيح Gemini مستنفدة", flush=True)
                 return False
             print(f"   ⚠️ محاولة Gemini {attempt} فشلت: {e}", flush=True)
         except Exception as e:
@@ -122,6 +127,9 @@ def try_gemini_quran(text, output_path):
     return False
 
 
+# ═════════════════════════════════════════════════════════════
+# بناء الحلقة الصوتية
+# ═════════════════════════════════════════════════════════════
 def build_episode_audio(episode_json_path, output_mp3):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_audio_"))
@@ -129,8 +137,11 @@ def build_episode_audio(episode_json_path, output_mp3):
     all_segs = ep.get("segments", [])
     total = len(all_segs)
     gemini_quran_count = 0
+    gemini_available = True   # circuit breaker: يتحول إلى False بعد أول فشل
 
     try:
+        print(f"🎙️ توليد الصوت: {total} مقطع", flush=True)
+
         for pos, seg in enumerate(all_segs):
             seg_type = seg.get("type")
             raw_path = work_dir / f"raw_{idx:03d}.mp3"
@@ -186,7 +197,7 @@ def build_episode_audio(episode_json_path, output_mp3):
                 parts.append(str(norm_path))
 
             # ══════════════════════════════════════════════════════
-            # 2. الآيات → Gemini TTS (جودة عالية، مع fallback)
+            # 2. الآيات → Gemini TTS (مع circuit breaker)
             # ══════════════════════════════════════════════════════
             elif seg_type == "quran":
                 surah = seg["surah"]
@@ -206,18 +217,22 @@ def build_episode_audio(episode_json_path, output_mp3):
                     idx += 1
                     continue
 
-                use_gemini = gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE
                 generated = False
 
-                if use_gemini:
+                # جرّب Gemini فقط إذا كان متاحاً ولم نتجاوز الحد
+                if gemini_available and gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE:
                     print(f"🎙️ Gemini TTS [آية {disp}]...", flush=True)
                     generated = try_gemini_quran(txt, str(raw_path))
                     if generated:
                         gemini_quran_count += 1
+                    else:
+                        # أول فشل → عطّل Gemini لبقية الحلقة (توفير وقت)
+                        gemini_available = False
+                        print(f"   🔒 تعطيل Gemini TTS لبقية الحلقة "
+                              f"(المفاتيح غير متاحة)", flush=True)
 
                 if not generated:
-                    # fallback إلى Edge TTS (صوت Hamed مع نبرة خشوع)
-                    print(f"🎙️ Edge TTS [آية {disp}] (fallback)...", flush=True)
+                    print(f"🎙️ Edge TTS [آية {disp}]...", flush=True)
                     edge_tts_generate(txt, str(raw_path))
 
                 if is_first or is_last:
@@ -240,12 +255,16 @@ def build_episode_audio(episode_json_path, output_mp3):
             raise RuntimeError("لا توجد مقاطع صوتية")
 
         print(f"📊 إجمالي: {gemini_quran_count} آية بـ Gemini، "
-              f"{len(parts) - gemini_quran_count} بـ Edge TTS", flush=True)
+              f"{len(parts) - gemini_quran_count} مقطع بـ Edge TTS", flush=True)
 
+        # ══════════════════════════════════════════════════════════
+        # دمج كل المقاطع
+        # ══════════════════════════════════════════════════════════
         concat_file = work_dir / "final.txt"
         concat_file.write_text("\n".join([f"file '{p}'" for p in parts]),
                                encoding="utf-8")
         merged = work_dir / "merged_raw.mp3"
+        print("🔗 دمج المقاطع...", flush=True)
         subprocess.run(
             ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
              "-i", str(concat_file), "-codec:a", "libmp3lame",
@@ -253,6 +272,9 @@ def build_episode_audio(episode_json_path, output_mp3):
             check=True, capture_output=True,
         )
 
+        # ══════════════════════════════════════════════════════════
+        # كسر بصمة الصوت (6.5% pitch + 5% speed)
+        # ══════════════════════════════════════════════════════════
         print("🛡️ كسر البصمة (6.5%+5%)...", flush=True)
         dsp = (
             "asetrate=44100*1.065,"
@@ -268,6 +290,9 @@ def build_episode_audio(episode_json_path, output_mp3):
             check=True, capture_output=True,
         )
 
+        # ══════════════════════════════════════════════════════════
+        # حفظ meta JSON
+        # ══════════════════════════════════════════════════════════
         meta_path = str(output_mp3).replace(".mp3", "_meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump({
@@ -281,10 +306,14 @@ def build_episode_audio(episode_json_path, output_mp3):
 
         print(f"✅ صوت: {output_mp3} | {get_duration(output_mp3)/60:.1f} د",
               flush=True)
+
     finally:
         cleanup_dir(work_dir)
 
 
+# ═════════════════════════════════════════════════════════════
+# نقطة الدخول
+# ═════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     try:
         if len(sys.argv) < 3:
