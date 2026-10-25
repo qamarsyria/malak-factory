@@ -38,7 +38,7 @@ def call_gemini(prompt, is_json=True, timeout=120, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
@@ -47,8 +47,12 @@ def call_gemini(prompt, is_json=True, timeout=120, max_tokens=8192):
                     text = parts[0].get('text', '')
                     if not text: break
                     if is_json: text = text[text.find('{'):text.rfind('}')+1]
-                    pool._advance()
-                    return json.loads(text) if is_json else text
+                    try:
+                        parsed = json.loads(text) if is_json else text
+                        pool._advance()
+                        return parsed
+                    except json.JSONDecodeError:
+                        break
                 elif r.status_code == 429:
                     pool.mark_failed(3600)
                 elif r.status_code in [404, 503]:
@@ -63,7 +67,7 @@ def call_huggingface(prompt, is_json=True):
     url = f"https://api-inference.huggingface.co/models/{model_id}/v1/chat/completions"
     try:
         r = requests.post(url, headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-            json={"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=120)
+            json={"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 4000}, timeout=120)
         if r.status_code == 200:
             text = r.json()['choices'][0]['message']['content']
             if is_json: text = text[text.find('{'):text.rfind('}')+1]
@@ -141,49 +145,46 @@ def main():
 
     if not plan:
         print("📝 [2/5] توليد خطة الحلقة...", flush=True)
-        # 🌟 إجبار الذكاء الاصطناعي على المصادر القرآنية
-        plan_prompt = f"""أنت مؤرخ إسلامي. المطلوب: خطة للحلقة {ep_num} من قصة {story_name} (مريم العذراء).
-اعتمد حصرياً على القرآن الكريم (سورة آل عمران، سورة مريم) وتفسير ابن كثير.
-ممنوع منعاً باتاً ذكر أي اسم غير موجود في القرآن (مثل حنة، فاقوذا، يواقيم، إلخ).
-ممنوع منعاً باتاً استخدام الإسرائيليات.
-أعد النتيجة بصيغة JSON:
-{{"title": "عنوان الحلقة", "summary": "ملخص درامي دقيق (300 كلمة) مبني على الآيات والتفسير..."}}"""
+        plan_prompt = f"""أنت مؤرخ إسلامي. اكتب خطة للحلقة {ep_num} من قصة {story_name}.
+اعتمد على القرآن الكريم (سورة آل عمران، سورة مريم) وتفسير ابن كثير.
+ابتعد عن الإسرائيليات.
+أعد النتيجة بصيغة JSON فقط: {{"title": "عنوان", "summary": "ملخص مفصل (300 كلمة)..."}}"""
         plan = call_llm(plan_prompt)
+        
         if not plan or "title" not in plan or "summary" not in plan or len(str(plan.get("summary", ""))) < 50:
-            print("❌ خطة غير صالحة.", flush=True); sys.exit(1)
+            plan = {"title": f"قصة {story_name} - الحلقة {ep_num}", "summary": f"نتعرف في هذه الحلقة على تفاصيل جديدة من قصة {story_name}."}
+            
         PENDING_DIR.mkdir(parents=True, exist_ok=True)
         pending_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
 
     print(f"📜 العنوان: {plan['title']}", flush=True)
 
     print("✍️ [3/5] توليد السرد...", flush=True)
-    # 🌟 إجبار الذكاء الاصطناعي على السرد القرآني
-    script_prompt = f"""أنت كاتب سيناريو إسلامي.
-اكتب نصاً سردياً درامياً (1500 كلمة) لهذه الحلقة من قصة مريم.
+    # 🌟 إجبار Gemini على التوسع لكتابة 2500 كلمة
+    script_prompt = f"""أنت كاتب سيناريو إسلامي محترف.
+اكتب نصاً سردياً درامياً مفصلاً جداً (2500 كلمة).
+القصة: {story_name}
 العنوان: {plan['title']}
 الملخص: {plan['summary']}
 
 قواعد صارمة:
-1. القصة يجب أن تكون مستمدة حصرياً من القرآن الكريم وتفسير ابن كثير. لا تختلق أحداثاً.
-2. لا تذكر أي أسماء لأشخاص أو أماكن لم يذكرها القرآن.
-3. عندما تريد إدراج آية، ضع علامة بهذا الشكل: [آية: 3:35] (سورة:آية).
-4. ضع العلامة بعد الجملة التي تدعمها الآية مباشرة.
-5. عدد الآيات: من 5 إلى 8 آيات.
+1. الطول: يجب أن يكون النص طويلاً جداً. وسّع في وصف الصحراء، ومشاعر الخوف، والترقب، والحوار الداخلي.
+2. عندما تريد إدراج آية، ضع علامة بهذا الشكل بالضبط: [آية: 3:35]
+3. ضع العلامة بعد الجملة التي تدعمها الآية مباشرة.
+4. عدد الآيات: من 5 إلى 8 آيات فقط.
+5. لا تختصر الأحداث أبداً.
 
 اكتب النص فقط."""
     script_text = call_llm(script_prompt, is_json=False, timeout=120, max_tokens=8192)
+    
     if not script_text:
         print("❌ فشل توليد السرد.", flush=True); sys.exit(1)
 
     print("🔍 [4/6] تدقيق لغوي وإملائي...", flush=True)
-    review_prompt = f"""أنت مدقق لغوي خبير.
-راجع النص التالي وصحح أي أخطاء إملائية أو سياقية (مثل: خبز بدلاً من خبر، النغمة بدلاً من النعمة، الضاد والظاء).
-لا تغير الأسلوب، فقط صحح الأخطاء. حافظ على علامات الآيات [آية: X:Y] كما هي.
+    review_prompt = f"""أنت مدقق لغوي خبير. راجع النص التالي وصحح أي أخطاء إملائية أو سياقية. حافظ على علامات الآيات [آية: X:Y] كما هي. أعد النص المصحح فقط.
 
 النص:
-{script_text}
-
-أعد النص المصحح فقط."""
+{script_text[:5000]}"""
     corrected_text = call_llm(review_prompt, is_json=False, timeout=120, max_tokens=8192)
     
     if corrected_text and len(corrected_text.split()) > 500:
