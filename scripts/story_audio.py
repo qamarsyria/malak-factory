@@ -6,6 +6,7 @@ import asyncio
 import subprocess
 import tempfile
 import traceback
+import shutil
 from pathlib import Path
 
 import requests
@@ -27,8 +28,9 @@ TARGET_BR = "192k"
 SFX_VOLUME = 0.05
 
 # Edge TTS: مجاني، بلا حدود، للسرد الطويل
+# جعلناه أبطأ بنسبة 10% ليكون أكثر خشوعاً وتمهلاً
 EDGE_VOICE = "ar-SA-HamedNeural"
-EDGE_RATE = "+0%"
+EDGE_RATE = "-10%" 
 EDGE_VOLUME = "+0%"
 
 # Gemini TTS: للآيات القرآنية فقط
@@ -108,7 +110,6 @@ def edge_tts_generate(text, output_path):
 # Gemini TTS (للآيات فقط)
 # ═════════════════════════════════════════════════════════════
 def try_gemini_quran(text, output_path):
-    """يعيد True عند النجاح، False عند الفشل (أي سبب)."""
     for attempt in range(1, MAX_GEMINI_RETRIES + 1):
         try:
             gemini_generate(
@@ -150,15 +151,12 @@ def build_episode_audio(episode_json_path, output_mp3):
             is_first = (pos == 0)
             is_last = (pos == total - 1)
 
-            # ─────────────────────────────────────────────
             # 1. السرد / CTA / Teaser / Intro → Edge TTS
-            # ─────────────────────────────────────────────
             if seg_type in ("narration", "teaser", "cta", "outro", "intro"):
                 style = seg.get("emotion_hint") or "(in a warm, narrative tone)"
                 visual = seg.get("visual", "mosque")
 
-                print(f"🎙️ Edge TTS [{seg_type}] ({len(seg['text'])} حرف)...",
-                      flush=True)
+                print(f"🎙️ Edge TTS [{seg_type}] ({len(seg['text'])} حرف)...", flush=True)
                 edge_tts_generate(seg["text"], str(raw_path))
 
                 src = str(raw_path)
@@ -196,9 +194,7 @@ def build_episode_audio(episode_json_path, output_mp3):
                 meta_segments.append(meta)
                 parts.append(str(norm_path))
 
-            # ─────────────────────────────────────────────
             # 2. الآيات → Gemini TTS (مع circuit breaker)
-            # ─────────────────────────────────────────────
             elif seg_type == "quran":
                 surah = seg["surah"]
                 ayahs = seg["ayah_numbers"]
@@ -208,8 +204,7 @@ def build_episode_audio(episode_json_path, output_mp3):
                     txt = fetch_ayah_text(surah, ayahs[0])
                     disp = f"{sname}: {ayahs[0]}"
                 else:
-                    txt = " ".join(filter(None, (fetch_ayah_text(surah, a)
-                                                 for a in ayahs)))
+                    txt = " ".join(filter(None, (fetch_ayah_text(surah, a) for a in ayahs)))
                     disp = f"{sname}: {ayahs[0]}-{ayahs[-1]}"
 
                 if not txt:
@@ -255,8 +250,7 @@ def build_episode_audio(episode_json_path, output_mp3):
               f"{len(parts) - gemini_quran_count} مقطع بـ Edge TTS", flush=True)
 
         concat_file = work_dir / "final.txt"
-        concat_file.write_text("\n".join([f"file '{p}'" for p in parts]),
-                               encoding="utf-8")
+        concat_file.write_text("\n".join([f"file '{p}'" for p in parts]), encoding="utf-8")
         merged = work_dir / "merged_raw.mp3"
         print("🔗 دمج المقاطع...", flush=True)
         subprocess.run(
@@ -266,20 +260,13 @@ def build_episode_audio(episode_json_path, output_mp3):
             check=True, capture_output=True,
         )
 
-        print("🛡️ كسر البصمة (6.5%+5%)...", flush=True)
-        dsp = (
-            "asetrate=44100*1.065,"
-            "aresample=44100,"
-            "atempo=1.05,"
-            "equalizer=f=1200:width_type=h:width=300:g=-2,"
-            "equalizer=f=3500:width_type=h:width=600:g=-1.5"
-        )
+        # 🛑 تم إزالة فلتر التسريع (asetrate/atempo) نهائياً!
+        # الصوت الآن سيتطابق 100% مع مدد الفيديو المحسوبة.
+        print("✅ الصوت جاهز ومتزامن تماماً...", flush=True)
         Path(output_mp3).parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(merged), "-af", dsp,
-             "-codec:a", "libmp3lame", "-b:a", TARGET_BR, str(output_mp3)],
-            check=True, capture_output=True,
-        )
+        
+        # ننسخ الملف النهائي مباشرة إلى المخرج
+        shutil.copy(str(merged), str(output_mp3))
 
         meta_path = str(output_mp3).replace(".mp3", "_meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -292,8 +279,7 @@ def build_episode_audio(episode_json_path, output_mp3):
                 "segments": meta_segments,
             }, f, ensure_ascii=False, indent=2)
 
-        print(f"✅ صوت: {output_mp3} | {get_duration(output_mp3)/60:.1f} د",
-              flush=True)
+        print(f"✅ صوت: {output_mp3} | {get_duration(output_mp3)/60:.1f} د", flush=True)
 
     finally:
         cleanup_dir(work_dir)
