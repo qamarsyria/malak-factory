@@ -1,7 +1,12 @@
-"""أدوات مساعدة: retry, circuit breaker, إشعارات تلغرام, تنظيف."""
-import os, time, subprocess, shutil, requests
+"""أدوات مشتركة: retry, circuit breaker, إشعارات, تنظيف."""
+import os
+import time
+import shutil
+import subprocess
 from pathlib import Path
 from functools import wraps
+
+import requests
 
 
 def retry(max_attempts=3, backoff=2.0, exceptions=(Exception,), on_fail=None):
@@ -36,7 +41,7 @@ def notify_telegram(message: str, level: str = "info"):
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": f"{emoji} {message}", "parse_mode": "HTML"},
+            json={"chat_id": chat, "text": f"{emoji} {message}"},
             timeout=10,
         )
     except Exception as e:
@@ -45,15 +50,16 @@ def notify_telegram(message: str, level: str = "info"):
 
 class CircuitBreaker:
     """عزل النماذج/المفاتيح الفاشلة مؤقتاً."""
-    def __init__(self, cooldown=3600):
+    def __init__(self, cooldown=3600, threshold=3):
         self.cooldown = cooldown
-        self.failures = {}  # key -> (count, last_failure_ts)
+        self.threshold = threshold
+        self.failures = {}  # key -> (count, last_ts)
 
     def is_open(self, key) -> bool:
         if key not in self.failures:
             return False
         count, ts = self.failures[key]
-        if count < 3:
+        if count < self.threshold:
             return False
         if time.time() - ts > self.cooldown:
             del self.failures[key]
@@ -70,6 +76,7 @@ class CircuitBreaker:
 
 _CB = CircuitBreaker()
 
+
 def get_breaker():
     return _CB
 
@@ -83,12 +90,19 @@ def cleanup_dir(path):
         pass
 
 
-def safe_ffmpeg(cmd, timeout=600):
+def safe_ffmpeg(cmd, timeout=900):
     """تشغيل ffmpeg مع timeout ومعالجة أخطاء."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
-            raise RuntimeError(f"ffmpeg فشل: {r.stderr[:500]}")
+            raise RuntimeError(f"ffmpeg فشل: {(r.stderr or '')[:500]}")
         return r
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"ffmpeg تجاوز {timeout}s")
+
+
+def safe_copy(src, dst):
+    """نسخ مع إنشاء الأب إن لم يوجد."""
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(str(src), str(dst))
