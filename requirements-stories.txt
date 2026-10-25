@@ -11,12 +11,18 @@ transformers==4.45.2
 torch==2.5.1
 torchaudio==2.5.1
 
+# --- TTS السريع (Edge TTS — للسرد في daily pipeline) ---
+edge-tts>=6.1.19
+
 # --- معالجة اللغة ---
 spacy==3.7.5
 click
 
 # --- معالجة الصوت ---
 soundfile
+
+# --- معالجة الصور (فيديو) ---
+Pillow>=10.0.0
 
 # --- الشبكة والـ API ---
 requests==2.32.3
