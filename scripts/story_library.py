@@ -1,19 +1,19 @@
-"""إدارة مكتبة القصص: تحميل، حالة، اختيار القصة التالية."""
+"""إدارة مكتبة القصص والحالة."""
 import json
 from pathlib import Path
 
-LIBRARY_FILE = Path("data/library/stories.json")
-STATE_FILE = Path("state/story_state.json")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+LIBRARY_FILE = _REPO_ROOT / "data/library/stories.json"
+STATE_FILE = _REPO_ROOT / "state/story_state.json"
 
 
 def load_library() -> list:
     if not LIBRARY_FILE.exists():
         return []
     try:
-        data = json.loads(LIBRARY_FILE.read_text(encoding="utf-8"))
-        return data.get("stories", [])
+        return json.loads(LIBRARY_FILE.read_text(encoding="utf-8")).get("stories", [])
     except Exception as e:
-        print(f"⚠️ فشل قراءة المكتبة: {e}")
+        print(f"⚠️ فشل قراءة المكتبة: {e}", flush=True)
         return []
 
 
@@ -29,6 +29,7 @@ def load_state() -> dict:
         "episode_num": 1,
         "covered_topics": [],
         "completed_stories": [],
+        "cycle": 0,
     }
 
 
@@ -38,56 +39,36 @@ def save_state(state: dict):
 
 
 def get_current_story(library: list, state: dict) -> dict:
-    """يعيد القصة الحالية، أو ينتقل للتالية تلقائياً."""
+    """يعيد القصة الحالية، متقدماً تلقائياً عند الحاجة."""
     if not library:
         raise RuntimeError("المكتبة فارغة")
 
-    completed = set(state.get("completed_stories", []))
-    idx = state.get("current_story_index", 0)
+    while True:
+        completed = set(state.get("completed_stories", []))
+        idx = state.get("current_story_index", 0)
 
-    while idx < len(library) and library[idx]["id"] in completed:
-        idx += 1
+        while idx < len(library) and library[idx]["id"] in completed:
+            idx += 1
 
-    if idx >= len(library):
-        # اكتملت كل القصص — أعد البدء من الأولى بجولة جديدة
-        completed.clear()
-        idx = 0
-        state["completed_stories"] = []
-        state["cycle"] = state.get("cycle", 0) + 1
+        if idx >= len(library):
+            state["cycle"] = state.get("cycle", 0) + 1
+            state["completed_stories"] = []
+            state["current_story_index"] = 0
+            continue
 
-    state["current_story_index"] = idx
-    state["current_story_id"] = library[idx]["id"]
-    story = library[idx]
+        story = library[idx]
+        state["current_story_index"] = idx
 
-    # إذا كانت القصة جديدة، أعد ضبط عداد الحلقات
-    if state.get("episode_num", 1) > story.get("target_episodes", 40) \
-            or state.get("current_story_id") != story["id"]:
-        state.setdefault("episode_num", 1)
+        if state.get("episode_num", 1) > story.get("target_episodes", 40):
+            completed.add(story["id"])
+            state["completed_stories"] = list(completed)
+            state["current_story_index"] = idx + 1
+            state["episode_num"] = 1
+            continue
 
-    return story
+        if state.get("current_story_id") != story["id"]:
+            state["episode_num"] = 1
+            state["covered_topics"] = []
 
-
-def should_advance_story(story: dict, state: dict) -> bool:
-    """هل يجب الانتقال للقصة التالية؟"""
-    target = story.get("target_episodes", 40)
-    return state.get("episode_num", 1) > target
-
-
-def advance_story(state: dict, current_story: dict):
-    """ينقل للقصة التالية ويُسجّل الحالية كمكتملة."""
-    completed = set(state.get("completed_stories", []))
-    completed.add(current_story["id"])
-    state["completed_stories"] = list(completed)
-    state["current_story_index"] = state.get("current_story_index", 0) + 1
-    state["episode_num"] = 1
-    state["covered_topics"] = []
-
-
-def next_episode_metadata() -> dict:
-    """تحديث الحالة بعد حلقة ناجحة."""
-    library = load_library()
-    state = load_state()
-    story = get_current_story(library, state)
-    state["episode_num"] = state.get("episode_num", 1) + 1
-    save_state(state)
-    return {"story": story, "state": state}
+        state["current_story_id"] = story["id"]
+        return story
