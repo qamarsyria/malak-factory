@@ -15,26 +15,43 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      # ═══════════════════════════════════════════════════════════
+      # 1. سحب الكود
+      # ═══════════════════════════════════════════════════════════
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
 
+      # ═══════════════════════════════════════════════════════════
+      # 2. تجهيز Python
+      # ═══════════════════════════════════════════════════════════
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
+      # ═══════════════════════════════════════════════════════════
+      # 3. تثبيت التبعيات
+      #    - requirements.txt أصبح يحتوي edge-tts
+      #    - ffmpeg + خط أميري للعربية
+      # ═══════════════════════════════════════════════════════════
       - name: Install
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install -r requirements.txt
 
+      # ═══════════════════════════════════════════════════════════
+      # 4. اكتشاف نماذج Gemini المتاحة (cache 24h)
+      # ═══════════════════════════════════════════════════════════
       - name: Discover Models
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: python -u scripts/model_discovery.py
 
+      # ═══════════════════════════════════════════════════════════
+      # 5. توليد الحلقة (JSON)
+      # ═══════════════════════════════════════════════════════════
       - name: Generate
         id: gen
         env:
@@ -54,6 +71,11 @@ jobs:
             exit 1
           fi
 
+      # ═══════════════════════════════════════════════════════════
+      # 6. بناء الصوت
+      #    - Edge TTS للسرد (مجاني)
+      #    - Gemini TTS للآيات (مع circuit breaker)
+      # ═══════════════════════════════════════════════════════════
       - name: Audio
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
@@ -67,6 +89,9 @@ jobs:
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
+      # ═══════════════════════════════════════════════════════════
+      # 7. بناء الفيديو
+      # ═══════════════════════════════════════════════════════════
       - name: Video
         id: vid
         if: steps.aud.outcome == 'success'
@@ -82,6 +107,9 @@ jobs:
             "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
           ls -lh "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
+      # ═══════════════════════════════════════════════════════════
+      # 8. الرفع إلى تلغرام
+      # ═══════════════════════════════════════════════════════════
       - name: Upload to Telegram
         id: tg
         if: steps.vid.outcome == 'success'
@@ -106,6 +134,9 @@ jobs:
           echo "✅ message_id=$MSG"
           echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
 
+      # ═══════════════════════════════════════════════════════════
+      # 9. تحديث الـ feed
+      # ═══════════════════════════════════════════════════════════
       - name: Update Feed
         if: steps.tg.outputs.MSG_ID != ''
         working-directory: scripts
@@ -124,11 +155,20 @@ jobs:
           )
           "
 
+      # ═══════════════════════════════════════════════════════════
+      # 10. تثبيت الحالة (نقل العداد للحلقة التالية)
+      #     يعمل فقط بعد نجاح الرفع إلى تلغرام
+      # ═══════════════════════════════════════════════════════════
       - name: Finalize State
         if: steps.tg.outputs.MSG_ID != ''
         run: |
           python scripts/finalize_episode.py "${{ steps.gen.outputs.EP_FILE }}"
 
+      # ═══════════════════════════════════════════════════════════
+      # 11. حفظ الحالة في المستودع
+      #     - `|| true` يضمن عدم فشل الـ workflow إذا لا تغييرات
+      #     - `-A state/` يضيف كل شيء حتى لو ملف جديد (models_cache)
+      # ═══════════════════════════════════════════════════════════
       - name: Commit State
         if: always()
         run: |
@@ -138,6 +178,10 @@ jobs:
           git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME || 'daily run' }}" || echo "لا تغييرات"
           git push || true
 
+      # ═══════════════════════════════════════════════════════════
+      # 12. تنظيف الملفات المؤقتة
+      #     - pending يبقى محفوظاً للاستئناف في حال فشل الرفع
+      # ═══════════════════════════════════════════════════════════
       - name: Cleanup
         if: always()
         run: |
@@ -146,6 +190,9 @@ jobs:
           rm -f out/latest_episode.txt
           echo "🧹 تنظيف (pending محفوظ للاستئناف)"
 
+      # ═══════════════════════════════════════════════════════════
+      # 13. إشعار فشل
+      # ═══════════════════════════════════════════════════════════
       - name: Notify Failure
         if: failure()
         env:
