@@ -163,7 +163,7 @@ def verify_ayah(surah_num, ayah_num):
     return local_name, True
 
 
-def split_narration(text, max_chars=240):
+def split_narration(text, max_chars=700):
     """يقسم النص الطويل إلى مقاطع صغيرة بحدود الجمل."""
     text = text.strip()
     if not text:
