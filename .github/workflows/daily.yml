@@ -1,93 +1,96 @@
 name: Daily
-
 on:
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
 
 jobs:
-  generate-and-produce:
+  produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    
+    timeout-minutes: 120
     steps:
-      - name: Checkout Factory
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT }}
+      - uses: actions/checkout@v4
+        with: { token: "${{ secrets.GH_PAT }}" }
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
 
-      - name: Install Dependencies
+      - name: Install
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install -r requirements.txt
 
-      - name: Generate Episode JSON
+      - name: Discover Models
+        env: { GEMINI_API_KEYS: "${{ secrets.GEMINI_API_KEYS }}" }
+        run: python -u scripts/model_discovery.py
+
+      - name: Generate
         id: gen
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEYS: "${{ secrets.GEMINI_API_KEYS }}"
+          HF_TOKEN: "${{ secrets.HF_TOKEN }}"
+          TELEGRAM_BOT_TOKEN: "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          TELEGRAM_CHAT_ID: "${{ secrets.TELEGRAM_CHAT_ID }}"
         run: |
           python -u scripts/generate_story.py
           if [ -f out/latest_episode.txt ]; then
             EP_FILE=$(cat out/latest_episode.txt)
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
-            EP_NAME=$(basename "$EP_FILE" .json)
-            echo "EP_NAME=$EP_NAME" >> $GITHUB_OUTPUT
-            echo "✅ الحلقة: $EP_NAME"
+            echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ لم يتم إنشاء حلقة."
-            exit 0
+            echo "❌ لا JSON"; exit 1
           fi
 
-      - name: Build Audio
+      - name: Audio
+        id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
+          GEMINI_API_KEYS: "${{ secrets.GEMINI_API_KEYS }}"
+          FREESOUND_API_KEY: "${{ secrets.FREESOUND_API_KEY }}"
+          TELEGRAM_BOT_TOKEN: "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          TELEGRAM_CHAT_ID: "${{ secrets.TELEGRAM_CHAT_ID }}"
         run: |
-          python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
+          python scripts/story_audio.py "${{ steps.gen.outputs.EP_FILE }}" \
+                 "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
-      - name: Build Video
-        if: steps.gen.outputs.EP_FILE != ''
+      - name: Video
+        id: vid
+        if: steps.aud.outcome == 'success'
         env:
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          PIXABAY_API_KEY: "${{ secrets.PIXABAY_API_KEY }}"
+          TELEGRAM_BOT_TOKEN: "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          TELEGRAM_CHAT_ID: "${{ secrets.TELEGRAM_CHAT_ID }}"
         run: |
           mkdir -p videos
-          python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
-          ls -lh "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
+          python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
+                 "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" \
+                 "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
-      - name: Upload to Telegram
-        if: steps.gen.outputs.EP_FILE != ''
+      - name: Upload
         id: tg
+        if: steps.vid.outcome == 'success'
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          TELEGRAM_CHAT_ID: "${{ secrets.TELEGRAM_CHAT_ID }}"
         run: |
-          CAPTION=$(printf "🎬 حلقة جديدة من ملاك المعرفة!\n#قصص_الأنبياء")
-          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+          META=$(cat "out/${{ steps.gen.outputs.EP_NAME }}_meta.json")
+          TITLE=$(echo "$META" | python -c "import json,sys; print(json.load(sys.stdin).get('title','حلقة جديدة'))")
+          CAPTION="🎬 ${TITLE}
+          #قصص_الأنبياء #ملاك_المعرفة"
+          RESP=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}.mp4" \
             -F "caption=${CAPTION}" \
             -F "supports_streaming=true")
-          MSG_ID=$(echo "$RESPONSE" | grep -oP '"message_id":\K[0-9]+' || true)
-          if [ -z "$MSG_ID" ]; then
-            echo "❌ تلغرام رفض الفيديو: $RESPONSE"
-            echo "MSG_ID=0" >> $GITHUB_OUTPUT
-          else
-            echo "✅ رُفع. message_id=$MSG_ID"
-            echo "MSG_ID=$MSG_ID" >> $GITHUB_OUTPUT
-          fi
+          MSG=$(echo "$RESP" | grep -oP '"message_id":\K[0-9]+' || true)
+          if [ -z "$MSG" ]; then echo "❌ $RESP"; exit 1; fi
+          echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
 
-      - name: Update Platform Feed
-        if: steps.gen.outputs.EP_FILE != '' && steps.tg.outputs.MSG_ID != '0'
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+      - name: Update Feed
+        if: steps.tg.outputs.MSG_ID
         working-directory: scripts
         run: |
           python -c "
@@ -96,32 +99,39 @@ jobs:
           meta = json.load(open('../out/${{ steps.gen.outputs.EP_NAME }}_meta.json'))
           add_video_to_feed(
               title=meta.get('title', 'حلقة جديدة'),
-              description='شاهد الحلقة الجديدة من قصص الأنبياء على ملاك المعرفة.',
+              description='حلقة جديدة من ملاك المعرفة.',
               video_url='${{ steps.tg.outputs.MSG_ID }}',
-              category='قصص الأنبياء'
-          )
-          "
+              category='قصص الأنبياء',
+          )"
 
-      # ═══════════════════════════════════════════════════════════
-      # 🌟 نحفظ الحالة فقط (لا فيديو، لا JSON)
-      # ═══════════════════════════════════════════════════════════
-      - name: Commit State Only
-        if: steps.gen.outputs.EP_FILE != ''
+      # حذف pending فقط بعد نجاح رفع تلغرام
+      - name: Clear Pending (success only)
+        if: steps.tg.outputs.MSG_ID != ''
+        run: |
+          rm -f state/pending/pending-*.json
+          echo "🧹 pending cleared"
+
+      - name: Commit State
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/story_state.json state/models_cache.json
-          git commit -m "🎬 حلقة جديدة: ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
-          git push
+          git add -A state/ || true
+          git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME || 'daily run' }}" || echo "لا تغييرات"
+          git push || true
 
-      # ═══════════════════════════════════════════════════════════
-      # 🌟 تنظيف الملفات المؤقتة (تلقائياً بعد النشر)
-      # ═══════════════════════════════════════════════════════════
-      - name: Cleanup Temp Files
+      - name: Cleanup
         if: always()
         run: |
-          rm -rf videos/*.mp4 || true
-          rm -rf data/stories/generated/*.json || true
-          rm -rf state/pending/*.json || true
-          rm -rf out/* || true
-          echo "🧹 تم تنظيف الملفات المؤقتة."
+          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json data/stories/generated/*.json || true
+          echo "🧹 تنظيف"
+
+      - name: Notify Failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          TELEGRAM_CHAT_ID: "${{ secrets.TELEGRAM_CHAT_ID }}"
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=🚨 فشل خط الإنتاج اليومي. تحقق من Actions."
