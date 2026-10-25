@@ -143,7 +143,6 @@ def normalize_arabic_numerals(text):
 
 
 def verify_ayah(surah_num, ayah_num):
-    """تحقق لا يُسقط الآية عند فشل الشبكة."""
     if not (1 <= surah_num <= 114) or not (1 <= ayah_num <= 286):
         return None, False
     local_name = SURAH_NAMES.get(surah_num)
@@ -207,7 +206,6 @@ def split_narration(text, max_chars=700):
 
 
 def parse_script_with_verses(script_text):
-    """يستخرج الآيات ويقسّم السرد إلى مقاطع صغيرة."""
     text = normalize_arabic_numerals(script_text)
 
     patterns = [
@@ -265,7 +263,6 @@ def parse_script_with_verses(script_text):
 
 
 def review_in_chunks(text, chunk_size=4500):
-    """تدقيق مجزأ لا يُسقط النص."""
     if len(text) <= chunk_size:
         result = call_llm(
             "صحح الأخطاء الإملائية والنحوية فقط. "
@@ -335,15 +332,15 @@ def build_script_prompt(story, plan, ep_num):
 4. ضع العلامة مباشرة بعد الجملة التي تدعمها الآية.
 5. لا تكتب [آية] بدون أرقام. لا تستخدم صيغة أخرى.
 6. ابدأ بمقدمة مشوقة واختم بموعظة.
+7. **التشكيل الإلزامي**: يجب كتابة النص بالكامل مع التشكيل (الحركات: فتحة، ضمة، كسرة، سكون) لضمان النطق السليم.
 
 مثال صحيح:
-"ثم توجه موسى إلى ربه داعياً في خلوته، فاستجاب الله له ووعده بالنصر [آية: 20:36]. وبينما كان في الوادي المقدس، نُودي من جانب الطور الأيمن [آية: 28:30]."
+"ثُمَّ تَوَجَّهَ مُوسَى إِلَى رَبِّهِ دَاعِياً فِي خَلْوَتِهِ، فَاسْتَجَابَ اللَّهُ لَهُ وَوَعَدَهُ بِالنَّصْرِ [آية: 20:36]. وَبَيْنَمَا كَانَ فِي الْوَادِي الْمُقَدَّسِ، نُودِيَ مِنْ جَانِبِ الطُّورِ الْأَيْمَنِ [آية: 28:30]."
 
 اكتب النص فقط دون مقدمات."""
 
 
 def save_episode(ep_data):
-    """يحفظ JSON في pending + output + يكتب مسار OUT_FILE."""
     story_id = ep_data["story_id"]
     ep_num = ep_data["episode_number"]
 
@@ -368,12 +365,11 @@ def main():
     story = get_current_story(library, state)
     ep_num = state.get("episode_num", 1)
 
-    save_state(state)  # احفظ أي تغيير من get_current_story (تقدّم/انتقال)
+    save_state(state)
 
     print(f"🚀 {story['title']} — الحلقة {ep_num}/{story.get('target_episodes', 40)}",
           flush=True)
 
-    # ♻️ استئناف: هل يوجد pending JSON؟
     pending_path = PENDING_DIR / f"{story['id']}-{ep_num:02d}.json"
     if pending_path.exists():
         try:
@@ -386,7 +382,6 @@ def main():
         except Exception as e:
             print(f"⚠️ pending تالف، سنعيد التوليد: {e}", flush=True)
 
-    # 1) الخطة
     plan = call_llm(build_plan_prompt(story, ep_num))
     if not plan or "title" not in plan or "summary" not in plan \
             or len(str(plan.get("summary", ""))) < 80:
@@ -396,7 +391,6 @@ def main():
         }
     print(f"📜 {plan['title']}", flush=True)
 
-    # 2) السرد (مع إعادة محاولة إن كانت الآيات قليلة)
     print("✍️ توليد السرد...", flush=True)
     script_text = None
     segments = []
@@ -423,7 +417,6 @@ def main():
         notify_telegram(f"سرد فارغ {story['title']} ح{ep_num}", "error")
         sys.exit(1)
 
-    # 3) تدقيق
     print("🔍 تدقيق...", flush=True)
     corrected = review_in_chunks(script_text)
     if corrected and corrected != script_text and len(corrected) > len(script_text) * 0.7:
@@ -436,7 +429,6 @@ def main():
         else:
             print("   ⚠️ النص المصحح أقل جودة، سنستخدم الأصل", flush=True)
 
-    # 4) CTA
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({
         "type": "cta",
@@ -446,7 +438,6 @@ def main():
         "sfx": "",
     })
 
-    # 5) Teaser
     segments.append({
         "type": "teaser",
         "text": f"الحلقة القادمة من {story['title']}.",
@@ -457,7 +448,6 @@ def main():
         "platform_name": "ملاك المعرفة",
     })
 
-    # 6) الحفظ
     ep_data = {
         "episode_number": ep_num,
         "story_id": story["id"],
@@ -468,7 +458,6 @@ def main():
     out = save_episode(ep_data)
     print(f"✅ JSON: {out}", flush=True)
 
-    # 7) تقرير تشخيصي
     narr = sum(1 for s in segments if s["type"] == "narration")
     qr = sum(1 for s in segments if s["type"] == "quran")
     avg = (sum(len(s.get("text", "")) for s in segments if s["type"] == "narration")
@@ -483,7 +472,7 @@ def main():
 
     if qr == 0:
         notify_telegram(f"⚠️ حلقة {story['title']} ح{ep_num} بلا آيات", "warn")
-    if avg > 350:
+    if avg > 750:
         notify_telegram(f"⚠️ مقاطع طويلة ({avg:.0f} حرفاً)", "warn")
 
 
