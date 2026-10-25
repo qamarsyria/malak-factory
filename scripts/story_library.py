@@ -12,8 +12,7 @@ def load_library() -> list:
         return []
     try:
         return json.loads(LIBRARY_FILE.read_text(encoding="utf-8")).get("stories", [])
-    except Exception as e:
-        print(f"⚠️ فشل قراءة المكتبة: {e}", flush=True)
+    except Exception:
         return []
 
 
@@ -39,36 +38,49 @@ def save_state(state: dict):
 
 
 def get_current_story(library: list, state: dict) -> dict:
-    """يعيد القصة الحالية، متقدماً تلقائياً عند الحاجة."""
     if not library:
         raise RuntimeError("المكتبة فارغة")
 
-    while True:
-        completed = set(state.get("completed_stories", []))
-        idx = state.get("current_story_index", 0)
+    # 1. الأولوية القصوى: إذا كان هناك قصة محددة بالـ ID، اذهب إليها فوراً
+    current_id = state.get("current_story_id")
+    if current_id:
+        for idx, s in enumerate(library):
+            if s["id"] == current_id:
+                # إذا تجاوزنا عدد الحلقات، ننقلها للمكتملة
+                if state.get("episode_num", 1) > s.get("target_episodes", 40):
+                    completed = set(state.get("completed_stories", []))
+                    completed.add(s["id"])
+                    state["completed_stories"] = list(completed)
+                    state["current_story_index"] = idx + 1
+                    state["episode_num"] = 1
+                    state["current_story_id"] = None
+                    break # اخرج من الحلقة لننتقل للقصة التالية
+                state["current_story_index"] = idx
+                return s
 
-        while idx < len(library) and library[idx]["id"] in completed:
-            idx += 1
+    # 2. إذا لم توجد قصة محددة (أو انتهت)، ابحث عن التالية
+    idx = state.get("current_story_index", 0)
+    completed = set(state.get("completed_stories", []))
 
-        if idx >= len(library):
-            state["cycle"] = state.get("cycle", 0) + 1
-            state["completed_stories"] = []
-            state["current_story_index"] = 0
-            continue
-
+    while idx < len(library):
         story = library[idx]
-        state["current_story_index"] = idx
+        if story["id"] not in completed:
+            if state.get("episode_num", 1) > story.get("target_episodes", 40):
+                completed.add(story["id"])
+                state["completed_stories"] = list(completed)
+                idx += 1
+                state["episode_num"] = 1
+                continue
 
-        if state.get("episode_num", 1) > story.get("target_episodes", 40):
-            completed.add(story["id"])
-            state["completed_stories"] = list(completed)
-            state["current_story_index"] = idx + 1
-            state["episode_num"] = 1
-            continue
+            state["current_story_id"] = story["id"]
+            state["current_story_index"] = idx
+            return story
+        idx += 1
 
-        if state.get("current_story_id") != story["id"]:
-            state["episode_num"] = 1
-            state["covered_topics"] = []
-
-        state["current_story_id"] = story["id"]
-        return story
+    # 3. إذا انتهت كل القصص، أعد البدء من الأولى
+    state["completed_stories"] = []
+    state["current_story_index"] = 0
+    state["episode_num"] = 1
+    story = library[0]
+    state["current_story_id"] = story["id"]
+    return story
