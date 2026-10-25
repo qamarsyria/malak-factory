@@ -1,4 +1,4 @@
-"""بناء الفيديو: صور + overlays + concat."""
+"""بناء الفيديو: صور + overlays + concat — متوافق مع مقاطع 700 حرف."""
 import sys
 import json
 import subprocess
@@ -19,6 +19,10 @@ from config import (  # noqa: E402
 from video import _find_arabic_font, _shape, _wrap  # noqa: E402
 from utilities import cleanup_dir, notify_telegram  # noqa: E402
 
+
+# ═════════════════════════════════════════════════════════════
+# فلترة الصور: منع أي صورة فيها بشر أو رموز دينية غير إسلامية
+# ═════════════════════════════════════════════════════════════
 FORBIDDEN_TAGS = {
     "woman", "women", "girl", "female", "child", "boy", "man", "men",
     "people", "person", "face", "human", "body", "hand", "skin",
@@ -34,11 +38,15 @@ def is_image_safe(tags_str):
     return not (tags & FORBIDDEN_TAGS)
 
 
+# ═════════════════════════════════════════════════════════════
+# جلب الصور من Pixabay
+# ═════════════════════════════════════════════════════════════
 def fetch_media(prompt, work_dir):
     safe = "".join(c if c.isalnum() else "_" for c in prompt)[:30]
     out = work_dir / f"bg_{safe}.jpg"
     if out.exists():
         return str(out)
+
     if PIXABAY_KEY:
         try:
             r = requests.get("https://pixabay.com/api/", params={
@@ -52,18 +60,25 @@ def fetch_media(prompt, work_dir):
                     if img.status_code == 200 and len(img.content) > 10000:
                         out.write_bytes(img.content)
                         return str(out)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"   ⚠️ فشل تحميل صورة '{prompt}': {e}", flush=True)
+
+    # fallback: خلفية سوداء
     Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
 
 
+# ═════════════════════════════════════════════════════════════
+# ملاءمة النص: يختار أكبر خط ممكن دون تجاوز الحدود
+# ═════════════════════════════════════════════════════════════
 def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
     for size in range(start_size, min_size - 1, -2):
         try:
-            font = ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
+            font = ImageFont.truetype(
+                font_path, size, layout_engine=ImageFont.Layout.RAQM,
+            )
         except Exception:
             font = ImageFont.truetype(font_path, size)
         lines = _wrap(_shape(text), font, max_width, ddraw)
@@ -81,6 +96,9 @@ def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill):
               stroke_width=stroke_w, stroke_fill=stroke_fill)
 
 
+# ═════════════════════════════════════════════════════════════
+# بناء الـ Overlay (الطبقة الشفافة فوق الصورة)
+# ═════════════════════════════════════════════════════════════
 def make_overlay(seg, work_dir, episode_title=""):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -90,18 +108,24 @@ def make_overlay(seg, work_dir, episode_title=""):
     is_cta = seg.get("type") in ("cta", "outro")
     text = seg.get("text", "")
 
-    # شريط العنوان العلوي
+    # ─────────────────────────────────────────────────────────
+    # شريط العنوان العلوي (يظهر في كل المقاطع)
+    # ─────────────────────────────────────────────────────────
     if episode_title:
         try:
-            ft = ImageFont.truetype(font_path, 44, layout_engine=ImageFont.Layout.RAQM)
+            ft = ImageFont.truetype(
+                font_path, 44, layout_engine=ImageFont.Layout.RAQM,
+            )
         except Exception:
             ft = ImageFont.truetype(font_path, 44)
         overlay.paste(Image.new("RGBA", (VIDEO_W, 100), (0, 0, 0, 180)), (0, 15))
         draw = ImageDraw.Draw(overlay)
         _draw_centered(draw, 38, episode_title, ft, "#D4AF37", 2, "black")
 
+    # ─────────────────────────────────────────────────────────
+    # CTA: لوحة ذهبية بإطار + أيقونات "شارك" و "اشترك"
+    # ─────────────────────────────────────────────────────────
     if is_cta:
-        # لوحة CTA كبيرة بإطار ذهبي
         panel_x = 40
         panel_y = 170
         panel_w = VIDEO_W - 80
@@ -116,6 +140,7 @@ def make_overlay(seg, work_dir, episode_title=""):
         overlay.paste(panel, (panel_x, panel_y))
         draw = ImageDraw.Draw(overlay)
 
+        # نص CTA بحجم كبير وذهبي
         font, lines, lh = _fit_text(
             text, font_path, panel_w - 80, panel_h - 200,
             start_size=58, min_size=34,
@@ -128,24 +153,33 @@ def make_overlay(seg, work_dir, episode_title=""):
 
         # أيقونات أسفل اللوحة
         try:
-            fi = ImageFont.truetype(font_path, 44, layout_engine=ImageFont.Layout.RAQM)
+            fi = ImageFont.truetype(
+                font_path, 44, layout_engine=ImageFont.Layout.RAQM,
+            )
         except Exception:
             fi = ImageFont.truetype(font_path, 44)
         icon_y = panel_y + panel_h - 90
-        _draw_centered(draw, icon_y, "◆ شارك الفيديو    ◆ اشترك في القناة",
-                       fi, "#FFD700", 2, "black")
+        _draw_centered(
+            draw, icon_y,
+            "◆ شارك الفيديو    ◆ اشترك في القناة",
+            fi, "#FFD700", 2, "black",
+        )
 
+    # ─────────────────────────────────────────────────────────
+    # نص عادي: سرد (700 حرف) أو آية
+    # ─────────────────────────────────────────────────────────
     else:
-        # نص عادي (سرد أو قرآن)
-        start = 60 if is_quran else 68
+        start = 56 if is_quran else 60
         color = ACCENT_COLOR if is_quran else TEXT_COLOR
         font, lines, lh = _fit_text(
-            text, font_path, VIDEO_W - 120, VIDEO_H - 400,
+            text, font_path,
+            VIDEO_W - 100, VIDEO_H - 340,
             start_size=start, min_size=40,
         )
         total_h = len(lines) * lh
-        y = max(150, (VIDEO_H - total_h) // 2)
+        y = max(140, (VIDEO_H - total_h) // 2)
 
+        # خلفية سوداء شفافة خلف النص
         bg_h = total_h + 70
         bg = Image.new("RGBA", (VIDEO_W, bg_h), (0, 0, 0, 150))
         overlay.paste(bg, (0, y - 35), bg)
@@ -155,61 +189,100 @@ def make_overlay(seg, work_dir, episode_title=""):
             _draw_centered(draw, y, line, font, color, TEXT_STROKE_W, TEXT_STROKE)
             y += lh
 
+        # للآيات: إضافة سطر المرجع (سورة: آية)
         if is_quran and seg.get("display"):
             try:
-                fd = ImageFont.truetype(font_path, 42, layout_engine=ImageFont.Layout.RAQM)
+                fd = ImageFont.truetype(
+                    font_path, 42, layout_engine=ImageFont.Layout.RAQM,
+                )
             except Exception:
                 fd = ImageFont.truetype(font_path, 42)
-            _draw_centered(draw, y + 25, f"﴿ {seg['display']} ﴾", fd, "#D4AF37", 2, "black")
+            _draw_centered(
+                draw, y + 25,
+                f"﴿ {seg['display']} ﴾",
+                fd, "#D4AF37", 2, "black",
+            )
 
-    # علامة مائية
+    # ─────────────────────────────────────────────────────────
+    # علامة مائية ثابتة (أسفل يمين)
+    # ─────────────────────────────────────────────────────────
     try:
-        fw = ImageFont.truetype(font_path, 30, layout_engine=ImageFont.Layout.RAQM)
+        fw = ImageFont.truetype(
+            font_path, 30, layout_engine=ImageFont.Layout.RAQM,
+        )
     except Exception:
         fw = ImageFont.truetype(font_path, 30)
     wm = _shape("ملاك المعرفة")
     bbox = draw.textbbox((0, 0), wm, font=fw)
-    draw.text((VIDEO_W - (bbox[2] - bbox[0]) - 40, VIDEO_H - 70),
-              wm, font=fw, fill=(212, 175, 55, 130))
+    draw.text(
+        (VIDEO_W - (bbox[2] - bbox[0]) - 40, VIDEO_H - 70),
+        wm, font=fw, fill=(212, 175, 55, 130),
+    )
 
-    # شريط teaser أسفل
+    # ─────────────────────────────────────────────────────────
+    # شريط Teaser (الحلقة القادمة)
+    # ─────────────────────────────────────────────────────────
     if seg.get("type") == "teaser" and seg.get("teaser_data"):
         td = seg["teaser_data"]
         strip_h = 320
-        overlay.paste(Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 225)),
-                      (0, VIDEO_H - strip_h))
+        overlay.paste(
+            Image.new("RGBA", (VIDEO_W, strip_h), (0, 0, 0, 225)),
+            (0, VIDEO_H - strip_h),
+        )
         draw = ImageDraw.Draw(overlay)
 
         try:
-            fn = ImageFont.truetype(font_path, 42, layout_engine=ImageFont.Layout.RAQM)
-            fu = ImageFont.truetype(font_path, 30, layout_engine=ImageFont.Layout.RAQM)
+            fn = ImageFont.truetype(
+                font_path, 42, layout_engine=ImageFont.Layout.RAQM,
+            )
+            fu = ImageFont.truetype(
+                font_path, 30, layout_engine=ImageFont.Layout.RAQM,
+            )
         except Exception:
             fn = ImageFont.truetype(font_path, 42)
             fu = ImageFont.truetype(font_path, 30)
 
         y0 = VIDEO_H - strip_h + 30
         _draw_centered(draw, y0, "▶ الحلقة القادمة", fn, ACCENT_COLOR, 2, "black")
-        _draw_centered(draw, y0 + 70, td.get("next_episode_title", ""),
-                       fn, TEXT_COLOR, 2, "black")
-        _draw_centered(draw, y0 + 160,
-                       f"◆ {td.get('url', '').replace('https://', '')}",
-                       fu, ACCENT_COLOR, 2, "black")
+        _draw_centered(
+            draw, y0 + 70, td.get("next_episode_title", ""),
+            fn, TEXT_COLOR, 2, "black",
+        )
+        _draw_centered(
+            draw, y0 + 160,
+            f"◆ {td.get('url', '').replace('https://', '')}",
+            fu, ACCENT_COLOR, 2, "black",
+        )
 
+    # ─────────────────────────────────────────────────────────
+    # حفظ الـ overlay
+    # ─────────────────────────────────────────────────────────
     path = work_dir / f"overlay_{seg['index']:03d}.png"
     overlay.save(path)
     return str(path)
 
 
+# ═════════════════════════════════════════════════════════════
+# بناء الفيديو الكامل
+# ═════════════════════════════════════════════════════════════
 def build_video(audio_path, meta_path, output_mp4):
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_video_"))
     concat_lines = []
 
     try:
-        for seg in meta["segments"]:
+        total_segs = len(meta["segments"])
+        print(f"🎬 بناء الفيديو: {total_segs} مقطع", flush=True)
+
+        for i, seg in enumerate(meta["segments"], 1):
             duration = seg["duration"]
             if duration <= 0:
+                print(f"   ⚠️ تخطي مقطع {seg['index']} (مدة 0)", flush=True)
                 continue
+
+            print(f"   [{i}/{total_segs}] {seg.get('type', '?')} "
+                  f"({duration:.1f}s)", flush=True)
+
             bg = fetch_media(seg.get("visual", "mosque"), work_dir)
             ov = make_overlay(seg, work_dir, meta.get("title", ""))
             out_seg = work_dir / f"seg_{seg['index']:03d}.mp4"
@@ -227,11 +300,15 @@ def build_video(audio_path, meta_path, output_mp4):
             concat_lines.append(f"file '{out_seg}'")
 
         if not concat_lines:
-            raise RuntimeError("لا مقاطع فيديو")
+            raise RuntimeError("لا مقاطع فيديو صالحة")
 
-        (work_dir / "concat.txt").write_text("\n".join(concat_lines),
-                                             encoding="utf-8")
+        # دمج كل المقاطع + الصوت
+        (work_dir / "concat.txt").write_text(
+            "\n".join(concat_lines), encoding="utf-8",
+        )
         Path(output_mp4).parent.mkdir(parents=True, exist_ok=True)
+
+        print("🔗 دمج المقاطع مع الصوت...", flush=True)
         subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", str(work_dir / "concat.txt"),
@@ -239,7 +316,9 @@ def build_video(audio_path, meta_path, output_mp4):
             "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
             "-shortest", output_mp4,
         ], check=True, capture_output=True)
-        print(f"✅ فيديو: {output_mp4}", flush=True)
+
+        size_mb = Path(output_mp4).stat().st_size / (1024 * 1024)
+        print(f"✅ فيديو: {output_mp4} ({size_mb:.1f} MB)", flush=True)
     finally:
         cleanup_dir(work_dir)
 
