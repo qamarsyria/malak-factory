@@ -31,7 +31,7 @@ EDGE_VOICE = "ar-SA-HamedNeural"
 EDGE_RATE = "+0%"
 EDGE_VOLUME = "+0%"
 
-# Gemini TTS: للآيات القرآنية فقط (حصة محدودة: ~15 طلب/يوم لكل مفتاح)
+# Gemini TTS: للآيات القرآنية فقط
 VOICE_QURAN = "Fenrir"
 QURAN_STYLE = (
     "(recite in a slow, solemn, tajweed-compliant tone "
@@ -137,7 +137,7 @@ def build_episode_audio(episode_json_path, output_mp3):
     all_segs = ep.get("segments", [])
     total = len(all_segs)
     gemini_quran_count = 0
-    gemini_available = True   # circuit breaker: يتحول إلى False بعد أول فشل
+    gemini_available = True
 
     try:
         print(f"🎙️ توليد الصوت: {total} مقطع", flush=True)
@@ -150,9 +150,9 @@ def build_episode_audio(episode_json_path, output_mp3):
             is_first = (pos == 0)
             is_last = (pos == total - 1)
 
-            # ══════════════════════════════════════════════════════
-            # 1. السرد / CTA / Teaser / Intro → Edge TTS (مجاني)
-            # ══════════════════════════════════════════════════════
+            # ─────────────────────────────────────────────
+            # 1. السرد / CTA / Teaser / Intro → Edge TTS
+            # ─────────────────────────────────────────────
             if seg_type in ("narration", "teaser", "cta", "outro", "intro"):
                 style = seg.get("emotion_hint") or "(in a warm, narrative tone)"
                 visual = seg.get("visual", "mosque")
@@ -196,9 +196,9 @@ def build_episode_audio(episode_json_path, output_mp3):
                 meta_segments.append(meta)
                 parts.append(str(norm_path))
 
-            # ══════════════════════════════════════════════════════
+            # ─────────────────────────────────────────────
             # 2. الآيات → Gemini TTS (مع circuit breaker)
-            # ══════════════════════════════════════════════════════
+            # ─────────────────────────────────────────────
             elif seg_type == "quran":
                 surah = seg["surah"]
                 ayahs = seg["ayah_numbers"]
@@ -219,17 +219,14 @@ def build_episode_audio(episode_json_path, output_mp3):
 
                 generated = False
 
-                # جرّب Gemini فقط إذا كان متاحاً ولم نتجاوز الحد
                 if gemini_available and gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE:
                     print(f"🎙️ Gemini TTS [آية {disp}]...", flush=True)
                     generated = try_gemini_quran(txt, str(raw_path))
                     if generated:
                         gemini_quran_count += 1
                     else:
-                        # أول فشل → عطّل Gemini لبقية الحلقة (توفير وقت)
                         gemini_available = False
-                        print(f"   🔒 تعطيل Gemini TTS لبقية الحلقة "
-                              f"(المفاتيح غير متاحة)", flush=True)
+                        print(f"   🔒 تعطيل Gemini TTS لبقية الحلقة", flush=True)
 
                 if not generated:
                     print(f"🎙️ Edge TTS [آية {disp}]...", flush=True)
@@ -257,9 +254,6 @@ def build_episode_audio(episode_json_path, output_mp3):
         print(f"📊 إجمالي: {gemini_quran_count} آية بـ Gemini، "
               f"{len(parts) - gemini_quran_count} مقطع بـ Edge TTS", flush=True)
 
-        # ══════════════════════════════════════════════════════════
-        # دمج كل المقاطع
-        # ══════════════════════════════════════════════════════════
         concat_file = work_dir / "final.txt"
         concat_file.write_text("\n".join([f"file '{p}'" for p in parts]),
                                encoding="utf-8")
@@ -272,9 +266,6 @@ def build_episode_audio(episode_json_path, output_mp3):
             check=True, capture_output=True,
         )
 
-        # ══════════════════════════════════════════════════════════
-        # كسر بصمة الصوت (6.5% pitch + 5% speed)
-        # ══════════════════════════════════════════════════════════
         print("🛡️ كسر البصمة (6.5%+5%)...", flush=True)
         dsp = (
             "asetrate=44100*1.065,"
@@ -290,9 +281,6 @@ def build_episode_audio(episode_json_path, output_mp3):
             check=True, capture_output=True,
         )
 
-        # ══════════════════════════════════════════════════════════
-        # حفظ meta JSON
-        # ══════════════════════════════════════════════════════════
         meta_path = str(output_mp3).replace(".mp3", "_meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump({
@@ -311,9 +299,6 @@ def build_episode_audio(episode_json_path, output_mp3):
         cleanup_dir(work_dir)
 
 
-# ═════════════════════════════════════════════════════════════
-# نقطة الدخول
-# ═════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     try:
         if len(sys.argv) < 3:
