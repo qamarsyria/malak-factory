@@ -1,4 +1,4 @@
-"""توليد الصوت: Edge TTS للسرد + Gemini TTS للقرآن."""
+"""توليد الصوت الهجين: SILMA + Phonemizer للقرآن، Gemini للسرد، Edge كاحتياط."""
 import os, sys, json, asyncio, subprocess, tempfile, traceback, shutil
 from pathlib import Path
 import requests
@@ -12,18 +12,44 @@ from voice import generate as gemini_generate
 from sfx_manager import fetch_sfx
 from utilities import cleanup_dir, notify_telegram, safe_copy
 
+try:
+    from silma_tts.api import SilmaTTS
+    HAS_SILMA = True
+except ImportError:
+    HAS_SILMA = False
+
+try:
+    from quranic_phonemizer import Phonemizer
+    HAS_PHONEMIZER = True
+except ImportError:
+    HAS_PHONEMIZER = False
+
 TARGET_BR = "192k"
 SFX_VOLUME = 0.05
 
-# إبطاء السرد بنسبة 12% ليكون متمهلاً
+# 🎯 السرعة المطلوبة (10.5%)
 EDGE_VOICE = "ar-SA-HamedNeural"
-EDGE_RATE = "-12%"
+EDGE_RATE = "-10.5%" 
 EDGE_VOLUME = "+0%"
 
-VOICE_QURAN = "Fenrir"
-QURAN_STYLE = "(recite in a slow, solemn, tajweed-compliant tone with pauses at proper waqf marks and full tashkeel)"
+GEMINI_VOICE = "Charon"
+GEMINI_QURAN_VOICE = "Fenrir"
+QURAN_STYLE = "(recite in a slow, solemn, tajweed-compliant tone with full tashkeel)"
+
 MAX_GEMINI_TTS_PER_EPISODE = 8
 MAX_GEMINI_RETRIES = 2
+
+# تهيئة SILMA (بدون استنساخ، سنستخدم الأصوات الافتراضية المدمجة)
+silma_engine = None
+if HAS_SILMA:
+    try: 
+        silma_engine = SilmaTTS()
+    except Exception as e:
+        print(f"⚠️ فشل تهيئة SILMA: {e}")
+
+phonemizer = None
+if HAS_PHONEMIZER:
+    phonemizer = Phonemizer()
 
 def normalize(input_path, output_path):
     subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-ar", "44100", "-ac", "1", "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-codec:a", "libmp3lame", "-b:a", TARGET_BR, str(output_path)], check=True, capture_output=True)
@@ -42,9 +68,7 @@ def get_duration(path):
 
 def add_fade(input_path, output_path):
     dur = get_duration(input_path)
-    if dur <= 0:
-        safe_copy(input_path, output_path)
-        return
+    if dur <= 0: safe_copy(input_path, output_path); return
     subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-af", f"afade=t=in:st=0:d=0.2,afade=t=out:st={max(0, dur - 0.25)}:d=0.25", "-c:a", "libmp3lame", "-b:a", TARGET_BR, str(output_path)], check=True, capture_output=True)
 
 async def _edge_tts_async(text, output_path):
@@ -54,15 +78,40 @@ async def _edge_tts_async(text, output_path):
 def edge_tts_generate(text, output_path):
     asyncio.run(_edge_tts_async(text, output_path))
 
-def try_gemini_quran(text, output_path):
+def try_gemini_tts(text, output_path, voice, item_type, hint):
     for attempt in range(1, MAX_GEMINI_RETRIES + 1):
         try:
-            gemini_generate(text, str(output_path), voice=VOICE_QURAN, item_type="quran", emotion_hint=QURAN_STYLE)
+            gemini_generate(text, str(output_path), voice=voice, item_type=item_type, emotion_hint=hint)
             return True
         except RuntimeError as e:
             if "مستنفدة" in str(e): return False
         except Exception: pass
     return False
+
+def try_silma_quran(surah, ayahs, output_path, fallback_text):
+    """توليد تلاوة عبر SILMA + Phonemizer باستخدام الصوت الافتراضي."""
+    if not silma_engine: return False
+    try:
+        ref = f"{surah}:{ayahs[0]}" if len(ayahs) == 1 else f"{surah}:{ayahs[0]}-{surah}:{ayahs[-1]}"
+        phonemes_str = ""
+        if phonemizer:
+            try:
+                result = phonemizer.phonemize(ref)
+                phonemes_str = " ".join(result.phonemes())
+            except Exception: pass
+        
+        gen_text = phonemes_str if phonemes_str else fallback_text
+        
+        # في SILMA، إذا لم نمرر ref_file، سيستخدم الصوت الافتراضي.
+        # هنا نستخدم واجهة الاستدلال الافتراضية.
+        silma_engine.infer(
+            gen_text=gen_text, 
+            file_wave=str(output_path)
+        )
+        return True
+    except Exception as e:
+        print(f"   ⚠️ فشل SILMA: {e}")
+        return False
 
 def build_episode_audio(episode_json_path, output_mp3):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
@@ -72,9 +121,9 @@ def build_episode_audio(episode_json_path, output_mp3):
     total = len(all_segs)
     gemini_quran_count = 0
     gemini_available = True
+    silma_count = 0
 
     try:
-        print(f"🎙️ توليد الصوت: {total} مقطع", flush=True)
         for pos, seg in enumerate(all_segs):
             seg_type = seg.get("type")
             raw_path = work_dir / f"raw_{idx:03d}.mp3"
@@ -84,10 +133,13 @@ def build_episode_audio(episode_json_path, output_mp3):
             is_last = (pos == total - 1)
 
             if seg_type in ("narration", "teaser", "cta", "outro", "intro", "summary"):
+                # استخراج طبقة الصوت (النبرة)
                 style = seg.get("emotion_hint") or "(in a warm, narrative tone)"
-                print(f"🎙️ Edge TTS [{seg_type}] ({len(seg['text'])} حرف)...", flush=True)
-                edge_tts_generate(seg["text"], str(raw_path))
-
+                
+                success = try_gemini_tts(seg["text"], str(raw_path), GEMINI_VOICE, "story", style)
+                if not success: 
+                    edge_tts_generate(seg["text"], str(raw_path))
+                
                 src = str(raw_path)
                 sfx = fetch_sfx(seg.get("sfx", "")) if seg.get("sfx") else ""
                 if sfx and os.path.exists(sfx):
@@ -108,49 +160,45 @@ def build_episode_audio(episode_json_path, output_mp3):
             elif seg_type == "quran":
                 surah, ayahs = seg["surah"], seg["ayah_numbers"]
                 sname = seg.get("surah_name") or f"سورة {surah}"
-                if len(ayahs) == 1:
-                    txt, disp = fetch_ayah_text(surah, ayahs[0]), f"{sname}: {ayahs[0]}"
-                else:
-                    txt, disp = " ".join(filter(None, (fetch_ayah_text(surah, a) for a in ayahs))), f"{sname}: {ayahs[0]}-{ayahs[-1]}"
+                if len(ayahs) == 1: txt, disp = fetch_ayah_text(surah, ayahs[0]), f"{sname}: {ayahs[0]}"
+                else: txt, disp = " ".join(filter(None, (fetch_ayah_text(surah, a) for a in ayahs))), f"{sname}: {ayahs[0]}-{ayahs[-1]}"
 
-                if not txt:
-                    idx += 1; continue
-
+                if not txt: idx += 1; continue
                 generated = False
-                if gemini_available and gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE:
-                    print(f"🎙️ Gemini TTS [آية {disp}]...", flush=True)
-                    generated = try_gemini_quran(txt, str(raw_path))
+
+                # 1. محاولة SILMA (الافتراضي)
+                if HAS_SILMA and silma_engine:
+                    generated = try_silma_quran(surah, ayahs, str(raw_path), txt)
+                    if generated: silma_count += 1
+
+                # 2. محاولة Gemini
+                if not generated and gemini_available and gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE:
+                    generated = try_gemini_tts(txt, str(raw_path), GEMINI_QURAN_VOICE, "quran", QURAN_STYLE)
                     if generated: gemini_quran_count += 1
                     else: gemini_available = False
 
-                if not generated:
-                    print(f"🎙️ Edge TTS [آية {disp}]...", flush=True)
-                    edge_tts_generate(txt, str(raw_path))
+                # 3. Edge TTS
+                if not generated: edge_tts_generate(txt, str(raw_path))
 
                 if is_first or is_last: add_fade(str(raw_path), str(fade_path))
                 else: safe_copy(str(raw_path), str(fade_path))
 
                 normalize(str(fade_path), str(norm_path))
-                meta_segments.append({"index": idx, "type": "quran", "text": txt, "display": disp, "visual": "quran book", "duration": get_duration(str(norm_path)), "voice": "gemini" if generated else "edge"})
+                meta_segments.append({"index": idx, "type": "quran", "text": txt, "display": disp, "visual": "quran book", "duration": get_duration(str(norm_path)), "voice": "silma" if (generated and silma_count>0) else ("gemini" if generated else "edge")})
                 parts.append(str(norm_path))
             idx += 1
 
         if not parts: raise RuntimeError("لا مقاطع صوتية")
-        print(f"📊 إجمالي: {gemini_quran_count} آية بـ Gemini، {len(parts) - gemini_quran_count} مقطع بـ Edge TTS", flush=True)
-
         concat_file = work_dir / "final.txt"
         concat_file.write_text("\n".join([f"file '{p}'" for p in parts]), encoding="utf-8")
         merged = work_dir / "merged_raw.mp3"
-        print("🔗 دمج المقاطع...", flush=True)
         subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-codec:a", "libmp3lame", "-b:a", TARGET_BR, str(merged)], check=True, capture_output=True)
-
-        print("✅ الصوت جاهز ومتزامن تماماً...", flush=True)
         Path(output_mp3).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(str(merged), str(output_mp3))
-
+        
         meta_path = str(output_mp3).replace(".mp3", "_meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "story_id": ep.get("story_id", ""), "total_duration": get_duration(output_mp3), "gemini_quran_count": gemini_quran_count, "segments": meta_segments}, f, ensure_ascii=False, indent=2)
+            json.dump({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "story_id": ep.get("story_id", ""), "total_duration": get_duration(output_mp3), "gemini_quran_count": gemini_quran_count, "silma_quran_count": silma_count, "segments": meta_segments}, f, ensure_ascii=False, indent=2)
         print(f"✅ صوت: {output_mp3} | {get_duration(output_mp3)/60:.1f} د", flush=True)
     finally:
         cleanup_dir(work_dir)
