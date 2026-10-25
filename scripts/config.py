@@ -47,10 +47,9 @@ TARGET_BITRATE = "192k"
 QURAN_RECITER = "Alafasy_128kbps"
 QURAN_BASE = "https://everyayah.com/data"
 
-# 🌟 القراء الآمنون من حقوق النشر (يتم الاختيار عشوائياً لكل حلقة)
+# 🌟 القارئ الآمن (الشيخ محمود خليل الحصري - آمن 100% على يوتيوب)
 SAFE_RECITERS = [
-    "Yasser_Ad-Dussary_128kbps",   # ياسر الدوسري (الأكثر أماناً)
-    "MaherAlMuaiqly128kbps"        # ماهر المعيقلي (آمن نسبياً)
+    "Husary_128kbps"
 ]
 # للتوافق مع الكود القديم (في حال استُخدم STORY_RECITER في مكان آخر)
 STORY_RECITER = SAFE_RECITERS[0]
