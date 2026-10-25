@@ -1,13 +1,15 @@
-"""توليد الصوت: TTS + SFX + fade (أول/آخر فقط) + كسر بصمة."""
+"""توليد الصوت: Edge TTS للسرد (مجاني) + Gemini TTS للقرآن (جودة عالية)."""
 import os
 import sys
 import json
+import asyncio
 import subprocess
 import tempfile
 import traceback
 from pathlib import Path
 
 import requests
+import edge_tts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,10 +22,24 @@ from utilities import cleanup_dir, notify_telegram, safe_copy  # noqa: E402
 TARGET_BR = "192k"
 SFX_VOLUME = 0.05
 
-VOICE_NARRATION = "Charon"
+# ─────────────────────────────────────────────────────────────
+# Edge TTS: مجاني، بلا حدود، للسرد الطويل
+# ─────────────────────────────────────────────────────────────
+EDGE_VOICE = "ar-SA-HamedNeural"   # صوت سعودي عميق (ذكوري)
+EDGE_RATE = "+0%"                  # سرعة عادية
+EDGE_VOLUME = "+0%"
+
+# ─────────────────────────────────────────────────────────────
+# Gemini TTS: للآيات القرآنية فقط (حصة محدودة: 15 طلب/يوم لكل مفتاح)
+# ─────────────────────────────────────────────────────────────
 VOICE_QURAN = "Fenrir"
-QURAN_STYLE = ("(recite in a slow, solemn, tajweed-compliant tone "
-               "with pauses at proper waqf marks and full tashkeel)")
+QURAN_STYLE = (
+    "(recite in a slow, solemn, tajweed-compliant tone "
+    "with pauses at proper waqf marks and full tashkeel)"
+)
+
+MAX_GEMINI_TTS_PER_EPISODE = 8   # لا تتجاوز هذه الآيات بـ Gemini
+MAX_GEMINI_RETRIES = 2            # إعادة محاولة لكل آية عند الفشل
 
 
 def normalize(input_path, output_path):
@@ -70,12 +86,49 @@ def add_fade(input_path, output_path):
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# Edge TTS: توليد صوت السرد (مجاني)
+# ─────────────────────────────────────────────────────────────
+async def _edge_tts_async(text, output_path):
+    communicate = edge_tts.Communicate(
+        text, EDGE_VOICE, rate=EDGE_RATE, volume=EDGE_VOLUME,
+    )
+    await communicate.save(str(output_path))
+
+
+def edge_tts_generate(text, output_path):
+    """توليد صوت عبر Edge TTS (async داخلياً)."""
+    asyncio.run(_edge_tts_async(text, output_path))
+    return output_path
+
+
+def try_gemini_quran(text, output_path):
+    """محاولة توليد آية عبر Gemini TTS. تعيد True عند النجاح."""
+    for attempt in range(1, MAX_GEMINI_RETRIES + 1):
+        try:
+            gemini_generate(
+                text, str(output_path),
+                voice=VOICE_QURAN, item_type="quran",
+                emotion_hint=QURAN_STYLE,
+            )
+            return True
+        except RuntimeError as e:
+            if "مستنفدة" in str(e):
+                print(f"   ⚠️ Gemini TTS مستنفد، سنستخدم Edge TTS للآية", flush=True)
+                return False
+            print(f"   ⚠️ محاولة Gemini {attempt} فشلت: {e}", flush=True)
+        except Exception as e:
+            print(f"   ⚠️ محاولة Gemini {attempt} فشلت: {e}", flush=True)
+    return False
+
+
 def build_episode_audio(episode_json_path, output_mp3):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     parts, meta_segments, idx = [], [], 0
     all_segs = ep.get("segments", [])
     total = len(all_segs)
+    gemini_quran_count = 0
 
     try:
         for pos, seg in enumerate(all_segs):
@@ -86,11 +139,16 @@ def build_episode_audio(episode_json_path, output_mp3):
             is_first = (pos == 0)
             is_last = (pos == total - 1)
 
+            # ══════════════════════════════════════════════════════
+            # 1. السرد / CTA / Teaser / Intro → Edge TTS (مجاني)
+            # ══════════════════════════════════════════════════════
             if seg_type in ("narration", "teaser", "cta", "outro", "intro"):
                 style = seg.get("emotion_hint") or "(in a warm, narrative tone)"
                 visual = seg.get("visual", "mosque")
-                gemini_generate(seg["text"], str(raw_path), voice=VOICE_NARRATION,
-                                item_type="story", emotion_hint=style)
+
+                print(f"🎙️ Edge TTS [{seg_type}] ({len(seg['text'])} حرف)...",
+                      flush=True)
+                edge_tts_generate(seg["text"], str(raw_path))
 
                 src = str(raw_path)
                 sfx = fetch_sfx(seg.get("sfx", "")) if seg.get("sfx") else ""
@@ -127,6 +185,9 @@ def build_episode_audio(episode_json_path, output_mp3):
                 meta_segments.append(meta)
                 parts.append(str(norm_path))
 
+            # ══════════════════════════════════════════════════════
+            # 2. الآيات → Gemini TTS (جودة عالية، مع fallback)
+            # ══════════════════════════════════════════════════════
             elif seg_type == "quran":
                 surah = seg["surah"]
                 ayahs = seg["ayah_numbers"]
@@ -145,8 +206,20 @@ def build_episode_audio(episode_json_path, output_mp3):
                     idx += 1
                     continue
 
-                gemini_generate(txt, str(raw_path), voice=VOICE_QURAN,
-                                item_type="quran", emotion_hint=QURAN_STYLE)
+                use_gemini = gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE
+                generated = False
+
+                if use_gemini:
+                    print(f"🎙️ Gemini TTS [آية {disp}]...", flush=True)
+                    generated = try_gemini_quran(txt, str(raw_path))
+                    if generated:
+                        gemini_quran_count += 1
+
+                if not generated:
+                    # fallback إلى Edge TTS (صوت Hamed مع نبرة خشوع)
+                    print(f"🎙️ Edge TTS [آية {disp}] (fallback)...", flush=True)
+                    edge_tts_generate(txt, str(raw_path))
+
                 if is_first or is_last:
                     add_fade(str(raw_path), str(fade_path))
                 else:
@@ -157,6 +230,7 @@ def build_episode_audio(episode_json_path, output_mp3):
                     "index": idx, "type": "quran", "text": txt,
                     "display": disp, "visual": "quran book",
                     "duration": get_duration(str(norm_path)),
+                    "voice": "gemini" if generated else "edge",
                 })
                 parts.append(str(norm_path))
 
@@ -164,6 +238,9 @@ def build_episode_audio(episode_json_path, output_mp3):
 
         if not parts:
             raise RuntimeError("لا توجد مقاطع صوتية")
+
+        print(f"📊 إجمالي: {gemini_quran_count} آية بـ Gemini، "
+              f"{len(parts) - gemini_quran_count} بـ Edge TTS", flush=True)
 
         concat_file = work_dir / "final.txt"
         concat_file.write_text("\n".join([f"file '{p}'" for p in parts]),
@@ -198,6 +275,7 @@ def build_episode_audio(episode_json_path, output_mp3):
                 "title": ep.get("title", ""),
                 "story_id": ep.get("story_id", ""),
                 "total_duration": get_duration(output_mp3),
+                "gemini_quran_count": gemini_quran_count,
                 "segments": meta_segments,
             }, f, ensure_ascii=False, indent=2)
 
