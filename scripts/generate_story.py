@@ -92,12 +92,13 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_gemini(prompt, is_json, timeout, max_tokens)
 
 def fix_arabic_tashkeel(text):
-    """إصلاح إجباري للزخارف والكلمات الشائعة قبل النطق"""
+    """إصلاح إجباري للزخارف والكلمات الشائعة قبل النطق (تجويد مبسط)"""
     text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
     text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ")
     text = text.replace("رحمه الله", "رَحِمَهُ اللَّهُ")
     text = text.replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
     
+    # تفخيم لام الجلالة وإصلاح التشكيل
     text = re.sub(r'(?<![ء-ي])الله(?![ء-ي])', 'اللَّه', text)
     text = re.sub(r'(?<![ء-ي])لله(?![ء-ي])', 'لِلَّه', text)
     text = re.sub(r'(?<![ء-ي])بالله(?![ء-ي])', 'بِاللَّه', text)
@@ -166,7 +167,7 @@ def parse_script_with_verses(script_text):
         return [{"type": "narration", "text": fix_arabic_tashkeel(c)} for c in split_narration(text)]
     
     segments, i, quran_count = [], 0, 0
-    used_ayahs = set() # لمنع التكرار
+    used_ayahs = set() 
     
     while i < len(parts):
         if i % 3 == 0:
