@@ -24,21 +24,15 @@ def save_state(state: dict):
 def get_current_story(library: list, state: dict) -> dict:
     if not library: raise RuntimeError("المكتبة فارغة")
     
+    # إجبار القصة المحددة في الحالة
     current_id = state.get("current_story_id")
     if current_id:
         for idx, s in enumerate(library):
             if s["id"] == current_id:
-                if state.get("episode_num", 1) > s.get("target_episodes", 40):
-                    completed = set(state.get("completed_stories", []))
-                    completed.add(s["id"])
-                    state["completed_stories"] = list(completed)
-                    state["current_story_index"] = idx + 1
-                    state["episode_num"] = 1
-                    state["current_story_id"] = None
-                    break
                 state["current_story_index"] = idx
                 return s
 
+    # إذا لم توجد، البحث العادي
     idx = state.get("current_story_index", 0)
     completed = set(state.get("completed_stories", []))
     while idx < len(library):
