@@ -14,16 +14,12 @@ from utilities import cleanup_dir, notify_telegram, safe_copy
 
 TARGET_BR = "192k"
 SFX_VOLUME = 0.05
-
-# إعدادات Edge TTS (سرعة -12% التي كانت تعجبك)
 EDGE_VOICE = "ar-SA-HamedNeural"
 EDGE_RATE = "-12%" 
 EDGE_VOLUME = "+0%"
 
-# إعدادات Gemini للآيات
 GEMINI_VOICE_QURAN = "Fenrir"
 QURAN_STYLE = "(recite in a slow, solemn, tajweed-compliant tone with full tashkeel and proper waqf)"
-
 MAX_GEMINI_TTS_PER_EPISODE = 8
 
 def normalize(input_path, output_path):
@@ -82,7 +78,6 @@ def build_episode_audio(episode_json_path, output_mp3):
             is_first = (pos == 0)
             is_last = (pos == total - 1)
 
-            # 1. السرد (Edge TTS فقط - مجاني ولا ينفد)
             if seg_type in ("narration", "teaser", "cta", "outro", "intro", "summary"):
                 edge_tts_generate(seg["text"], str(raw_path))
                 
@@ -103,7 +98,6 @@ def build_episode_audio(episode_json_path, output_mp3):
                 meta_segments.append(meta)
                 parts.append(str(norm_path))
 
-            # 2. الآيات (Gemini أولاً، ثم Edge كاحتياط مع النص الحقيقي)
             elif seg_type == "quran":
                 surah, ayahs = seg["surah"], seg["ayah_numbers"]
                 sname = seg.get("surah_name") or f"سورة {surah}"
@@ -113,13 +107,11 @@ def build_episode_audio(episode_json_path, output_mp3):
                 if not txt: idx += 1; continue
                 generated = False
 
-                # محاولة Gemini
                 if gemini_available and gemini_quran_count < MAX_GEMINI_TTS_PER_EPISODE:
                     generated = try_gemini_quran(txt, str(raw_path))
                     if generated: gemini_quran_count += 1
                     else: gemini_available = False
 
-                # إذا فشل Gemini، نستخدم Edge TTS لقراءة نص الآية (وليس رقمها)
                 if not generated: 
                     edge_tts_generate(txt, str(raw_path))
 
