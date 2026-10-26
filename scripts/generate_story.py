@@ -64,20 +64,12 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     return None
 
 def fix_arabic_tashkeel(text):
-    """إصلاح إجباري للزخارف والكلمات الشائعة قبل النطق (تجويد مبسط)"""
-    # مسافات إجبارية بين كلمات الصلاة
-    text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    text = text.replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    
-    text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ")
-    text = text.replace("رحمه الله", "رَحِمَهُ اللَّهُ")
-    text = text.replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
-    
+    text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ").replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
+    text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ").replace("رحمه الله", "رَحِمَهُ اللَّهُ").replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
     text = re.sub(r'(?<![ء-ي])الله(?![ء-ي])', 'اللَّه', text)
     text = re.sub(r'(?<![ء-ي])لله(?![ء-ي])', 'لِلَّه', text)
     text = re.sub(r'(?<![ء-ي])بالله(?![ء-ي])', 'بِاللَّه', text)
     text = re.sub(r'(?<![ء-ي])والله(?![ء-ي])', 'وَاللَّه', text)
-    
     text = re.sub(r'الرحمن', 'الرَّحْمَن', text).replace(r'الرحيم', 'الرَّحِيم')
     return text
 
@@ -125,10 +117,8 @@ def split_narration(text, max_chars=700):
 
 def parse_script_with_verses(script_text):
     text = normalize_arabic_numerals(script_text)
-    # تحويل اسم السورة إلى رقم (مثال: البقرة -> 2)
     for name, num in SURAH_NAME_TO_NUM.items():
-        text = text.replace(f"آية: {name}:", f"آية: {num}:")
-        text = text.replace(f"آية {name}:", f"آية {num}:")
+        text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
         
     patterns = [r'\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]', r'[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]', r'\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]']
     parts = None
@@ -176,7 +166,6 @@ def build_script_prompt(story, plan, ep_num):
 5. **شروط الآيات (مهم جداً):**
    - **ممنوع كتابة نص الآية في السرد**. اكتب فقط جملة السرد، ثم ضع الرمز `[آية: 3:35]` (رقم السورة ثم رقم الآية). النظام سيقوم بإدراج الآية تلقائياً.
    - مثال صحيح: "ثم قال الله تعالى [آية: 2:30] فسجد الملائكة."
-   - مثال خاطئ (لا تفعله): "ثم قال الله تعالى [آية: 2:30] وإذ قال ربك للملائكة إني جاعل..."
 
 اكتب النص فقط."""
 
