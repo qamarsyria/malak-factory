@@ -1,0 +1,101 @@
+name: Test TTS Comparison (SILMA)
+
+# ═════════════════════════════════════════════════════════════
+# اختبار مقارنة TTS — SILMA (وFish اختياري)
+# الاستخدام: Actions → Test TTS Comparison (SILMA) → Run workflow
+# المخرجات: Artifact اسمه "tts-comparison" — حمّله كـ zip
+# ═════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_fish:
+        description: 'اختبار Fish Speech أيضاً؟ (ثقيل + قد يفشل)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  test-tts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ─── 1. جلب الكود ───
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ─── 2. Python 3.11 (متوافق مع torch 2.5) ───
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ─── 3. ffmpeg ───
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      # ─── 4. تثبيت المتطلبات ───
+      - name: Install PyTorch (CPU)
+        run: |
+          pip install --upgrade pip
+          pip install torch==2.5.1 torchaudio==2.5.1 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install SILMA + phonemizer
+        run: |
+          pip install silma-tts quranic-phonemizer soundfile
+          echo "✅ SILMA installed"
+
+      - name: Install Fish Speech (optional)
+        if: ${{ inputs.test_fish == 'true' }}
+        continue-on-error: true
+        run: |
+          pip install fish-speech || echo "⚠️ Fish failed — will skip"
+
+      - name: Install mishkal
+        run: |
+          pip install mishkal || echo "⚠️ mishkal failed — will skip"
+
+      # ─── 5. مجلدات ───
+      - name: Prepare directories
+        run: |
+          mkdir -p out/test_tts
+          mkdir -p assets/audio/reference
+
+      # ─── 6. تشغيل الاختبار ───
+      - name: Run TTS comparison
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python test_tts_comparison.py 2>&1 | tee out/test_tts/log.txt
+
+      # ─── 7. رفع الملفات ───
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-comparison
+          path: out/test_tts/
+          retention-days: 7
+
+      # ─── 8. ملخص ───
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🎧 Test Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f out/test_tts/report.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat out/test_tts/report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifact:** scroll down → Artifacts → 'tts-comparison'" >> $GITHUB_STEP_SUMMARY
