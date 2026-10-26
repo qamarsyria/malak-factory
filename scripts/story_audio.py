@@ -1,5 +1,5 @@
-"""توليد الصوت المستقر: Edge TTS للسرد + Gemini TTS للآيات (مع حماية)."""
-import os, sys, json, asyncio, subprocess, tempfile, traceback, shutil
+"""توليد الصوت المستقر: Edge TTS للسرد + Gemini TTS للآيات (مع حماية من الانهيار)."""
+import os, sys, json, asyncio, subprocess, tempfile, traceback, shutil, re
 from pathlib import Path
 import requests
 import edge_tts
@@ -23,7 +23,12 @@ QURAN_STYLE = "(recite in a slow, solemn, tajweed-compliant tone with full tashk
 MAX_GEMINI_TTS_PER_EPISODE = 8
 
 def normalize(input_path, output_path):
-    subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-ar", "44100", "-ac", "1", "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-codec:a", "libmp3lame", "-b:a", TARGET_BR, str(output_path)], check=True, capture_output=True)
+    """تطبيع الصوت مع حماية من انهيار ffmpeg على مقاطع الصمت."""
+    try:
+        subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-ar", "44100", "-ac", "1", "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-codec:a", "libmp3lame", "-b:a", TARGET_BR, str(output_path)], check=True, capture_output=True)
+    except Exception as e:
+        print(f"⚠️ فشل تطبيع الصوت (loudnorm): {e}. سيتم نسخ الملف كما هو.", flush=True)
+        safe_copy(input_path, output_path)
 
 def fetch_ayah_text(surah, ayah):
     try:
@@ -47,11 +52,20 @@ async def _edge_tts_async(text, output_path):
     await communicate.save(str(output_path))
 
 def edge_tts_generate(text, output_path):
+    # تنظيف النص من أي أقواس أو رموز قد تسبب فشل Edge TTS
+    clean_text = re.sub(r'\[.*?\]', '', text)
+    clean_text = re.sub(r'\(.*?\)', '', clean_text).strip()
+    if not clean_text:
+        clean_text = "تلاوة" # كلمة احتياطية لتجنب النص الفارغ
+    
     try:
-        asyncio.run(_edge_tts_async(text, output_path))
+        asyncio.run(_edge_tts_async(clean_text, output_path))
+        if os.path.getsize(output_path) < 100:
+            raise Exception("ملف صوتي فارغ")
     except Exception as e:
         print(f"⚠️ فشل Edge TTS: {e}. سيتم توليد صمت للمقطع.", flush=True)
-        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "1", "-c:a", "libmp3lame", str(output_path)], check=True, capture_output=True)
+        # توليد ثانيتين صمت لتجنب انهيار loudnorm
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "2", "-c:a", "libmp3lame", "-b:a", "192k", str(output_path)], check=True, capture_output=True)
 
 def try_gemini_quran(text, output_path):
     try:
