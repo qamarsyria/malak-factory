@@ -1,12 +1,6 @@
 """توليد حلقة: خطة → سرد → تدقيق → مقاطع → JSON."""
-import os
-import re
-import sys
-import json
-import random
-import traceback
+import os, re, sys, json, random, traceback
 from pathlib import Path
-
 import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,29 +42,22 @@ SURAH_NAMES = {
     111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس",
 }
 
-def get_working_models():
-    return discover_and_cache(force=False)
-
-def call_gemini(prompt, is_json=True, timeout=180, max_tokens=8192):
+def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     pool = get_pool()
     breaker = get_breaker()
-    for model in get_working_models()[:5]:
+    for model in discover_and_cache(force=False)[:5]:
         if breaker.is_open(f"model:{model}"): continue
         for attempt in range(2):
             try:
                 key = pool.get_current()
-                url = (f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}")
-                body = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens},
-                }
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
-                    parts = (r.json().get("candidates", [{}])[0].get("content", {}).get("parts", []))
+                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     if not parts: break
                     text = parts[0].get("text", "")
-                    if not text: break
                     if is_json:
                         s, e = text.find("{"), text.rfind("}")
                         if s == -1 or e <= s: break
@@ -82,30 +69,17 @@ def call_gemini(prompt, is_json=True, timeout=180, max_tokens=8192):
                         return parsed
                     except json.JSONDecodeError: break
                 elif r.status_code == 429: pool.mark_failed(3600)
-                elif r.status_code in (404, 503):
-                    breaker.record_failure(f"model:{model}")
-                    break
+                elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
             except Exception: pass
     return None
 
-def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
-    return call_gemini(prompt, is_json, timeout, max_tokens)
-
 def fix_arabic_tashkeel(text):
-    """إصلاح إجباري للزخارف والكلمات الشائعة قبل النطق (تجويد مبسط)"""
-    text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ")
-    text = text.replace("رحمه الله", "رَحِمَهُ اللَّهُ")
-    text = text.replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
-    
-    # تفخيم لام الجلالة وإصلاح التشكيل
+    text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ").replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ").replace("رحمه الله", "رَحِمَهُ اللَّهُ").replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
     text = re.sub(r'(?<![ء-ي])الله(?![ء-ي])', 'اللَّه', text)
     text = re.sub(r'(?<![ء-ي])لله(?![ء-ي])', 'لِلَّه', text)
     text = re.sub(r'(?<![ء-ي])بالله(?![ء-ي])', 'بِاللَّه', text)
     text = re.sub(r'(?<![ء-ي])والله(?![ء-ي])', 'وَاللَّه', text)
-    
-    text = re.sub(r'الرحمن', 'الرَّحْمَن', text)
-    text = re.sub(r'الرحيم', 'الرَّحِيم', text)
+    text = re.sub(r'الرحمن', 'الرَّحْمَن', text).replace(r'الرحيم', 'الرَّحِيم')
     return text
 
 def normalize_arabic_numerals(text):
@@ -154,21 +128,14 @@ def split_narration(text, max_chars=700):
 
 def parse_script_with_verses(script_text):
     text = normalize_arabic_numerals(script_text)
-    patterns = [
-        r'\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]',
-        r'[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]',
-        r'\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]',
-    ]
+    patterns = [r'\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]', r'[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]', r'\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]']
     parts = None
     for pat in patterns:
         parts = re.split(pat, text)
         if len(parts) > 1: break
     if not parts or len(parts) == 1:
         return [{"type": "narration", "text": fix_arabic_tashkeel(c)} for c in split_narration(text)]
-    
-    segments, i, quran_count = [], 0, 0
-    used_ayahs = set() 
-    
+    segments, i, quran_count, used_ayahs = [], 0, 0, set()
     while i < len(parts):
         if i % 3 == 0:
             chunk = parts[i].strip()
@@ -179,7 +146,6 @@ def parse_script_with_verses(script_text):
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
             except (ValueError, IndexError): i += 2; continue
-            
             ayah_key = f"{surah}:{ayah}"
             if ayah_key not in used_ayahs:
                 sname, ok = verify_ayah(surah, ayah)
