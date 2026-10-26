@@ -14,6 +14,10 @@ torchaudio==2.5.1
 # --- TTS السريع (Edge TTS — للسرد في daily pipeline) ---
 edge-tts>=6.1.19
 
+# --- التلاوة والتجويد المحلي (SILMA + Phonemizer) ---
+silma-tts
+quranic-phonemizer
+
 # --- معالجة اللغة ---
 spacy==3.7.5
 click
