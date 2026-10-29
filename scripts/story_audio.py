@@ -1,11 +1,16 @@
-"""توليد الصوت النهائي لخط القصص — v5.
+"""توليد الصوت النهائي لخط القصص — v8.
 
-المحرك: Gemini TTS (Charon، ar-XA) للسرد والآيات.
-احتياطي: Edge TTS فقط عند فشل Gemini متتالياً.
+الحل الجذري للخشة:
+- استخدام gemini_tts_with_pool بدلاً من Gemini API مباشرة.
+- هذه الدالة تحتوي على _clean_chunk الذي:
+  1. يقص 250ms من نهاية كل مقطع (يزيل ذيل Gemini)
+  2. يطبق fade out 150ms قبل القص
+- هذا هو نفس الأسلوب المستخدم في voice.py (الخط اليومي) الذي لا خشة فيه.
 
-إصلاح v5:
-- convert_to_wav_44k يتعامل مع حالة input == output (ملف مؤقت).
-- لا مزيد من فشل ffmpeg exit 234.
+الدمج:
+- concat demuxer مع -c copy (مثل audio_mixer.py) → انتقالات سلسة.
+- كل المقاطع موحّدة إلى MP3 24kHz 192k mono قبل الدمج.
+- fade in فقط على المقطع الأول (الباقي معالجته _clean_chunk).
 """
 import os
 import sys
@@ -15,11 +20,8 @@ import subprocess
 import tempfile
 import shutil
 import re
-import base64
-import wave
-from pathlib import Path
-
 import requests
+from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,24 +29,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram, safe_copy
 
+# ═══ الحل: استخدام gemini_tts_with_pool (يحتوي _clean_chunk) ═══
+try:
+    from gemini_tts_pool import gemini_tts_with_pool
+    HAS_GEMINI_POOL = True
+except ImportError:
+    HAS_GEMINI_POOL = False
+    print("⚠️ gemini_tts_pool غير موجود", flush=True)
 
-# ═══ الإعدادات — Gemini فقط، صوت ذكر ═══
+# ═══ Edge TTS احتياطي ═══
+try:
+    import edge_tts
+    HAS_EDGE = True
+except ImportError:
+    HAS_EDGE = False
+
+
+TARGET_SR = "24000"
 TARGET_BR = "192k"
-TARGET_SR = "44100"
-
-GEMINI_VOICE = "Charon"
-GEMINI_LANGUAGE = "ar-XA"
-
-MAX_GEMINI_CALLS_PER_EPISODE = 40
+MAX_GEMINI_CALLS = 40
 MAX_CONSECUTIVE_FAILURES = 3
-
-FADE_IN_OUT = 0.10
-CROSSFADE = 0.15
-TRIM_THRESHOLD = "-40dB"
-TRIM_MIN_DURATION = 0.30
+EDGE_VOICE = "ar-SA-HamedNeural"
 
 
-# ═══ إصلاحات يدوية للكلمات الحرجة فقط (بدون mishkal) ═══
 CRITICAL_FIXES = {
     "الله": "اللَّه",
     "بالله": "بِاللَّه",
@@ -78,7 +85,6 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-# ═══ أدوات الصوت ═══
 def get_duration(path) -> float:
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -91,114 +97,27 @@ def get_duration(path) -> float:
         return 0.0
 
 
-def convert_to_wav_44k(input_path, output_path):
-    """تحويل إلى WAV 44100 mono — يتعامل مع حالة input == output."""
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-
-    same_file = input_path.resolve() == output_path.resolve()
-    if same_file:
-        tmp = output_path.with_suffix(".tmp.wav")
-        target = tmp
-    else:
-        target = output_path
-
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(input_path),
-             "-af", "aresample=resampler=soxr",
-             "-ar", TARGET_SR, "-ac", "1",
-             "-c:a", "pcm_s16le",
-             str(target)],
-            check=True, capture_output=True, timeout=120,
-        )
-        if same_file:
-            shutil.move(str(tmp), str(output_path))
-    except Exception as e:
-        print(f"   ⚠️ convert_to_wav_44k: {str(e)[:100]}", flush=True)
-        if same_file and tmp.exists():
-            tmp.unlink(missing_ok=True)
-        if not same_file:
-            safe_copy(input_path, output_path)
-        # إذا كان same_file، لا نفعل شيئاً — الملف الأصلي كما هو
+def normalize_mp3(input_path, output_path):
+    """توحيد إلى MP3 24kHz 192k mono — مطابق لصيغة gemini_tts_with_pool."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(input_path),
+         "-ar", TARGET_SR, "-ac", "1",
+         "-codec:a", "libmp3lame", "-b:a", TARGET_BR,
+         str(output_path)],
+        check=True, capture_output=True, timeout=120,
+    )
 
 
-def trim_silence(input_path, output_path):
-    """قص الصمت — يتعامل مع حالة input == output."""
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-    same_file = input_path.resolve() == output_path.resolve()
-
-    if same_file:
-        tmp = output_path.with_suffix(".trim.wav")
-        target = tmp
-    else:
-        target = output_path
-
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(input_path),
-             "-af",
-             f"silenceremove=start_periods=1:start_threshold={TRIM_THRESHOLD}:start_silence={TRIM_MIN_DURATION},"
-             f"areverse,"
-             f"silenceremove=start_periods=1:start_threshold={TRIM_THRESHOLD}:start_silence={TRIM_MIN_DURATION},"
-             f"areverse",
-             "-c:a", "pcm_s16le",
-             str(target)],
-            check=True, capture_output=True, timeout=60,
-        )
-        if same_file:
-            if tmp.stat().st_size > 5000:
-                shutil.move(str(tmp), str(output_path))
-            else:
-                tmp.unlink(missing_ok=True)
-        else:
-            if Path(target).stat().st_size < 5000:
-                safe_copy(input_path, output_path)
-    except Exception as e:
-        print(f"   ⚠️ trim_silence: {str(e)[:100]}", flush=True)
-        if same_file and tmp.exists():
-            tmp.unlink(missing_ok=True)
-        if not same_file:
-            safe_copy(input_path, output_path)
-
-
-def apply_fade(input_wav, output_wav, duration=FADE_IN_OUT):
-    """fade in/out — يتعامل مع حالة input == output."""
-    input_wav = Path(input_wav)
-    output_wav = Path(output_wav)
-    same_file = input_wav.resolve() == output_wav.resolve()
-
-    dur = get_duration(input_wav)
-    if dur <= duration * 2:
-        if not same_file:
-            safe_copy(input_wav, output_wav)
-        return
-
-    if same_file:
-        tmp = output_wav.with_suffix(".fade.wav")
-        target = tmp
-    else:
-        target = output_wav
-
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(input_wav),
-             "-af",
-             f"afade=t=in:st=0:d={duration},"
-             f"afade=t=out:st={max(0, dur - duration)}:d={duration}",
-             "-c:a", "pcm_s16le",
-             str(target)],
-            check=True, capture_output=True,
-        )
-        if same_file:
-            shutil.move(str(tmp), str(output_wav))
-    except Exception as e:
-        print(f"   ⚠️ apply_fade: {str(e)[:100]}", flush=True)
-        if same_file and tmp.exists():
-            tmp.unlink(missing_ok=True)
-        if not same_file:
-            safe_copy(input_wav, output_wav)
+def add_fade_in_only(input_mp3, output_mp3, duration=0.15):
+    """fade in فقط (fade out معالجته _clean_chunk)."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(input_mp3),
+         "-af", f"afade=t=in:st=0:d={duration}",
+         "-ar", TARGET_SR, "-ac", "1",
+         "-codec:a", "libmp3lame", "-b:a", TARGET_BR,
+         str(output_mp3)],
+        check=True, capture_output=True, timeout=60,
+    )
 
 
 def fetch_ayah_text(surah: int, ayah: int) -> str:
@@ -211,196 +130,50 @@ def fetch_ayah_text(surah: int, ayah: int) -> str:
     return ""
 
 
-# ═══ Gemini TTS ═══
-def gemini_tts(text: str, output_wav: Path) -> bool:
-    try:
-        from gemini_tts_pool import get_pool, discover_tts_models
-    except ImportError:
-        return False
-
-    try:
-        pool = get_pool()
-    except Exception:
-        return False
-
-    models = discover_tts_models(prefer_lite=False)
-    if not models:
-        return False
-
-    for model in models[:3]:
-        for attempt in range(2):
-            try:
-                key = pool.get_current()
-            except Exception:
-                return False
-
-            body = {
-                "contents": [{"parts": [{"text": text}]}],
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {
-                        "languageCode": GEMINI_LANGUAGE,
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {"voiceName": GEMINI_VOICE}
-                        },
-                    },
-                },
-            }
-
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={key}"
-            )
-
-            try:
-                r = requests.post(url, json=body, timeout=180)
-
-                if r.status_code == 429:
-                    pool.mark_daily_exhausted()
-                    return False
-
-                if r.status_code == 404:
-                    break
-
-                if r.status_code != 200:
-                    continue
-
-                data = r.json()
-                cands = data.get("candidates") or []
-                if not cands:
-                    continue
-                parts = (cands[0].get("content") or {}).get("parts") or []
-                if not parts:
-                    continue
-                inline = parts[0].get("inlineData") or {}
-                audio_b64 = inline.get("data")
-                if not audio_b64:
-                    continue
-
-                raw = base64.b64decode(audio_b64)
-                with wave.open(str(output_wav), "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(24000)
-                    wf.writeframes(raw)
-
-                pool._advance()
-                return True
-
-            except Exception as e:
-                print(f"   ⚠️ Gemini استثناء: {str(e)[:80]}", flush=True)
-                pool.mark_failed(60)
-                continue
-
-    return False
-
-
-# ═══ Edge TTS — احتياطي فقط ═══
-_EDGE_AVAILABLE = False
-try:
-    import edge_tts
-    _EDGE_AVAILABLE = True
-except ImportError:
-    pass
-
-
 async def _edge_async(text: str, output_path: str):
-    comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-12%")
+    comm = edge_tts.Communicate(text, EDGE_VOICE, rate="-12%")
     await comm.save(output_path)
 
 
-def edge_tts_fallback(text: str, output_mp3: str):
-    if not _EDGE_AVAILABLE:
-        raise RuntimeError("Edge TTS غير متاح أيضاً")
-    asyncio.run(_edge_async(text, output_mp3))
-    if not Path(output_mp3).exists() or Path(output_mp3).stat().st_size < 1024:
+def edge_tts_generate(text: str, output_path: str):
+    if not HAS_EDGE:
+        raise RuntimeError("Edge TTS غير متاح")
+    asyncio.run(_edge_async(text, output_path))
+    if not Path(output_path).exists() or Path(output_path).stat().st_size < 1024:
         raise RuntimeError("Edge TTS: ملف صغير")
 
 
-# ═══ الدالة الرئيسية ═══
 def build_episode_audio(episode_json_path: str, output_mp3: str):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     all_segs = ep.get("segments", [])
-    total = len(all_segs)
 
+    segment_files = []
+    meta_segments = []
     gemini_ok = 0
     gemini_fail = 0
     gemini_calls = 0
     edge_fallback = 0
     consecutive_failures = 0
-
-    segment_wavs = []
-    meta_segments = []
     idx = 0
 
     try:
         for pos, seg in enumerate(all_segs):
             seg_type = seg.get("type")
-            wav_out = work_dir / f"seg_{idx:03d}.wav"
-            trimmed = work_dir / f"trim_{idx:03d}.wav"
-            final_wav = work_dir / f"final_{idx:03d}.wav"
+            is_first = (pos == 0)
 
-            # ═══ السرد ═══
+            text = ""
+            display = ""
+            clean = ""
+
             if seg_type in ("narration", "teaser", "cta", "outro", "intro", "summary"):
-                text = seg["text"]
-                text = apply_critical_fixes(text)
+                text = apply_critical_fixes(seg["text"])
                 clean = _clean_text(text)
                 if not clean:
-                    print(f"   ⏭️ سرد فارغ [{idx}]", flush=True)
                     idx += 1
                     continue
-
                 seg["text"] = text
 
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"🔊 Edge TTS [سرد {idx}] (احتياطي)...", flush=True)
-                    tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
-                    edge_tts_fallback(clean, str(tmp_mp3))
-                    convert_to_wav_44k(tmp_mp3, wav_out)
-                    edge_fallback += 1
-                else:
-                    if gemini_calls >= MAX_GEMINI_CALLS_PER_EPISODE:
-                        print(f"⏭️ تجاوز سقف Gemini — تخطي سرد {idx}", flush=True)
-                        idx += 1
-                        continue
-
-                    print(f"🎙️ Gemini [سرد {idx}]...", flush=True)
-                    gemini_calls += 1
-                    if gemini_tts(clean, wav_out):
-                        if wav_out.exists() and wav_out.stat().st_size > 4096:
-                            convert_to_wav_44k(wav_out, wav_out)
-                            gemini_ok += 1
-                            consecutive_failures = 0
-                            print(f"   ✅ {get_duration(wav_out):.1f}s", flush=True)
-                        else:
-                            gemini_fail += 1
-                            consecutive_failures += 1
-                            print(f"   ⚠️ ملف صغير (متتالي: {consecutive_failures})", flush=True)
-                            tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
-                            edge_tts_fallback(clean, str(tmp_mp3))
-                            convert_to_wav_44k(tmp_mp3, wav_out)
-                            edge_fallback += 1
-                    else:
-                        gemini_fail += 1
-                        consecutive_failures += 1
-                        print(f"   ⚠️ فشل (متتالي: {consecutive_failures})", flush=True)
-                        tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
-                        edge_tts_fallback(clean, str(tmp_mp3))
-                        convert_to_wav_44k(tmp_mp3, wav_out)
-                        edge_fallback += 1
-
-                trim_silence(wav_out, trimmed)
-                apply_fade(trimmed, final_wav)
-
-                meta_segments.append({
-                    "index": idx, "type": seg_type, "text": text,
-                    "visual": seg.get("visual", "mosque"),
-                    "duration": get_duration(final_wav),
-                })
-                segment_wavs.append(final_wav)
-
-            # ═══ الآيات ═══
             elif seg_type == "quran":
                 surah = seg["surah"]
                 ayahs = seg["ayah_numbers"]
@@ -408,100 +181,103 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
 
                 if len(ayahs) == 1:
                     txt = fetch_ayah_text(surah, ayahs[0])
-                    disp = f"{sname}: {ayahs[0]}"
+                    display = f"{sname}: {ayahs[0]}"
                 else:
                     txt = " ".join(filter(None, (fetch_ayah_text(surah, a) for a in ayahs)))
-                    disp = f"{sname}: {ayahs[0]}-{ayahs[-1]}"
+                    display = f"{sname}: {ayahs[0]}-{ayahs[-1]}"
 
                 if not txt:
-                    print(f"   ⏭️ لا نص للآية {disp}", flush=True)
+                    print(f"   ⏭️ لا نص للآية {display}", flush=True)
                     idx += 1
                     continue
-
+                text = txt
                 clean = _clean_text(txt)
 
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"🔊 Edge TTS [آية {disp}] (احتياطي)...", flush=True)
-                    tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
-                    edge_tts_fallback(clean, str(tmp_mp3))
-                    convert_to_wav_44k(tmp_mp3, wav_out)
-                    edge_fallback += 1
-                else:
-                    if gemini_calls >= MAX_GEMINI_CALLS_PER_EPISODE:
-                        print(f"⏭️ تجاوز سقف Gemini — تخطي آية {disp}", flush=True)
-                        idx += 1
-                        continue
+            else:
+                idx += 1
+                continue
 
-                    print(f"🎙️ Gemini [آية {disp}]...", flush=True)
-                    gemini_calls += 1
-                    if gemini_tts(clean, wav_out):
-                        if wav_out.exists() and wav_out.stat().st_size > 4096:
-                            convert_to_wav_44k(wav_out, wav_out)
-                            gemini_ok += 1
-                            consecutive_failures = 0
-                            print(f"   ✅ {get_duration(wav_out):.1f}s", flush=True)
-                        else:
-                            gemini_fail += 1
-                            consecutive_failures += 1
-                            print(f"   ⚠️ ملف صغير (متتالي: {consecutive_failures})", flush=True)
-                            tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
-                            edge_tts_fallback(clean, str(tmp_mp3))
-                            convert_to_wav_44k(tmp_mp3, wav_out)
-                            edge_fallback += 1
+            raw_mp3 = work_dir / f"raw_{idx:03d}.mp3"
+            generated_by_gemini = False
+
+            # ═══ Gemini (via gemini_tts_with_pool — فيه _clean_chunk) ═══
+            can_use_gemini = (
+                HAS_GEMINI_POOL
+                and consecutive_failures < MAX_CONSECUTIVE_FAILURES
+                and gemini_calls < MAX_GEMINI_CALLS
+            )
+
+            if can_use_gemini:
+                gemini_calls += 1
+                try:
+                    print(f"🎙️ Gemini [{seg_type} {idx}]...", flush=True)
+                    gemini_tts_with_pool(clean, str(raw_mp3), voice="Charon")
+
+                    if raw_mp3.exists() and raw_mp3.stat().st_size > 5000:
+                        gemini_ok += 1
+                        consecutive_failures = 0
+                        generated_by_gemini = True
+                        print(f"   ✅ {get_duration(raw_mp3):.1f}s", flush=True)
                     else:
                         gemini_fail += 1
                         consecutive_failures += 1
-                        print(f"   ⚠️ فشل (متتالي: {consecutive_failures})", flush=True)
-                        tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
-                        edge_tts_fallback(clean, str(tmp_mp3))
-                        convert_to_wav_44k(tmp_mp3, wav_out)
-                        edge_fallback += 1
+                        print(f"   ⚠️ ملف صغير (متتالي: {consecutive_failures})", flush=True)
+                except Exception as e:
+                    gemini_fail += 1
+                    consecutive_failures += 1
+                    print(f"   ⚠️ {str(e)[:100]} (متتالي: {consecutive_failures})", flush=True)
 
-                trim_silence(wav_out, trimmed)
-                apply_fade(trimmed, final_wav)
+            # ═══ Edge TTS احتياطي ═══
+            if not generated_by_gemini:
+                print(f"🔊 Edge TTS [{seg_type} {idx}] (احتياطي)...", flush=True)
+                tmp_edge = work_dir / f"edge_{idx:03d}.mp3"
+                try:
+                    edge_tts_generate(clean, str(tmp_edge))
+                    normalize_mp3(tmp_edge, raw_mp3)
+                    edge_fallback += 1
+                except Exception as e:
+                    print(f"   ❌ Edge TTS فشل: {e}", flush=True)
+                    idx += 1
+                    continue
 
-                meta_segments.append({
-                    "index": idx, "type": "quran", "text": clean,
-                    "display": disp, "visual": "quran book",
-                    "duration": get_duration(final_wav),
-                })
-                segment_wavs.append(final_wav)
+            # ═══ fade in فقط على المقطع الأول ═══
+            if is_first:
+                faded = work_dir / f"faded_{idx:03d}.mp3"
+                add_fade_in_only(raw_mp3, faded)
+                segment_files.append(faded)
+            else:
+                segment_files.append(raw_mp3)
+
+            meta_segments.append({
+                "index": idx,
+                "type": seg_type,
+                "text": text[:300],
+                "display": display,
+                "duration": get_duration(raw_mp3),
+                "engine": "gemini" if generated_by_gemini else "edge",
+            })
 
             idx += 1
 
-        if not segment_wavs:
+        if not segment_files:
             raise RuntimeError("لا مقاطع صوتية")
 
-        # ═══ دمج بـ acrossfade ═══
-        print(f"\n🔗 دمج {len(segment_wavs)} مقطع بـ crossfade...", flush=True)
-
-        if len(segment_wavs) == 1:
-            filter_complex = "[0:a]anull[out]"
-        else:
-            filter_parts = []
-            prev = "[0:a]"
-            for i in range(1, len(segment_wavs)):
-                label = f"[x{i}]" if i < len(segment_wavs) - 1 else "[out]"
-                filter_parts.append(
-                    f"{prev}[{i}:a]acrossfade=d={CROSSFADE}:c1=tri:c2=tri{label}"
-                )
-                prev = label
-            filter_complex = ";".join(filter_parts)
-
-        inputs = []
-        for wav in segment_wavs:
-            inputs.extend(["-i", str(wav)])
-
-        concat_cmd = ["ffmpeg", "-y"] + inputs + [
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-ar", TARGET_SR, "-ac", "1",
-            "-c:a", "libmp3lame", "-b:a", TARGET_BR,
-            str(output_mp3),
-        ]
+        # ═══ دمج بـ concat demuxer + -c copy (مثل audio_mixer.py) ═══
+        print(f"\n🔗 دمج {len(segment_files)} مقطع (concat + copy)...", flush=True)
+        concat_file = work_dir / "final.txt"
+        concat_file.write_text(
+            "\n".join(f"file '{p.resolve()}'" for p in segment_files),
+            encoding="utf-8",
+        )
 
         Path(output_mp3).parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(concat_cmd, check=True, capture_output=True, timeout=600)
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", str(concat_file),
+             "-c", "copy",
+             str(output_mp3)],
+            check=True, capture_output=True, timeout=600,
+        )
 
         meta_path = str(output_mp3).replace(".mp3", "_meta.json")
         Path(meta_path).write_text(
@@ -513,7 +289,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                 "stats": {
                     "gemini_ok": gemini_ok,
                     "gemini_fail": gemini_fail,
-                    "gemini_calls": gemini_calls,
                     "edge_fallback": edge_fallback,
                 },
                 "segments": meta_segments,
@@ -521,13 +296,9 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
             encoding="utf-8",
         )
 
-        print("", flush=True)
         print("═" * 60, flush=True)
-        print(f"✅ صوت الحلقة: {output_mp3}", flush=True)
-        print(f"   المدة: {get_duration(output_mp3)/60:.1f} دقيقة", flush=True)
-        print(f"   Gemini: {gemini_ok} ✅ / {gemini_fail} ⚠️", flush=True)
-        print(f"   Edge احتياطي: {edge_fallback}", flush=True)
-        print(f"   استدعاءات: {gemini_calls}/{MAX_GEMINI_CALLS_PER_EPISODE}", flush=True)
+        print(f"✅ {output_mp3} | {get_duration(output_mp3)/60:.1f} دقيقة", flush=True)
+        print(f"   Gemini: {gemini_ok} ✅ | Edge: {edge_fallback}", flush=True)
         print("═" * 60, flush=True)
 
     finally:
