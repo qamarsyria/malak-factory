@@ -43,7 +43,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## 🎧 Voxtral Test (v3)" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎧 Voxtral Test" >> $GITHUB_STEP_SUMMARY
           if [ -f out/test_voxtral/fatiha_1.wav ]; then
             SIZE=$(stat -c%s out/test_voxtral/fatiha_1.wav)
             DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 out/test_voxtral/fatiha_1.wav 2>/dev/null || echo "?")
