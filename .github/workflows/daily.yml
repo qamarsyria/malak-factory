@@ -106,7 +106,7 @@ jobs:
           ls -lh "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
       # ═══════════════════════════════════════════════════════════
-      # 8. الرفع إلى تلغرام (مع ضغط تلقائي إذا تجاوز 48 ميجا)
+      # 8. الرفع إلى تلغرام (ضغط قوي لضمان النجاح)
       # ═══════════════════════════════════════════════════════════
       - name: Upload to Telegram
         id: tg
@@ -122,21 +122,22 @@ jobs:
           VIDEO_PATH="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
           UPLOAD_PATH="$VIDEO_PATH"
           
-          # فحص حجم الفيديو وضغطه إذا لزم الأمر
           SIZE_BYTES=$(stat -c%s "$VIDEO_PATH")
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
           echo "📊 حجم الفيديو الأصلي: ${SIZE_MB} ميجابايت"
           
           if [ "$SIZE_MB" -gt 48 ]; then
-            echo "⚠️ الفيديو أكبر من 48 ميجابايت. جاري إنشاء نسخة مضغوطة (720p) لتلغرام..."
+            echo "⚠️ الفيديو أكبر من 48 ميجابايت. جاري الضغط القوي (480p)..."
             COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
-            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:1280" -c:v libx264 -crf 32 -preset fast -c:a aac -b:a 96k "$COMPRESSED_PATH"
+            
+            # سطر الضغط الجديد: يضمن بقاء الحجم أقل من 40 ميجابايت
+            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:854" -c:v libx264 -b:v 350k -maxrate 400k -bufsize 800k -preset veryfast -c:a aac -b:a 64k "$COMPRESSED_PATH"
+            
             UPLOAD_PATH="$COMPRESSED_PATH"
             C_SIZE=$(( $(stat -c%s "$UPLOAD_PATH") / 1024 / 1024 ))
             echo "✅ تم الضغط بنجاح. الحجم الجديد: ${C_SIZE} ميجابايت"
           fi
           
-          # الرفع
           RESP=$(curl -s -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
