@@ -1,16 +1,7 @@
-"""توليد الصوت النهائي لخط القصص — v8.
-
-الحل الجذري للخشة:
-- استخدام gemini_tts_with_pool بدلاً من Gemini API مباشرة.
-- هذه الدالة تحتوي على _clean_chunk الذي:
-  1. يقص 250ms من نهاية كل مقطع (يزيل ذيل Gemini)
-  2. يطبق fade out 150ms قبل القص
-- هذا هو نفس الأسلوب المستخدم في voice.py (الخط اليومي) الذي لا خشة فيه.
-
-الدمج:
-- concat demuxer مع -c copy (مثل audio_mixer.py) → انتقالات سلسة.
-- كل المقاطع موحّدة إلى MP3 24kHz 192k mono قبل الدمج.
-- fade in فقط على المقطع الأول (الباقي معالجته _clean_chunk).
+"""توليد الصوت النهائي لخط القصص — v9.
+- إصلاح استبدال (ﷺ) بالكلمة كاملة قبل النطق.
+- معالجة الرمز في جميع المقاطع (سرد، خاتمة، تشويق).
+- تحسين استقرار Gemini TTS.
 """
 import os
 import sys
@@ -20,8 +11,11 @@ import subprocess
 import tempfile
 import shutil
 import re
-import requests
+import base64
+import wave
 from pathlib import Path
+
+import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,15 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram, safe_copy
 
-# ═══ الحل: استخدام gemini_tts_with_pool (يحتوي _clean_chunk) ═══
 try:
     from gemini_tts_pool import gemini_tts_with_pool
     HAS_GEMINI_POOL = True
 except ImportError:
     HAS_GEMINI_POOL = False
-    print("⚠️ gemini_tts_pool غير موجود", flush=True)
 
-# ═══ Edge TTS احتياطي ═══
 try:
     import edge_tts
     HAS_EDGE = True
@@ -51,33 +42,61 @@ MAX_GEMINI_CALLS = 40
 MAX_CONSECUTIVE_FAILURES = 3
 EDGE_VOICE = "ar-SA-HamedNeural"
 
-
+# ═══ إصلاحات الكلمات الحرجة ═══
 CRITICAL_FIXES = {
-    "الله": "اللَّه",
-    "بالله": "بِاللَّه",
-    "والله": "وَاللَّه",
-    "لله": "لِلَّه",
-    "الرحمن": "الرَّحْمَن",
-    "الرحيم": "الرَّحِيم",
-    "القرآن": "الْقُرْآن",
-    "محمد": "مُحَمَّد",
+    "ﷺ": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
     "صلى الله عليه وسلم": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
     "رضي الله عنه": "رَضِيَ اللَّهُ عَنْهُ",
     "رضي الله عنها": "رَضِيَ اللَّهُ عَنْهَا",
+    "رضي الله عنهم": "رَضِيَ اللَّهُ عَنْهُمْ",
     "عليه السلام": "عَلَيْهِ السَّلَامُ",
+    "عليها السلام": "عَلَيْهَا السَّلَامُ",
+    "عليهم السلام": "عَلَيْهِمُ السَّلَامُ",
+    "الله": "اللَّه", "بالله": "بِاللَّه", "والله": "وَاللَّه",
+    "لله": "لِلَّه", "الرحمن": "الرَّحْمَن", "الرحيم": "الرَّحِيم",
+    "القرآن": "الْقُرْآن", "محمد": "مُحَمَّد", "رسول": "رَسُول",
+    "النبي": "النَّبِيّ", "الأنبياء": "الْأَنْبِيَاء", "الصديق": "الصِّدِّيق",
+    "الشيطان": "الشَّيْطَان", "الملائكة": "الْمَلَائِكَة", "الجن": "الْجِنّ",
+    "قال": "قَالَ", "قالت": "قَالَتْ", "قالوا": "قَالُوا", 
+    "إبراهيم": "إِبْرَاهِيم", "إسماعيل": "إِسْمَاعِيل", "إسحاق": "إِسْحَاق",
+    "يعقوب": "يَعْقُوب", "يوسف": "يُوسُف", "موسى": "مُوسَى", "عيسى": "عِيسَى",
+    "داود": "دَاوُد", "سليمان": "سُلَيْمَان", "يونس": "يُونُس", "أيوب": "أَيُّوب",
+    "زكريا": "زَكَرِيَّا", "يحيى": "يَحْيَى", "مريم": "مَرْيَم", "آدم": "آدَم",
+    "نوح": "نُوح", "هود": "هُود", "صالح": "صَالِح", "لوط": "لُوط",
+    "شعيب": "شُعَيْب", "هارون": "هَارُون", "مكة": "مَكَّة", "المدينة": "الْمَدِينَة",
+    "الكعبة": "الْكَعْبَة", "المسجد": "الْمَسْجِد", "القدس": "الْقُدْس",
+    "الشام": "الشَّام", "مصر": "مِصْر", "بابل": "بَابِل", "فلسطين": "فِلَسْطِين",
+    "على": "عَلَى", "إلى": "إِلَى", "هدى": "هُدًى", "مصطفى": "مُصْطَفًى",
+    "التقوى": "التَّقْوَى", "الأولى": "الْأُولَى", "الأخرى": "الْأُخْرَى",
+    "الأدنى": "الْأَدْنَى", "الأعلى": "الْأَعْلَى", "الدنيا": "الدُّنْيَا",
+    "الآخرة": "الْآخِرَة", "مرضى": "مَرْضَى", "أسرى": "أَسْرَى", "جرحى": "جَرْحَى",
+    "دعوى": "دَعْوَى", "نجوى": "نَجْوَى", "مأوى": "مَأْوَى", "سلوى": "سَلْوَى",
+    "بلوى": "بَلْوَى", "شكوى": "شَكْوَى", "رؤيا": "رُؤْيَا", "ذكرى": "ذِكْرَى",
+    "أنثى": "أُنْثَى", "مولى": "مَوْلَى", "أولى": "أُولَى", "قصوى": "قُصْوَى",
+    "مجتبى": "مُجْتَبَى", "مرتضى": "مُرْتَضَى", "مستشفى": "مُسْتَشْفَى",
+    "معنى": "مَعْنَى", "مسمى": "مُسَمَّى", "مبنى": "مَبْنَى",
+    "مستوى": "مُسْتَوَى", "منتدى": "مُنْتَدَى", "ملتقى": "مُلْتَقَى",
+    "محتوى": "مُحْتَوَى",
 }
 
 
 def apply_critical_fixes(text: str) -> str:
+    """استبدال الرموز والكلمات الحرجة بتشكيل صحيح."""
+    # استبدال الرمز (ﷺ) مباشرة قبل أي معالجة أخرى
+    text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
+    
     for plain, diacritized in sorted(
         CRITICAL_FIXES.items(), key=lambda x: -len(x[0])
     ):
+        if plain == "ﷺ":
+            continue
         pattern = rf'(?<![ء-ي\u064B-\u0652]){re.escape(plain)}(?![ء-ي\u064B-\u0652])'
         text = re.sub(pattern, diacritized, text)
     return text
 
 
 def _clean_text(text: str) -> str:
+    """تنظيف النص من الرموز غير المرغوبة قبل الإرسال."""
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'\(.*?\)', '', text)
     text = re.sub(r"[ۖۗۘۙۚۛ۞]", "", text)
@@ -98,7 +117,6 @@ def get_duration(path) -> float:
 
 
 def normalize_mp3(input_path, output_path):
-    """توحيد إلى MP3 24kHz 192k mono — مطابق لصيغة gemini_tts_with_pool."""
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(input_path),
          "-ar", TARGET_SR, "-ac", "1",
@@ -109,7 +127,6 @@ def normalize_mp3(input_path, output_path):
 
 
 def add_fade_in_only(input_mp3, output_mp3, duration=0.15):
-    """fade in فقط (fade out معالجته _clean_chunk)."""
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(input_mp3),
          "-af", f"afade=t=in:st=0:d={duration}",
@@ -200,7 +217,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
             raw_mp3 = work_dir / f"raw_{idx:03d}.mp3"
             generated_by_gemini = False
 
-            # ═══ Gemini (via gemini_tts_with_pool — فيه _clean_chunk) ═══
             can_use_gemini = (
                 HAS_GEMINI_POOL
                 and consecutive_failures < MAX_CONSECUTIVE_FAILURES
@@ -227,7 +243,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     consecutive_failures += 1
                     print(f"   ⚠️ {str(e)[:100]} (متتالي: {consecutive_failures})", flush=True)
 
-            # ═══ Edge TTS احتياطي ═══
             if not generated_by_gemini:
                 print(f"🔊 Edge TTS [{seg_type} {idx}] (احتياطي)...", flush=True)
                 tmp_edge = work_dir / f"edge_{idx:03d}.mp3"
@@ -240,7 +255,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     idx += 1
                     continue
 
-            # ═══ fade in فقط على المقطع الأول ═══
             if is_first:
                 faded = work_dir / f"faded_{idx:03d}.mp3"
                 add_fade_in_only(raw_mp3, faded)
@@ -262,7 +276,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
         if not segment_files:
             raise RuntimeError("لا مقاطع صوتية")
 
-        # ═══ دمج بـ concat demuxer + -c copy (مثل audio_mixer.py) ═══
         print(f"\n🔗 دمج {len(segment_files)} مقطع (concat + copy)...", flush=True)
         concat_file = work_dir / "final.txt"
         concat_file.write_text(
