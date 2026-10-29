@@ -1,25 +1,11 @@
-"""توليد الصوت النهائي لخط القصص — v4.
+"""توليد الصوت النهائي لخط القصص — v5.
 
-المحرك الوحيد: Gemini TTS (Charon، ar-XA) لكل شيء:
-- السرد (narration/teaser/cta/outro/summary)
-- الآيات (quran)
+المحرك: Gemini TTS (Charon، ar-XA) للسرد والآيات.
+احتياطي: Edge TTS فقط عند فشل Gemini متتالياً.
 
-لماذا Gemini فقط:
-- Edge TTS كان يقرأ التشكيل الخاطئ من mishkal فيصبح النطق أعوج.
-- اختلاف مصادر الصوت (Gemini WAV، Edge MP3، صمت MP3) كان سبب "الخشة".
-- Gemini TTS يقرأ العربية الفصحى بدقة بدون حاجة لتشكيل كامل.
-
-الحلول الجذرية:
-1. مصدر صوت واحد (Gemini WAV 24kHz) لكل المقاطع → لا اختلاف codec.
-2. trim_silence على كل مقطع (بداية ونهاية).
-3. fade 100ms + crossfade 150ms بين المقاطع.
-4. concat filter مع إعادة ترميز (ليس demuxer copy) → انتقالات سلسة.
-5. بدون mishkal، بدون Edge، بدون تشكيل يدوي معقد.
-
-قيود صارمة:
-- ممنوع أي صوت نسائي (Charon ذكر فقط).
-- سقف Gemini: 40 استدعاء لكل حلقة (يكفي 20 مقطع × 2 محاولات).
-- احتياطي أخير: Edge TTS فقط إذا فشل Gemini تماماً (نادراً).
+إصلاح v5:
+- convert_to_wav_44k يتعامل مع حالة input == output (ملف مؤقت).
+- لا مزيد من فشل ffmpeg exit 234.
 """
 import os
 import sys
@@ -39,14 +25,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import QURAN_API
-from sfx_manager import fetch_sfx
 from utilities import cleanup_dir, notify_telegram, safe_copy
 
 
 # ═══ الإعدادات — Gemini فقط، صوت ذكر ═══
 TARGET_BR = "192k"
 TARGET_SR = "44100"
-SFX_VOLUME = 0.15
 
 GEMINI_VOICE = "Charon"
 GEMINI_LANGUAGE = "ar-XA"
@@ -54,15 +38,13 @@ GEMINI_LANGUAGE = "ar-XA"
 MAX_GEMINI_CALLS_PER_EPISODE = 40
 MAX_CONSECUTIVE_FAILURES = 3
 
-# ═══ إعدادات الانتقالات ═══
-FADE_IN_OUT = 0.10        # 100ms fade in/out
-CROSSFADE = 0.15          # 150ms crossfade بين المقاطع
+FADE_IN_OUT = 0.10
+CROSSFADE = 0.15
 TRIM_THRESHOLD = "-40dB"
 TRIM_MIN_DURATION = 0.30
 
 
-# ═══ إصلاحات يدوية بسيطة (بدون mishkal) ═══
-# فقط الكلمات الحرجة التي قد تُقرأ خطأً بدون تشكيل
+# ═══ إصلاحات يدوية للكلمات الحرجة فقط (بدون mishkal) ═══
 CRITICAL_FIXES = {
     "الله": "اللَّه",
     "بالله": "بِاللَّه",
@@ -80,7 +62,6 @@ CRITICAL_FIXES = {
 
 
 def apply_critical_fixes(text: str) -> str:
-    """إصلاحات يدوية فقط للكلمات الحرجة — لا mishkal."""
     for plain, diacritized in sorted(
         CRITICAL_FIXES.items(), key=lambda x: -len(x[0])
     ):
@@ -90,9 +71,8 @@ def apply_critical_fixes(text: str) -> str:
 
 
 def _clean_text(text: str) -> str:
-    """تنظيف النص قبل الإرسال لـ Gemini."""
-    text = re.sub(r'\[.*?\]', '', text)  # إزالة [آية: X:Y]
-    text = re.sub(r'\(.*?\)', '', text)  # إزالة (تلميحات)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'\(.*?\)', '', text)
     text = re.sub(r"[ۖۗۘۙۚۛ۞]", "", text)
     text = text.replace("۝", " ")
     return re.sub(r"\s+", " ", text).strip()
@@ -111,8 +91,50 @@ def get_duration(path) -> float:
         return 0.0
 
 
+def convert_to_wav_44k(input_path, output_path):
+    """تحويل إلى WAV 44100 mono — يتعامل مع حالة input == output."""
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    same_file = input_path.resolve() == output_path.resolve()
+    if same_file:
+        tmp = output_path.with_suffix(".tmp.wav")
+        target = tmp
+    else:
+        target = output_path
+
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(input_path),
+             "-af", "aresample=resampler=soxr",
+             "-ar", TARGET_SR, "-ac", "1",
+             "-c:a", "pcm_s16le",
+             str(target)],
+            check=True, capture_output=True, timeout=120,
+        )
+        if same_file:
+            shutil.move(str(tmp), str(output_path))
+    except Exception as e:
+        print(f"   ⚠️ convert_to_wav_44k: {str(e)[:100]}", flush=True)
+        if same_file and tmp.exists():
+            tmp.unlink(missing_ok=True)
+        if not same_file:
+            safe_copy(input_path, output_path)
+        # إذا كان same_file، لا نفعل شيئاً — الملف الأصلي كما هو
+
+
 def trim_silence(input_path, output_path):
-    """قص الصمت من البداية والنهاية."""
+    """قص الصمت — يتعامل مع حالة input == output."""
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    same_file = input_path.resolve() == output_path.resolve()
+
+    if same_file:
+        tmp = output_path.with_suffix(".trim.wav")
+        target = tmp
+    else:
+        target = output_path
+
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-i", str(input_path),
@@ -122,42 +144,61 @@ def trim_silence(input_path, output_path):
              f"silenceremove=start_periods=1:start_threshold={TRIM_THRESHOLD}:start_silence={TRIM_MIN_DURATION},"
              f"areverse",
              "-c:a", "pcm_s16le",
-             str(output_path)],
+             str(target)],
             check=True, capture_output=True, timeout=60,
         )
-        if Path(output_path).stat().st_size < 5000:
+        if same_file:
+            if tmp.stat().st_size > 5000:
+                shutil.move(str(tmp), str(output_path))
+            else:
+                tmp.unlink(missing_ok=True)
+        else:
+            if Path(target).stat().st_size < 5000:
+                safe_copy(input_path, output_path)
+    except Exception as e:
+        print(f"   ⚠️ trim_silence: {str(e)[:100]}", flush=True)
+        if same_file and tmp.exists():
+            tmp.unlink(missing_ok=True)
+        if not same_file:
             safe_copy(input_path, output_path)
-    except Exception:
-        safe_copy(input_path, output_path)
-
-
-def convert_to_wav_44k(input_path, output_path):
-    """تحويل أي صيغة إلى WAV 44100 mono — لتوحيد المصدر."""
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", str(input_path),
-         "-af", "aresample=resampler=soxr",
-         "-ar", TARGET_SR, "-ac", "1",
-         "-c:a", "pcm_s16le",
-         str(output_path)],
-        check=True, capture_output=True, timeout=120,
-    )
 
 
 def apply_fade(input_wav, output_wav, duration=FADE_IN_OUT):
-    """fade in/out قصير."""
+    """fade in/out — يتعامل مع حالة input == output."""
+    input_wav = Path(input_wav)
+    output_wav = Path(output_wav)
+    same_file = input_wav.resolve() == output_wav.resolve()
+
     dur = get_duration(input_wav)
     if dur <= duration * 2:
-        safe_copy(input_wav, output_wav)
+        if not same_file:
+            safe_copy(input_wav, output_wav)
         return
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", str(input_wav),
-         "-af",
-         f"afade=t=in:st=0:d={duration},"
-         f"afade=t=out:st={max(0, dur - duration)}:d={duration}",
-         "-c:a", "pcm_s16le",
-         str(output_wav)],
-        check=True, capture_output=True,
-    )
+
+    if same_file:
+        tmp = output_wav.with_suffix(".fade.wav")
+        target = tmp
+    else:
+        target = output_wav
+
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(input_wav),
+             "-af",
+             f"afade=t=in:st=0:d={duration},"
+             f"afade=t=out:st={max(0, dur - duration)}:d={duration}",
+             "-c:a", "pcm_s16le",
+             str(target)],
+            check=True, capture_output=True,
+        )
+        if same_file:
+            shutil.move(str(tmp), str(output_wav))
+    except Exception as e:
+        print(f"   ⚠️ apply_fade: {str(e)[:100]}", flush=True)
+        if same_file and tmp.exists():
+            tmp.unlink(missing_ok=True)
+        if not same_file:
+            safe_copy(input_wav, output_wav)
 
 
 def fetch_ayah_text(surah: int, ayah: int) -> str:
@@ -170,9 +211,8 @@ def fetch_ayah_text(surah: int, ayah: int) -> str:
     return ""
 
 
-# ═══ Gemini TTS — موحّد للسرد والآيات ═══
+# ═══ Gemini TTS ═══
 def gemini_tts(text: str, output_wav: Path) -> bool:
-    """توليد صوت عبر Gemini TTS (Charon، ar-XA)."""
     try:
         from gemini_tts_pool import get_pool, discover_tts_models
     except ImportError:
@@ -255,7 +295,7 @@ def gemini_tts(text: str, output_wav: Path) -> bool:
     return False
 
 
-# ═══ Edge TTS — احتياطي أخير فقط ═══
+# ═══ Edge TTS — احتياطي فقط ═══
 _EDGE_AVAILABLE = False
 try:
     import edge_tts
@@ -277,7 +317,7 @@ def edge_tts_fallback(text: str, output_mp3: str):
         raise RuntimeError("Edge TTS: ملف صغير")
 
 
-# ═══ بناء الحلقة — concat filter مع إعادة ترميز ═══
+# ═══ الدالة الرئيسية ═══
 def build_episode_audio(episode_json_path: str, output_mp3: str):
     ep = json.loads(Path(episode_json_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_audio_"))
@@ -290,7 +330,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
     edge_fallback = 0
     consecutive_failures = 0
 
-    # قائمة ملفات WAV 44.1kHz (موحّدة)
     segment_wavs = []
     meta_segments = []
     idx = 0
@@ -305,7 +344,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
             # ═══ السرد ═══
             if seg_type in ("narration", "teaser", "cta", "outro", "intro", "summary"):
                 text = seg["text"]
-                # إصلاحات بسيطة فقط (بدون mishkal)
                 text = apply_critical_fixes(text)
                 clean = _clean_text(text)
                 if not clean:
@@ -313,11 +351,10 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     idx += 1
                     continue
 
-                seg["text"] = text  # تحديث meta
+                seg["text"] = text
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    # احتياطي: Edge
-                    print(f"🔊 Edge TTS [سرد {idx}] (احتياطي بسبب فشل Gemini)...", flush=True)
+                    print(f"🔊 Edge TTS [سرد {idx}] (احتياطي)...", flush=True)
                     tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
                     edge_tts_fallback(clean, str(tmp_mp3))
                     convert_to_wav_44k(tmp_mp3, wav_out)
@@ -340,7 +377,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                             gemini_fail += 1
                             consecutive_failures += 1
                             print(f"   ⚠️ ملف صغير (متتالي: {consecutive_failures})", flush=True)
-                            # Edge فوري لهذا المقطع
                             tmp_mp3 = work_dir / f"edge_{idx:03d}.mp3"
                             edge_tts_fallback(clean, str(tmp_mp3))
                             convert_to_wav_44k(tmp_mp3, wav_out)
@@ -354,7 +390,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                         convert_to_wav_44k(tmp_mp3, wav_out)
                         edge_fallback += 1
 
-                # trim → fade
                 trim_silence(wav_out, trimmed)
                 apply_fade(trimmed, final_wav)
 
@@ -362,7 +397,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     "index": idx, "type": seg_type, "text": text,
                     "visual": seg.get("visual", "mosque"),
                     "duration": get_duration(final_wav),
-                    "engine": "gemini" if gemini_ok > 0 else "edge",
                 })
                 segment_wavs.append(final_wav)
 
@@ -423,7 +457,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                         convert_to_wav_44k(tmp_mp3, wav_out)
                         edge_fallback += 1
 
-                # trim → fade
                 trim_silence(wav_out, trimmed)
                 apply_fade(trimmed, final_wav)
 
@@ -439,21 +472,13 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
         if not segment_wavs:
             raise RuntimeError("لا مقاطع صوتية")
 
-        # ═══ دمج باستخدام concat filter مع crossfade ═══
+        # ═══ دمج بـ acrossfade ═══
         print(f"\n🔗 دمج {len(segment_wavs)} مقطع بـ crossfade...", flush=True)
-
-        # بناء filter_complex: crossfade بين كل مقطعين
-        filter_parts = []
-        inputs = []
-        for i, wav in enumerate(segment_wavs):
-            inputs.extend(["-i", str(wav)])
 
         if len(segment_wavs) == 1:
             filter_complex = "[0:a]anull[out]"
         else:
-            # crossfade تسلسلي
-            # [0][1]acrossfade=d=0.15:c1=tri:c2=tri[x1];
-            # [x1][2]acrossfade=d=0.15:c1=tri:c2=tri[x2]; ...
+            filter_parts = []
             prev = "[0:a]"
             for i in range(1, len(segment_wavs)):
                 label = f"[x{i}]" if i < len(segment_wavs) - 1 else "[out]"
@@ -462,6 +487,10 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                 )
                 prev = label
             filter_complex = ";".join(filter_parts)
+
+        inputs = []
+        for wav in segment_wavs:
+            inputs.extend(["-i", str(wav)])
 
         concat_cmd = ["ffmpeg", "-y"] + inputs + [
             "-filter_complex", filter_complex,
@@ -474,7 +503,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
         Path(output_mp3).parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(concat_cmd, check=True, capture_output=True, timeout=600)
 
-        # ═══ meta ═══
         meta_path = str(output_mp3).replace(".mp3", "_meta.json")
         Path(meta_path).write_text(
             json.dumps({
@@ -487,7 +515,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     "gemini_fail": gemini_fail,
                     "gemini_calls": gemini_calls,
                     "edge_fallback": edge_fallback,
-                    "crossfade_used": CROSSFADE,
                 },
                 "segments": meta_segments,
             }, ensure_ascii=False, indent=2),
@@ -501,7 +528,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
         print(f"   Gemini: {gemini_ok} ✅ / {gemini_fail} ⚠️", flush=True)
         print(f"   Edge احتياطي: {edge_fallback}", flush=True)
         print(f"   استدعاءات: {gemini_calls}/{MAX_GEMINI_CALLS_PER_EPISODE}", flush=True)
-        print(f"   crossfade: {CROSSFADE}s", flush=True)
         print("═" * 60, flush=True)
 
     finally:
