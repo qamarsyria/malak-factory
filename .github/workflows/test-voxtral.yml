@@ -1,11 +1,5 @@
 name: Test Voxtral TTS (Arabic)
 
-# ═════════════════════════════════════════════════════════════
-# اختبار Voxtral-4B-TTS-2603 على آية قرآنية واحدة
-# الاستخدام: Actions → Test Voxtral TTS (Arabic) → Run workflow
-# المخرجات: artifact اسمه "voxtral-test" — حمّله واسمع fatiha_1.wav
-# ═════════════════════════════════════════════════════════════
-
 on:
   workflow_dispatch:
 
@@ -23,8 +17,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg unzip curl libgomp1
 
-      - name: Run Voxtral test
+      - name: Free disk space
         run: |
+          # مساحة إضافية (النموذج 8GB)
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android 2>/dev/null || true
+          df -h
+
+      - name: Run Voxtral test
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -o pipefail
           bash test_voxtral.sh 2>&1 | tee voxtral_log.txt
 
       - name: Upload artifact
@@ -36,17 +39,19 @@ jobs:
             out/test_voxtral/fatiha_1.wav
             out/test_voxtral/voxtral_log.txt
           retention-days: 7
+          if-no-files-found: warn
 
       - name: Summary
         if: always()
         run: |
-          echo "## 🎧 Voxtral Test" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎧 Voxtral Test (v2)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f out/test_voxtral/fatiha_1.wav ]; then
             SIZE=$(stat -c%s out/test_voxtral/fatiha_1.wav)
-            echo "✅ **نجح** — الحجم: ${SIZE} bytes" >> $GITHUB_STEP_SUMMARY
+            DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 out/test_voxtral/fatiha_1.wav 2>/dev/null || echo "?")
+            echo "✅ **نجح**" >> $GITHUB_STEP_SUMMARY
+            echo "- الحجم: ${SIZE} bytes" >> $GITHUB_STEP_SUMMARY
+            echo "- المدة: ${DUR}s" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **فشل** — راجع السجل" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "حمّل الـ artifact من قسم Artifacts أدناه." >> $GITHUB_STEP_SUMMARY
