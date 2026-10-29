@@ -33,9 +33,6 @@ jobs:
 
       # ═══════════════════════════════════════════════════════════
       # 3. تثبيت التبعيات
-      #    - pip install -r requirements.txt
-      #    - pip install edge-tts (مباشرة كضمان احتياطي)
-      #    - التحقق الفوري من نجاح التثبيت
       # ═══════════════════════════════════════════════════════════
       - name: Install
         run: |
@@ -76,8 +73,6 @@ jobs:
 
       # ═══════════════════════════════════════════════════════════
       # 6. بناء الصوت
-      #    - Edge TTS للسرد (مجاني)
-      #    - Gemini TTS للآيات (مع circuit breaker)
       # ═══════════════════════════════════════════════════════════
       - name: Audio
         id: aud
@@ -111,7 +106,7 @@ jobs:
           ls -lh "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
       # ═══════════════════════════════════════════════════════════
-      # 8. الرفع إلى تلغرام
+      # 8. الرفع إلى تلغرام (مع ضغط تلقائي إذا تجاوز 48 ميجا)
       # ═══════════════════════════════════════════════════════════
       - name: Upload to Telegram
         id: tg
@@ -123,12 +118,32 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           CAPTION=$(printf "🎬 %s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          
+          VIDEO_PATH="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
+          UPLOAD_PATH="$VIDEO_PATH"
+          
+          # فحص حجم الفيديو وضغطه إذا لزم الأمر
+          SIZE_BYTES=$(stat -c%s "$VIDEO_PATH")
+          SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
+          echo "📊 حجم الفيديو الأصلي: ${SIZE_MB} ميجابايت"
+          
+          if [ "$SIZE_MB" -gt 48 ]; then
+            echo "⚠️ الفيديو أكبر من 48 ميجابايت. جاري إنشاء نسخة مضغوطة (720p) لتلغرام..."
+            COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
+            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:1280" -c:v libx264 -crf 32 -preset fast -c:a aac -b:a 96k "$COMPRESSED_PATH"
+            UPLOAD_PATH="$COMPRESSED_PATH"
+            C_SIZE=$(( $(stat -c%s "$UPLOAD_PATH") / 1024 / 1024 ))
+            echo "✅ تم الضغط بنجاح. الحجم الجديد: ${C_SIZE} ميجابايت"
+          fi
+          
+          # الرفع
           RESP=$(curl -s -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}.mp4" \
+            -F "video=@${UPLOAD_PATH}" \
             -F "caption=${CAPTION}" \
             -F "supports_streaming=true")
+            
           MSG=$(echo "$RESP" | grep -oP '"message_id":\K[0-9]+' || true)
           if [ -z "$MSG" ]; then
             echo "❌ تلغرام رفض: $RESP"
@@ -159,8 +174,7 @@ jobs:
           "
 
       # ═══════════════════════════════════════════════════════════
-      # 10. تثبيت الحالة (نقل العداد للحلقة التالية)
-      #     يعمل فقط بعد نجاح الرفع إلى تلغرام
+      # 10. تثبيت الحالة
       # ═══════════════════════════════════════════════════════════
       - name: Finalize State
         if: steps.tg.outputs.MSG_ID != ''
