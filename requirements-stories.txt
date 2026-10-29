@@ -1,22 +1,37 @@
 # ============================================
-# مشروع القصص — malak-factory / stories
-# ============================================
-# هذا الملف يخدم build-story.yml فقط
-# لا يُستخدم في daily.yml
+# مصنع الفيديو الأساسي — الحديث / الفقه / القصص
 # ============================================
 
-# --- TTS السريع (Edge TTS — للسرد) ---
-edge-tts>=6.1.19
+# --- معالجة الفيديو ---
+moviepy==1.0.3
+Pillow>=10.0.0
+
+# --- النص العربي ---
+arabic-reshaper==3.0.0
+python-bidi==0.6.3
 
 # --- تشكيل النص العربي (إلزامي للسرد) ---
 mishkal>=0.4.0
 
+# --- TTS ---
+edge-tts>=6.1.19
+
 # --- معالجة الصوت ---
 soundfile
 
-# --- معالجة الصور (فيديو) ---
-Pillow>=10.0.0
-
 # --- الشبكة والـ API ---
 requests==2.32.3
+aiohttp>=3.9.0
+
+# --- YouTube API ---
+google-api-python-client==2.147.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+
+# --- HuggingFace ---
 huggingface_hub
+
+# --- أدوات بوت رفع يوتيوب (AI Agent) ---
+playwright
+beautifulsoup4
+pyotp
