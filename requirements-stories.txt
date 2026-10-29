@@ -1,26 +1,15 @@
 # ============================================
 # مشروع القصص — malak-factory / stories
 # ============================================
-# هذا الملف يخدم test-audio-mixer.yml و build-story.yml فقط
-# لا يُستخدم في daily.yml (المشروع القديم)
+# هذا الملف يخدم build-story.yml فقط
+# لا يُستخدم في daily.yml
 # ============================================
 
-# --- TTS العصبي (XTTS / Fasih / Audar) ---
-coqui-tts>=0.25.0
-transformers==4.45.2
-torch==2.5.1
-torchaudio==2.5.1
-
-# --- TTS السريع (Edge TTS — للسرد في daily pipeline) ---
+# --- TTS السريع (Edge TTS — للسرد) ---
 edge-tts>=6.1.19
 
-# --- التلاوة والتجويد المحلي (SILMA + Phonemizer) ---
-silma-tts
-quranic-phonemizer
-
-# --- معالجة اللغة ---
-spacy==3.7.5
-click
+# --- تشكيل النص العربي (إلزامي للسرد) ---
+mishkal>=0.4.0
 
 # --- معالجة الصوت ---
 soundfile
