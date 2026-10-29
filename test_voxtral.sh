@@ -1,82 +1,73 @@
 #!/usr/bin/env bash
-# test_voxtral.sh — اختبار Voxtral-4B-TTS على آية واحدة (مُصحَّح v2)
+# test_voxtral.sh — v3 (Python API بدل huggingface-cli)
 set -euo pipefail
 
 echo "════════════════════════════════════════════════════════════"
-echo "🧪 اختبار Voxtral-4B-TTS-2603 (آية الفاتحة:1)"
+echo "🧪 اختبار Voxtral-4B-TTS-2603 (v3)"
 echo "════════════════════════════════════════════════════════════"
 
 WORK_DIR="out/test_voxtral"
 mkdir -p "${WORK_DIR}"
 cd "${WORK_DIR}"
 
-# ═══ 1. تنزيل الـ zip إن لم يكن موجوداً ═══
+# ═══ 1. تنزيل الـ zip ═══
 if [ ! -d "voxtral-tts-linux-x86_64" ]; then
-    echo ""
-    echo "⬇️ [1/5] تنزيل voxtral_tts_rs (Linux CPU)..."
+    echo "⬇️ [1/6] تنزيل voxtral_tts_rs..."
     curl -LO https://github.com/second-state/voxtral_tts_rs/releases/latest/download/voxtral-tts-linux-x86_64.zip
     unzip -oq voxtral-tts-linux-x86_64.zip
 else
-    echo "⏭️ [1/5] المجلد موجود مسبقاً"
+    echo "⏭️ [1/6] المجلد موجود"
 fi
 
-# ═══ 2. الدخول للمجلد وجعل الملفات قابلة للتنفيذ ═══
-echo ""
-echo "🔧 [2/5] تجهيز الملفات التنفيذية..."
+# ═══ 2. الدخول للمجلد ═══
 cd voxtral-tts-linux-x86_64
-chmod +x voxtral-tts voxtral-tts-server 2>/dev/null || true
+chmod +x voxtral-tts 2>/dev/null || true
 
-echo "📂 محتوى المجلد:"
-ls -la | head -20
-
+# ═══ 3. تنزيل النموذج (Python API — لا يحتاج CLI) ═══
 echo ""
-echo "🆘 خيارات voxtral-tts (للتشخيص):"
-./voxtral-tts --help 2>&1 | head -30 || echo "⚠️ --help فشل"
+echo "⬇️ [3/6] تنزيل النموذج عبر Python API..."
+pip install -q "huggingface_hub>=0.26"
 
-# ═══ 3. تنزيل النموذج ═══
-echo ""
-echo "⬇️ [3/5] تنزيل النموذج (8GB — قد يأخذ 10-15 دقيقة)..."
+python3 << 'PYEOF'
+import os
+import sys
+from huggingface_hub import snapshot_download
 
-# أولاً: هل يوجد سكربت جاهز في الـ zip؟
-if [ -f "scripts/download_model.sh" ]; then
-    echo "   → استخدام scripts/download_model.sh"
-    bash scripts/download_model.sh
-else
-    echo "   → لا يوجد سكربت — استخدام huggingface-cli"
-    pip install -q huggingface-hub 2>/dev/null || pip install -q --user huggingface-hub
-    
-    # قد يحتاج توكن إذا كان النموذج gated
-    HF_ARGS=""
-    if [ -n "${HF_TOKEN:-}" ]; then
-        HF_ARGS="--token ${HF_TOKEN}"
-        echo "   → استخدام HF_TOKEN"
-    fi
-    
-    huggingface-cli download mistralai/Voxtral-4B-TTS-2603 \
-        --local-dir models/voxtral-4b-tts \
-        ${HF_ARGS} 2>&1 | tail -20 \
-        || {
-            echo "❌ فشل تنزيل النموذج"
-            echo "   قد يكون النموذج gated — يحتاج قبول الترخيص على HF"
-            echo "   أو انتهت مساحة القرص (النموذج 8GB، المتاح ~14GB)"
-            exit 1
-        }
-fi
+token = os.environ.get("HF_TOKEN", "").strip()
+if token:
+    print(f"🔑 Token موجود (طوله: {len(token)} حرف)")
+else:
+    print("⚠️ لا توكن — قد يفشل إذا النموذج gated")
 
-echo "✅ النموذج جاهز:"
-du -sh models/voxtral-4b-tts 2>/dev/null || echo "⚠️ المجلد غير موجود"
+try:
+    path = snapshot_download(
+        repo_id="mistralai/Voxtral-4B-TTS-2603",
+        local_dir="models/voxtral-4b-tts",
+        token=token if token else None,
+    )
+    print(f"✅ النموذج: {path}")
+except Exception as e:
+    print(f"❌ فشل: {type(e).__name__}: {e}")
+    sys.exit(1)
+PYEOF
 
 # ═══ 4. نسخ voice embeddings ═══
 echo ""
-echo "📋 [4/5] نسخ voice embeddings..."
+echo "📋 [4/6] نسخ voice embeddings..."
 mkdir -p models/voxtral-4b-tts/voice_embedding
 cp voice_embedding/*.safetensors models/voxtral-4b-tts/voice_embedding/ 2>/dev/null || true
-echo "   ملفات ar_male:"
-ls -la models/voxtral-4b-tts/voice_embedding/ar_male.safetensors 2>/dev/null || echo "   ⚠️ ar_male غير موجود"
+echo "   ملف ar_male:"
+ls -la models/voxtral-4b-tts/voice_embedding/ar_male.safetensors 2>/dev/null || echo "   ⚠️ غير موجود"
 
-# ═══ 5. التوليد ═══
+# ═══ 5. عرض الأصوات (تشخيص) ═══
 echo ""
-echo "🎙️ [5/5] توليد: بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ (ar_male)"
+echo "🎤 [5/6] الأصوات المتاحة (قبل التوليد):"
+./voxtral-tts models/voxtral-4b-tts --list-voices 2>&1 | head -50 || echo "⚠️ list-voices فشل"
+
+# ═══ 6. التوليد ═══
+echo ""
+echo "🎙️ [6/6] توليد: بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ"
+echo "    الصوت: ar_male (ذكر)"
 
 ./voxtral-tts models/voxtral-4b-tts \
     --text "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ" \
@@ -89,17 +80,15 @@ echo "🎙️ [5/5] توليد: بِسْمِ اللَّهِ الرَّحْمَن
 echo ""
 cd ..
 if [ -f "fatiha_1.wav" ]; then
-    SIZE=$(stat -c%s fatiha_1.wav 2>/dev/null || stat -f%z fatiha_1.wav)
+    SIZE=$(stat -c%s fatiha_1.wav)
     DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 fatiha_1.wav 2>/dev/null || echo "?")
     echo "════════════════════════════════════════════════════════════"
-    echo "✅ نجح! الملف: fatiha_1.wav"
-    echo "   الحجم: ${SIZE} bytes"
-    echo "   المدة: ${DUR}s"
+    echo "✅ نجح! fatiha_1.wav"
+    echo "   الحجم: ${SIZE} bytes | المدة: ${DUR}s"
     echo "════════════════════════════════════════════════════════════"
 else
     echo "════════════════════════════════════════════════════════════"
-    echo "❌ لم يُنتج الملف — راجع السجل أعلاه"
-    echo "════════════════════════════════════════════════════════════"
+    echo "❌ لم يُنتج الملف"
     ls -la . 2>/dev/null || true
     exit 1
 fi
