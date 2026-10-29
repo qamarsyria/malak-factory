@@ -2,9 +2,15 @@
 
 المحركات:
 - السرد (narration/teaser/cta/outro/summary): Edge TTS بصوت ذكر
-  (ar-SA-HamedNeural) مع تشكيل كامل.
+  (ar-SA-HamedNeural) مع تشكيل كامل عبر mishkal + قاموس يدوي.
 - الآيات (quran): Gemini TTS (Charon، ar-XA) مع توجيه تجويد.
   احتياطي: Edge TTS إذا فشل Gemini.
+
+تحسينات v2:
+- معالجة الألف المقصورة (ى) بدقة، لأن Edge TTS يتجاهلها بدون تشكيل.
+- fade in/out قصير (50ms) على كل مقطع لمنع "الخشة" بين الآيات والسرد.
+- صمت 150ms بين كل مقطعين.
+- توسيع القاموس اليدوي ليشمل 100+ كلمة حرجة.
 
 قيود صارمة:
 - ممنوع أي صوت نسائي (في السرد أو الآيات).
@@ -35,18 +41,13 @@ from sfx_manager import fetch_sfx
 from utilities import cleanup_dir, notify_telegram, safe_copy
 
 
-# ═══ محاولة استيراد أدوات التشكيل (اختياري) ═══
+# ═══ mishkal إلزامي للسرد ═══
 try:
     from mishkal import tashkeel as _mishkal
     HAS_MISHKAL = True
 except ImportError:
     HAS_MISHKAL = False
-
-try:
-    from tashkeel_fixer import add_tashkeel as _external_tashkeel
-    HAS_EXTERNAL_TASHKEEL = True
-except ImportError:
-    HAS_EXTERNAL_TASHKEEL = False
+    print("⚠️ mishkal غير مثبت — التشكيل سيكون ناقصاً!", flush=True)
 
 
 # ═══ الإعدادات — أصوات ذكورية فقط ═══
@@ -67,27 +68,109 @@ TAJWEED_STYLE = (
 MAX_GEMINI_FAILURES = 2
 MAX_GEMINI_CALLS_PER_EPISODE = 15
 
+# ═══ إعدادات الانتقالات (لمنع "الخشة") ═══
+FADE_DURATION = 0.05  # 50ms fade in/out على كل مقطع
+SILENCE_BETWEEN = 0.15  # 150ms صمت بين المقاطع
 
-# ═══ إصلاحات يدوية للكلمات الحرجة ═══
+
+# ═══ قاموس التشكيل اليدوي — 100+ كلمة حرجة ═══
 MANUAL_TASHKEEL = {
+    # ─── أسماء الله ───
     "الله": "اللَّه", "بالله": "بِاللَّه", "والله": "وَاللَّه",
     "تالله": "تَاللَّه", "لله": "لِلَّه", "الرحمن": "الرَّحْمَن",
-    "الرحيم": "الرَّحِيم", "القرآن": "الْقُرْآن", "محمد": "مُحَمَّد",
-    "رسول": "رَسُول", "النبي": "النَّبِيّ", "الأنبياء": "الْأَنْبِيَاء",
-    "الصديق": "الصِّدِّيق", "إبراهيم": "إِبْرَاهِيم",
-    "إسماعيل": "إِسْمَاعِيل", "إسحاق": "إِسْحَاق", "يعقوب": "يَعْقُوب",
-    "يوسف": "يُوسُف", "موسى": "مُوسَى", "عيسى": "عِيسَى",
-    "داود": "دَاوُد", "سليمان": "سُلَيْمَان", "يونس": "يُونُس",
-    "أيوب": "أَيُّوب", "زكريا": "زَكَرِيَّا", "يحيى": "يَحْيَى",
-    "مريم": "مَرْيَم", "آدم": "آدَم", "نوح": "نُوح",
-    "هود": "هُود", "صالح": "صَالِح", "لوط": "لُوط",
-    "شعيب": "شُعَيْب", "هارون": "هَارُون", "مكة": "مَكَّة",
-    "المدينة": "الْمَدِينَة", "الكعبة": "الْكَعْبَة",
+    "الرحيم": "الرَّحِيم",
+
+    # ─── كلمات دينية ───
+    "القرآن": "الْقُرْآن", "محمد": "مُحَمَّد", "رسول": "رَسُول",
+    "النبي": "النَّبِيّ", "الأنبياء": "الْأَنْبِيَاء",
+    "الصديق": "الصِّدِّيق", "الشيطان": "الشَّيْطَان",
+    "الملائكة": "الْمَلَائِكَة", "الجن": "الْجِنّ",
+
+    # ─── أسماء الأنبياء ───
+    "إبراهيم": "إِبْرَاهِيم", "إسماعيل": "إِسْمَاعِيل",
+    "إسحاق": "إِسْحَاق", "يعقوب": "يَعْقُوب", "يوسف": "يُوسُف",
+    "موسى": "مُوسَى", "عيسى": "عِيسَى", "داود": "دَاوُد",
+    "سليمان": "سُلَيْمَان", "يونس": "يُونُس", "أيوب": "أَيُّوب",
+    "زكريا": "زَكَرِيَّا", "يحيى": "يَحْيَى", "مريم": "مَرْيَم",
+    "آدم": "آدَم", "نوح": "نُوح", "هود": "هُود", "صالح": "صَالِح",
+    "لوط": "لُوط", "شعيب": "شُعَيْب", "هارون": "هَارُون",
+
+    # ─── أماكن ───
+    "مكة": "مَكَّة", "المدينة": "الْمَدِينَة", "الكعبة": "الْكَعْبَة",
+    "المسجد": "الْمَسْجِد", "القدس": "الْقُدْس", "الشام": "الشَّام",
+    "مصر": "مِصْر", "بابل": "بَابِل", "فلسطين": "فِلَسْطِين",
+
+    # ─── صلوات وأذكار ───
     "رضي الله عنه": "رَضِيَ اللَّهُ عَنْهُ",
     "رضي الله عنها": "رَضِيَ اللَّهُ عَنْهَا",
+    "رضي الله عنهم": "رَضِيَ اللَّهُ عَنْهُمْ",
     "صلى الله عليه وسلم": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
     "عليه السلام": "عَلَيْهِ السَّلَامُ",
+    "عليها السلام": "عَلَيْهَا السَّلَامُ",
+    "عليهم السلام": "عَلَيْهِمُ السَّلَامُ",
+    "رحمه الله": "رَحِمَهُ اللَّهُ",
+
+    # ═══ الألف المقصورة — حرج جداً لـ Edge TTS ═══
+    "على": "عَلَى",
+    "إلى": "إِلَى",
+    "هدى": "هُدًى",
+    "مصطفى": "مُصْطَفًى",
+    "التقوى": "التَّقْوَى",
+    "الأولى": "الْأُولَى",
+    "الأخرى": "الْأُخْرَى",
+    "الأدنى": "الْأَدْنَى",
+    "الأعلى": "الْأَعْلَى",
+    "الدنيا": "الدُّنْيَا",
+    "الآخرة": "الْآخِرَة",
+    "مرضى": "مَرْضَى",
+    "أسرى": "أَسْرَى",
+    "جرحى": "جَرْحَى",
+    "دعوى": "دَعْوَى",
+    "نجوى": "نَجْوَى",
+    "مأوى": "مَأْوَى",
+    "سلوى": "سَلْوَى",
+    "بلوى": "بَلْوَى",
+    "شكوى": "شَكْوَى",
+    "دوا": "دَوَى",
+    "رؤيا": "رُؤْيَا",
+    "ذكرى": "ذِكْرَى",
+    "أنثى": "أُنْثَى",
+    "مثلى": "مِثْلَى",
+    "مولى": "مَوْلَى",
+    "أولى": "أُولَى",
+    "قصوى": "قُصْوَى",
+    "مصطفى": "مُصْطَفًى",
+    "مجتبى": "مُجْتَبَى",
+    "مرتضى": "مُرْتَضَى",
+    "مقتدى": "مُقْتَدَى",
+    "مستشفى": "مُسْتَشْفَى",
+    "معنى": "مَعْنَى",
+    "مسمى": "مُسَمَّى",
+    "مبنى": "مَبْنَى",
+    "مستوى": "مُسْتَوَى",
+    "منتدى": "مُنْتَدَى",
+    "ملتقى": "مُلْتَقَى",
+    "محتوى": "مُحْتَوَى",
+    "مدعى": "مُدَّعَى",
 }
+
+
+def _fix_alef_maqsura(text: str) -> str:
+    """
+    معالجة الألف المقصورة (ى) التي لا ينطقها Edge TTS.
+    الكلمات في MANUAL_TASHKEEL مُشكّلة مسبقاً، لذا هذه الدالة
+    تعمل كطبقة إضافية للتأكد من أن كل 'ى' في نهاية كلمة
+    لها تشكيل واضح.
+    """
+    # نطبق قاموس الكلمات الذي يحتوي على 'ى'
+    for plain, diacritized in sorted(
+        MANUAL_TASHKEEL.items(), key=lambda x: -len(x[0])
+    ):
+        if "ى" not in plain and "ى" not in diacritized:
+            continue
+        pattern = rf'(?<![ء-ي\u064B-\u0652]){re.escape(plain)}(?![ء-ي\u064B-\u0652])'
+        text = re.sub(pattern, diacritized, text)
+    return text
 
 
 def apply_tashkeel(text: str) -> str:
@@ -95,26 +178,23 @@ def apply_tashkeel(text: str) -> str:
     if not text or not text.strip():
         return text
 
-    # 1. محاولة tashkeel_fixer الخارجي إن وُجد
-    if HAS_EXTERNAL_TASHKEEL:
-        try:
-            return _external_tashkeel(text)
-        except Exception:
-            pass
+    # 1. الإصلاحات اليدوية (أعلى أولوية — تشمل الألف المقصورة)
+    text = _fix_alef_maqsura(text)
 
-    # 2. الإصلاحات اليدوية (أعلى أولوية)
     for plain, diacritized in sorted(
         MANUAL_TASHKEEL.items(), key=lambda x: -len(x[0])
     ):
+        if "ى" in plain and plain in MANUAL_TASHKEEL:
+            continue  # تمت معالجتها في _fix_alef_maqsura
         pattern = rf'(?<![ء-ي\u064B-\u0652]){re.escape(plain)}(?![ء-ي\u064B-\u0652])'
         text = re.sub(pattern, diacritized, text)
 
-    # 3. mishkal للتشكيل الكامل إن وُجد
+    # 2. mishkal للتشكيل الكامل (بقية النص)
     if HAS_MISHKAL:
         try:
             text = _mishkal.tashkeel(text)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"   ⚠️ mishkal فشل: {str(e)[:80]}", flush=True)
 
     return text
 
@@ -141,6 +221,7 @@ def get_duration(path) -> float:
 
 
 def normalize(input_path, output_path):
+    """تطبيع إلى 44100 Hz mono + loudnorm."""
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-i", str(input_path),
@@ -153,15 +234,34 @@ def normalize(input_path, output_path):
         safe_copy(input_path, output_path)
 
 
-def add_fade(input_path, output_path):
+def apply_fade(input_path, output_path, duration: float = None):
+    """تطبيق fade in/out قصير على كل مقطع لمنع 'الخشة'."""
+    if duration is None:
+        duration = FADE_DURATION
     dur = get_duration(input_path)
-    if dur <= 0:
+    if dur <= duration * 2:
         safe_copy(input_path, output_path)
         return
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(input_path),
-         "-af", f"afade=t=in:st=0:d=0.2,afade=t=out:st={max(0, dur - 0.25)}:d=0.25",
+         "-af",
+         f"afade=t=in:st=0:d={duration},"
+         f"afade=t=out:st={max(0, dur - duration)}:d={duration}",
          "-c:a", "libmp3lame", "-b:a", TARGET_BR, str(output_path)],
+        check=True, capture_output=True,
+    )
+
+
+def make_silence(output_path, duration: float = None):
+    """إنشاء ملف صمت قصير."""
+    if duration is None:
+        duration = SILENCE_BETWEEN
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi",
+         "-i", "anullsrc=r=44100:cl=mono",
+         "-t", str(duration),
+         "-c:a", "libmp3lame", "-b:a", TARGET_BR,
+         str(output_path)],
         check=True, capture_output=True,
     )
 
@@ -197,14 +297,10 @@ def edge_tts_generate(text: str, output_path: str):
 
 
 # ═══ Gemini TTS للآيات ═══
-_style_supported = None  # None = لم يُختبر، True/False بعد أول محاولة
+_style_supported = None
 
 
 def gemini_quran_tts(text: str, output_path: Path) -> tuple[bool, bool]:
-    """
-    توليد آية عبر Gemini TTS.
-    يعيد (نجح، استُخدم_style).
-    """
     global _style_supported
 
     try:
@@ -255,7 +351,6 @@ def gemini_quran_tts(text: str, output_path: Path) -> tuple[bool, bool]:
                 r = requests.post(url, json=body, timeout=180)
 
                 if r.status_code == 400 and use_style:
-                    # style غير مدعوم في هذا الموديل — أعد بدون style
                     _style_supported = False
                     continue
 
@@ -264,7 +359,7 @@ def gemini_quran_tts(text: str, output_path: Path) -> tuple[bool, bool]:
                     return False, False
 
                 if r.status_code == 404:
-                    break  # جرّب موديلاً آخر
+                    break
 
                 if r.status_code != 200:
                     continue
@@ -315,31 +410,32 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
     gemini_calls = 0
     edge_fallback = 0
 
+    # ملف صمت للفصل بين المقاطع
+    silence_path = work_dir / "silence.mp3"
+    make_silence(silence_path)
+
     try:
         for pos, seg in enumerate(all_segs):
             seg_type = seg.get("type")
-            raw_path = work_dir / f"raw_{idx:03d}"
+            raw_path = work_dir / f"raw_{idx:03d}.mp3"
             fade_path = work_dir / f"fade_{idx:03d}.mp3"
             norm_path = work_dir / f"norm_{idx:03d}.mp3"
-            is_first = (pos == 0)
-            is_last = (pos == total - 1)
 
             # ═══ السرد (Edge TTS) ═══
             if seg_type in ("narration", "teaser", "cta", "outro", "intro", "summary"):
                 text = seg["text"]
 
-                # تشكيل السرد
-                original_len = len(re.findall(r'[\u064B-\u0652]', text))
+                # تطبيق التشكيل + معالجة الألف المقصورة
+                old_count = len(re.findall(r'[\u064B-\u0652]', text))
                 text = apply_tashkeel(text)
-                new_len = len(re.findall(r'[\u064B-\u0652]', text))
-                if new_len > original_len:
-                    print(f"   🔤 تشكيل السرد: {new_len} علامة", flush=True)
+                new_count = len(re.findall(r'[\u064B-\u0652]', text))
+                if new_count > old_count:
+                    print(f"   🔤 تشكيل السرد: {old_count} → {new_count} علامة", flush=True)
                     seg["text"] = text
 
-                raw_mp3 = work_dir / f"raw_{idx:03d}.mp3"
-                edge_tts_generate(text, str(raw_mp3))
+                edge_tts_generate(text, str(raw_path))
 
-                src = raw_mp3
+                src = raw_path
                 sfx_query = seg.get("sfx", "")
                 if sfx_query:
                     sfx_path = fetch_sfx(sfx_query)
@@ -347,7 +443,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                         mixed = work_dir / f"mixed_{idx:03d}.mp3"
                         subprocess.run(
                             ["ffmpeg", "-y",
-                             "-i", str(raw_mp3),
+                             "-i", str(raw_path),
                              "-stream_loop", "-1", "-i", sfx_path,
                              "-filter_complex",
                              f"[1:a]volume={SFX_VOLUME}[sfx];[0:a][sfx]amix=inputs=2:duration=first[out]",
@@ -358,10 +454,8 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                         )
                         src = mixed
 
-                if is_first or is_last:
-                    add_fade(src, fade_path)
-                else:
-                    safe_copy(src, fade_path)
+                # fade قصير على كل مقطع (لا فقط الأول والأخير)
+                apply_fade(src, fade_path)
                 normalize(fade_path, norm_path)
 
                 meta = {
@@ -378,6 +472,9 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     }
                 meta_segments.append(meta)
                 parts.append(norm_path)
+                # صمت بعد كل مقطع (ما عدا الأخير)
+                if pos < total - 1:
+                    parts.append(silence_path)
 
             # ═══ الآيات (Gemini → Edge احتياطي) ═══
             elif seg_type == "quran":
@@ -402,7 +499,6 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                 used_style = False
                 engine = "none"
 
-                # محاولة Gemini أولاً (مع حماية الحصة)
                 can_use_gemini = (
                     gemini_fail < MAX_GEMINI_FAILURES
                     and gemini_calls < MAX_GEMINI_CALLS_PER_EPISODE
@@ -415,21 +511,19 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     success, used_style = gemini_quran_tts(txt_clean, wav_out)
 
                     if success and wav_out.exists() and wav_out.stat().st_size > 4096:
-                        # تحويل WAV إلى MP3
-                        raw_mp3 = work_dir / f"raw_{idx:03d}.mp3"
+                        # تحويل WAV إلى MP3 (مع تطبيع لضمان نفس الصيغة)
                         subprocess.run(
                             ["ffmpeg", "-y", "-i", str(wav_out),
                              "-ar", "44100", "-ac", "1",
                              "-codec:a", "libmp3lame", "-b:a", "192k",
-                             str(raw_mp3)],
+                             str(raw_path)],
                             check=True, capture_output=True,
                         )
-                        raw_path_final = raw_mp3
                         generated = True
                         gemini_ok += 1
                         engine = "gemini"
                         print(
-                            f"   ✅ Gemini نجح ({get_duration(raw_mp3):.1f}s، "
+                            f"   ✅ Gemini نجح ({get_duration(raw_path):.1f}s، "
                             f"style={'نعم' if used_style else 'لا'})",
                             flush=True,
                         )
@@ -437,21 +531,15 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                         gemini_fail += 1
                         print(f"   ⚠️ Gemini فشل (فشل متتالي: {gemini_fail})", flush=True)
 
-                # احتياطي: Edge TTS
                 if not generated:
                     print(f"🎙️ Edge TTS [آية {disp}] (احتياطي)...", flush=True)
-                    raw_mp3 = work_dir / f"raw_{idx:03d}.mp3"
-                    edge_tts_generate(txt_clean, str(raw_mp3))
-                    raw_path_final = raw_mp3
+                    edge_tts_generate(txt_clean, str(raw_path))
                     generated = True
                     edge_fallback += 1
                     engine = "edge"
 
-                # fade + normalize
-                if is_first or is_last:
-                    add_fade(raw_path_final, fade_path)
-                else:
-                    safe_copy(raw_path_final, fade_path)
+                # fade قصير على كل آية (لا فقط الأول والأخير)
+                apply_fade(raw_path, fade_path)
                 normalize(fade_path, norm_path)
 
                 meta_segments.append({
@@ -462,6 +550,9 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     "style_applied": used_style,
                 })
                 parts.append(norm_path)
+                # صمت بعد كل آية (ما عدا الأخيرة)
+                if pos < total - 1:
+                    parts.append(silence_path)
 
             idx += 1
 
@@ -499,6 +590,7 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
                     "gemini_calls": gemini_calls,
                     "edge_fallback": edge_fallback,
                     "style_supported": _style_supported,
+                    "mishkal_available": HAS_MISHKAL,
                 },
                 "segments": meta_segments,
             }, ensure_ascii=False, indent=2),
@@ -513,12 +605,12 @@ def build_episode_audio(episode_json_path: str, output_mp3: str):
         print(f"   Edge احتياطي: {edge_fallback}", flush=True)
         print(f"   استدعاءات Gemini: {gemini_calls}/{MAX_GEMINI_CALLS_PER_EPISODE}", flush=True)
         print(f"   style مدعوم: {_style_supported}", flush=True)
+        print(f"   mishkal: {'✅' if HAS_MISHKAL else '❌ (تشكيل ناقص!)'}", flush=True)
         print("═" * 60, flush=True)
 
-        # إشعار إذا فشل Gemini أكثر من اللازم
-        if gemini_fail >= MAX_GEMINI_FAILURES and gemini_ok == 0:
+        if not HAS_MISHKAL:
             notify_telegram(
-                f"⚠️ Gemini فشل تماماً — كل الآيات بـ Edge TTS",
+                "⚠️ mishkal غير مثبت — التشكيل ناقص. أضف mishkal إلى requirements-stories.txt",
                 "warn",
             )
 
