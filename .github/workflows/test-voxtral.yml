@@ -6,7 +6,7 @@ on:
 jobs:
   test-voxtral:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -19,7 +19,6 @@ jobs:
 
       - name: Free disk space
         run: |
-          # مساحة إضافية (النموذج 8GB)
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android 2>/dev/null || true
           df -h
 
@@ -44,14 +43,11 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## 🎧 Voxtral Test (v2)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎧 Voxtral Test (v3)" >> $GITHUB_STEP_SUMMARY
           if [ -f out/test_voxtral/fatiha_1.wav ]; then
             SIZE=$(stat -c%s out/test_voxtral/fatiha_1.wav)
             DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 out/test_voxtral/fatiha_1.wav 2>/dev/null || echo "?")
-            echo "✅ **نجح**" >> $GITHUB_STEP_SUMMARY
-            echo "- الحجم: ${SIZE} bytes" >> $GITHUB_STEP_SUMMARY
-            echo "- المدة: ${DUR}s" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **نجح** — ${SIZE} bytes | ${DUR}s" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **فشل** — راجع السجل" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **فشل**" >> $GITHUB_STEP_SUMMARY
           fi
