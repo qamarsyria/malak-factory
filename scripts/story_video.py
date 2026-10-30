@@ -1,9 +1,7 @@
-"""بناء الفيديو: فيديوهات متحركة + تغيير المشاهد + نص متزامن + شعار.
-- إصلاح قطع الفيديو (8 دقائق).
-- عدم تقطيع الآيات القرآنية.
-- إضافة الشعار (Watermark).
-- إزالة الخلفية السوداء للنص.
-- تغيير المشاهد الطبيعية داخل المقطع الطويل.
+"""بناء الفيديو: فيديوهات متحركة متغيرة + نصوص ديناميكية + شعار.
+- إزالة أي حروف إنجليزية أو فيديوهات تحتوي على نصوص.
+- حل مشكلة انقطاع الفيديو قبل الصوت باستخدام tpad (تجميد آخر إطار).
+- إصلاح تزامن النص مع الصوت بحساب طول الجملة وليس تقسيم الوقت بالتساوي.
 """
 import os
 import re
@@ -27,6 +25,7 @@ from config import (
 from video import _find_arabic_font, _shape, _wrap
 from utilities import cleanup_dir, notify_telegram
 
+# 1. حظر الفيديوهات التي تحتوي على نصوص أو شعارات
 FORBIDDEN_TAGS = {
     "woman", "women", "girl", "female", "child", "boy", "man", "men",
     "people", "person", "face", "human", "body", "hand", "skin",
@@ -34,6 +33,8 @@ FORBIDDEN_TAGS = {
     "idol", "church", "cross", "crucifix",
     "alcohol", "wine", "beer", "drunk", "pig", "dog", "bride", "groom",
     "nude", "naked", "bikini", "lingerie", "kiss", "romance",
+    "text", "word", "words", "quote", "quotes", "letter", "letters", 
+    "typography", "font", "english", "alphabet", "watermark", "logo"
 }
 
 def is_media_safe(tags_str: str) -> bool:
@@ -67,9 +68,16 @@ POOLS_BY_TYPE = {
     "summary": ["sunrise sky", "calm sea", "mountain peak", "starry night"],
     "teaser": ["dramatic clouds", "starry night sky", "moon night"],
     "cta": ["mosque architecture", "islamic pattern", "mosque minaret"],
+    "intro": ["mosque architecture", "islamic pattern"],
+    "outro": ["mosque architecture", "sunrise sky"],
 }
 
-def pick_visual_query(seg: dict, idx: int) -> str:
+def get_duration(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True, timeout=15)
+    try: return float(r.stdout.strip())
+    except: return 0.0
+
+def pick_visual_query(seg: dict) -> str:
     explicit = seg.get("visual", "").strip()
     if explicit and explicit not in ("mosque", "quran book", "islamic architecture"):
         return explicit
@@ -99,51 +107,57 @@ def _download_file(url: str, out_path: Path) -> bool:
         return out_path.stat().st_size > 20000
     except: return False
 
-def _fetch_video(query: str, work_dir: Path):
+def _fetch_video(query: str, work_dir: Path, used_urls: set):
     if not PIXABAY_KEY: return None
     try:
-        r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 10, "min_width": 1080}, timeout=20)
+        r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
         if r.status_code != 200: return None
+        random.shuffle(r.json().get("hits", []))
         for hit in r.json().get("hits", []):
             if not is_media_safe(hit.get("tags", "")): continue
             url = hit.get("videos", {}).get("medium", {}).get("url") or hit.get("videos", {}).get("small", {}).get("url")
-            if not url: continue
+            if not url or url in used_urls: continue
+            
             slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
             out = work_dir / f"vid_{slug}_{hit['id']}.mp4"
             if _download_file(url, out):
+                used_urls.add(url)
                 return str(out)
-    except: pass
+    except Exception: pass
     return None
 
-def _fetch_image(query: str, work_dir: Path):
+def _fetch_image(query: str, work_dir: Path, used_urls: set):
     if not PIXABAY_KEY: return None
     try:
-        r = requests.get("https://pixabay.com/api/", params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "orientation": "vertical", "per_page": 10, "safesearch": "true", "min_width": 1080}, timeout=20)
+        r = requests.get("https://pixabay.com/api/", params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "orientation": "vertical", "per_page": 20, "safesearch": "true", "min_width": 1080}, timeout=20)
         if r.status_code != 200: return None
+        random.shuffle(r.json().get("hits", []))
         for hit in r.json().get("hits", []):
             if not is_media_safe(hit.get("tags", "")): continue
             url = hit.get("largeImageURL")
-            if not url: continue
+            if not url or url in used_urls: continue
+            
             slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
             out = work_dir / f"img_{slug}_{hit['id']}.jpg"
             if _download_file(url, out):
+                used_urls.add(url)
                 return str(out)
-    except: pass
+    except Exception: pass
     return None
 
-def fetch_media(query: str, work_dir: Path):
+def fetch_media(query: str, work_dir: Path, used_urls: set):
     local = _find_local(query)
     if local: return local
-    video = _fetch_video(query, work_dir)
+    video = _fetch_video(query, work_dir, used_urls)
     if video: return video
-    image = _fetch_image(query, work_dir)
+    image = _fetch_image(query, work_dir, used_urls)
     if image: return image
     out = work_dir / "black.jpg"
     if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
 
-def split_text_for_captions(text, max_words=4):
-    """تقسيم النص للسرد فقط (الآيات لا تمس)."""
+def split_text_for_captions(text, max_words=4, is_quran=False):
+    if is_quran: return [text]
     words = text.split()
     chunks, current = [], []
     for w in words:
@@ -172,34 +186,43 @@ def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill):
     x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
     draw.text((x, y), shaped, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
 
-def make_caption_overlay(chunk_text, seg_type, out_path):
+def make_caption_overlay(chunk_text, seg, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
-    is_quran = seg_type == "quran"
+    # حذف أي حروف إنجليزية قد تظهر بالخطأ
+    chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
+    if not chunk_text and seg.get("type") != "quran": 
+        overlay.save(out_path)
+        return
+
+    is_quran = seg.get("type") == "quran"
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
     
-    # زيادة حجم الخط قليلاً للآيات لأنها كاملة
-    start_sz = 70 if not is_quran else 60
-    font, lines, lh = _fit_text(chunk_text, font_path, VIDEO_W - 120, VIDEO_H - 400, start_sz, 45)
+    display_text = chunk_text
+    if is_quran and seg.get("display"):
+        display_text += f"\n﴿ {seg['display']} ﴾"
+        
+    font, lines, lh = _fit_text(display_text, font_path, VIDEO_W - 120, VIDEO_H - 400, 70, 45)
     
     total_h = len(lines) * lh
     y = max(200, (VIDEO_H - total_h) // 2)
     
-    # إزالة الخلفية السوداء، والاعتماد على الحدود السميكة للحروف
-    for line in lines:
-        _draw_centered(draw, y, line, font, color, 5, "black") # زيادة سماكة الحدود لـ 5
+    stroke_width = 6 if not is_quran else 8
+    for i, line in enumerate(lines):
+        line_color = color if i < len(lines)-1 or not is_quran else "#D4AF37"
+        _draw_centered(draw, y, line, font, line_color, stroke_width, "black")
         y += lh
         
-    # إضافة الشعار (Watermark) في كل صورة
-    try:
-        fw = ImageFont.truetype(font_path, 35, layout_engine=ImageFont.Layout.RAQM)
-    except:
-        fw = ImageFont.truetype(font_path, 35)
-    wm = _shape("ملاك المعرفة")
-    bbox = draw.textbbox((0, 0), wm, font=fw)
-    draw.text((VIDEO_W - (bbox[2] - bbox[0]) - 40, VIDEO_H - 100), wm, font=fw, fill=(255, 215, 0, 200), stroke_width=2, stroke_fill="black")
+    # الشعار الثابت أسفل اليمين
+    try: wm_font = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
+    except: wm_font = ImageFont.truetype(font_path, 40)
+    wm_text = _shape("ملاك المعرفة")
+    wm_bbox = draw.textbbox((0,0), wm_text, font=wm_font)
+    wm_x = VIDEO_W - (wm_bbox[2] - wm_bbox[0]) - 40
+    wm_y = VIDEO_H - 80
+    draw.text((wm_x, wm_y), wm_text, font=wm_font, fill="#D4AF37", stroke_width=4, stroke_fill="black")
         
     overlay.save(out_path)
 
@@ -207,99 +230,96 @@ def build_video(audio_path, meta_path, output_mp4):
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_vid_"))
     concat_lines = []
+    used_urls = set()
 
     try:
         for i, seg in enumerate(meta["segments"]):
             duration = seg["duration"]
             if duration <= 0: continue
             
-            seg_type = seg.get("type", "narration")
-            print(f"🎬 مقطع {i+1}: {seg_type} ({duration:.1f}s)", flush=True)
+            print(f"🎬 مقطع {i+1}: {seg['type']} ({duration:.1f}s)", flush=True)
             
-            # 1. تجهيز النصوص (الآيات كاملة، السرد مقسم)
+            num_bgs = max(1, math.ceil(duration / 10))
+            bg_files = []
+            for _ in range(num_bgs):
+                query = pick_visual_query(seg)
+                bg_files.append(fetch_media(query, work_dir, used_urls))
+            
+            bg_duration = duration / num_bgs
+            
+            inputs = []
+            filter_parts = []
+            for b_idx, bg in enumerate(bg_files):
+                inputs.extend(["-stream_loop", "-1", "-i", bg])
+                filter_parts.append(
+                    f"[{b_idx}:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
+                    f"crop={VIDEO_W}:{VIDEO_H},trim=start=0:end={bg_duration},setpts=PTS-STARTPTS[bg{b_idx}]"
+                )
+            
+            concat_inputs = "".join(f"[bg{b_idx}]" for b_idx in range(num_bgs))
+            filter_parts.append(f"{concat_inputs}concat=n={num_bgs}:v=1:a=0[bg_concat]")
+            
+            current_video = "[bg_concat]"
+            input_idx = num_bgs 
+            
+            is_quran = seg.get("type") == "quran"
             text = seg.get("text", "")
-            if seg_type == "quran":
-                chunks = [text] # الآية كاملة
-            else:
-                chunks = split_text_for_captions(text, max_words=4)
-            
+            chunks = split_text_for_captions(text, max_words=4, is_quran=is_quran)
             if not chunks: chunks = [""]
-            time_per_chunk = duration / len(chunks)
             
-            # 2. تجهيز الخلفية (تغيير المشهد كل 15 ثانية للمقاطع الطويلة)
-            num_scenes = max(1, math.ceil(duration / 15))
-            scene_duration = duration / num_scenes
-            scene_files = []
+            # التوزيع الذكي للوقت بناءً على عدد الحروف (لحل مشكلة التزامن)
+            total_chars = sum(len(c) for c in chunks)
+            if total_chars == 0: total_chars = 1
             
-            for s_idx in range(num_scenes):
-                query = pick_visual_query(seg, i)
-                media = fetch_media(query, work_dir)
-                # إنشاء فيديو قصير للمشهد
-                scene_out = work_dir / f"scene_{i}_{s_idx}.mp4"
-                subprocess.run([
-                    "ffmpeg", "-y", "-stream_loop", "-1", "-i", media,
-                    "-t", str(scene_duration), "-r", "24",
-                    "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H}",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-                    str(scene_out)
-                ], check=True, capture_output=True)
-                scene_files.append(scene_out)
-
-            # دمج المشاهد لصنع خلفية المقطع
-            bg_concat = work_dir / f"bg_cat_{i}.txt"
-            bg_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in scene_files), encoding="utf-8")
-            bg_video = work_dir / f"bg_vid_{i}.mp4"
-            subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(bg_concat), "-c", "copy", str(bg_video)], check=True, capture_output=True)
-
-            # 3. وضع النصوص فوق الخلفية
-            cmd = ["ffmpeg", "-y", "-i", str(bg_video)]
-            filter_parts = ["[0:v]setpts=PTS-STARTPTS[bg0]"]
-            
-            current_video = "[bg0]"
-            input_idx = 1
-            
+            current_time = 0.0
             for c_idx, chunk in enumerate(chunks):
                 if not chunk.strip(): continue
                 
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
-                make_caption_overlay(chunk, seg_type, overlay_png)
+                make_caption_overlay(chunk, seg, overlay_png)
                 
-                cmd.extend(["-i", str(overlay_png)])
+                inputs.extend(["-i", str(overlay_png)])
                 
-                start_t = c_idx * time_per_chunk
-                end_t = (c_idx + 1) * time_per_chunk
+                # وقت الجملة يتناسب مع طولها
+                chunk_len = len(chunk)
+                chunk_duration = duration * (chunk_len / total_chars)
+                
+                start_t = current_time
+                end_t = current_time + chunk_duration
                 
                 next_video = f"[v{c_idx}]"
                 filter_parts.append(f"{current_video}[{input_idx}:v]overlay=enable='between(t,{start_t},{end_t})'{next_video}")
                 current_video = next_video
                 input_idx += 1
+                current_time = end_t
             
             out_seg = work_dir / f"seg_{i}.mp4"
-            cmd.extend([
+            cmd = ["ffmpeg", "-y"] + inputs + [
                 "-filter_complex", ";".join(filter_parts),
                 "-map", current_video,
                 "-t", str(duration), "-r", "24",
-                "-c:v", "libx264", "-preset", "faster", "-crf", "32", # ضغط أعلى لتقليل الحجم
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
                 str(out_seg)
-            ])
-            
+            ]
             subprocess.run(cmd, check=True, capture_output=True)
             concat_lines.append(f"file '{out_seg}'")
 
-        # 4. الدمج النهائي (بدون -shortest لضمان اكتمال الفيديو)
-        (work_dir / "final_concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        print("🔗 الدمج النهائي مع الصوت...", flush=True)
+        audio_dur = get_duration(audio_path)
+        (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
         
+        print("🔗 الدمج النهائي ومزامنة الصوت مع الفيديو...", flush=True)
         subprocess.run([
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "final_concat.txt"),
-            "-i", audio_path, 
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            output_mp4
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"),
+            "-i", audio_path,
+            "-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={audio_dur}[v]",
+            "-map", "[v]", "-map", "1:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "192k",
+            "-t", str(audio_dur),
+            str(output_mp4)
         ], check=True, capture_output=True)
         
-        size_mb = Path(output_mp4).stat().st_size / (1024 * 1024)
-        print(f"✅ فيديو: {output_mp4} ({size_mb:.1f} MB)", flush=True)
+        print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
         cleanup_dir(work_dir)
 
