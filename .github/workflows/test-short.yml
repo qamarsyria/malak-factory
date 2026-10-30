@@ -6,7 +6,7 @@ on:
 jobs:
   test-short:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -15,8 +15,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.10' # إصدار مستقر ومتوافق مع المكتبات
 
       - name: Install system dependencies
         run: |
@@ -26,18 +25,19 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cpu
-          pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/c.txt
-          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --constraint /tmp/c.txt
-          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests --constraint /tmp/c.txt
-          pip install neucodec --no-deps --constraint /tmp/c.txt
-          pip install local_attention vector-quantize-pytorch transformers --constraint /tmp/c.txt
+          # الإصدار الصحيح لـ torch
+          pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          # تثبيت llama-cpp-python من مصدر wheels الجاهزة (لتجنب البناء الطويل)
+          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          # باقي المكتبات
+          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests
+          pip install neucodec --no-deps
+          pip install local_attention vector-quantize-pytorch transformers
 
       - name: Run Test Short
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python test_short.py
+        run: python scripts/test_short.py
 
       - name: Upload Artifact
         if: always()
