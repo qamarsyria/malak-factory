@@ -6,6 +6,7 @@ import tempfile
 import shutil
 import re
 import requests
+import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +40,7 @@ def fix_text(t):
     return t
 
 def clean(t):
-    t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t) # إزالة أي آية بين الأقواس
+    t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
@@ -55,6 +56,18 @@ def fetch_ayah(s, a):
     except: pass
     return ""
 
+def split_into_small_chunks(text, max_words=6):
+    # تقسيم النص إلى جمل قصيرة جداً لضمان سرعة الاستجابة ومنع الفشل
+    words = text.split()
+    chunks, current = [], []
+    for w in words:
+        current.append(w)
+        if len(current) >= max_words or any(p in w for p in [".", "؟", "!", "،", "؛"]):
+            chunks.append(" ".join(current))
+            current = []
+    if current: chunks.append(" ".join(current))
+    return chunks
+
 def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_"))
@@ -62,76 +75,87 @@ def build_episode_audio(json_path, out_mp3):
     silence = work / "sil.mp3"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "libmp3lame", str(silence)], check=True, capture_output=True)
 
-    seg_files = []
-    meta_segments = []
+    all_segments_meta = []
 
     for idx, seg in enumerate(ep.get("segments", [])):
         stype = seg.get("type")
-        text, clean_txt, display = "", "", ""
+        text, display = "", ""
         
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = fix_text(seg["text"])
-            clean_txt = clean(text)
-            seg["text"] = text
         elif stype == "quran":
             s, ayahs = seg["surah"], seg["ayah_numbers"]
-            txt = " ".join(filter(None, (fetch_ayah(s, a) for a in ayahs)))
-            text, clean_txt = txt, clean(txt)
+            text = " ".join(filter(None, (fetch_ayah(s, a) for a in ayahs)))
             display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
         else:
             continue
             
-        if not clean_txt: continue
+        clean_text = clean(text)
+        if not clean_text: continue
         
-        raw = work / f"raw_{idx:03d}.mp3"
-        print(f"🎙️ Gemini [{stype} {idx}]...", flush=True)
+        # تقسيم النص إلى جمل صغيرة
+        chunks = split_into_small_chunks(clean_text, max_words=6)
+        chunk_files = []
+        chunk_timings = []
         
-        success = False
-        for attempt in range(3):
-            try:
-                gemini_tts_with_pool(clean_txt, str(raw), voice="Charon")
-                if raw.exists() and raw.stat().st_size > 5000:
-                    success = True; break
-            except Exception as e:
-                print(f"   ⚠️ خطأ: {str(e)[:80]}", flush=True)
-                
-        if not success:
-            # إصلاح: عدم الانهيار، بل وضع صمت 3 ثوانٍ
-            print(f"❌ فشل Gemini في المقطع {idx}. تم وضع صمت بدلاً منه.", flush=True)
-            subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "3", "-c:a", "libmp3lame", str(raw)], check=True, capture_output=True)
+        print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} جملة...", flush=True)
+        
+        for c_idx, chunk in enumerate(chunks):
+            if not chunk.strip(): continue
+            
+            raw_chunk = work / f"c_{idx}_{c_idx}.mp3"
+            
+            success = False
+            for attempt in range(4): # محاولات أكثر لجمل قصيرة
+                try:
+                    gemini_tts_with_pool(chunk, str(raw_chunk), voice="Charon")
+                    if raw_chunk.exists() and raw_chunk.stat().st_size > 2000:
+                        success = True; break
+                except Exception as e:
+                    print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:50]}", flush=True)
+                    time.sleep(2) # انتظار قبل المحاولة التالية
+                    
+            if not success:
+                print(f"   ❌ فشل في جملة: {chunk[:20]}... تم وضع صمت.", flush=True)
+                subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "1.5", "-c:a", "libmp3lame", str(raw_chunk)], check=True, capture_output=True)
 
-        raw_dur = get_dur(raw)
-        faded = work / f"faded_{idx:03d}.mp3"
-        if raw_dur > 0.1:
-            subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-af", f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0,raw_dur-0.05)}:d=0.05", "-c:a", "libmp3lame", str(faded)], check=True, capture_output=True)
-        else:
-            shutil.copy(raw, faded)
-
-        seg_files.append(faded)
+            c_dur = get_dur(raw_chunk)
+            chunk_files.append(raw_chunk)
+            
+            # إضافة صمت قصير جداً بين الجمل (0.2 ثانية)
+            silent_c = work / f"sc_{idx}_{c_idx}.mp3"
+            subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "0.2", "-c:a", "libmp3lame", str(silent_c)], check=True, capture_output=True)
+            chunk_files.append(silent_c)
+            
+            # تسجيل توقيت الجملة (النص + الوقت الدقيق)
+            chunk_timings.append({"text": chunk, "duration": c_dur + 0.2})
+            
+            time.sleep(1) # تأخير بسيط جداً بين طلبات Gemini لمنع الحظر (Rate Limit)
+            
+        # دمج جمل المقطع الواحد
+        seg_concat = work / f"seg_{idx}.txt"
+        seg_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in chunk_files), encoding="utf-8")
+        seg_audio = work / f"seg_{idx}.mp3"
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(seg_concat), "-c:a", "libmp3lame", str(seg_audio)], check=True, capture_output=True)
         
-        total_seg_dur = raw_dur
+        # إضافة صمت بعد المقطع كاملاً
         if idx < len(ep.get("segments", [])) - 1:
-            seg_files.append(silence)
-            total_seg_dur += SILENCE_DUR
-
-        meta_segments.append({
-            "index": idx, 
-            "type": stype, 
-            "text": text, 
-            "display": display, 
-            "duration": total_seg_dur,
-            "audio_dur": raw_dur,
-            "engine": "gemini"
+            chunk_timings.append({"text": "", "duration": SILENCE_DUR, "is_silence": True})
+            
+        all_segments_meta.append({
+            "index": idx,
+            "type": stype,
+            "display": display,
+            "chunks": chunk_timings, # التوقيتات الدقيقة هنا
+            "audio_file": str(seg_audio)
         })
 
-    if not seg_files: raise RuntimeError("لا مقاطع")
-
-    print(f"\n🔗 دمج {len(seg_files)} مقطع...", flush=True)
-    concat = work / "final.txt"
-    concat.write_text("\n".join(f"file '{p.resolve()}'" for p in seg_files), encoding="utf-8")
+    # الدمج النهائي
+    final_concat = work / "final.txt"
+    final_concat.write_text("\n".join(f"file '{s['audio_file']}'" for s in all_segments_meta), encoding="utf-8")
     
     Path(out_mp3).parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c:a", "libmp3lame", "-b:a", TARGET_BR, str(out_mp3)], check=True, capture_output=True)
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(final_concat), "-c:a", "libmp3lame", "-b:a", TARGET_BR, str(out_mp3)], check=True, capture_output=True)
     
     meta_path = str(out_mp3).replace(".mp3", "_meta.json")
     Path(meta_path).write_text(json.dumps({
@@ -139,7 +163,7 @@ def build_episode_audio(json_path, out_mp3):
         "title": ep.get("title", ""), 
         "story_id": ep.get("story_id", ""), 
         "total_duration": get_dur(out_mp3), 
-        "segments": meta_segments
+        "segments": all_segments_meta
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"✅ {out_mp3} | {get_dur(out_mp3)/60:.1f} دقيقة", flush=True)
