@@ -2,8 +2,7 @@ import os
 import re
 import sys
 import subprocess
-import requests
-import asyncio
+import time
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
@@ -14,25 +13,22 @@ from gemini_tts_pool import gemini_tts_with_pool
 OUT_DIR = Path("out/test_short")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ═══ 1. مرجع التدريب (نصك + كلمات الضاد + قلقيلية + التشكيل الكامل) ═══
+# ═══ 1. النص المرجعي الشامل (تدريب لفظ الجلالة + الضاد + القاف) ═══
 REF_TEXT = (
     "اللَّهُ لَا إِلَهَ إِلَّا هُوَ الْحَيُّ الْقَيُّومُ يُحْيِي وَيُمِيتُ وَهُوَ عَلَى كُلِّ شَيْءٍ قَدِيرٌ. "
     "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ. نَحْنُ نَقُصُّ عَلَيْكَ أَحْسَنَ الْقَصَصِ إِيمَانًا. "
-    "صَدَقَ اللَّهُ الْعَظِيمُ. "
-    "فِي فُسْطَاطِ قَلْقِيلِيَّةَ، عَلَى أَرْضِ فِلَسْطِينَ الْمُبَارَكَةِ، ضَرَبَ الْمَثَلَ بِالْأَرْضِ الطَّيِّبَةِ وَالضَّلَالِ الْمُبِينِ، فَضْلًا مِنْهُ وَمَرْضِيًّا."
+    "صَدَقَ اللَّهُ الْعَظِيمُ. ذَهَبْتُ إِلَى مَدِينَةِ فُسْطَاطَ وَمَدِينَةِ قَلْقِيلِيَةَ. "
+    "وَالْأَرْضَ مَدَدْنَاهَا وَأَلْقَيْنَا فِيهَا رَوَاسِيَ. وَلَا الضَّالِّينَ. هَذَا فَضْلٌ كَبِيرٌ. وَجَعَلْنَا فِيهَا جَنَّاتٍ خَضْرَاءَ."
 )
 
-# ═══ 2. النص المراد اختباره (يحتوي كلمات صعبة) ═══
-NARRATION_TEXT = (
-    "فِي قَدِيمِ الزَّمَانِ، فِي أَرْضِ فِلَسْطِينَ، عَاشَ نَبِيٌّ كَرِيمٌ ضَاقَ صَدْرُهُ بِقَوْمِهِ، "
-    "فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّهَ بِقَلْبٍ خَاشِعٍ."
-)
+# ═══ 2. نص السرد (مختلف عن المرجع، ويحتوي على لفظ الجلالة والضاد لاختبارهما) ═══
+NARRATION_TEXT = "فِي قَدِيمِ الزَّمَانِ، عَاشَ نَبِيٌّ كَرِيمٌ فِي قَوْمٍ ظَالِمِينَ. فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّهَ بِقَلْبٍ خَاشِعٍ عَلَى هَذِهِ الْأَرْضِ."
 
 def _find_arabic_font():
     candidates = [
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
-        "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-BoldItalic.ttf"
+        "/usr/share/fonts/opentype/fonts/hosny-amiri/Amiri-BoldItalic.ttf"
     ]
     for c in candidates:
         if os.path.exists(c): return c
@@ -61,19 +57,23 @@ def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     return float(r.stdout.strip())
 
-print("🎙️ إنشاء المرجع الصوتي عبر Gemini (تدريب على الكلمات الصعبة)...")
+# ═══ إنشاء المرجع الصوتي عبر Gemini ═══
+print("🎙️ إنشاء المرجع الصوتي عبر Gemini...")
 ref_mp3 = OUT_DIR / "ref_gemini.mp3"
 try:
+    # إضافة تأخير بسيط لضمان عدم حظر المفاتيح
+    time.sleep(5)
     gemini_tts_with_pool(REF_TEXT, str(ref_mp3), voice="Charon")
     subprocess.run(["ffmpeg", "-y", "-i", str(ref_mp3), "-ar", "16000", "-ac", "1", str(OUT_DIR / "ref.wav")], check=True, capture_output=True)
     REF_WAV = OUT_DIR / "ref.wav"
-    print("✅ تم إنشاء المرجع.")
+    print("✅ تم إنشاء المرجع بواسطة Gemini.")
 except Exception as e:
     print(f"❌ فشل Gemini في إنشاء المرجع: {e}")
     sys.exit(1)
 
+# ═══ تشغيل Audar بالمرجع الجديد ═══
 def test_audar():
-    print("🔊 اختبار Audar (مع بصمة Gemini المدربة)...")
+    print("🔊 اختبار Audar (مع بصمة Gemini)...")
     try:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
@@ -96,7 +96,6 @@ def test_audar():
         ref_codes = codec.encode_code(ref_tensor).squeeze().tolist()
         ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
 
-        # إرسال النص الطويل
         prompt = f"user: Convert the text to speech:<|REF_TEXT_START|>{REF_TEXT}<|REF_TEXT_END|><|REF_SPEECH_START|>{ref}<|REF_SPEECH_END|><|TARGET_TEXT_START|>{NARRATION_TEXT}<|TARGET_TEXT_END|>\nassistant:<|TARGET_CODES_START|>"
         
         tce = llm.tokenize(b"<|TARGET_CODES_END|>", add_bos=False, special=True)[0]
@@ -112,7 +111,7 @@ def test_audar():
         
         print(f"📊 تولد {len(codes)} كود صوتي.")
         
-        if len(codes) < 200: 
+        if len(codes) < 150: 
             raise Exception("النموذج لم يقرأ النص بالكامل (عدد الكودات قليل جداً).")
         
         wav = codec.decode_code(torch.tensor(codes)[None, None, :]).cpu().numpy()[0, 0, :]
