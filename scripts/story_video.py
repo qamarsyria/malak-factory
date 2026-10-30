@@ -75,7 +75,7 @@ def pick_visual_query(seg: dict) -> str:
     explicit = seg.get("visual", "").strip()
     if explicit and explicit not in ("mosque", "quran book", "islamic architecture"):
         return explicit
-    text = seg.get("text", "")
+    text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     for keyword, query in KEYWORD_MAP.items():
         if keyword in text:
             return query
@@ -150,18 +150,6 @@ def fetch_media(query: str, work_dir: Path, used_urls: set):
     if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
 
-def split_text_for_captions(text, max_words=4, is_quran=False):
-    if is_quran: return [text]
-    words = text.split()
-    chunks, current = [], []
-    for w in words:
-        current.append(w)
-        if len(current) >= max_words or any(p in w for p in [".", "؟", "!", "،"]):
-            chunks.append(" ".join(current))
-            current = []
-    if current: chunks.append(" ".join(current))
-    return chunks
-
 def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
@@ -180,22 +168,21 @@ def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill):
     x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
     draw.text((x, y), shaped, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
 
-def make_caption_overlay(chunk_text, seg, out_path):
+def make_caption_overlay(chunk_text, display_ref, is_quran, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
-    if not chunk_text and seg.get("type") != "quran": 
+    if not chunk_text and not is_quran: 
         overlay.save(out_path)
         return
 
-    is_quran = seg.get("type") == "quran"
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
     
     display_text = chunk_text
-    if is_quran and seg.get("display"):
-        display_text += f"\n﴿ {seg['display']} ﴾"
+    if is_quran and display_ref:
+        display_text += f"\n﴿ {display_ref} ﴾"
         
     font, lines, lh = _fit_text(display_text, font_path, VIDEO_W - 120, VIDEO_H - 400, 70, 45)
     
@@ -226,19 +213,19 @@ def build_video(audio_path, meta_path, output_mp4):
 
     try:
         for i, seg in enumerate(meta["segments"]):
-            duration = seg["duration"]
-            if duration <= 0: continue
+            seg_duration = sum(c["duration"] for c in seg.get("chunks", []))
+            if seg_duration <= 0: continue
             
-            print(f"🎬 مقطع {i+1}: {seg['type']} ({duration:.1f}s)", flush=True)
+            print(f"🎬 مقطع {i+1}: {seg['type']} ({seg_duration:.1f}s)", flush=True)
             
             # 1. بناء فيديو الخلفية (بشكل متسلسل)
-            num_bgs = max(1, math.ceil(duration / 10))
+            num_bgs = max(1, math.ceil(seg_duration / 10))
             bg_files = []
             for _ in range(num_bgs):
                 query = pick_visual_query(seg)
                 bg_files.append(fetch_media(query, work_dir, used_urls))
             
-            bg_duration = duration / num_bgs
+            bg_duration = seg_duration / num_bgs
             processed_bgs = []
             
             for b_idx, bg in enumerate(bg_files):
@@ -267,45 +254,41 @@ def build_video(audio_path, meta_path, output_mp4):
             bg_video_path = work_dir / f"bg_{i}.mp4"
             subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(bg_concat_txt), "-c", "copy", str(bg_video_path)], check=True, capture_output=True)
 
-            # 2. بناء فيديو النصوص (شفاف)
+            # 2. بناء فيديو النصوص (شفاف) بناءً على التوقيت الدقيق
             is_quran = seg.get("type") == "quran"
-            text = seg.get("text", "")
-            chunks = split_text_for_captions(text, max_words=4, is_quran=is_quran)
-            if not chunks: chunks = [""]
-            
-            chunk_weights = []
-            for c in chunks:
-                words_count = len(c.split())
-                punct_count = len(re.findall(r'[.،؟!]', c))
-                weight = words_count + (punct_count * 1.5)
-                chunk_weights.append(max(1, weight))
-                
-            total_weight = sum(chunk_weights)
+            display_ref = seg.get("display", "")
+            chunks = seg.get("chunks", [])
             
             text_inputs = []
             text_filters = []
             actual_chunks = 0
+            current_time = 0.0
             
-            for c_idx, chunk in enumerate(chunks):
-                if not chunk.strip(): continue
+            for c_idx, chunk_data in enumerate(chunks):
+                c_text = chunk_data.get("text", "")
+                c_dur = chunk_data.get("duration", 0)
+                is_silence = chunk_data.get("is_silence", False)
+                
+                if is_silence or not c_text.strip():
+                    current_time += c_dur
+                    continue
                 
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
-                make_caption_overlay(chunk, seg, overlay_png)
+                make_caption_overlay(c_text, display_ref, is_quran, overlay_png)
                 
                 text_inputs.extend(["-loop", "1", "-i", str(overlay_png)])
                 
-                chunk_duration = duration * (chunk_weights[c_idx] / total_weight)
-                
                 text_filters.append(
-                    f"[{actual_chunks}:v]trim=start=0:end={chunk_duration},setpts=PTS-STARTPTS,format=rgba[t{actual_chunks}]"
+                    f"[{actual_chunks}:v]trim=start=0:end={c_dur},setpts=PTS-STARTPTS,format=rgba[t{actual_chunks}]"
                 )
                 actual_chunks += 1
+                current_time += c_dur
             
             text_video_path = work_dir / f"text_{i}.mov"
             
             if actual_chunks == 0:
                 subprocess.run([
-                    "ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={VIDEO_W}x{VIDEO_H}:d={duration},format=rgba",
+                    "ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={VIDEO_W}x{VIDEO_H}:d={seg_duration},format=rgba",
                     "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)
                 ], check=True, capture_output=True)
             else:
@@ -314,7 +297,7 @@ def build_video(audio_path, meta_path, output_mp4):
                 
                 text_cmd = ["ffmpeg", "-y"] + text_inputs + [
                     "-filter_complex", ";".join(text_filters),
-                    "-map", "[text]", "-t", str(duration),
+                    "-map", "[text]", "-t", str(seg_duration),
                     "-c:v", "qtrle", "-pix_fmt", "rgba",
                     str(text_video_path)
                 ]
@@ -339,8 +322,7 @@ def build_video(audio_path, meta_path, output_mp4):
         subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"),
             "-i", audio_path,
-            "-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={audio_dur}[v]",
-            "-map", "[v]", "-map", "1:a",
+            "-map", "0:v", "-map", "1:a",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-t", str(audio_dur),
