@@ -25,18 +25,12 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          # الإصدارات الصحيحة والمتوافقة
           pip install torch==2.5.1 torchaudio==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
           pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/c.txt
           
-          # متطلبات neucodec الأساسية
           pip install torchao torchtune --constraint /tmp/c.txt
-          
-          # باقي المكتبات
           pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --constraint /tmp/c.txt
           pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi --constraint /tmp/c.txt
-          
-          # neucodec وإصداره المتوافق
           pip install neucodec --no-deps --constraint /tmp/c.txt
           pip install local_attention vector-quantize-pytorch==1.17.8 transformers --constraint /tmp/c.txt
 
