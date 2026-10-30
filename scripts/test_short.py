@@ -14,9 +14,19 @@ from gemini_tts_pool import gemini_tts_with_pool
 OUT_DIR = Path("out/test_short")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ═══ خدعة الإملاء: كتابة "اللَّاه" و "الرَّحْمَان" ═══
-REF_TEXT = "بِسْمِ اللَّاهِ الرَّحْمَانِ الرَّحِيمِ"
-NARRATION_TEXT = "فِي قَدِيمِ الزَّمَانِ، عَاشَ نَبِيٌّ كَرِيمٌ فِي قَوْمٍ ظَالِمِينَ. فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّاهَ بِقَلْبٍ خَاشِعٍ."
+# ═══ 1. مرجع التدريب (نصك + كلمات الضاد + قلقيلية + التشكيل الكامل) ═══
+REF_TEXT = (
+    "اللَّهُ لَا إِلَهَ إِلَّا هُوَ الْحَيُّ الْقَيُّومُ يُحْيِي وَيُمِيتُ وَهُوَ عَلَى كُلِّ شَيْءٍ قَدِيرٌ. "
+    "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ. نَحْنُ نَقُصُّ عَلَيْكَ أَحْسَنَ الْقَصَصِ إِيمَانًا. "
+    "صَدَقَ اللَّهُ الْعَظِيمُ. "
+    "فِي فُسْطَاطِ قَلْقِيلِيَّةَ، عَلَى أَرْضِ فِلَسْطِينَ الْمُبَارَكَةِ، ضَرَبَ الْمَثَلَ بِالْأَرْضِ الطَّيِّبَةِ وَالضَّلَالِ الْمُبِينِ، فَضْلًا مِنْهُ وَمَرْضِيًّا."
+)
+
+# ═══ 2. النص المراد اختباره (يحتوي كلمات صعبة) ═══
+NARRATION_TEXT = (
+    "فِي قَدِيمِ الزَّمَانِ، فِي أَرْضِ فِلَسْطِينَ، عَاشَ نَبِيٌّ كَرِيمٌ ضَاقَ صَدْرُهُ بِقَوْمِهِ، "
+    "فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّهَ بِقَلْبٍ خَاشِعٍ."
+)
 
 def _find_arabic_font():
     candidates = [
@@ -51,7 +61,7 @@ def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     return float(r.stdout.strip())
 
-print("🎙️ إنشاء المرجع الصوتي عبر Gemini (بصمة جميني + خدعة الإملاء)...")
+print("🎙️ إنشاء المرجع الصوتي عبر Gemini (تدريب على الكلمات الصعبة)...")
 ref_mp3 = OUT_DIR / "ref_gemini.mp3"
 try:
     gemini_tts_with_pool(REF_TEXT, str(ref_mp3), voice="Charon")
@@ -63,7 +73,7 @@ except Exception as e:
     sys.exit(1)
 
 def test_audar():
-    print("🔊 اختبار Audar (مع بصمة جميني)...")
+    print("🔊 اختبار Audar (مع بصمة Gemini المدربة)...")
     try:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
@@ -86,8 +96,9 @@ def test_audar():
         ref_codes = codec.encode_code(ref_tensor).squeeze().tolist()
         ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
 
-        # إرسال النص الطويل (المختلف عن المرجع) لضمان قراءته
+        # إرسال النص الطويل
         prompt = f"user: Convert the text to speech:<|REF_TEXT_START|>{REF_TEXT}<|REF_TEXT_END|><|REF_SPEECH_START|>{ref}<|REF_SPEECH_END|><|TARGET_TEXT_START|>{NARRATION_TEXT}<|TARGET_TEXT_END|>\nassistant:<|TARGET_CODES_START|>"
+        
         tce = llm.tokenize(b"<|TARGET_CODES_END|>", add_bos=False, special=True)[0]
         toks = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
         
@@ -99,8 +110,10 @@ def test_audar():
         text = "".join(llm.detokenize([t], special=True).decode("utf-8", "ignore") for t in ids)
         codes = [int(x) for x in re.findall(r"<\|speech_(\d+)\|>", text)]
         
-        if len(codes) < 100: 
-            raise Exception("النموذج قرأ المرجع فقط ولم يقرأ النص (عدد الكودات قليل جداً).")
+        print(f"📊 تولد {len(codes)} كود صوتي.")
+        
+        if len(codes) < 200: 
+            raise Exception("النموذج لم يقرأ النص بالكامل (عدد الكودات قليل جداً).")
         
         wav = codec.decode_code(torch.tensor(codes)[None, None, :]).cpu().numpy()[0, 0, :]
         sf.write(str(OUT_DIR / "audar.wav"), wav, 24000, subtype="PCM_16")
