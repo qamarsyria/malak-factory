@@ -1,5 +1,5 @@
 """بناء الفيديو: فيديوهات متحركة متغيرة + نصوص ديناميكية + شعار.
-- إصلاح خطأ الدمج (exit code 234) عبر توحيد سرعة الإطارات (fps) وصيغة الألوان.
+- إصلاح خطأ ffmpeg (Exit code 234) عبر استخدام -loop 1 للصور وتوحيد الألوان.
 - إزالة أي حروف إنجليزية أو فيديوهات تحتوي على نصوص.
 - حل مشكلة انقطاع الفيديو قبل الصوت باستخدام tpad.
 - إصلاح تزامن النص مع الصوت بحساب عدد الكلمات وعلامات الترقيم.
@@ -249,7 +249,6 @@ def build_video(audio_path, meta_path, output_mp4):
             filter_parts = []
             for b_idx, bg in enumerate(bg_files):
                 inputs.extend(["-stream_loop", "-1", "-i", bg])
-                # إصلاح الخطأ: توحيد سرعة الإطارات وصيغة الألوان لكل خلفية
                 filter_parts.append(
                     f"[{b_idx}:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
                     f"crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,trim=start=0:end={bg_duration},setpts=PTS-STARTPTS[bg{b_idx}]"
@@ -282,15 +281,18 @@ def build_video(audio_path, meta_path, output_mp4):
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
                 make_caption_overlay(chunk, seg, overlay_png)
                 
-                inputs.extend(["-i", str(overlay_png)])
+                # إصلاح 1: استخدام -loop 1 للصور لكي تستمر
+                inputs.extend(["-loop", "1", "-i", str(overlay_png)])
                 
                 chunk_duration = duration * (chunk_weights[c_idx] / total_weight)
-                
                 start_t = current_time
                 end_t = current_time + chunk_duration
                 
+                # إصلاح 2: توحيد صيغة الصورة (RGBA) والـ fps قبل الدمج
+                filter_parts.append(f"[{input_idx}:v]fps=24,format=rgba[ov{c_idx}]")
+                
                 next_video = f"[v{c_idx}]"
-                filter_parts.append(f"{current_video}[{input_idx}:v]overlay=enable='between(t,{start_t},{end_t})'{next_video}")
+                filter_parts.append(f"{current_video}[ov{c_idx}]overlay=enable='between(t,{start_t},{end_t})'{next_video}")
                 current_video = next_video
                 input_idx += 1
                 current_time = end_t
@@ -300,7 +302,7 @@ def build_video(audio_path, meta_path, output_mp4):
                 "-filter_complex", ";".join(filter_parts),
                 "-map", current_video,
                 "-t", str(duration), "-r", "24",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
                 str(out_seg)
             ]
             subprocess.run(cmd, check=True, capture_output=True)
@@ -315,7 +317,7 @@ def build_video(audio_path, meta_path, output_mp4):
             "-i", audio_path,
             "-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={audio_dur}[v]",
             "-map", "[v]", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-t", str(audio_dur),
             str(output_mp4)
