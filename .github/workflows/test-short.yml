@@ -25,12 +25,24 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
+          # تثبيت PyTorch
           pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          # إضافة المكتبات الناقصة هنا
-          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi
-          pip install neucodec --no-deps
-          pip install local_attention vector-quantize-pytorch transformers
+          pip freeze | grep -E '^(torch|torchaudio)==' > /tmp/c.txt
+          
+          # تثبيت متطلبات neucodec الأساسية (هذا ما كان ناقصاً)
+          pip install torchao torchtune --constraint /tmp/c.txt
+          
+          # تثبيت llama-cpp
+          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --constraint /tmp/c.txt
+          
+          # تثبيت المكتبات المساعدة
+          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi --constraint /tmp/c.txt
+          
+          # تثبيت neucodec بدون تبعياته
+          pip install neucodec --no-deps --constraint /tmp/c.txt
+          
+          # تثبيت النسخة المتوافقة من vector-quantize-pytorch
+          pip install local_attention vector-quantize-pytorch==1.17.8 transformers --constraint /tmp/c.txt
 
       - name: Run Test Short
         env:
