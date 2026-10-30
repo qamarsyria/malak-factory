@@ -15,7 +15,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # إصدار مستقر ومتوافق مع المكتبات
+          python-version: '3.10'
 
       - name: Install system dependencies
         run: |
@@ -25,12 +25,10 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          # الإصدار الصحيح لـ torch
           pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-          # تثبيت llama-cpp-python من مصدر wheels الجاهزة (لتجنب البناء الطويل)
           pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          # باقي المكتبات
-          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests
+          # إضافة المكتبات الناقصة هنا
+          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi
           pip install neucodec --no-deps
           pip install local_attention vector-quantize-pytorch transformers
 
