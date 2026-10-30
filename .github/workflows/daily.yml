@@ -31,17 +31,19 @@ jobs:
           path: |
             ./models
             ~/.cache/huggingface
-          key: audar-models-v1-${{ hashFiles('scripts/test_short.py') }}
+          key: audar-models-v2-${{ hashFiles('scripts/story_audio.py') }}
           restore-keys: |
-            audar-models-v1-
+            audar-models-v2-
 
       - name: Install
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri libsndfile1
           pip install --upgrade pip
-          pip install torch==2.5.1 torchaudio==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+          # استخدام الإصدارات الصارمة التي نجحت في الاختبار
+          pip install torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cpu
           pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/c.txt
-          pip install torchao torchtune --constraint /tmp/c.txt
+          
+          pip install torchao==0.15.0 torchtune==0.6.1 --constraint /tmp/c.txt
           pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --constraint /tmp/c.txt
           pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi --constraint /tmp/c.txt
           pip install neucodec --no-deps --constraint /tmp/c.txt
