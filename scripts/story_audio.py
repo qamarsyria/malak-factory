@@ -38,7 +38,11 @@ def fix_text(t):
     return t
 
 def clean(t):
+    # إزالة الأقواس والمربعات
     t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
+    # إزالة أي حروف إنجليزية (هذا هو السطر الجديد)
+    t = re.sub(r'[a-zA-Z]', '', t)
+    # إزالة رموز الوقف والمسافات الزائدة
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
 def get_dur(p):
@@ -57,7 +61,6 @@ def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_"))
     
-    # ملف صمت قصير جداً للفصل بين المقاطع
     silence = work / "sil.mp3"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "0.3", "-c:a", "libmp3lame", str(silence)], check=True, capture_output=True)
 
@@ -98,7 +101,6 @@ def build_episode_audio(json_path, out_mp3):
             print(f"❌ فشل Gemini في المقطع {idx}. تم تخطيه.", flush=True)
             continue
 
-        # إصلاح الطقة: إضافة تلاشي (fade) في البداية والنهاية لكل مقطع
         faded = work / f"faded_{idx:03d}.mp3"
         subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-af", "afade=t=in:st=0:d=0.05,afade=t=out:st={}:d=0.05".format(get_dur(raw)-0.05), "-c:a", "libmp3lame", str(faded)], check=True, capture_output=True)
 
@@ -109,7 +111,7 @@ def build_episode_audio(json_path, out_mp3):
         meta_segments.append({
             "index": idx, 
             "type": stype, 
-            "text": text, # تم إزالة شرط الـ 300 حرف، النص كامل هنا
+            "text": text, # النص كامل هنا ليظهر في الفيديو
             "display": display, 
             "duration": get_dur(raw), 
             "engine": "gemini"
@@ -124,7 +126,6 @@ def build_episode_audio(json_path, out_mp3):
     Path(out_mp3).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c:a", "libmp3lame", "-b:a", TARGET_BR, str(out_mp3)], check=True, capture_output=True)
     
-    # حفظ ملف meta
     meta_path = str(out_mp3).replace(".mp3", "_meta.json")
     Path(meta_path).write_text(json.dumps({
         "episode": ep.get("episode_number", 1), 
