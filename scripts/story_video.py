@@ -1,5 +1,5 @@
 """بناء الفيديو: فيديوهات متحركة متغيرة + نصوص ديناميكية + شعار.
-- إصلاح خطأ ffmpeg (Exit code 234) عبر استخدام -loop 1 للصور وتوحيد الألوان.
+- إصلاح جذري لانهيار ffmpeg (Exit code 234) عبر فصل النص عن الخلفية.
 - إزالة أي حروف إنجليزية أو فيديوهات تحتوي على نصوص.
 - حل مشكلة انقطاع الفيديو قبل الصوت باستخدام tpad.
 - إصلاح تزامن النص مع الصوت بحساب عدد الكلمات وعلامات الترقيم.
@@ -237,6 +237,7 @@ def build_video(audio_path, meta_path, output_mp4):
             
             print(f"🎬 مقطع {i+1}: {seg['type']} ({duration:.1f}s)", flush=True)
             
+            # 1. بناء فيديو الخلفية (بدون نصوص)
             num_bgs = max(1, math.ceil(duration / 10))
             bg_files = []
             for _ in range(num_bgs):
@@ -245,21 +246,28 @@ def build_video(audio_path, meta_path, output_mp4):
             
             bg_duration = duration / num_bgs
             
-            inputs = []
-            filter_parts = []
+            bg_inputs = []
+            bg_filters = []
             for b_idx, bg in enumerate(bg_files):
-                inputs.extend(["-stream_loop", "-1", "-i", bg])
-                filter_parts.append(
+                bg_inputs.extend(["-stream_loop", "-1", "-i", bg])
+                bg_filters.append(
                     f"[{b_idx}:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
                     f"crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,trim=start=0:end={bg_duration},setpts=PTS-STARTPTS[bg{b_idx}]"
                 )
             
             concat_inputs = "".join(f"[bg{b_idx}]" for b_idx in range(num_bgs))
-            filter_parts.append(f"{concat_inputs}concat=n={num_bgs}:v=1:a=0[bg_concat]")
+            bg_filters.append(f"{concat_inputs}concat=n={num_bgs}:v=1:a=0[bg_concat]")
             
-            current_video = "[bg_concat]"
-            input_idx = num_bgs 
-            
+            bg_video_path = work_dir / f"bg_{i}.mp4"
+            bg_cmd = ["ffmpeg", "-y"] + bg_inputs + [
+                "-filter_complex", ";".join(bg_filters),
+                "-map", "[bg_concat]", "-t", str(duration), "-r", "24",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+                str(bg_video_path)
+            ]
+            subprocess.run(bg_cmd, check=True, capture_output=True)
+
+            # 2. بناء فيديو النصوص (شفاف)
             is_quran = seg.get("type") == "quran"
             text = seg.get("text", "")
             chunks = split_text_for_captions(text, max_words=4, is_quran=is_quran)
@@ -274,38 +282,47 @@ def build_video(audio_path, meta_path, output_mp4):
                 
             total_weight = sum(chunk_weights)
             
+            text_inputs = []
+            text_filters = []
             current_time = 0.0
+            
             for c_idx, chunk in enumerate(chunks):
                 if not chunk.strip(): continue
                 
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
                 make_caption_overlay(chunk, seg, overlay_png)
                 
-                # إصلاح 1: استخدام -loop 1 للصور لكي تستمر
-                inputs.extend(["-loop", "1", "-i", str(overlay_png)])
+                text_inputs.extend(["-loop", "1", "-i", str(overlay_png)])
                 
                 chunk_duration = duration * (chunk_weights[c_idx] / total_weight)
-                start_t = current_time
-                end_t = current_time + chunk_duration
                 
-                # إصلاح 2: توحيد صيغة الصورة (RGBA) والـ fps قبل الدمج
-                filter_parts.append(f"[{input_idx}:v]fps=24,format=rgba[ov{c_idx}]")
-                
-                next_video = f"[v{c_idx}]"
-                filter_parts.append(f"{current_video}[ov{c_idx}]overlay=enable='between(t,{start_t},{end_t})'{next_video}")
-                current_video = next_video
-                input_idx += 1
-                current_time = end_t
+                text_filters.append(
+                    f"[{c_idx}:v]trim=start=0:end={chunk_duration},setpts=PTS-STARTPTS,format=rgba[t{c_idx}]"
+                )
+                current_time += chunk_duration
             
+            text_concat = "".join(f"[t{i}]" for i in range(len(chunks)))
+            text_filters.append(f"{text_concat}concat=n={len(chunks)}:v=1:a=0[text]")
+            
+            text_video_path = work_dir / f"text_{i}.mov"
+            text_cmd = ["ffmpeg", "-y"] + text_inputs + [
+                "-filter_complex", ";".join(text_filters),
+                "-map", "[text]", "-t", str(duration),
+                "-c:v", "png", "-pix_fmt", "rgba",
+                str(text_video_path)
+            ]
+            subprocess.run(text_cmd, check=True, capture_output=True)
+
+            # 3. دمج الخلفية مع النص
             out_seg = work_dir / f"seg_{i}.mp4"
-            cmd = ["ffmpeg", "-y"] + inputs + [
-                "-filter_complex", ";".join(filter_parts),
-                "-map", current_video,
-                "-t", str(duration), "-r", "24",
+            final_cmd = [
+                "ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path),
+                "-filter_complex", "[0:v][1:v]overlay",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
                 str(out_seg)
             ]
-            subprocess.run(cmd, check=True, capture_output=True)
+            subprocess.run(final_cmd, check=True, capture_output=True)
+            
             concat_lines.append(f"file '{out_seg}'")
 
         audio_dur = get_duration(audio_path)
