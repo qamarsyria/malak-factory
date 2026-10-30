@@ -1,9 +1,3 @@
-"""بناء الفيديو: فيديوهات متحركة متغيرة + نصوص ديناميكية + شعار.
-- إصلاح جذري لانهيار ffmpeg (Exit code 234) عبر المعالجة المتسلسلة وتخفيف الكوديك.
-- إزالة أي حروف إنجليزية أو فيديوهات تحتوي على نصوص.
-- حل مشكلة انقطاع الفيديو قبل الصوت باستخدام tpad.
-- إصلاح تزامن النص مع الصوت بحساب عدد الكلمات وعلامات الترقيم.
-"""
 import os
 import re
 import sys
@@ -310,7 +304,6 @@ def build_video(audio_path, meta_path, output_mp4):
             text_video_path = work_dir / f"text_{i}.mov"
             
             if actual_chunks == 0:
-                # إذا لم يكن هناك نصوص، ننشئ فيديو شفاف
                 subprocess.run([
                     "ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={VIDEO_W}x{VIDEO_H}:d={duration},format=rgba",
                     "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)
