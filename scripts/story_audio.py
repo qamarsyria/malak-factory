@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram
-from gemini_tts_pool import gemini_tts_with_pool
+# سنستخدم دالة توليد مباشرة بدلاً من النظام القديم لتجنب الانتظار
+from gemini_tts_pool import get_pool, discover_tts_models
 
 TARGET_SR = "24000"
 TARGET_BR = "192k"
@@ -51,7 +52,6 @@ def fetch_ayah(s, a):
     return ""
 
 def split_into_sentences(text, max_chars=250):
-    # تقسيم إلى جمل كاملة (حتى 250 حرف) لمنع غضب السيرفر
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
     for sentence in sentences:
@@ -72,6 +72,50 @@ def split_into_sentences(text, max_chars=250):
                 current = sentence
     if current: chunks.append(current)
     return chunks
+
+# دالة توليد مباشرة بدون نظام الانتظار الطويل
+def generate_audio_fast(text, out_file):
+    import base64
+    import wave
+    pool = get_pool()
+    models = discover_tts_models()
+    
+    for model in models[:2]:
+        for _ in range(len(pool.keys)):
+            try:
+                key = pool.get_current()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                body = {
+                    "contents": [{"parts": [{"text": text}]}],
+                    "generationConfig": {
+                        "responseModalities": ["AUDIO"],
+                        "speechConfig": {"languageCode": "ar-XA", "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Charon"}}},
+                    },
+                }
+                r = requests.post(url, json=body, timeout=60)
+                if r.status_code == 429:
+                    pool.mark_failed(60) # تبريد سريع بدون انتظار
+                    continue
+                if r.status_code != 200: continue
+                
+                data = r.json()
+                parts = (data.get("candidates", [{}])[0].get("content", {})).get("parts", [])
+                if not parts: continue
+                inline = parts[0].get("inlineData", {})
+                audio_b64 = inline.get("data")
+                if not audio_b64: continue
+                
+                raw = base64.b64decode(audio_b64)
+                wav_file = str(out_file).replace(".mp3", ".wav")
+                with wave.open(wav_file, "wb") as wf:
+                    wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
+                    wf.writeframes(raw)
+                
+                subprocess.run(["ffmpeg", "-y", "-i", wav_file, "-c:a", "libmp3lame", str(out_file)], check=True, capture_output=True)
+                return True
+            except Exception:
+                continue
+    return False
 
 def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
@@ -102,21 +146,13 @@ def build_episode_audio(json_path, out_mp3):
         chunk_files = []
         chunk_timings = []
         
-        print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} جملة...", flush=True)
+        print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...", flush=True)
         
         for c_idx, chunk in enumerate(chunks):
             if not chunk.strip(): continue
             
             raw_chunk = work / f"c_{idx}_{c_idx}.mp3"
-            success = False
-            for attempt in range(3):
-                try:
-                    gemini_tts_with_pool(chunk, str(raw_chunk), voice="Charon")
-                    if raw_chunk.exists() and raw_chunk.stat().st_size > 2000:
-                        success = True; break
-                except Exception as e:
-                    print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:50]}", flush=True)
-                    time.sleep(3)
+            success = generate_audio_fast(chunk, raw_chunk)
                     
             if not success:
                 print(f"   ❌ فشل: {chunk[:20]}... تم وضع صمت.", flush=True)
@@ -130,7 +166,6 @@ def build_episode_audio(json_path, out_mp3):
             chunk_files.append(silent_c)
             
             chunk_timings.append({"text": chunk, "duration": c_dur + 0.2})
-            time.sleep(1) # تأخير بسيط لضمان عدم الحظر
             
         seg_concat = work / f"seg_{idx}.txt"
         seg_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in chunk_files), encoding="utf-8")
@@ -141,11 +176,8 @@ def build_episode_audio(json_path, out_mp3):
             chunk_timings.append({"text": "", "duration": SILENCE_DUR, "is_silence": True})
             
         all_segments_meta.append({
-            "index": idx,
-            "type": stype,
-            "display": display,
-            "chunks": chunk_timings,
-            "audio_file": str(seg_audio)
+            "index": idx, "type": stype, "display": display,
+            "chunks": chunk_timings, "audio_file": str(seg_audio)
         })
 
     final_concat = work / "final.txt"
@@ -156,11 +188,8 @@ def build_episode_audio(json_path, out_mp3):
     
     meta_path = str(out_mp3).replace(".mp3", "_meta.json")
     Path(meta_path).write_text(json.dumps({
-        "episode": ep.get("episode_number", 1), 
-        "title": ep.get("title", ""), 
-        "story_id": ep.get("story_id", ""), 
-        "total_duration": get_dur(out_mp3), 
-        "segments": all_segments_meta
+        "episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "story_id": ep.get("story_id", ""), 
+        "total_duration": get_dur(out_mp3), "segments": all_segments_meta
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"✅ {out_mp3} | {get_dur(out_mp3)/60:.1f} دقيقة", flush=True)
@@ -168,6 +197,4 @@ def build_episode_audio(json_path, out_mp3):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3: sys.exit(1)
-    try: build_episode_audio(sys.argv[1], sys.argv[2])
-    except Exception as e: 
-        import traceback; traceback.print_exc(); sys.exit(1)
+    build_episode_audio(sys.argv[1], sys.argv[2])
