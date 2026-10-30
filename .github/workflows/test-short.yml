@@ -37,7 +37,7 @@ jobs:
       - name: Run Test Short
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }} # تمرير مفاتيح Gemini
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: python scripts/test_short.py
 
       - name: Upload Artifact
