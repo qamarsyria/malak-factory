@@ -17,6 +17,7 @@ from gemini_tts_pool import gemini_tts_with_pool
 
 TARGET_SR = "24000"
 TARGET_BR = "192k"
+SILENCE_DUR = 0.3
 
 FIXES = {
     "ﷺ": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
@@ -38,11 +39,8 @@ def fix_text(t):
     return t
 
 def clean(t):
-    # إزالة الأقواس والمربعات
-    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
-    # إزالة أي حروف إنجليزية (هذا هو السطر الجديد)
+    t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t) # إزالة أي آية بين الأقواس
     t = re.sub(r'[a-zA-Z]', '', t)
-    # إزالة رموز الوقف والمسافات الزائدة
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
 def get_dur(p):
@@ -62,7 +60,7 @@ def build_episode_audio(json_path, out_mp3):
     work = Path(tempfile.mkdtemp(prefix="ep_"))
     
     silence = work / "sil.mp3"
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "0.3", "-c:a", "libmp3lame", str(silence)], check=True, capture_output=True)
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "libmp3lame", str(silence)], check=True, capture_output=True)
 
     seg_files = []
     meta_segments = []
@@ -98,22 +96,31 @@ def build_episode_audio(json_path, out_mp3):
                 print(f"   ⚠️ خطأ: {str(e)[:80]}", flush=True)
                 
         if not success:
-            print(f"❌ فشل Gemini في المقطع {idx}. تم تخطيه.", flush=True)
-            continue
+            # إصلاح: عدم الانهيار، بل وضع صمت 3 ثوانٍ
+            print(f"❌ فشل Gemini في المقطع {idx}. تم وضع صمت بدلاً منه.", flush=True)
+            subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "3", "-c:a", "libmp3lame", str(raw)], check=True, capture_output=True)
 
+        raw_dur = get_dur(raw)
         faded = work / f"faded_{idx:03d}.mp3"
-        subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-af", "afade=t=in:st=0:d=0.05,afade=t=out:st={}:d=0.05".format(get_dur(raw)-0.05), "-c:a", "libmp3lame", str(faded)], check=True, capture_output=True)
+        if raw_dur > 0.1:
+            subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-af", f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0,raw_dur-0.05)}:d=0.05", "-c:a", "libmp3lame", str(faded)], check=True, capture_output=True)
+        else:
+            shutil.copy(raw, faded)
 
         seg_files.append(faded)
+        
+        total_seg_dur = raw_dur
         if idx < len(ep.get("segments", [])) - 1:
             seg_files.append(silence)
+            total_seg_dur += SILENCE_DUR
 
         meta_segments.append({
             "index": idx, 
             "type": stype, 
-            "text": text, # النص كامل هنا ليظهر في الفيديو
+            "text": text, 
             "display": display, 
-            "duration": get_dur(raw), 
+            "duration": total_seg_dur,
+            "audio_dur": raw_dur,
             "engine": "gemini"
         })
 
