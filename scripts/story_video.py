@@ -9,6 +9,7 @@ import random
 from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont
+import arabic_reshaper
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,8 +18,38 @@ from config import (
     VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W,
     ACCENT_COLOR, PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR,
 )
-from video import _find_arabic_font, _shape, _wrap
 from utilities import cleanup_dir
+
+# ═══ دوال النص والخطوط (مستقلة تماماً بدلاً من video.py) ═══
+def _find_arabic_font():
+    candidates = [
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+        "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-BoldItalic.ttf"
+    ]
+    for c in candidates:
+        if os.path.exists(c): return c
+    r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
+    files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
+    if files: return files[0]
+    raise RuntimeError("لا يوجد خط عربي")
+
+def _shape(text):
+    return arabic_reshaper.reshape(str(text))
+
+def _wrap(text, font, max_w, draw):
+    words = text.split()
+    lines, current = [], ""
+    for w in words:
+        trial = (current + " " + w).strip() if current else w
+        bbox = draw.textbbox((0, 0), trial, font=font)
+        if bbox[2] - bbox[0] <= max_w: current = trial
+        else:
+            if current: lines.append(current)
+            current = w
+    if current: lines.append(current)
+    return lines
+# ═════════════════════════════════════════════════════════════
 
 FORBIDDEN_TAGS = {"woman", "women", "girl", "female", "child", "boy", "man", "men", "people", "person", "face", "human", "body", "hand", "skin", "crowd", "family", "couple", "wedding", "dance", "dancing", "idol", "church", "cross", "crucifix", "alcohol", "wine", "beer", "drunk", "pig", "dog", "bride", "groom", "nude", "naked", "bikini", "lingerie", "kiss", "romance", "text", "word", "words", "quote", "quotes", "letter", "letters", "typography", "font", "english", "alphabet", "watermark", "logo"}
 
