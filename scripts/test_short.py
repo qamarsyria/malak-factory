@@ -4,7 +4,6 @@ import sys
 import subprocess
 import requests
 import asyncio
-import time
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
@@ -13,10 +12,25 @@ import edge_tts
 OUT_DIR = Path("out/test_short")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# النص الأصلي (بدون تشكيل مبالغ فيه، سنترك الدالة تعالجه)
 NARRATION_TEXT = "فِي قَدِيمِ الزَّمَانِ، عَاشَ نَبِيٌّ كَرِيمٌ فِي قَوْمٍ ظَالِمِينَ. فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّهَ بِقَلْبٍ خَاشِعٍ."
 REF_TEXT = "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ"
 
-# دوال الخطوط والنصوص (مستقلة تماماً)
+# دالة إصلاح لفظ الجلالة والكلمات الحرجة
+def fix_word(t):
+    # إصلاح لفظ الجلالة لضمان التفخيم والشدة
+    t = t.replace("الله", "اللّٰه") 
+    t = t.replace("بالله", "بِاللّٰه")
+    t = t.replace("لله", "لِلّٰه")
+    t = t.replace("والله", "وَاللّٰه")
+    # إصلاح الرحمن والرحيم
+    t = t.replace("الرحمن", "الرَّحْمَن")
+    t = t.replace("الرحيم", "الرَّحِيم")
+    return t
+
+NARRATION_TEXT = fix_word(NARRATION_TEXT)
+REF_TEXT = fix_word(REF_TEXT)
+
 def _find_arabic_font():
     candidates = [
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
