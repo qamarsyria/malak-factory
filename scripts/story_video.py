@@ -1,7 +1,8 @@
 """بناء الفيديو: فيديوهات متحركة متغيرة + نصوص ديناميكية + شعار.
+- إصلاح خطأ الدمج (exit code 234) عبر توحيد سرعة الإطارات (fps) وصيغة الألوان.
 - إزالة أي حروف إنجليزية أو فيديوهات تحتوي على نصوص.
-- حل مشكلة انقطاع الفيديو قبل الصوت باستخدام tpad (تجميد آخر إطار).
-- إصلاح تزامن النص مع الصوت بحساب طول الجملة وليس تقسيم الوقت بالتساوي.
+- حل مشكلة انقطاع الفيديو قبل الصوت باستخدام tpad.
+- إصلاح تزامن النص مع الصوت بحساب عدد الكلمات وعلامات الترقيم.
 """
 import os
 import re
@@ -25,7 +26,6 @@ from config import (
 from video import _find_arabic_font, _shape, _wrap
 from utilities import cleanup_dir, notify_telegram
 
-# 1. حظر الفيديوهات التي تحتوي على نصوص أو شعارات
 FORBIDDEN_TAGS = {
     "woman", "women", "girl", "female", "child", "boy", "man", "men",
     "people", "person", "face", "human", "body", "hand", "skin",
@@ -191,7 +191,6 @@ def make_caption_overlay(chunk_text, seg, out_path):
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
-    # حذف أي حروف إنجليزية قد تظهر بالخطأ
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
     if not chunk_text and seg.get("type") != "quran": 
         overlay.save(out_path)
@@ -215,7 +214,6 @@ def make_caption_overlay(chunk_text, seg, out_path):
         _draw_centered(draw, y, line, font, line_color, stroke_width, "black")
         y += lh
         
-    # الشعار الثابت أسفل اليمين
     try: wm_font = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
     except: wm_font = ImageFont.truetype(font_path, 40)
     wm_text = _shape("ملاك المعرفة")
@@ -251,9 +249,10 @@ def build_video(audio_path, meta_path, output_mp4):
             filter_parts = []
             for b_idx, bg in enumerate(bg_files):
                 inputs.extend(["-stream_loop", "-1", "-i", bg])
+                # إصلاح الخطأ: توحيد سرعة الإطارات وصيغة الألوان لكل خلفية
                 filter_parts.append(
                     f"[{b_idx}:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
-                    f"crop={VIDEO_W}:{VIDEO_H},trim=start=0:end={bg_duration},setpts=PTS-STARTPTS[bg{b_idx}]"
+                    f"crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,trim=start=0:end={bg_duration},setpts=PTS-STARTPTS[bg{b_idx}]"
                 )
             
             concat_inputs = "".join(f"[bg{b_idx}]" for b_idx in range(num_bgs))
@@ -267,9 +266,14 @@ def build_video(audio_path, meta_path, output_mp4):
             chunks = split_text_for_captions(text, max_words=4, is_quran=is_quran)
             if not chunks: chunks = [""]
             
-            # التوزيع الذكي للوقت بناءً على عدد الحروف (لحل مشكلة التزامن)
-            total_chars = sum(len(c) for c in chunks)
-            if total_chars == 0: total_chars = 1
+            chunk_weights = []
+            for c in chunks:
+                words_count = len(c.split())
+                punct_count = len(re.findall(r'[.،؟!]', c))
+                weight = words_count + (punct_count * 1.5)
+                chunk_weights.append(max(1, weight))
+                
+            total_weight = sum(chunk_weights)
             
             current_time = 0.0
             for c_idx, chunk in enumerate(chunks):
@@ -280,9 +284,7 @@ def build_video(audio_path, meta_path, output_mp4):
                 
                 inputs.extend(["-i", str(overlay_png)])
                 
-                # وقت الجملة يتناسب مع طولها
-                chunk_len = len(chunk)
-                chunk_duration = duration * (chunk_len / total_chars)
+                chunk_duration = duration * (chunk_weights[c_idx] / total_weight)
                 
                 start_t = current_time
                 end_t = current_time + chunk_duration
