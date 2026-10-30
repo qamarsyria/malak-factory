@@ -18,7 +18,7 @@ from config import (
     ACCENT_COLOR, PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR,
 )
 from video import _find_arabic_font, _shape, _wrap
-from utilities import cleanup_dir, notify_telegram
+from utilities import cleanup_dir
 
 FORBIDDEN_TAGS = {
     "woman", "women", "girl", "female", "child", "boy", "man", "men",
@@ -104,7 +104,7 @@ def _download_file(url: str, out_path: Path) -> bool:
 def _fetch_video(query: str, work_dir: Path, used_urls: set):
     if not PIXABAY_KEY: return None
     try:
-        r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
+        r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 10, "min_width": 1080}, timeout=20)
         if r.status_code != 200: return None
         random.shuffle(r.json().get("hits", []))
         for hit in r.json().get("hits", []):
@@ -123,7 +123,7 @@ def _fetch_video(query: str, work_dir: Path, used_urls: set):
 def _fetch_image(query: str, work_dir: Path, used_urls: set):
     if not PIXABAY_KEY: return None
     try:
-        r = requests.get("https://pixabay.com/api/", params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "orientation": "vertical", "per_page": 20, "safesearch": "true", "min_width": 1080}, timeout=20)
+        r = requests.get("https://pixabay.com/api/", params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "orientation": "vertical", "per_page": 10, "safesearch": "true", "min_width": 1080}, timeout=20)
         if r.status_code != 200: return None
         random.shuffle(r.json().get("hits", []))
         for hit in r.json().get("hits", []):
@@ -218,7 +218,8 @@ def build_video(audio_path, meta_path, output_mp4):
             
             print(f"🎬 مقطع {i+1}: {seg['type']} ({seg_duration:.1f}s)", flush=True)
             
-            num_bgs = max(1, math.ceil(seg_duration / 10))
+            # تقليل تغييرات الخلفية لتسريع المعالجة (تغيير كل 20 ثانية بدلاً من 10)
+            num_bgs = max(1, math.ceil(seg_duration / 20))
             bg_files = []
             for _ in range(num_bgs):
                 query = pick_visual_query(seg)
@@ -239,7 +240,7 @@ def build_video(audio_path, meta_path, output_mp4):
                 
                 cmd_bg.extend([
                     "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p", # استخدام ultrafast
                     str(temp_bg)
                 ])
                 subprocess.run(cmd_bg, check=True, capture_output=True)
@@ -305,7 +306,7 @@ def build_video(audio_path, meta_path, output_mp4):
             final_cmd = [
                 "ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path),
                 "-filter_complex", "[0:v][1:v]overlay",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p",
                 str(out_seg)
             ]
             subprocess.run(final_cmd, check=True, capture_output=True)
@@ -320,7 +321,7 @@ def build_video(audio_path, meta_path, output_mp4):
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"),
             "-i", audio_path,
             "-map", "0:v", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-t", str(audio_dur),
             str(output_mp4)
