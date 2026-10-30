@@ -21,16 +21,10 @@ TARGET_BR = "192k"
 SILENCE_DUR = 0.3
 
 FIXES = {
-    "ﷺ": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
-    "صلى الله عليه وسلم": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
-    "رضي الله عنه": "رَضِيَ اللَّهُ عَنْهُ", 
-    "رضي الله عنها": "رَضِيَ اللَّهُ عَنْهَا",
-    "عليه السلام": "عَلَيْهِ السَّلَامُ", 
-    "عليها السلام": "عَلَيْهَا السَّلَامُ",
-    "الله": "اللَّه", 
-    "القرآن": "الْقُرْآن", 
-    "محمد": "مُحَمَّد", 
-    "رسول": "رَسُول"
+    "ﷺ": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ", "صلى الله عليه وسلم": "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ",
+    "رضي الله عنه": "رَضِيَ اللَّهُ عَنْهُ", "رضي الله عنها": "رَضِيَ اللَّهُ عَنْهَا",
+    "عليه السلام": "عَلَيْهِ السَّلَامُ", "عليها السلام": "عَلَيْهَا السَّلَامُ",
+    "الله": "اللَّه", "القرآن": "الْقُرْآن", "محمد": "مُحَمَّد", "رسول": "رَسُول"
 }
 
 def fix_text(t):
@@ -56,16 +50,27 @@ def fetch_ayah(s, a):
     except: pass
     return ""
 
-def split_into_small_chunks(text, max_words=6):
-    # تقسيم النص إلى جمل قصيرة جداً لضمان سرعة الاستجابة ومنع الفشل
-    words = text.split()
-    chunks, current = [], []
-    for w in words:
-        current.append(w)
-        if len(current) >= max_words or any(p in w for p in [".", "؟", "!", "،", "؛"]):
-            chunks.append(" ".join(current))
-            current = []
-    if current: chunks.append(" ".join(current))
+def split_into_sentences(text, max_chars=250):
+    # تقسيم إلى جمل كاملة (حتى 250 حرف) لمنع غضب السيرفر
+    sentences = re.split(r'(?<=[.!؟])\s+', text)
+    chunks, current = [], ""
+    for sentence in sentences:
+        if not sentence.strip(): continue
+        if len(sentence) > max_chars:
+            words = sentence.split()
+            for w in words:
+                if len(current) + len(w) + 1 <= max_chars:
+                    current = (current + " " + w).strip()
+                else:
+                    chunks.append(current)
+                    current = w
+        else:
+            if len(current) + len(sentence) + 1 <= max_chars:
+                current = (current + " " + sentence).strip()
+            else:
+                chunks.append(current)
+                current = sentence
+    if current: chunks.append(current)
     return chunks
 
 def build_episode_audio(json_path, out_mp3):
@@ -93,8 +98,7 @@ def build_episode_audio(json_path, out_mp3):
         clean_text = clean(text)
         if not clean_text: continue
         
-        # تقسيم النص إلى جمل صغيرة
-        chunks = split_into_small_chunks(clean_text, max_words=6)
+        chunks = split_into_sentences(clean_text, max_chars=250)
         chunk_files = []
         chunk_timings = []
         
@@ -104,41 +108,35 @@ def build_episode_audio(json_path, out_mp3):
             if not chunk.strip(): continue
             
             raw_chunk = work / f"c_{idx}_{c_idx}.mp3"
-            
             success = False
-            for attempt in range(4): # محاولات أكثر لجمل قصيرة
+            for attempt in range(3):
                 try:
                     gemini_tts_with_pool(chunk, str(raw_chunk), voice="Charon")
                     if raw_chunk.exists() and raw_chunk.stat().st_size > 2000:
                         success = True; break
                 except Exception as e:
                     print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:50]}", flush=True)
-                    time.sleep(2) # انتظار قبل المحاولة التالية
+                    time.sleep(3)
                     
             if not success:
-                print(f"   ❌ فشل في جملة: {chunk[:20]}... تم وضع صمت.", flush=True)
-                subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "1.5", "-c:a", "libmp3lame", str(raw_chunk)], check=True, capture_output=True)
+                print(f"   ❌ فشل: {chunk[:20]}... تم وضع صمت.", flush=True)
+                subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "2", "-c:a", "libmp3lame", str(raw_chunk)], check=True, capture_output=True)
 
             c_dur = get_dur(raw_chunk)
             chunk_files.append(raw_chunk)
             
-            # إضافة صمت قصير جداً بين الجمل (0.2 ثانية)
             silent_c = work / f"sc_{idx}_{c_idx}.mp3"
             subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", "0.2", "-c:a", "libmp3lame", str(silent_c)], check=True, capture_output=True)
             chunk_files.append(silent_c)
             
-            # تسجيل توقيت الجملة (النص + الوقت الدقيق)
             chunk_timings.append({"text": chunk, "duration": c_dur + 0.2})
+            time.sleep(1) # تأخير بسيط لضمان عدم الحظر
             
-            time.sleep(1) # تأخير بسيط جداً بين طلبات Gemini لمنع الحظر (Rate Limit)
-            
-        # دمج جمل المقطع الواحد
         seg_concat = work / f"seg_{idx}.txt"
         seg_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in chunk_files), encoding="utf-8")
         seg_audio = work / f"seg_{idx}.mp3"
         subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(seg_concat), "-c:a", "libmp3lame", str(seg_audio)], check=True, capture_output=True)
         
-        # إضافة صمت بعد المقطع كاملاً
         if idx < len(ep.get("segments", [])) - 1:
             chunk_timings.append({"text": "", "duration": SILENCE_DUR, "is_silence": True})
             
@@ -146,11 +144,10 @@ def build_episode_audio(json_path, out_mp3):
             "index": idx,
             "type": stype,
             "display": display,
-            "chunks": chunk_timings, # التوقيتات الدقيقة هنا
+            "chunks": chunk_timings,
             "audio_file": str(seg_audio)
         })
 
-    # الدمج النهائي
     final_concat = work / "final.txt"
     final_concat.write_text("\n".join(f"file '{s['audio_file']}'" for s in all_segments_meta), encoding="utf-8")
     
