@@ -12,12 +12,15 @@ from PIL import Image, ImageDraw, ImageFont
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACCENT_COLOR, PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR
+from config import (
+    VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W,
+    ACCENT_COLOR, PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR
+)
 from video import _find_arabic_font, _shape, _wrap
 from utilities import cleanup_dir, notify_telegram
 
-def split_text_for_captions(text, max_words=5):
-    """تقسيم النص إلى جمل صغيرة (3-5 كلمات) لعرضها ديناميكياً."""
+def split_text_for_captions(text, max_words=4):
+    """تقسيم النص إلى جمل صغيرة (4 كلمات) لعرضها ديناميكياً."""
     words = text.split()
     chunks = []
     current = []
@@ -34,8 +37,10 @@ def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
     for size in range(start_size, min_size - 1, -2):
-        try: font = ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
-        except: font = ImageFont.truetype(font_path, size)
+        try: 
+            font = ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
+        except: 
+            font = ImageFont.truetype(font_path, size)
         lines = _wrap(_shape(text), font, max_width, ddraw)
         if len(lines) * int(size * 1.6) <= max_height:
             return font, lines, int(size * 1.6)
@@ -72,18 +77,20 @@ def make_caption_overlay(chunk_text, seg_type, out_path):
     overlay.save(out_path)
 
 def fetch_media(query, work_dir):
-    # كود جلب الوسائط (مختصر لضمان عدم وجود أخطاء)
-    if not PIXABAY_KEY: return str(work_dir / "black.jpg")
+    if not PIXABAY_KEY: 
+        out = work_dir / "black.jpg"
+        Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
+        return str(out)
     try:
         r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "per_page": 3}, timeout=20)
         hits = r.json().get("hits", [])
         if hits:
             url = hits[0]["videos"]["medium"]["url"]
-            out = work_dir / "bg.mp4"
+            out = work_dir / f"bg_{random.randint(1,999)}.mp4"
             out.write_bytes(requests.get(url, timeout=30).content)
             return str(out)
     except: pass
-    out = work_dir / "black.jpg"
+    out = work_dir / f"black_{random.randint(1,999)}.jpg"
     Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
 
@@ -101,34 +108,33 @@ def build_video(audio_path, meta_path, output_mp4):
             
             media = fetch_media("islamic mosque nature", work_dir)
             
-            # تقسيم النص إلى جمل صغيرة (للتيك توك)
             text = seg.get("text", "")
             chunks = split_text_for_captions(text, max_words=4)
-            
             if not chunks: chunks = [""]
             
-            # حساب وقت كل جملة
             time_per_chunk = duration / len(chunks)
             
-            # إنشاء صورة لكل جملة وبناء أوامر ffmpeg
+            # بناء أوامر ffmpeg (تم إصلاح فهرسة المدخلات هنا)
             inputs = ["-stream_loop", "-1", "-i", media]
             filters = [f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H}[bg0]"]
             
             current_video = "[bg0]"
+            input_idx = 1 # المدخل 0 هو الفيديو الخلفي
+            
             for c_idx, chunk in enumerate(chunks):
                 if not chunk.strip(): continue
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
                 make_caption_overlay(chunk, seg["type"], overlay_png)
                 
                 inputs.extend(["-i", str(overlay_png)])
-                input_idx = len(inputs) - 1
                 
                 start_t = c_idx * time_per_chunk
                 end_t = (c_idx + 1) * time_per_chunk
                 
-                next_video = f"[v{c_idx}]"
-                filters.append(f"{current_video}[{input_idx}:v]overlay=enable='between(t,{start_t},{end_t})'{next_video}")
+                next_video = f"[v{i}_{c_idx}]"
+                filters.append(f"{current_video}[{input_idx}:v]overlay=enable='between(t,{start_t:.3f},{end_t:.3f})'{next_video}")
                 current_video = next_video
+                input_idx += 1 # تحديث رقم المدخل للصورة التالية
             
             out_seg = work_dir / f"seg_{i}.mp4"
             cmd = ["ffmpeg", "-y"] + inputs + [
