@@ -218,7 +218,6 @@ def build_video(audio_path, meta_path, output_mp4):
             
             print(f"🎬 مقطع {i+1}: {seg['type']} ({seg_duration:.1f}s)", flush=True)
             
-            # 1. بناء فيديو الخلفية (بشكل متسلسل)
             num_bgs = max(1, math.ceil(seg_duration / 10))
             bg_files = []
             for _ in range(num_bgs):
@@ -254,7 +253,6 @@ def build_video(audio_path, meta_path, output_mp4):
             bg_video_path = work_dir / f"bg_{i}.mp4"
             subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(bg_concat_txt), "-c", "copy", str(bg_video_path)], check=True, capture_output=True)
 
-            # 2. بناء فيديو النصوص (شفاف) بناءً على التوقيت الدقيق
             is_quran = seg.get("type") == "quran"
             display_ref = seg.get("display", "")
             chunks = seg.get("chunks", [])
@@ -303,7 +301,6 @@ def build_video(audio_path, meta_path, output_mp4):
                 ]
                 subprocess.run(text_cmd, check=True, capture_output=True)
 
-            # 3. دمج الخلفية مع النص
             out_seg = work_dir / f"seg_{i}.mp4"
             final_cmd = [
                 "ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path),
