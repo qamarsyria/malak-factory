@@ -7,29 +7,17 @@ import asyncio
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
-import edge_tts
+
+# استدعاء محرك Gemini
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gemini_tts_pool import gemini_tts_with_pool
 
 OUT_DIR = Path("out/test_short")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# النص الأصلي (بدون تشكيل مبالغ فيه، سنترك الدالة تعالجه)
+# النص مشكول بالكامل
 NARRATION_TEXT = "فِي قَدِيمِ الزَّمَانِ، عَاشَ نَبِيٌّ كَرِيمٌ فِي قَوْمٍ ظَالِمِينَ. فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّهَ بِقَلْبٍ خَاشِعٍ."
 REF_TEXT = "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ"
-
-# دالة إصلاح لفظ الجلالة والكلمات الحرجة
-def fix_word(t):
-    # إصلاح لفظ الجلالة لضمان التفخيم والشدة
-    t = t.replace("الله", "اللّٰه") 
-    t = t.replace("بالله", "بِاللّٰه")
-    t = t.replace("لله", "لِلّٰه")
-    t = t.replace("والله", "وَاللّٰه")
-    # إصلاح الرحمن والرحيم
-    t = t.replace("الرحمن", "الرَّحْمَن")
-    t = t.replace("الرحيم", "الرَّحِيم")
-    return t
-
-NARRATION_TEXT = fix_word(NARRATION_TEXT)
-REF_TEXT = fix_word(REF_TEXT)
 
 def _find_arabic_font():
     candidates = [
@@ -64,16 +52,21 @@ def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     return float(r.stdout.strip())
 
-print("🎙️ إنشاء المرجع الصوتي الآلي...")
-async def gen_ref():
-    comm = edge_tts.Communicate(REF_TEXT, "ar-SA-HamedNeural")
-    await comm.save(str(OUT_DIR / "ref.mp3"))
-    subprocess.run(["ffmpeg", "-y", "-i", str(OUT_DIR / "ref.mp3"), "-ar", "16000", "-ac", "1", str(OUT_DIR / "ref.wav")], check=True, capture_output=True)
-asyncio.run(gen_ref())
-REF_WAV = OUT_DIR / "ref.wav"
+# ═══ 1. إنشاء المرجع الصوتي عبر Gemini (طلب واحد فقط) ═══
+print("🎙️ إنشاء المرجع الصوتي عبر Gemini (لضمان لفظ الجلالة)...")
+ref_mp3 = OUT_DIR / "ref_gemini.mp3"
+try:
+    gemini_tts_with_pool(REF_TEXT, str(ref_mp3), voice="Charon")
+    subprocess.run(["ffmpeg", "-y", "-i", str(ref_mp3), "-ar", "16000", "-ac", "1", str(OUT_DIR / "ref.wav")], check=True, capture_output=True)
+    REF_WAV = OUT_DIR / "ref.wav"
+    print("✅ تم إنشاء المرجع بواسطة Gemini.")
+except Exception as e:
+    print(f"❌ فشل Gemini في إنشاء المرجع: {e}")
+    sys.exit(1)
 
+# ═══ 2. اختبار Audar بالمرجع الجديد ═══
 def test_audar():
-    print("🔊 اختبار Audar...")
+    print("🔊 اختبار Audar (مع مرجع Gemini)...")
     try:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
@@ -158,10 +151,4 @@ def build_video(audio_path):
 
 if __name__ == "__main__":
     if test_audar():
-        final_audio = OUT_DIR / "audar.wav"
-    else:
-        print("⚠️ استخدام Edge TTS كخطة بديلة...")
-        asyncio.run(edge_tts.Communicate(NARRATION_TEXT, "ar-SA-HamedNeural").save(str(OUT_DIR / "fallback.mp3")))
-        subprocess.run(["ffmpeg", "-y", "-i", str(OUT_DIR / "fallback.mp3"), "-ar", "24000", "-ac", "1", str(OUT_DIR / "fallback.wav")], check=True, capture_output=True)
-        final_audio = OUT_DIR / "fallback.wav"
-    build_video(final_audio)
+        build_video(OUT_DIR / "audar.wav")
