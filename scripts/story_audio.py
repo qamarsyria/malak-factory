@@ -17,7 +17,7 @@ from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
 
 TARGET_SR = "24000"
-SILENCE_DUR = 0.0 # إزالة الصمت تماماً للحفاظ على التزامن
+SILENCE_DUR = 0.0 
 
 # النص المرجعي الشامل (تدريب Audar)
 REF_TEXT = (
@@ -65,9 +65,11 @@ def generate_audar(text, ref_wav, out_wav):
         import soundfile as sf
         import torchaudio.functional as F
         
-        gguf_path = hf_hub_download(repo_id="audarai/Audar-TTS-V1-Flash", filename="Audar-TTS-V1-Flash-Q4_K_M.gguf", local_dir="./models")
+        # إضافة التوكن هنا لحل مشكلة 403
+        hf_token = os.environ.get("HF_TOKEN", "")
+        gguf_path = hf_hub_download(repo_id="audarai/Audar-TTS-V1-Flash", filename="Audar-TTS-V1-Flash-Q4_K_M.gguf", local_dir="./models", token=hf_token)
         llm = Llama(model_path=gguf_path, n_ctx=4096, n_gpu_layers=0, verbose=False)
-        codec = NeuCodec.from_pretrained("neuphonic/neucodec").eval()
+        codec = NeuCodec.from_pretrained("neuphonic/neucodec", token=hf_token).eval()
         
         data, sr = sf.read(str(ref_wav), dtype="float32")
         if data.ndim > 1: data = data.mean(axis=1)
@@ -103,7 +105,6 @@ def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     
-    # 1. مرجع Gemini
     print("🎙️ توليد المرجع (Gemini)...")
     ref_mp3 = work / "ref.mp3"
     try:
@@ -155,9 +156,8 @@ def build_episode_audio(json_path, out_mp3):
             
             if not success:
                 print(f"   ❌ فشل تام. تخطي فقرة.", flush=True)
-                continue # تخطي بدون وضع صمت
+                continue
 
-            # إصلاح الخشّة: تلاشي قصير
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
@@ -177,7 +177,6 @@ def build_episode_audio(json_path, out_mp3):
 
     if not final_wavs: raise RuntimeError("لا يوجد صوت")
 
-    # الدمج النهائي
     final_concat = work / "final.txt"
     final_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in final_wavs), encoding="utf-8")
     
