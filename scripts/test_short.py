@@ -8,16 +8,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 
-# استدعاء محرك Gemini
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gemini_tts_pool import gemini_tts_with_pool
 
 OUT_DIR = Path("out/test_short")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# النص مشكول بالكامل
-NARRATION_TEXT = "فِي قَدِيمِ الزَّمَانِ، عَاشَ نَبِيٌّ كَرِيمٌ فِي قَوْمٍ ظَالِمِينَ. فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّهَ بِقَلْبٍ خَاشِعٍ."
-REF_TEXT = "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ"
+# ═══ خدعة الإملاء: كتابة "اللَّاه" و "الرَّحْمَان" ═══
+REF_TEXT = "بِسْمِ اللَّاهِ الرَّحْمَانِ الرَّحِيمِ"
+NARRATION_TEXT = "فِي قَدِيمِ الزَّمَانِ، عَاشَ نَبِيٌّ كَرِيمٌ فِي قَوْمٍ ظَالِمِينَ. فَصَبَرَ عَلَى أَذَاهُمْ، وَدَعَا اللَّاهَ بِقَلْبٍ خَاشِعٍ."
 
 def _find_arabic_font():
     candidates = [
@@ -52,21 +51,19 @@ def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     return float(r.stdout.strip())
 
-# ═══ 1. إنشاء المرجع الصوتي عبر Gemini (طلب واحد فقط) ═══
-print("🎙️ إنشاء المرجع الصوتي عبر Gemini (لضمان لفظ الجلالة)...")
+print("🎙️ إنشاء المرجع الصوتي عبر Gemini (بصمة جميني + خدعة الإملاء)...")
 ref_mp3 = OUT_DIR / "ref_gemini.mp3"
 try:
     gemini_tts_with_pool(REF_TEXT, str(ref_mp3), voice="Charon")
     subprocess.run(["ffmpeg", "-y", "-i", str(ref_mp3), "-ar", "16000", "-ac", "1", str(OUT_DIR / "ref.wav")], check=True, capture_output=True)
     REF_WAV = OUT_DIR / "ref.wav"
-    print("✅ تم إنشاء المرجع بواسطة Gemini.")
+    print("✅ تم إنشاء المرجع.")
 except Exception as e:
     print(f"❌ فشل Gemini في إنشاء المرجع: {e}")
     sys.exit(1)
 
-# ═══ 2. اختبار Audar بالمرجع الجديد ═══
 def test_audar():
-    print("🔊 اختبار Audar (مع مرجع Gemini)...")
+    print("🔊 اختبار Audar (مع بصمة جميني)...")
     try:
         from huggingface_hub import hf_hub_download
         from llama_cpp import Llama
@@ -89,6 +86,7 @@ def test_audar():
         ref_codes = codec.encode_code(ref_tensor).squeeze().tolist()
         ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
 
+        # إرسال النص الطويل (المختلف عن المرجع) لضمان قراءته
         prompt = f"user: Convert the text to speech:<|REF_TEXT_START|>{REF_TEXT}<|REF_TEXT_END|><|REF_SPEECH_START|>{ref}<|REF_SPEECH_END|><|TARGET_TEXT_START|>{NARRATION_TEXT}<|TARGET_TEXT_END|>\nassistant:<|TARGET_CODES_START|>"
         tce = llm.tokenize(b"<|TARGET_CODES_END|>", add_bos=False, special=True)[0]
         toks = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
@@ -100,7 +98,9 @@ def test_audar():
 
         text = "".join(llm.detokenize([t], special=True).decode("utf-8", "ignore") for t in ids)
         codes = [int(x) for x in re.findall(r"<\|speech_(\d+)\|>", text)]
-        if not codes: raise Exception("فشل التوليد")
+        
+        if len(codes) < 100: 
+            raise Exception("النموذج قرأ المرجع فقط ولم يقرأ النص (عدد الكودات قليل جداً).")
         
         wav = codec.decode_code(torch.tensor(codes)[None, None, :]).cpu().numpy()[0, 0, :]
         sf.write(str(OUT_DIR / "audar.wav"), wav, 24000, subtype="PCM_16")
