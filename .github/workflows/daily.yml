@@ -12,102 +12,84 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
-      # ═══════════════════════════════════════════════════════════
-      # 1. سحب الكود
-      # ═══════════════════════════════════════════════════════════
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
 
-      # ═══════════════════════════════════════════════════════════
-      # 2. تجهيز Python
-      # ═══════════════════════════════════════════════════════════
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # ═══════════════════════════════════════════════════════════
-      # 3. تثبيت التبعيات
-      # ═══════════════════════════════════════════════════════════
+      - name: Cache Audar Models & HF
+        uses: actions/cache@v4
+        with:
+          path: |
+            ./models
+            ~/.cache/huggingface
+          key: audar-models-v1-${{ hashFiles('scripts/test_short.py') }}
+          restore-keys: |
+            audar-models-v1-
+
       - name: Install
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
-          pip install -r requirements.txt
-          pip install --no-cache-dir "edge-tts>=6.1.19"
-          python -c "import edge_tts; print('✅ edge-tts:', edge_tts.__version__)"
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri libsndfile1
+          pip install --upgrade pip
+          pip install torch==2.5.1 torchaudio==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+          pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/c.txt
+          pip install torchao torchtune --constraint /tmp/c.txt
+          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --constraint /tmp/c.txt
+          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi --constraint /tmp/c.txt
+          pip install neucodec --no-deps --constraint /tmp/c.txt
+          pip install local_attention vector-quantize-pytorch==1.17.8 transformers --constraint /tmp/c.txt
 
-      # ═══════════════════════════════════════════════════════════
-      # 4. اكتشاف نماذج Gemini المتاحة (cache 24h)
-      # ═══════════════════════════════════════════════════════════
       - name: Discover Models
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: python -u scripts/model_discovery.py
 
-      # ═══════════════════════════════════════════════════════════
-      # 5. توليد الحلقة (JSON)
-      # ═══════════════════════════════════════════════════════════
       - name: Generate
         id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python -u scripts/generate_story.py
           if [ -f out/latest_episode.txt ]; then
             EP_FILE=$(cat out/latest_episode.txt)
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
-            echo "✅ الحلقة: $(basename "$EP_FILE")"
           else
-            echo "❌ لا JSON"
             exit 1
           fi
 
-      # ═══════════════════════════════════════════════════════════
-      # 6. بناء الصوت
-      # ═══════════════════════════════════════════════════════════
       - name: Audio
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
-      # ═══════════════════════════════════════════════════════════
-      # 7. بناء الفيديو
-      # ═══════════════════════════════════════════════════════════
       - name: Video
         id: vid
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p videos
           python scripts/story_video.py \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
             "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" \
             "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
-          ls -lh "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
-      # ═══════════════════════════════════════════════════════════
-      # 8. الرفع إلى تلغرام (ضغط قوي لضمان النجاح)
-      # ═══════════════════════════════════════════════════════════
       - name: Upload to Telegram
         id: tg
         if: steps.vid.outcome == 'success'
@@ -124,18 +106,12 @@ jobs:
           
           SIZE_BYTES=$(stat -c%s "$VIDEO_PATH")
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
-          echo "📊 حجم الفيديو الأصلي: ${SIZE_MB} ميجابايت"
           
           if [ "$SIZE_MB" -gt 48 ]; then
-            echo "⚠️ الفيديو أكبر من 48 ميجابايت. جاري الضغط القوي (480p)..."
+            echo "⚠️ الفيديو كبير. جاري الضغط إلى 480p..."
             COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
-            
-            # سطر الضغط الجديد: يضمن بقاء الحجم أقل من 40 ميجابايت
-            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:854" -c:v libx264 -b:v 350k -maxrate 400k -bufsize 800k -preset veryfast -c:a aac -b:a 64k "$COMPRESSED_PATH"
-            
+            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:854" -c:v libx264 -b:v 350k -maxrate 400k -bufsize 800k -preset ultrafast -c:a aac -b:a 64k "$COMPRESSED_PATH"
             UPLOAD_PATH="$COMPRESSED_PATH"
-            C_SIZE=$(( $(stat -c%s "$UPLOAD_PATH") / 1024 / 1024 ))
-            echo "✅ تم الضغط بنجاح. الحجم الجديد: ${C_SIZE} ميجابايت"
           fi
           
           RESP=$(curl -s -X POST \
@@ -150,41 +126,12 @@ jobs:
             echo "❌ تلغرام رفض: $RESP"
             exit 1
           fi
-          echo "✅ message_id=$MSG"
           echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
 
-      # ═══════════════════════════════════════════════════════════
-      # 9. تحديث الـ feed
-      # ═══════════════════════════════════════════════════════════
-      - name: Update Feed
-        if: steps.tg.outputs.MSG_ID != ''
-        working-directory: scripts
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          python -c "
-          import json
-          from update_feed import add_video_to_feed
-          meta = json.load(open('../out/${{ steps.gen.outputs.EP_NAME }}_meta.json'))
-          add_video_to_feed(
-              title=meta.get('title', 'حلقة جديدة'),
-              description='حلقة جديدة من ملاك المعرفة.',
-              video_url='${{ steps.tg.outputs.MSG_ID }}',
-              category='قصص الأنبياء',
-          )
-          "
-
-      # ═══════════════════════════════════════════════════════════
-      # 10. تثبيت الحالة
-      # ═══════════════════════════════════════════════════════════
       - name: Finalize State
         if: steps.tg.outputs.MSG_ID != ''
-        run: |
-          python scripts/finalize_episode.py "${{ steps.gen.outputs.EP_FILE }}"
+        run: python scripts/finalize_episode.py "${{ steps.gen.outputs.EP_FILE }}"
 
-      # ═══════════════════════════════════════════════════════════
-      # 11. حفظ الحالة في المستودع
-      # ═══════════════════════════════════════════════════════════
       - name: Commit State
         if: always()
         run: |
@@ -194,27 +141,9 @@ jobs:
           git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME || 'daily run' }}" || echo "لا تغييرات"
           git push || true
 
-      # ═══════════════════════════════════════════════════════════
-      # 12. تنظيف الملفات المؤقتة
-      # ═══════════════════════════════════════════════════════════
       - name: Cleanup
         if: always()
         run: |
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
           rm -rf data/stories/generated/*.json
           rm -f out/latest_episode.txt
-          echo "🧹 تنظيف (pending محفوظ للاستئناف)"
-
-      # ═══════════════════════════════════════════════════════════
-      # 13. إشعار فشل
-      # ═══════════════════════════════════════════════════════════
-      - name: Notify Failure
-        if: failure()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          curl -s -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            -d "text=🚨 فشل خط الإنتاج. تحقق من Actions."
