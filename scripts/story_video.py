@@ -92,7 +92,7 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, out_path):
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
-    # ═══ إصلاح النص المشوه: إزالة أي رموز غريبة ═══
+    # تنظيف النص من الرموز
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
     if not chunk_text and not is_quran: 
@@ -136,7 +136,8 @@ def build_video(audio_path, meta_path, output_mp4):
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.endswith(('.jpg', '.jpeg', '.png'))
-                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p", str(temp_bg)]
+                # تحسين جودة الخلفية (crf 18 بدلاً من 28)
+                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
                 
@@ -152,7 +153,7 @@ def build_video(audio_path, meta_path, output_mp4):
             text_inputs, text_filters, actual_chunks = [], [], 0
             
             for c_idx, chunk_data in enumerate(chunks):
-                c_text = chunk_data.get("text", "").replace("اللله", "الله").replace("الرَّحْمَان", "الرَّحْمَن") # إرجاع النص الأصلي للعرض
+                c_text = chunk_data.get("text", "").replace("اللله", "الله").replace("الرَّحْمَان", "الرَّحْمَن")
                 c_dur = chunk_data.get("duration", 0)
                 if not c_text.strip(): continue
                 
@@ -170,12 +171,14 @@ def build_video(audio_path, meta_path, output_mp4):
                 subprocess.run(["ffmpeg", "-y"] + text_inputs + ["-filter_complex", ";".join(text_filters), "-map", "[text]", "-t", str(seg_duration), "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)], check=True, capture_output=True)
 
             out_seg = work_dir / f"seg_{i}.mp4"
-            subprocess.run(["ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
+            # تحسين جودة دمج النص والخلفية (crf 18)
+            subprocess.run(["ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
             concat_lines.append(f"file '{out_seg}'")
 
         audio_dur = get_duration(audio_path)
         (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
+        # الدمج النهائي بجودة عالية جداً
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
         print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
         cleanup_dir(work_dir)
