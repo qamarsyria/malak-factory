@@ -1,4 +1,4 @@
-import os, re, sys, json, math, subprocess, tempfile, random
+import os, re, sys, json, math, subprocess, tempfile, random, time
 from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -39,23 +39,43 @@ def get_duration(path):
     try: return float(r.stdout.strip())
     except: return 0.0
 
+def get_visual_query(seg):
+    text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
+    if "بحر" in text or "موج" in text or "يم" in text: return "sea waves"
+    if "جبل" in text or "طور" in text: return "mountain peak"
+    if "ماء" in text or "نهر" in text or "عين" in text: return "river water"
+    if "سماء" in text or "نجم" in text or "قمر" in text: return "starry sky night"
+    if "شجر" in text or "نخل" in text or "بستان" in text: return "palm trees desert"
+    if "صحراء" in text or "رمل" in text: return "sand dunes desert"
+    if "مسجد" in text or "محراب" in text: return "mosque architecture"
+    if "نار" in text: return "fire flames"
+    
+    if seg.get("type") == "quran": return "quran book islamic"
+    return "islamic nature landscape"
+
 def _find_local(query):
     slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
     for base in (Path(BG_VIDEOS_DIR), Path(BG_IMAGES_DIR)):
         if not base.exists(): continue
-        for f in base.glob(f"{slug}*"):
-            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: return str(f)
+        for f in base.glob(f"*{slug}*"):
+            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: 
+                return str(f)
     return None
 
 def fetch_media(query, work_dir, used_urls):
+    # 1. البحث في المجلدات المحلية أولاً
     local = _find_local(query)
     if local: return local
+    
+    # 2. جلب فيديو من Pixabay
     if PIXABAY_KEY:
         try:
+            time.sleep(1) # تأخير لمنع الحظر
             r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 10, "min_width": 1080}, timeout=20)
             if r.status_code == 200:
-                random.shuffle(r.json().get("hits", []))
-                for hit in r.json().get("hits", []):
+                hits = r.json().get("hits", [])
+                random.shuffle(hits)
+                for hit in hits:
                     url = hit.get("videos", {}).get("medium", {}).get("url") or hit.get("videos", {}).get("small", {}).get("url")
                     if not url or url in used_urls: continue
                     slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
@@ -67,6 +87,13 @@ def fetch_media(query, work_dir, used_urls):
                         return str(out)
                     except: pass
         except: pass
+        
+    # 3. الخطة البديلة: استخدام أي فيديو من المجلد المحلي (إن وجد)
+    if Path(BG_VIDEOS_DIR).exists():
+        videos = list(Path(BG_VIDEOS_DIR).glob("*.mp4"))
+        if videos: return str(random.choice(videos))
+
+    # 4. آخر حل: صورة سوداء
     out = work_dir / "black.jpg"
     if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
@@ -92,7 +119,6 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, out_path):
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
-    # تنظيف النص من الرموز
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
     if not chunk_text and not is_quran: 
@@ -128,15 +154,17 @@ def build_video(audio_path, meta_path, output_mp4):
             seg_duration = sum(c["duration"] for c in seg.get("chunks", []))
             if seg_duration <= 0: continue
             
+            query = get_visual_query(seg) # استخدام الكلمة المناسبة
             num_bgs = max(1, math.ceil(seg_duration / 15))
-            bg_files = [fetch_media("islamic nature", work_dir, used_urls) for _ in range(num_bgs)]
+            bg_files = [fetch_media(query, work_dir, used_urls) for _ in range(num_bgs)]
+            
             bg_duration = seg_duration / num_bgs
             processed_bgs = []
             
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.endswith(('.jpg', '.jpeg', '.png'))
-                # تحسين جودة الخلفية (crf 18 بدلاً من 28)
+                # تحسين جودة الخلفية
                 cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
@@ -171,13 +199,11 @@ def build_video(audio_path, meta_path, output_mp4):
                 subprocess.run(["ffmpeg", "-y"] + text_inputs + ["-filter_complex", ";".join(text_filters), "-map", "[text]", "-t", str(seg_duration), "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)], check=True, capture_output=True)
 
             out_seg = work_dir / f"seg_{i}.mp4"
-            # تحسين جودة دمج النص والخلفية (crf 18)
             subprocess.run(["ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
             concat_lines.append(f"file '{out_seg}'")
 
         audio_dur = get_duration(audio_path)
         (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        # الدمج النهائي بجودة عالية جداً
         subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
         print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
