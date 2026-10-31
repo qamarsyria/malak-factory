@@ -12,7 +12,7 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -29,7 +29,6 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install --upgrade pip
-          # تثبيت خفيف وسريع (بدون PyTorch ولا Audar)
           pip install requests edge-tts pillow arabic-reshaper python-bidi huggingface_hub
 
       - name: Discover Models
@@ -84,6 +83,7 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           CAPTION=$(printf "🎬 %s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          
           VIDEO_PATH="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
           UPLOAD_PATH="$VIDEO_PATH"
           
@@ -91,8 +91,10 @@ jobs:
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
           
           if [ "$SIZE_MB" -gt 48 ]; then
+            echo "⚠️ الفيديو كبير. جاري الضغط إلى 720p..."
             COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
-            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:854" -c:v libx264 -b:v 350k -maxrate 400k -bufsize 800k -preset ultrafast -c:a aac -b:a 64k "$COMPRESSED_PATH"
+            # ضغط 720p مع bitrate 1000k (جودة ممتازة للمدة القصيرة)
+            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:1280" -c:v libx264 -b:v 1000k -maxrate 1200k -bufsize 2000k -preset fast -c:a aac -b:a 96k "$COMPRESSED_PATH"
             UPLOAD_PATH="$COMPRESSED_PATH"
           fi
           
@@ -105,6 +107,7 @@ jobs:
             
           MSG=$(echo "$RESP" | grep -oP '"message_id":\K[0-9]+' || true)
           if [ -z "$MSG" ]; then
+            echo "❌ تلغرام رفض: $RESP"
             exit 1
           fi
           echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
