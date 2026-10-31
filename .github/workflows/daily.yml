@@ -25,29 +25,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Cache Audar Models & HF
-        uses: actions/cache@v4
-        with:
-          path: |
-            ./models
-            ~/.cache/huggingface
-          key: audar-models-v2-${{ hashFiles('scripts/story_audio.py') }}
-          restore-keys: |
-            audar-models-v2-
-
       - name: Install
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri libsndfile1
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install --upgrade pip
-          # استخدام الإصدارات الصارمة التي نجحت في الاختبار
-          pip install torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cpu
-          pip freeze | grep -E '^(torch|torchaudio|torchvision)==' > /tmp/c.txt
-          
-          pip install torchao==0.15.0 torchtune==0.6.1 --constraint /tmp/c.txt
-          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu --constraint /tmp/c.txt
-          pip install huggingface_hub soundfile numpy scipy librosa edge-tts pillow requests arabic_reshaper python-bidi --constraint /tmp/c.txt
-          pip install neucodec --no-deps --constraint /tmp/c.txt
-          pip install local_attention vector-quantize-pytorch==1.17.8 transformers --constraint /tmp/c.txt
+          # تثبيت خفيف وسريع (بدون PyTorch ولا Audar)
+          pip install requests edge-tts pillow arabic-reshaper python-bidi huggingface_hub
 
       - name: Discover Models
         env:
@@ -74,7 +57,6 @@ jobs:
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -102,7 +84,6 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           CAPTION=$(printf "🎬 %s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
-          
           VIDEO_PATH="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
           UPLOAD_PATH="$VIDEO_PATH"
           
@@ -110,7 +91,6 @@ jobs:
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
           
           if [ "$SIZE_MB" -gt 48 ]; then
-            echo "⚠️ الفيديو كبير. جاري الضغط إلى 480p..."
             COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
             ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:854" -c:v libx264 -b:v 350k -maxrate 400k -bufsize 800k -preset ultrafast -c:a aac -b:a 64k "$COMPRESSED_PATH"
             UPLOAD_PATH="$COMPRESSED_PATH"
@@ -125,7 +105,6 @@ jobs:
             
           MSG=$(echo "$RESP" | grep -oP '"message_id":\K[0-9]+' || true)
           if [ -z "$MSG" ]; then
-            echo "❌ تلغرام رفض: $RESP"
             exit 1
           fi
           echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
