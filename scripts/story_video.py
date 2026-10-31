@@ -20,7 +20,7 @@ from config import (
 )
 from utilities import cleanup_dir
 
-# ═══ دوال النص والخطوط (مستقلة تماماً بدلاً من video.py) ═══
+# ═══ دوال النص والخطوط (مستقلة) ═══
 def _find_arabic_font():
     candidates = [
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
@@ -181,6 +181,7 @@ def build_video(audio_path, meta_path, output_mp4):
 
     try:
         for i, seg in enumerate(meta["segments"]):
+            # هنا نستخدم الوقت الدقيق الذي حسبه كود الصوت
             seg_duration = sum(c["duration"] for c in seg.get("chunks", []))
             if seg_duration <= 0: continue
             
@@ -229,7 +230,7 @@ def build_video(audio_path, meta_path, output_mp4):
             
             for c_idx, chunk_data in enumerate(chunks):
                 c_text = chunk_data.get("text", "")
-                c_dur = chunk_data.get("duration", 0)
+                c_dur = chunk_data.get("duration", 0) # التزامن الدقيق هنا
                 
                 if not c_text.strip(): continue
                 
