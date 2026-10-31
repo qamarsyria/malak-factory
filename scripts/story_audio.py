@@ -20,11 +20,21 @@ from gemini_tts_pool import gemini_tts_with_pool
 
 TARGET_SR = "24000"
 EDGE_VOICE = "ar-SA-HamedNeural"
+SILENCE_DUR = 0.2 # صمت بين المقاطع لمنع الخشّة
 
 def clean(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
+
+def apply_edge_fixes(t):
+    t = t.replace("الله", "اللله")
+    t = t.replace("بالله", "باللله")
+    t = t.replace("والله", "واللله")
+    t = t.replace("تالله", "تاللله")
+    t = t.replace("الرحمن", "الرَّحْمَان")
+    t = t.replace("الرحيم", "الرَّحِيم")
+    return t
 
 def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
@@ -62,6 +72,10 @@ def build_episode_audio(json_path, out_mp3):
     
     final_wavs = []
     all_segments_meta = []
+    
+    # إنشاء ملف الصمت
+    silence_path = work / "silence.wav"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
 
     for idx, seg in enumerate(ep.get("segments", [])):
         stype = seg.get("type")
@@ -71,7 +85,6 @@ def build_episode_audio(json_path, out_mp3):
             text = clean(seg["text"])
         elif stype == "quran":
             s, ayahs = seg["surah"], seg["ayah_numbers"]
-            # النص القرآني يأتي بالتشكيل الكامل من الـ API ولا نلمسه
             text = " ".join(filter(None, (fetch_ayah(s, a) for a in ayahs)))
             display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
         
@@ -89,12 +102,10 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
             
-            # ═══ الآيات: Gemini حصراً ═══
             if stype == "quran":
                 for attempt in range(3):
                     try:
                         time.sleep(2)
-                        # نرسل النص كما هو مع تعليمات التجويد
                         gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style="Recite with full Tajweed, slow pace, emphatic letters.")
                         if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                             subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
@@ -103,12 +114,11 @@ def build_episode_audio(json_path, out_mp3):
                     except Exception as e:
                         print(f"   ⚠️ Gemini فشل: {str(e)[:80]}", flush=True)
                         time.sleep(5)
-            
-            # ═══ السرد: Edge TTS ═══
             else:
+                chunk_for_audio = apply_edge_fixes(chunk)
                 for attempt in range(3):
                     try:
-                        edge_generate(chunk, str(temp_mp3))
+                        edge_generate(chunk_for_audio, str(temp_mp3))
                         if temp_mp3.exists() and temp_mp3.stat().st_size > 2000:
                             subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                             success = True
@@ -121,7 +131,7 @@ def build_episode_audio(json_path, out_mp3):
                 print(f"   ❌ فشل تام. تخطي فقرة.", flush=True)
                 continue
 
-            # إصلاح الخشّة: تلاشي قصير
+            # إصلاح الخشّة
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
@@ -130,7 +140,11 @@ def build_episode_audio(json_path, out_mp3):
                 shutil.copy(raw_wav, faded)
 
             final_wavs.append(faded)
-            chunk_timings.append({"text": chunk, "duration": get_dur(faded)})
+            final_wavs.append(silence_path) # إضافة الصمت بعد الكلام
+            
+            # الوقت المسجل للتزامن يشمل الكلام + الصمت
+            total_dur = get_dur(faded) + SILENCE_DUR
+            chunk_timings.append({"text": chunk, "duration": total_dur})
             
         if chunk_timings:
             all_segments_meta.append({
@@ -140,7 +154,6 @@ def build_episode_audio(json_path, out_mp3):
 
     if not final_wavs: raise RuntimeError("لا يوجد صوت")
 
-    # الدمج النهائي
     final_concat = work / "final.txt"
     final_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in final_wavs), encoding="utf-8")
     merged_wav = work / "merged.wav"
