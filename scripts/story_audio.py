@@ -6,8 +6,8 @@ import tempfile
 import shutil
 import re
 import time
-import requests
 from pathlib import Path
+import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,15 +17,6 @@ from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
 
 TARGET_SR = "24000"
-SILENCE_DUR = 0.0 
-
-# النص المرجعي الشامل (تدريب Audar)
-REF_TEXT = (
-    "اللَّهُ لَا إِلَهَ إِلَّا هُوَ الْحَيُّ الْقَيُّومُ يُحْيِي وَيُمِيتُ وَهُوَ عَلَى كُلِّ شَيْءٍ قَدِيرٌ. "
-    "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ. نَحْنُ نَقُصُّ عَلَيْكَ أَحْسَنَ الْقَصَصِ إِيمَانًا. "
-    "صَدَقَ اللَّهُ الْعَظِيمُ. ذَهَبْتُ إِلَى مَدِينَةِ فُسْطَاطَ وَمَدِينَةِ قَلْقِيلِيَةَ. "
-    "وَالْأَرْضَ مَدَدْنَاهَا وَأَلْقَيْنَا فِيهَا رَوَاسِيَ. وَلَا الضَّالِّينَ. هَذَا فَضْلٌ كَبِيرٌ. وَجَعَلْنَا فِيهَا جَنَّاتٍ خَضْرَاءَ."
-)
 
 def clean(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
@@ -44,76 +35,21 @@ def fetch_ayah(s, a):
     except: pass
     return ""
 
-def split_text(text, max_chars=150):
+def split_text(text, max_chars=300):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
     for s in sentences:
-        if len(current) + len(s) < max_chars:
-            current += " " + s
+        if len(current) + len(s) < max_chars: current += " " + s
         else:
             if current: chunks.append(current.strip())
             current = s
     if current: chunks.append(current.strip())
     return chunks
 
-def generate_audar(text, ref_wav, out_wav):
-    try:
-        from huggingface_hub import hf_hub_download
-        from llama_cpp import Llama
-        from neucodec import NeuCodec
-        import torch
-        import soundfile as sf
-        import torchaudio.functional as F
-        
-        # إضافة التوكن هنا لحل مشكلة 403
-        hf_token = os.environ.get("HF_TOKEN", "")
-        gguf_path = hf_hub_download(repo_id="audarai/Audar-TTS-V1-Flash", filename="Audar-TTS-V1-Flash-Q4_K_M.gguf", local_dir="./models", token=hf_token)
-        llm = Llama(model_path=gguf_path, n_ctx=4096, n_gpu_layers=0, verbose=False)
-        codec = NeuCodec.from_pretrained("neuphonic/neucodec", token=hf_token).eval()
-        
-        data, sr = sf.read(str(ref_wav), dtype="float32")
-        if data.ndim > 1: data = data.mean(axis=1)
-        if sr != 16000:
-            wav = torch.from_numpy(data).unsqueeze(0)
-            wav = F.resample(wav, orig_freq=sr, new_freq=16000)
-            data = wav.squeeze(0).numpy()
-        ref_tensor = torch.from_numpy(data).float().unsqueeze(0).unsqueeze(0)
-        ref_codes = codec.encode_code(ref_tensor).squeeze().tolist()
-        ref = "".join(f"<|speech_{c}|>" for c in ref_codes)
-        
-        prompt = f"user: Convert the text to speech:<|REF_TEXT_START|>{REF_TEXT}<|REF_TEXT_END|><|REF_SPEECH_START|>{ref}<|REF_SPEECH_END|><|TARGET_TEXT_START|>{text}<|TARGET_TEXT_END|>\nassistant:<|TARGET_CODES_START|>"
-        tce = llm.tokenize(b"<|TARGET_CODES_END|>", add_bos=False, special=True)[0]
-        toks = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
-        
-        ids = []
-        for tid in llm.generate(toks, temp=0.7, top_k=20, top_p=0.8, repeat_penalty=1.1):
-            if tid == tce or len(ids) >= 4096: break
-            ids.append(tid)
-            
-        raw_text = "".join(llm.detokenize([t], special=True).decode("utf-8", "ignore") for t in ids)
-        codes = [int(x) for x in re.findall(r"<\|speech_(\d+)\|>", raw_text)]
-        if len(codes) < 50: return False
-        
-        wav = codec.decode_code(torch.tensor(codes)[None, None, :]).cpu().numpy()[0, 0, :]
-        sf.write(str(out_wav), wav, 24000, subtype="PCM_16")
-        return True
-    except Exception as e:
-        print(f"   ⚠️ Audar Error: {str(e)[:80]}")
-        return False
-
 def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     
-    print("🎙️ توليد المرجع (Gemini)...")
-    ref_mp3 = work / "ref.mp3"
-    try:
-        gemini_tts_with_pool(REF_TEXT, str(ref_mp3), voice="Charon")
-        ref_wav = work / "ref.wav"
-        subprocess.run(["ffmpeg", "-y", "-i", str(ref_mp3), "-ar", "16000", "-ac", "1", str(ref_wav)], check=True, capture_output=True)
-    except Exception as e:
-        raise RuntimeError(f"فشل توليد المرجع: {e}")
-
     final_wavs = []
     all_segments_meta = []
 
@@ -139,21 +75,32 @@ def build_episode_audio(json_path, out_mp3):
             if not chunk.strip(): continue
             
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
-            success = False
+            temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            if stype == "quran":
+            success = False
+            for attempt in range(3):
                 try:
-                    temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-                    gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
+                    time.sleep(3) # تأخير لمنع الحظر
+                    
+                    # ═══ تحسينات التجويد ═══
+                    if stype == "quran":
+                        # إضافة وقفات قصيرة بين الكلمات وإجبار التجويد
+                        styled_text = chunk.replace(" ", " <short pause> ")
+                        style = "Recite with tajweed, slow measured pace, emphatic letters, humble tone."
+                    else:
+                        styled_text = chunk
+                        style = "Calm, warm narrative tone."
+                        
+                    gemini_tts_with_pool(styled_text, str(temp_mp3), voice="Charon", style=style)
+                    
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                         success = True
-                except Exception:
-                    pass
-            
-            if not success:
-                success = generate_audar(chunk, ref_wav, raw_wav)
-            
+                        break
+                except Exception as e:
+                    print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:80]}", flush=True)
+                    time.sleep(5)
+
             if not success:
                 print(f"   ❌ فشل تام. تخطي فقرة.", flush=True)
                 continue
@@ -167,7 +114,6 @@ def build_episode_audio(json_path, out_mp3):
 
             final_wavs.append(faded)
             chunk_timings.append({"text": chunk, "duration": get_dur(faded)})
-            time.sleep(1)
             
         if chunk_timings:
             all_segments_meta.append({
@@ -179,7 +125,6 @@ def build_episode_audio(json_path, out_mp3):
 
     final_concat = work / "final.txt"
     final_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in final_wavs), encoding="utf-8")
-    
     merged_wav = work / "merged.wav"
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(final_concat), "-c", "copy", str(merged_wav)], check=True, capture_output=True)
     
