@@ -49,7 +49,6 @@ def get_visual_query(seg):
     if "صحراء" in text or "رمل" in text: return "sand dunes desert"
     if "مسجد" in text or "محراب" in text: return "mosque architecture"
     if "نار" in text: return "fire flames"
-    
     if seg.get("type") == "quran": return "quran book islamic"
     return "islamic nature landscape"
 
@@ -67,18 +66,20 @@ def fetch_media(query, work_dir, used_urls):
     local = _find_local(query)
     if local: return local
     
-    # 2. جلب فيديو من Pixabay
-    if PIXABAY_KEY:
+    # 2. محاولة جلب فيديو من Pixabay (مع كلمات بديلة إذا فشل)
+    queries = [query, "islamic nature", "desert dunes", "sky clouds", "mosque architecture", "ocean waves"]
+    for q in queries:
+        if not PIXABAY_KEY: break
         try:
             time.sleep(1) # تأخير لمنع الحظر
-            r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 10, "min_width": 1080}, timeout=20)
+            r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
             if r.status_code == 200:
                 hits = r.json().get("hits", [])
                 random.shuffle(hits)
                 for hit in hits:
                     url = hit.get("videos", {}).get("medium", {}).get("url") or hit.get("videos", {}).get("small", {}).get("url")
                     if not url or url in used_urls: continue
-                    slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
+                    slug = re.sub(r"[^a-z0-9]+", "-", q.lower())[:30]
                     out = work_dir / f"vid_{slug}_{hit['id']}.mp4"
                     try:
                         with open(out, "wb") as f:
@@ -90,8 +91,10 @@ def fetch_media(query, work_dir, used_urls):
         
     # 3. الخطة البديلة: استخدام أي فيديو من المجلد المحلي (إن وجد)
     if Path(BG_VIDEOS_DIR).exists():
-        videos = list(Path(BG_VIDEOS_DIR).glob("*.mp4"))
-        if videos: return str(random.choice(videos))
+        videos = list(Path(BG_VIDEOS_DIR).glob("*.*"))
+        videos = [v for v in videos if v.suffix.lower() in ('.mp4', '.mov', '.webm', '.jpg', '.png')]
+        if videos: 
+            return str(random.choice(videos))
 
     # 4. آخر حل: صورة سوداء
     out = work_dir / "black.jpg"
@@ -154,7 +157,7 @@ def build_video(audio_path, meta_path, output_mp4):
             seg_duration = sum(c["duration"] for c in seg.get("chunks", []))
             if seg_duration <= 0: continue
             
-            query = get_visual_query(seg) # استخدام الكلمة المناسبة
+            query = get_visual_query(seg)
             num_bgs = max(1, math.ceil(seg_duration / 15))
             bg_files = [fetch_media(query, work_dir, used_urls) for _ in range(num_bgs)]
             
