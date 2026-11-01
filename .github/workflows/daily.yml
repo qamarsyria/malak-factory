@@ -57,7 +57,7 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          TEST_MODE: "0" # اجعلها 1 للتجربة السريعة
+          TEST_MODE: "1" # اجعلها 1 للتجربة السريعة
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
