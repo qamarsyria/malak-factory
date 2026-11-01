@@ -113,11 +113,18 @@ def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill):
     x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
     draw.text((x, y), shaped, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
 
-def make_caption_overlay(chunk_text, display_ref, is_quran, out_path):
+def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
+    # ═══ إعادة شريط العنوان العلوي ═══
+    if ep_title:
+        try: ft = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
+        except: ft = ImageFont.truetype(font_path, 40)
+        draw.rectangle([0, 40, VIDEO_W, 100], fill=(0, 0, 0, 160))
+        _draw_centered(draw, 55, ep_title, ft, "#D4AF37", 2, "black")
+
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
     if not chunk_text and not is_quran: 
@@ -147,6 +154,7 @@ def build_video(audio_path, meta_path, output_mp4):
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix="ep_vid_"))
     concat_lines, used_urls = [], set()
+    ep_title = meta.get("title", "")
 
     try:
         for i, seg in enumerate(meta["segments"]):
@@ -184,7 +192,7 @@ def build_video(audio_path, meta_path, output_mp4):
                 if not c_text.strip(): continue
                 
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
-                make_caption_overlay(c_text, display_ref, is_quran, overlay_png)
+                make_caption_overlay(c_text, display_ref, is_quran, ep_title, overlay_png)
                 text_inputs.extend(["-loop", "1", "-i", str(overlay_png)])
                 text_filters.append(f"[{actual_chunks}:v]trim=start=0:end={c_dur},setpts=PTS-STARTPTS,format=rgba[t{actual_chunks}]")
                 actual_chunks += 1
