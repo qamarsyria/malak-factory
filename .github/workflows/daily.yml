@@ -90,14 +90,17 @@ jobs:
           SIZE_BYTES=$(stat -c%s "$VIDEO_PATH")
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
           
-          if [ "$SIZE_MB" -gt 48 ]; then
-            echo "⚠️ الفيديو كبير. جاري الضغط إلى 720p..."
+          # ضغط الفيديو إذا كان أكبر من 25 ميجا (لضمان قبول تلغرام)
+          if [ "$SIZE_MB" -gt 25 ]; then
+            echo "⚠️ الفيديو كبير ($SIZE_MB MB). جاري الضغط إلى 720p..."
             COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
-            # ضغط 720p مع bitrate 1000k (جودة ممتازة للمدة القصيرة)
-            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:1280" -c:v libx264 -b:v 1000k -maxrate 1200k -bufsize 2000k -preset fast -c:a aac -b:a 96k "$COMPRESSED_PATH"
+            # ضغط قوي (600k bitrate) لضمان حجم أقل من 30 ميجا
+            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$COMPRESSED_PATH"
             UPLOAD_PATH="$COMPRESSED_PATH"
+            echo "✅ تم الضغط. الحجم الجديد: $(stat -c%s "$UPLOAD_PATH" | awk '{print int($1/1024/1024)}') ميجا"
           fi
           
+          echo "🚀 جاري الرفع إلى تلغرام..."
           RESP=$(curl -s -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -110,6 +113,7 @@ jobs:
             echo "❌ تلغرام رفض: $RESP"
             exit 1
           fi
+          echo "✅ تم الرفع بنجاح (message_id=$MSG)"
           echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
 
       - name: Finalize State
