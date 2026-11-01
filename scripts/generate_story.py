@@ -118,13 +118,13 @@ def build_script_prompt(story, plan, ep_num):
 قواعد صارمة:
 1. المصدر: القرآن، السنة، تفسير ابن كثير.
 2. ممنوع أي لغة سينمائية.
-3. **مهم جداً: اكتب فقط تفاصيل أحداث هذه الحلقة المحددة (الحلقة {ep_num}). لا تلخص القصة بأكملها! ركز على السرد الدرامي لما يحدث في هذه الحلقة فقط.**
-4. **اكتب من 1000 إلى 1200 كلمة** لتفصيل أحداث هذه الحلقة.
+3. **مهم: اكتب فقط تفاصيل أحداث هذه الحلقة المحددة. لا تلخص القصة بأكملها.**
+4. **اكتب من 500 إلى 600 كلمة فقط** (لينتج فيديو من 5 إلى 6 دقائق).
 5. استخدم كلمات عربية بسيطة ومألوفة.
 6. **التشكيل**: اكتب النص بالتشكيل التام (فتحة، ضمة، كسرة، سكون، شدة).
 7. اكتب "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ" كاملة، ممنوع استخدام (ﷺ).
 8. **الآيات**: اكتب فقط العلامة [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
-9. أدرج من 6 إلى 8 آيات.
+9. أدرج من 4 إلى 6 آيات.
 10. ابدأ السرد مباشرة.
 
 اكتب النص السردي فقط."""
@@ -158,11 +158,9 @@ def main():
         "segments": segments
     }
     
-    PENDING_DIR.mkdir(parents=True, exist_ok=True); OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(ep_data, ensure_ascii=False, indent=2)
-    (PENDING_DIR / f"{story['id']}-{ep_num:02d}.json").write_text(payload, encoding="utf-8")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUT_DIR / f"{story['id']}-{ep_num:02d}.json"
-    output_path.write_text(payload, encoding="utf-8")
+    output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
     OUT_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_FILE_PATH.write_text(str(output_path), encoding="utf-8")
 
