@@ -27,8 +27,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-hosny-amiri
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install --upgrade pip
           pip install requests edge-tts pillow arabic-reshaper python-bidi huggingface_hub
 
@@ -58,7 +57,7 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          TEST_MODE: "0" # ⚠️ هذا هو مفتاح وضع الاختبار
+          TEST_MODE: "0" # اجعلها 1 للتجربة السريعة
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
