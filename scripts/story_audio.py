@@ -48,10 +48,10 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # تسريع 1.25 + تضخيم 8dB (بدون صفير)
+        # تسريع 35% + تضخيم مضاعف (12dB و 16dB) + حماية 0.8
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
-            "-af", "atempo=1.25,equalizer=f=250:t=q:w=1.0:g=6,equalizer=f=3000:t=q:w=1.0:g=-4,bass=g=8,alimiter=limit=0.9",
+            "-af", "atempo=1.35,equalizer=f=250:t=q:w=1.0:g=12,equalizer=f=3000:t=q:w=1.0:g=-6,bass=g=16,alimiter=limit=0.8",
             "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
         subprocess.run(cmd, check=True, capture_output=True)
@@ -105,9 +105,8 @@ def build_episode_audio(json_path, out_mp3):
     total_segs = len(segments_list)
     test_mode = os.environ.get("TEST_MODE") == "1"
     
-    print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل'}")
+    print(f"⚙️ وضع الاختبار: {'مفعل (سرد + آية + نهاية)' if test_mode else 'معطل (الحلقة كاملة)'}")
 
-    # تتبع ما إذا كنا قد أخذنا السرد والتلاوة في وضع الاختبار
     taken_narration = False
     taken_quran = False
 
@@ -115,14 +114,13 @@ def build_episode_audio(json_path, out_mp3):
         stype = seg.get("type")
         is_ending_segment = (total_segs - idx) <= 3
         
-        # ═══ منطق وضع الاختبار الذكي ═══
         if test_mode:
             if stype == "narration" and not taken_narration:
                 taken_narration = True
             elif stype == "quran" and not taken_quran:
                 taken_quran = True
             elif not is_ending_segment:
-                continue # تخطي أي مقطع آخر
+                continue
             
         text, display = "", ""
         
@@ -149,7 +147,7 @@ def build_episode_audio(json_path, out_mp3):
             
             if stype == "quran":
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (سريعة ومضخمة)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (سرعة 35% وتضخيم مضاعف)", flush=True)
             
             if not success:
                 try:
