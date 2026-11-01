@@ -45,12 +45,30 @@ def fetch_ayah_audio(s, a, out_path):
         if r.status_code == 200 and len(r.content) > 10000:
             temp_mp3 = out_path.replace(".wav", "_temp.mp3")
             Path(temp_mp3).write_bytes(r.content)
-            # تسريع 10%
-            subprocess.run(["ffmpeg", "-y", "-i", temp_mp3, "-af", "atempo=1.1", "-ar", TARGET_SR, "-ac", "1", out_path], check=True, capture_output=True)
+            
+            # ═══ التعديل الصوتي الاحترافي ═══
+            # atempo=1.1: الحفاظ على السرعة الممتازة (10%)
+            # equalizer: تقليل الحدة (3000Hz) وتضخيم العمق (300Hz)
+            # alimiter: منع التشويه (Distortion)
+            audio_filter = (
+                "atempo=1.1,"
+                "equalizer=f=300:t=q:w=1.0:g=4,"     # تضخيم العمق
+                "equalizer=f=3000:t=q:w=1.0:g=-3,"   # تقليل الحدة
+                "bass=g=2,"                          # تعزيز الباس
+                "alimiter=limit=0.9"                 # منع التشويه
+            )
+            
+            subprocess.run([
+                "ffmpeg", "-y", "-i", temp_mp3, 
+                "-af", audio_filter, 
+                "-ar", TARGET_SR, "-ac", "1", 
+                out_path
+            ], check=True, capture_output=True)
+            
             Path(temp_mp3).unlink(missing_ok=True)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"   ⚠️ خطأ في معالجة الصوت: {e}")
     return False
 
 def split_text(text, max_chars=300):
@@ -72,7 +90,6 @@ def build_episode_audio(json_path, out_mp3):
     silence_path = work / "silence.wav"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
 
-    # تفعيل وضع الاختبار
     limit = 2 if os.environ.get("TEST_MODE") == "1" else 9999
     print(f"⚙️ وضع الاختبار: {'مفعل (مقطعين فقط)' if limit == 2 else 'معطل (الحلقة كاملة)'}")
 
@@ -106,10 +123,8 @@ def build_episode_audio(json_path, out_mp3):
             success = False
             
             if stype == "quran":
-                # محاولة التلاوة البشرية أولاً
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success:
-                    print(f"   ✅ تلاوة بشرية (عبد الله بصفر)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (بصفر - سرعة 1.1 وتضخيم)", flush=True)
             
             if not success:
                 print(f"   ⚠️ التلاوة البشرية غير متوفرة، استخدام Gemini...", flush=True)
