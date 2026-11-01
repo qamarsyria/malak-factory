@@ -70,7 +70,6 @@ def fix_arabic_tashkeel_minimal(text):
     return text
 
 def split_narration(text, max_chars=300):
-    # تقطيع أذكى يعتمد على الجمل
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
     for s in sentences:
@@ -149,7 +148,15 @@ def main():
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
 
-    ep_data = {"episode_number": ep_num, "story_id": story["id"], "story_title": story["title"], "title": f"{story['title']} — {plan['title']}", "segments": segments}
+    # ═══ تعديل: إضافة رقم الحلقة في العنوان ═══
+    ep_data = {
+        "episode_number": ep_num, 
+        "story_id": story["id"], 
+        "story_title": story["title"], 
+        "title": f"{story['title']} — الحلقة {ep_num} — {plan['title']}", 
+        "segments": segments
+    }
+    
     PENDING_DIR.mkdir(parents=True, exist_ok=True); OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(ep_data, ensure_ascii=False, indent=2)
     (PENDING_DIR / f"{story['id']}-{ep_num:02d}.json").write_text(payload, encoding="utf-8")
