@@ -37,10 +37,9 @@ def fetch_ayah(s, a):
     return ""
 
 def fetch_ayah_audio(s, a, out_path):
-    # استخدام القارئ عاطف عبد الجواد (معرف everyayah الصحيح غالباً هو Atef_AbdulJawad)
-    # إذا لم يعمل، سيعود للاحتياطي Gemini
+    # استخدام القارئ عبد الله بصفر
     filename = f"{s:03d}{a:03d}.mp3"
-    url = f"https://everyayah.com/data/Atef_AbdulJawad/{filename}"
+    url = f"https://everyayah.com/data/Abdullah_Basfar_192kbps/{filename}"
     try:
         r = requests.get(url, timeout=60)
         if r.status_code == 200 and len(r.content) > 10000:
@@ -110,9 +109,10 @@ def build_episode_audio(json_path, out_mp3):
                 # محاولة التلاوة البشرية أولاً
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
                 if success:
-                    print(f"   ✅ تلاوة بشرية (عاطف عبد الجواد)", flush=True)
+                    print(f"   ✅ تلاوة بشرية (عبد الله بصفر)", flush=True)
             
             if not success:
+                print(f"   ⚠️ التلاوة البشرية غير متوفرة، استخدام Gemini...", flush=True)
                 for attempt in range(3):
                     try:
                         time.sleep(2)
