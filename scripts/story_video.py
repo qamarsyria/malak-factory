@@ -11,7 +11,7 @@ from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACC
 from utilities import cleanup_dir
 
 def _find_arabic_font():
-    candidates = ["/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf", "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-BoldItalic.ttf"]
+    candidates = ["/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf", "/usr/share/fonts/opentype/fonts/hosny-amiri/Amiri-BoldItalic.ttf"]
     for c in candidates:
         if os.path.exists(c): return c
     r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
@@ -41,11 +41,11 @@ def get_duration(path):
 
 def get_visual_query(seg):
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
-    if "بحر" in text or "موج" in text or "يم" in text: return "sea waves"
+    if "بحر" in text or "موج" in text: return "sea waves"
     if "جبل" in text or "طور" in text: return "mountain peak"
     if "ماء" in text or "نهر" in text or "عين" in text: return "river water"
     if "سماء" in text or "نجم" in text or "قمر" in text: return "starry sky night"
-    if "شجر" in text or "نخل" in text or "بستان" in text: return "palm trees desert"
+    if "شجر" in text or "نخل" in text: return "palm trees desert"
     if "صحراء" in text or "رمل" in text: return "sand dunes desert"
     if "مسجد" in text or "محراب" in text: return "mosque architecture"
     if "نار" in text: return "fire flames"
@@ -136,7 +136,6 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         _draw_centered(draw, y, line, font, line_color, 6 if not is_quran else 8, "black")
         y += lh
         
-    # ═══ العلامة المائية تظهر دائماً في أسفل الشاشة ═══
     try: wm_font = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
     except: wm_font = ImageFont.truetype(font_path, 40)
     wm_text = _shape("ملاك المعرفة")
