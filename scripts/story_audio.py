@@ -1,25 +1,27 @@
-import os, sys, json, subprocess, tempfile, shutil, re, time
-from pathlib import Path
+import os
+import sys
+import json
+import subprocess
+import tempfile
+import shutil
+import re
+import time
 import requests
+from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import QURAN_API
-from utilities import cleanup_dir
+from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
-EVERYAYAH_BASE = "https://everyayah.com/data"
-# معرف القارئ عاطف عبد الجواد (قد يحتاج تعديلاً إذا كان مختلفاً في everyayah)
-RECITER_ID = "Atef_AbdulJawad" 
-SPEED_FACTOR = 1.1 # تسريع 10%
 
 def sanitize_for_tts(t):
-    """حذف أي حروف إنجليزية أو رموز غريبة لضمان قراءة عربية فقط."""
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
-    t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t) # حذف الحروف الإنجليزية والرموز
+    t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
 def get_dur(p):
@@ -27,7 +29,7 @@ def get_dur(p):
     try: return round(float(r.stdout.strip()), 3)
     except: return 0.0
 
-def fetch_ayah_text(s, a):
+def fetch_ayah(s, a):
     try:
         r = requests.get(f"{QURAN_API}/ayah/{s}:{a}", timeout=10)
         if r.status_code == 200: return r.json()["data"]["text"]
@@ -35,20 +37,21 @@ def fetch_ayah_text(s, a):
     return ""
 
 def fetch_ayah_audio(s, a, out_path):
-    """جلب التلاوة الصوتية من everyayah وتسريعها."""
+    # استخدام القارئ عاطف عبد الجواد (معرف everyayah الصحيح غالباً هو Atef_AbdulJawad)
+    # إذا لم يعمل، سيعود للاحتياطي Gemini
     filename = f"{s:03d}{a:03d}.mp3"
-    url = f"{EVERYAYAH_BASE}/{RECITER_ID}/{filename}"
+    url = f"https://everyayah.com/data/Atef_AbdulJawad/{filename}"
     try:
         r = requests.get(url, timeout=60)
         if r.status_code == 200 and len(r.content) > 10000:
             temp_mp3 = out_path.replace(".wav", "_temp.mp3")
             Path(temp_mp3).write_bytes(r.content)
-            # تسريع الصوت بنسبة 10% مع الحفاظ على النغمة
-            subprocess.run(["ffmpeg", "-y", "-i", temp_mp3, "-af", f"atempo={SPEED_FACTOR}", "-ar", TARGET_SR, "-ac", "1", out_path], check=True, capture_output=True)
+            # تسريع 10%
+            subprocess.run(["ffmpeg", "-y", "-i", temp_mp3, "-af", "atempo=1.1", "-ar", TARGET_SR, "-ac", "1", out_path], check=True, capture_output=True)
             Path(temp_mp3).unlink(missing_ok=True)
             return True
-    except Exception as e:
-        print(f"   ⚠️ فشل جلب التلاوة ({RECITER_ID}): {e}", flush=True)
+    except Exception:
+        pass
     return False
 
 def split_text(text, max_chars=300):
@@ -70,7 +73,15 @@ def build_episode_audio(json_path, out_mp3):
     silence_path = work / "silence.wav"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
 
+    # تفعيل وضع الاختبار
+    limit = 2 if os.environ.get("TEST_MODE") == "1" else 9999
+    print(f"⚙️ وضع الاختبار: {'مفعل (مقطعين فقط)' if limit == 2 else 'معطل (الحلقة كاملة)'}")
+
     for idx, seg in enumerate(ep.get("segments", [])):
+        if idx >= limit:
+            print(f"⏹️ تم إيقاف التوليد بعد {limit} مقاطع لتوفير الحصة.")
+            break
+            
         stype = seg.get("type")
         text, display = "", ""
         
@@ -78,7 +89,7 @@ def build_episode_audio(json_path, out_mp3):
             text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             s, ayahs = seg["surah"], seg["ayah_numbers"]
-            text = " ".join(filter(None, (fetch_ayah_text(s, a) for a in ayahs)))
+            text = " ".join(filter(None, (fetch_ayah(s, a) for a in ayahs)))
             display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
         
         if not text: continue
@@ -96,31 +107,26 @@ def build_episode_audio(json_path, out_mp3):
             success = False
             
             if stype == "quran":
-                # 1. محاولة جلب التلاوة البشرية من everyayah
+                # محاولة التلاوة البشرية أولاً
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
                 if success:
                     print(f"   ✅ تلاوة بشرية (عاطف عبد الجواد)", flush=True)
             
             if not success:
-                # 2. الاحتياطي: Gemini TTS
                 for attempt in range(3):
                     try:
                         time.sleep(2)
-                        style = "Recite with accurate Tajweed, moderate pace, clear pronunciation, without exaggeration."
+                        style = "Recite with accurate Tajweed, moderate pace, clear pronunciation."
                         gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style=style)
                         if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                             subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                             success = True
                             break
                     except Exception as e:
-                        print(f"   ⚠️ Gemini فشل: {str(e)[:80]}", flush=True)
-                        time.sleep(5)
+                        time.sleep(2)
 
-            if not success:
-                print(f"   ❌ فشل تام. تخطي فقرة.", flush=True)
-                continue
+            if not success: continue
 
-            # إصلاح الخشّة
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
