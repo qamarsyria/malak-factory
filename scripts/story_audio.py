@@ -19,10 +19,27 @@ from gemini_tts_pool import gemini_tts_with_pool
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
+# ═══ قاموس تصحيح الكلمات الصعبة (لفظياً فقط، لا يظهر على الشاشة) ═══
+SPELLING_FIXES = {
+    "تعالى": "تَعَالَى",
+    "منشغلة": "مُنْشَغِلَة",
+    "إرهاصا": "إِرْهَاصًا",
+    "اللله": "اللَّه",
+    "الله": "اللَّه",
+    "بالله": "بِاللَّه",
+    "والله": "وَاللَّه",
+}
+
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
+
+def apply_spelling_fixes(t):
+    for original, fixed in SPELLING_FIXES.items():
+        pattern = rf'(?<![ء-ي\u064B-\u0652]){re.escape(original)}(?![ء-ي\u064B-\u0652])'
+        t = re.sub(pattern, fixed, t)
+    return t
 
 def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
@@ -37,7 +54,6 @@ def fetch_ayah(s, a):
     return ""
 
 def fetch_ayah_audio(s, a, out_path):
-    # استخدام القارئ عبد الله بصفر
     filename = f"{s:03d}{a:03d}.mp3"
     url = f"https://everyayah.com/data/Abdullah_Basfar_192kbps/{filename}"
     try:
@@ -45,26 +61,8 @@ def fetch_ayah_audio(s, a, out_path):
         if r.status_code == 200 and len(r.content) > 10000:
             temp_mp3 = out_path.replace(".wav", "_temp.mp3")
             Path(temp_mp3).write_bytes(r.content)
-            
-            # ═══ التعديل الصوتي الاحترافي ═══
-            # atempo=1.1: الحفاظ على السرعة الممتازة (10%)
-            # equalizer: تقليل الحدة (3000Hz) وتضخيم العمق (300Hz)
-            # alimiter: منع التشويه (Distortion)
-            audio_filter = (
-                "atempo=1.1,"
-                "equalizer=f=300:t=q:w=1.0:g=4,"     # تضخيم العمق
-                "equalizer=f=3000:t=q:w=1.0:g=-3,"   # تقليل الحدة
-                "bass=g=2,"                          # تعزيز الباس
-                "alimiter=limit=0.9"                 # منع التشويه
-            )
-            
-            subprocess.run([
-                "ffmpeg", "-y", "-i", temp_mp3, 
-                "-af", audio_filter, 
-                "-ar", TARGET_SR, "-ac", "1", 
-                out_path
-            ], check=True, capture_output=True)
-            
+            audio_filter = "atempo=1.1,equalizer=f=300:t=q:w=1.0:g=4,equalizer=f=3000:t=q:w=1.0:g=-3,bass=g=2,alimiter=limit=0.9"
+            subprocess.run(["ffmpeg", "-y", "-i", temp_mp3, "-af", audio_filter, "-ar", TARGET_SR, "-ac", "1", out_path], check=True, capture_output=True)
             Path(temp_mp3).unlink(missing_ok=True)
             return True
     except Exception as e:
@@ -124,20 +122,23 @@ def build_episode_audio(json_path, out_mp3):
             
             if stype == "quran":
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (بصفر - سرعة 1.1 وتضخيم)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (بصفر)", flush=True)
             
             if not success:
-                print(f"   ⚠️ التلاوة البشرية غير متوفرة، استخدام Gemini...", flush=True)
+                print(f"   ⚠️ استخدام Gemini...", flush=True)
+                # تصحيح الكلمات الصعبة قبل إرسالها لـ Gemini
+                chunk_fixed = apply_spelling_fixes(chunk)
                 for attempt in range(3):
                     try:
                         time.sleep(2)
-                        style = "Recite with accurate Tajweed, moderate pace, clear pronunciation."
-                        gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style=style)
+                        # ═══ لا نمرر style إطلاقاً (هذا كان سبب الصوت الإنجليزي) ═══
+                        gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
                         if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                             subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                             success = True
                             break
                     except Exception as e:
+                        print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:50]}")
                         time.sleep(2)
 
             if not success: continue
