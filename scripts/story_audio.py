@@ -19,7 +19,6 @@ from gemini_tts_pool import gemini_tts_with_pool
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
-# ═══ قاموس تصحيح الكلمات الصعبة (لفظياً فقط، لا يظهر على الشاشة) ═══
 SPELLING_FIXES = {
     "تعالى": "تَعَالَى",
     "منشغلة": "مُنْشَغِلَة",
@@ -69,7 +68,8 @@ def fetch_ayah_audio(s, a, out_path):
         print(f"   ⚠️ خطأ في معالجة الصوت: {e}")
     return False
 
-def split_text(text, max_chars=300):
+# ═══ الحد الأقصى 150 حرفاً للنص لضمان عدم قطعه ═══
+def split_text(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
     for s in sentences:
