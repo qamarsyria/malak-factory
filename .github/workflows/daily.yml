@@ -30,7 +30,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install --upgrade pip
-          # تثبيت خفيف وسريع (بدون PyTorch)
           pip install requests edge-tts pillow arabic-reshaper python-bidi huggingface_hub
 
       - name: Discover Models
@@ -50,7 +49,6 @@ jobs:
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
-            echo "❌ فشل توليد القصة"
             exit 1
           fi
 
@@ -60,6 +58,7 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TEST_MODE: "1" # ⚠️ هذا هو مفتاح وضع الاختبار
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -93,24 +92,18 @@ jobs:
           
           SIZE_BYTES=$(stat -c%s "$VIDEO_PATH")
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
-          echo "📊 حجم الفيديو الأصلي: $SIZE_MB ميجابايت"
           
-          # ضغط الفيديو إذا كان أكبر من 25 ميجا (لضمان قبول تلغرام وتجنب 504)
           if [ "$SIZE_MB" -gt 25 ]; then
-            echo "⚠️ الفيديو كبير. جاري الضغط إلى 720p..."
             COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
             ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$COMPRESSED_PATH"
             UPLOAD_PATH="$COMPRESSED_PATH"
-            echo "✅ تم الضغط. الحجم الجديد: $(stat -c%s "$UPLOAD_PATH" | awk '{print int($1/1024/1024)}') ميجابايت"
           fi
           
-          # محاولة الرفع 3 مرات (لتجنب خطأ 504 Timeout)
           MAX_RETRIES=3
           ATTEMPT=1
           MSG=""
           
           while [ $ATTEMPT -le $MAX_RETRIES ]; do
-            echo "🚀 محاولة الرفع ($ATTEMPT/$MAX_RETRIES)..."
             RESP=$(curl -s -X POST \
               "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
               -F "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -119,20 +112,12 @@ jobs:
               -F "supports_streaming=true")
               
             MSG=$(echo "$RESP" | grep -oP '"message_id":\K[0-9]+' || true)
-            if [ -n "$MSG" ]; then
-              echo "✅ تم الرفع بنجاح (message_id=$MSG)"
-              break
-            fi
-            
-            echo "⚠️ فشل الرفع: $RESP"
+            if [ -n "$MSG" ]; then break; fi
             ATTEMPT=$((ATTEMPT + 1))
             sleep 10
           done
           
-          if [ -z "$MSG" ]; then
-            echo "❌ تلغرام رفض الرفع بعد $MAX_RETRIES محاولات."
-            exit 1
-          fi
+          if [ -z "$MSG" ]; then exit 1; fi
           echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
 
       - name: Update Feed
