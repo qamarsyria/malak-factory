@@ -46,24 +46,17 @@ def fetch_ayah(s, a):
     except: pass
     return ""
 
-# ═════════════════════════════════════════════════════════════
-# 🍹 الخلطة السحرية (تسريع 15% + صفير + مطر خفيف)
-# ═════════════════════════════════════════════════════════════
 def apply_cocktail_mix(input_path, output_path):
     try:
+        # تسريع 1.3، صفير، ضوضاء وردية
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
-            "-f", "lavfi", "-i", "sine=frequency=18000:sample_rate=24000", # الصفير
-            "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=24000:amplitude=0.1", # صوت المطر
+            "ffmpeg", "-y", "-i", str(input_path),
+            "-f", "lavfi", "-i", "sine=frequency=18000:sample_rate=24000",
+            "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=24000:amplitude=0.1",
             "-filter_complex",
-            "[0:a]atempo=1.15,asetrate=24576,aresample=24000[voice];" # تسريع 15% وتغيير نبرة
-            "[1:a]volume=0.05[chirp];" # خفض صوت الصفير جداً
-            "[2:a]volume=0.08[amb];"   # خفض صوت المطر ليكون خلفية خفيفة جداً
+            "[0:a]atempo=1.3[voice];[1:a]volume=0.05[chirp];[2:a]volume=0.08[amb];"
             "[voice][chirp][amb]amix=inputs=3:duration=first:dropout_transition=0[out]",
-            "-map", "[out]",
-            "-ar", TARGET_SR, "-ac", "1",
-            str(output_path)
+            "-map", "[out]", "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
         subprocess.run(cmd, check=True, capture_output=True)
         return True
@@ -83,8 +76,7 @@ def fetch_ayah_audio(s, a, out_path):
             apply_cocktail_mix(temp_mp3, out_path)
             Path(temp_mp3).unlink(missing_ok=True)
             return True
-    except Exception as e:
-        print(f"   ⚠️ خطأ في معالجة الصوت: {e}")
+    except Exception as e: pass
     return False
 
 async def _edge_tts_async(text, out_path):
@@ -117,10 +109,7 @@ def build_episode_audio(json_path, out_mp3):
     total_segs = len(segments_list)
     test_mode = os.environ.get("TEST_MODE") == "1"
     
-    if test_mode:
-        print("⚙️ وضع الاختبار مفعل: سيتم توليد أول مقطعين + آخر 3 مقاطع.")
-    else:
-        print("⚙️ وضع الاختبار معطل: سيتم توليد الحلقة كاملة.")
+    print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل'}")
 
     for idx, seg in enumerate(segments_list):
         is_ending_segment = (total_segs - idx) <= 3
@@ -156,7 +145,6 @@ def build_episode_audio(json_path, out_mp3):
                 if success: print(f"   ✅ تلاوة بشرية (مع الخلطة)", flush=True)
             
             if not success:
-                # محاولة Gemini مرة واحدة فقط (بدون انتظار طويل)
                 try:
                     chunk_fixed = apply_spelling_fixes(chunk)
                     gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
@@ -164,8 +152,7 @@ def build_episode_audio(json_path, out_mp3):
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                         success = True
                         print(f"   ✅ Gemini", flush=True)
-                except Exception:
-                    pass
+                except Exception: pass
 
             if not success:
                 print(f"   🚨 Edge TTS...", flush=True)
@@ -175,8 +162,7 @@ def build_episode_audio(json_path, out_mp3):
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 2000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                         success = True
-                except Exception:
-                    pass
+                except Exception: pass
 
             if not success: continue
 
