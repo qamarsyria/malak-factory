@@ -1,13 +1,7 @@
-import os
-import sys
-import json
-import subprocess
-import tempfile
-import shutil
-import re
-import time
-import requests
+import os, sys, json, subprocess, tempfile, shutil, re, time, asyncio
 from pathlib import Path
+import requests
+import edge_tts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -60,15 +54,31 @@ def fetch_ayah_audio(s, a, out_path):
         if r.status_code == 200 and len(r.content) > 10000:
             temp_mp3 = out_path.replace(".wav", "_temp.mp3")
             Path(temp_mp3).write_bytes(r.content)
-            audio_filter = "atempo=1.1,equalizer=f=300:t=q:w=1.0:g=4,equalizer=f=3000:t=q:w=1.0:g=-3,bass=g=2,alimiter=limit=0.9"
-            subprocess.run(["ffmpeg", "-y", "-i", temp_mp3, "-af", audio_filter, "-ar", TARGET_SR, "-ac", "1", out_path], check=True, capture_output=True)
+            
+            # ═══ التعديل الصوتي لتجنب حقوق النشر ═══
+            # تسريع 25% + تضخيم قوي + تقليل الحدة + حماية من التشويه
+            audio_filter = "atempo=1.25,equalizer=f=250:t=q:w=1.0:g=6,equalizer=f=3000:t=q:w=1.0:g=-4,bass=g=6,alimiter=limit=0.8"
+            
+            subprocess.run([
+                "ffmpeg", "-y", "-i", temp_mp3, 
+                "-af", audio_filter, 
+                "-ar", TARGET_SR, "-ac", "1", 
+                out_path
+            ], check=True, capture_output=True)
+            
             Path(temp_mp3).unlink(missing_ok=True)
             return True
     except Exception as e:
         print(f"   ⚠️ خطأ في معالجة الصوت: {e}")
     return False
 
-# ═══ الحد الأقصى 150 حرفاً للنص لضمان عدم قطعه ═══
+async def _edge_tts_async(text, out_path):
+    comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
+    await comm.save(out_path)
+
+def edge_generate(text, out_path):
+    asyncio.run(_edge_tts_async(text, out_path))
+
 def split_text(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
@@ -122,7 +132,7 @@ def build_episode_audio(json_path, out_mp3):
             
             if stype == "quran":
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (بصفر)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (بصفر - تعديل 25%)", flush=True)
             
             if not success:
                 print(f"   ⚠️ استخدام Gemini...", flush=True)
@@ -138,6 +148,17 @@ def build_episode_audio(json_path, out_mp3):
                     except Exception as e:
                         print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:50]}")
                         time.sleep(2)
+
+            if not success:
+                print(f"   🚨 استخدام Edge TTS كاحتياطي أخير...", flush=True)
+                chunk_fixed = apply_spelling_fixes(chunk)
+                try:
+                    edge_generate(chunk_fixed, str(temp_mp3))
+                    if temp_mp3.exists() and temp_mp3.stat().st_size > 2000:
+                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                        success = True
+                except Exception as e:
+                    print(f"   ❌ فشل Edge أيضاً: {str(e)[:50]}")
 
             if not success: continue
 
