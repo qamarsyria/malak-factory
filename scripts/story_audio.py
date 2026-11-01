@@ -48,18 +48,18 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # 1. rubberband: خفض النبرة 25% وزيادة الحنجرة 35%
-        # 2. atempo: تسريع 30%
-        # 3. aecho: صدى هال بسيط (تأخير 40ms و 80ms)
+        # 1. rubberband: خفض النبرة 10% وزيادة الحنجرة 10% (صوت رجولي دافئ)
+        # 2. atempo: تسريع 25%
+        # 3. aecho: صدى خفيف جداً (60ms)
         # 4. equalizer: تضخيم العمق وتقليل الحدة
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
-            "rubberband=pitch=0.75:formant=1.35," 
-            "atempo=1.3,"
+            "rubberband=pitch=0.90:formant=1.10," 
+            "atempo=1.25,"
             "equalizer=f=250:t=q:w=1.0:g=4,"
-            "equalizer=f=3000:t=q:w=1.0:g=-4,"
-            "aecho=0.8:0.88:40|80:0.3|0.2,"
+            "equalizer=f=3000:t=q:w=1.0:g=-3,"
+            "aecho=0.8:0.88:60:0.15,"
             "alimiter=limit=0.9",
             "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
