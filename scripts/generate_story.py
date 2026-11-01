@@ -64,15 +64,33 @@ def call_huggingface(prompt, is_json=True):
 def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
+# ═══ قاموس إصلاح الأخطاء الإملائية الإجباري (Failsafe) ═══
+MANUAL_FIXES = {
+    "أسجدت": "سجدت",
+    "أبعاطها": "أبعادها",
+    "تعالى": "تَعَالَى",
+    "منشغلة": "مُنْشَغِلَة",
+    "إرهاصا": "إِرْهَاصًا",
+    "هاذا": "هَذَا",
+    "هاذه": "هَذِهِ"
+}
+
+def force_manual_fixes(text):
+    for wrong, right in MANUAL_FIXES.items():
+        text = text.replace(wrong, right)
+    return text
+
 def proofread_script(text):
     print("🔍 جاري التدقيق الإملائي ووضع التشكيل...", flush=True)
-    prompt = f"""أنت مدقق لغوي عربي خبير.
+    text = force_manual_fixes(text) # إصلاح إجباري أولاً
+    
+    prompt = f"""أنت مدقق لغوي عربي خبير ومتشدد جداً.
 مهمتك: تصحيح النص التالي.
-القواعد:
-1. صحح أي أخطاء إملائية أو نحوية.
-2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على كل حرف.
+القواعد الصارمة:
+1. صحح أي أخطاء إملائية أو نحوية أو في همزات الوصل والقطع.
+2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على **كل حرف** في النص بدون استثناء.
 3. حافظ على علامات الآيات [آية: X:Y] كما هي تماماً.
-4. أعد النص المصحح فقط، دون أي مقدمات.
+4. أعد النص المصحح فقط، دون أي مقدمات أو اعتذارات.
 
 النص:
 {text}"""
@@ -125,7 +143,7 @@ def parse_script_with_verses(script_text):
             i += 2
     return segments
 
-def build_plan_prompt(story, ep_num):
+def build_plan_prompt(story, ep_num, covered_topics):
     return f'أنت مؤرخ إسلامي. اكتب خطة للحلقة {ep_num} من "{story["title"]}".\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
 
 def build_script_prompt(story, plan, ep_num):
@@ -138,11 +156,9 @@ def build_script_prompt(story, plan, ep_num):
 3. اكتب فقط تفاصيل أحداث هذه الحلقة المحددة. لا تلخص القصة بأكملها.
 4. اكتب من 500 إلى 600 كلمة فقط.
 5. استخدم كلمات عربية بسيطة ومألوفة.
-6. التشكيل: اكتب النص بالتشكيل التام.
-7. اكتب "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ" كاملة، ممنوع استخدام (ﷺ).
-8. الآيات: اكتب فقط العلامة [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
-9. أدرج من 4 إلى 6 آيات.
-10. ابدأ السرد مباشرة.
+6. **الآيات**: اكتب فقط العلامة [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
+7. أدرج من 4 إلى 6 آيات.
+8. ابدأ السرد مباشرة.
 
 اكتب النص السردي فقط."""
 
@@ -153,7 +169,7 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state.get("covered_topics", []))) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
