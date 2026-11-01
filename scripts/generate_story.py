@@ -51,7 +51,7 @@ def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     try:
-        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 6000}, timeout=180)
+        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"]
             if is_json:
@@ -64,9 +64,26 @@ def call_huggingface(prompt, is_json=True):
 def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
+def proofread_script(text):
+    print("🔍 جاري التدقيق الإملائي ووضع التشكيل...", flush=True)
+    prompt = f"""أنت مدقق لغوي عربي خبير.
+مهمتك: تصحيح النص التالي.
+القواعد:
+1. صحح أي أخطاء إملائية أو نحوية.
+2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على كل حرف.
+3. حافظ على علامات الآيات [آية: X:Y] كما هي تماماً.
+4. أعد النص المصحح فقط، دون أي مقدمات.
+
+النص:
+{text}"""
+    corrected = call_llm_with_fallback(prompt, is_json=False, timeout=180, max_tokens=8192)
+    if corrected and len(corrected) > len(text) * 0.8:
+        return corrected
+    return text
+
 def fix_arabic_tashkeel_minimal(text):
     text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ").replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ").replace("رضي الله عنها", "رَضِيَ اللَّهُ عَنْهَا").replace("رحمه الله", "رَحِمَهُ اللَّهُ").replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
+    text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ").replace("رضي الله عنها", "رَضِيَ اللَّهُ عَنْهَا").replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
     return text
 
 def split_narration(text, max_chars=150):
@@ -108,8 +125,8 @@ def parse_script_with_verses(script_text):
             i += 2
     return segments
 
-def build_plan_prompt(story, ep_num, covered_topics):
-    return f'أنت مؤرخ إسلامي. اكتب خطة للحلقة {ep_num} من "{story["title"]}".\nاعتمد على: {", ".join(story.get("sources", []))}\nالمواضيع: {", ".join(story.get("key_topics", [])[:8])}\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
+def build_plan_prompt(story, ep_num):
+    return f'أنت مؤرخ إسلامي. اكتب خطة للحلقة {ep_num} من "{story["title"]}".\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
 
 def build_script_prompt(story, plan, ep_num):
     return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي موثوق.
@@ -118,12 +135,12 @@ def build_script_prompt(story, plan, ep_num):
 قواعد صارمة:
 1. المصدر: القرآن، السنة، تفسير ابن كثير.
 2. ممنوع أي لغة سينمائية.
-3. **مهم: اكتب فقط تفاصيل أحداث هذه الحلقة المحددة. لا تلخص القصة بأكملها.**
-4. **اكتب من 500 إلى 600 كلمة فقط** (لينتج فيديو من 5 إلى 6 دقائق).
+3. اكتب فقط تفاصيل أحداث هذه الحلقة المحددة. لا تلخص القصة بأكملها.
+4. اكتب من 500 إلى 600 كلمة فقط.
 5. استخدم كلمات عربية بسيطة ومألوفة.
-6. **التشكيل**: اكتب النص بالتشكيل التام (فتحة، ضمة، كسرة، سكون، شدة).
+6. التشكيل: اكتب النص بالتشكيل التام.
 7. اكتب "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ" كاملة، ممنوع استخدام (ﷺ).
-8. **الآيات**: اكتب فقط العلامة [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
+8. الآيات: اكتب فقط العلامة [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
 9. أدرج من 4 إلى 6 آيات.
 10. ابدأ السرد مباشرة.
 
@@ -136,11 +153,13 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state.get("covered_topics", []))) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
+    script_text = proofread_script(script_text)
     segments = parse_script_with_verses(script_text)
+    
     summary_text = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر.", is_json=False, timeout=60, max_tokens=300)
     segments.append({"type": "summary", "text": summary_text.strip() if summary_text else "وهكذا تتجلى العبرة.", "visual": "sunrise sky"})
 
@@ -151,9 +170,7 @@ def main():
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
 
     ep_data = {
-        "episode_number": ep_num, 
-        "story_id": story["id"], 
-        "story_title": story["title"], 
+        "episode_number": ep_num, "story_id": story["id"], "story_title": story["title"],
         "title": f"{story['title']} — الحلقة {ep_num} — {plan['title']}", 
         "segments": segments
     }
