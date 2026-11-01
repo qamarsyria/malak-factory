@@ -48,15 +48,11 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # تسريع 1.3، صفير، ضوضاء وردية
+        # تم حذف الصفير (sine) المزعج. تسريع 1.25 + تضخيم 8dB
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
-            "-f", "lavfi", "-i", "sine=frequency=18000:sample_rate=24000",
-            "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=24000:amplitude=0.1",
-            "-filter_complex",
-            "[0:a]atempo=1.3[voice];[1:a]volume=0.05[chirp];[2:a]volume=0.08[amb];"
-            "[voice][chirp][amb]amix=inputs=3:duration=first:dropout_transition=0[out]",
-            "-map", "[out]", "-ar", TARGET_SR, "-ac", "1", str(output_path)
+            "-af", "atempo=1.25,equalizer=f=250:t=q:w=1.0:g=6,equalizer=f=3000:t=q:w=1.0:g=-4,bass=g=8,alimiter=limit=0.9",
+            "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
         subprocess.run(cmd, check=True, capture_output=True)
         return True
@@ -142,7 +138,7 @@ def build_episode_audio(json_path, out_mp3):
             
             if stype == "quran":
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (مع الخلطة)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (سريعة ومضخمة)", flush=True)
             
             if not success:
                 try:
