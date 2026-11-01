@@ -62,16 +62,14 @@ def _find_local(query):
     return None
 
 def fetch_media(query, work_dir, used_urls):
-    # 1. البحث في المجلدات المحلية أولاً
     local = _find_local(query)
     if local: return local
     
-    # 2. محاولة جلب فيديو من Pixabay (مع كلمات بديلة إذا فشل)
     queries = [query, "islamic nature", "desert dunes", "sky clouds", "mosque architecture", "ocean waves"]
     for q in queries:
         if not PIXABAY_KEY: break
         try:
-            time.sleep(1) # تأخير لمنع الحظر
+            time.sleep(1)
             r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
             if r.status_code == 200:
                 hits = r.json().get("hits", [])
@@ -89,14 +87,12 @@ def fetch_media(query, work_dir, used_urls):
                     except: pass
         except: pass
         
-    # 3. الخطة البديلة: استخدام أي فيديو من المجلد المحلي (إن وجد)
     if Path(BG_VIDEOS_DIR).exists():
         videos = list(Path(BG_VIDEOS_DIR).glob("*.*"))
         videos = [v for v in videos if v.suffix.lower() in ('.mp4', '.mov', '.webm', '.jpg', '.png')]
         if videos: 
             return str(random.choice(videos))
 
-    # 4. آخر حل: صورة سوداء
     out = work_dir / "black.jpg"
     if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
@@ -167,7 +163,6 @@ def build_video(audio_path, meta_path, output_mp4):
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.endswith(('.jpg', '.jpeg', '.png'))
-                # تحسين جودة الخلفية
                 cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
