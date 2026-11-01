@@ -10,7 +10,7 @@ OUTRO_TEMPLATES = [
             "وفعِّل جرس التنبيهات حتى لا تفوتك حلقة. "
             "مَلَاك المَعْرِفَة."
         ),
-        "voice_style": "(in a warm, inviting, sincere tone with a slight smile in the voice)",
+        "voice_style": "(in a warm, inviting, sincere tone)",
     },
     {
         "text": (
@@ -22,15 +22,5 @@ OUTRO_TEMPLATES = [
             "مَلَاك المَعْرِفَة."
         ),
         "voice_style": "(in a calm, dignified, and inviting tone)",
-    },
-    {
-        "text": (
-            "قال ﷺ لعلي رضي الله عنه: «لأَنْ يَهدِيَ اللهُ بك رجُلًا واحدًا خيرٌ لك من حُمْرِ النَّعَم». "
-            "لعلَّ مشاركتك لهذا الفيديو تكون سبباً في هداية إنسان. "
-            "شارِك الفيديو، واشترك في القناة، "
-            "وكن أنت الدالَّ على الخير. "
-            "مَلَاك المَعْرِفَة."
-        ),
-        "voice_style": "(in a solemn, sincere, and reflective tone)",
     }
 ]
