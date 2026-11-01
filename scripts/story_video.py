@@ -64,7 +64,6 @@ def _find_local(query):
 def fetch_media(query, work_dir, used_urls):
     local = _find_local(query)
     if local: return local
-    
     queries = [query, "islamic nature", "desert dunes", "sky clouds", "mosque architecture", "ocean waves"]
     for q in queries:
         if not PIXABAY_KEY: break
@@ -86,13 +85,10 @@ def fetch_media(query, work_dir, used_urls):
                         return str(out)
                     except: pass
         except: pass
-        
     if Path(BG_VIDEOS_DIR).exists():
         videos = list(Path(BG_VIDEOS_DIR).glob("*.*"))
         videos = [v for v in videos if v.suffix.lower() in ('.mp4', '.mov', '.webm', '.jpg', '.png')]
-        if videos: 
-            return str(random.choice(videos))
-
+        if videos: return str(random.choice(videos))
     out = work_dir / "black.jpg"
     if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
     return str(out)
@@ -113,17 +109,16 @@ def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill):
     x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
     draw.text((x, y), shaped, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
 
-def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
+def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, is_last, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font_path = _find_arabic_font()
     
-    # ═══ إعادة شريط العنوان العلوي ═══
+    # شريط العنوان بدون خلفية سوداء
     if ep_title:
-        try: ft = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
-        except: ft = ImageFont.truetype(font_path, 40)
-        draw.rectangle([0, 40, VIDEO_W, 100], fill=(0, 0, 0, 160))
-        _draw_centered(draw, 55, ep_title, ft, "#D4AF37", 2, "black")
+        try: ft = ImageFont.truetype(font_path, 38, layout_engine=ImageFont.Layout.RAQM)
+        except: ft = ImageFont.truetype(font_path, 38)
+        _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black")
 
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
@@ -142,11 +137,13 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         _draw_centered(draw, y, line, font, line_color, 6 if not is_quran else 8, "black")
         y += lh
         
-    try: wm_font = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
-    except: wm_font = ImageFont.truetype(font_path, 40)
-    wm_text = _shape("ملاك المعرفة")
-    wm_bbox = draw.textbbox((0,0), wm_text, font=wm_font)
-    draw.text((VIDEO_W - (wm_bbox[2] - wm_bbox[0]) - 40, VIDEO_H - 80), wm_text, font=wm_font, fill="#D4AF37", stroke_width=4, stroke_fill="black")
+    # العلامة المائية في آخر مقطع فقط
+    if is_last:
+        try: wm_font = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
+        except: wm_font = ImageFont.truetype(font_path, 40)
+        wm_text = _shape("ملاك المعرفة")
+        wm_bbox = draw.textbbox((0,0), wm_text, font=wm_font)
+        draw.text((VIDEO_W - (wm_bbox[2] - wm_bbox[0]) - 40, VIDEO_H - 80), wm_text, font=wm_font, fill="#D4AF37", stroke_width=4, stroke_fill="black")
         
     overlay.save(out_path)
 
@@ -155,6 +152,7 @@ def build_video(audio_path, meta_path, output_mp4):
     work_dir = Path(tempfile.mkdtemp(prefix="ep_vid_"))
     concat_lines, used_urls = [], set()
     ep_title = meta.get("title", "")
+    total_segments = len(meta["segments"])
 
     try:
         for i, seg in enumerate(meta["segments"]):
@@ -185,14 +183,16 @@ def build_video(audio_path, meta_path, output_mp4):
             display_ref = seg.get("display", "")
             chunks = seg.get("chunks", [])
             text_inputs, text_filters, actual_chunks = [], [], 0
+            is_last_segment = (i == total_segments - 1)
             
             for c_idx, chunk_data in enumerate(chunks):
                 c_text = chunk_data.get("text", "").replace("اللله", "الله").replace("الرَّحْمَان", "الرَّحْمَن")
                 c_dur = chunk_data.get("duration", 0)
                 if not c_text.strip(): continue
                 
+                is_last_chunk = is_last_segment and (c_idx == len(chunks) - 1)
                 overlay_png = work_dir / f"ov_{i}_{c_idx}.png"
-                make_caption_overlay(c_text, display_ref, is_quran, ep_title, overlay_png)
+                make_caption_overlay(c_text, display_ref, is_quran, ep_title, is_last_chunk, overlay_png)
                 text_inputs.extend(["-loop", "1", "-i", str(overlay_png)])
                 text_filters.append(f"[{actual_chunks}:v]trim=start=0:end={c_dur},setpts=PTS-STARTPTS,format=rgba[t{actual_chunks}]")
                 actual_chunks += 1
