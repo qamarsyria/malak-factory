@@ -48,7 +48,7 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # تم حذف الصفير (sine) المزعج. تسريع 1.25 + تضخيم 8dB
+        # تسريع 1.25 + تضخيم 8dB (بدون صفير)
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", "atempo=1.25,equalizer=f=250:t=q:w=1.0:g=6,equalizer=f=3000:t=q:w=1.0:g=-4,bass=g=8,alimiter=limit=0.9",
@@ -107,12 +107,23 @@ def build_episode_audio(json_path, out_mp3):
     
     print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل'}")
 
+    # تتبع ما إذا كنا قد أخذنا السرد والتلاوة في وضع الاختبار
+    taken_narration = False
+    taken_quran = False
+
     for idx, seg in enumerate(segments_list):
-        is_ending_segment = (total_segs - idx) <= 3
-        if test_mode and idx >= 2 and not is_ending_segment:
-            continue
-            
         stype = seg.get("type")
+        is_ending_segment = (total_segs - idx) <= 3
+        
+        # ═══ منطق وضع الاختبار الذكي ═══
+        if test_mode:
+            if stype == "narration" and not taken_narration:
+                taken_narration = True
+            elif stype == "quran" and not taken_quran:
+                taken_quran = True
+            elif not is_ending_segment:
+                continue # تخطي أي مقطع آخر
+            
         text, display = "", ""
         
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
