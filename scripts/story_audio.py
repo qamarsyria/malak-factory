@@ -48,10 +48,19 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # تسريع 35% + تضخيم مضاعف (12dB و 16dB) + حماية 0.8
+        # 1. rubberband: خفض النبرة 25% وزيادة الحنجرة 35%
+        # 2. atempo: تسريع 30%
+        # 3. aecho: صدى هال بسيط (تأخير 40ms و 80ms)
+        # 4. equalizer: تضخيم العمق وتقليل الحدة
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
-            "-af", "atempo=1.35,equalizer=f=250:t=q:w=1.0:g=12,equalizer=f=3000:t=q:w=1.0:g=-6,bass=g=16,alimiter=limit=0.8",
+            "-af", 
+            "rubberband=pitch=0.75:formant=1.35," 
+            "atempo=1.3,"
+            "equalizer=f=250:t=q:w=1.0:g=4,"
+            "equalizer=f=3000:t=q:w=1.0:g=-4,"
+            "aecho=0.8:0.88:40|80:0.3|0.2,"
+            "alimiter=limit=0.9",
             "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
         subprocess.run(cmd, check=True, capture_output=True)
@@ -147,7 +156,7 @@ def build_episode_audio(json_path, out_mp3):
             
             if stype == "quran":
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (سرعة 35% وتضخيم مضاعف)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (ترددات وهال)", flush=True)
             
             if not success:
                 try:
