@@ -126,12 +126,10 @@ def build_episode_audio(json_path, out_mp3):
             
             if not success:
                 print(f"   ⚠️ استخدام Gemini...", flush=True)
-                # تصحيح الكلمات الصعبة قبل إرسالها لـ Gemini
                 chunk_fixed = apply_spelling_fixes(chunk)
                 for attempt in range(3):
                     try:
                         time.sleep(2)
-                        # ═══ لا نمرر style إطلاقاً (هذا كان سبب الصوت الإنجليزي) ═══
                         gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
                         if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                             subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
