@@ -46,6 +46,32 @@ def fetch_ayah(s, a):
     except: pass
     return ""
 
+# ═════════════════════════════════════════════════════════════
+# 🍹 الخلطة السحرية (تسريع 15% + صفير + مطر خفيف)
+# ═════════════════════════════════════════════════════════════
+def apply_cocktail_mix(input_path, output_path):
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-f", "lavfi", "-i", "sine=frequency=18000:sample_rate=24000", # الصفير
+            "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=24000:amplitude=0.1", # صوت المطر
+            "-filter_complex",
+            "[0:a]atempo=1.15,asetrate=24576,aresample=24000[voice];" # تسريع 15% وتغيير نبرة
+            "[1:a]volume=0.05[chirp];" # خفض صوت الصفير جداً
+            "[2:a]volume=0.08[amb];"   # خفض صوت المطر ليكون خلفية خفيفة جداً
+            "[voice][chirp][amb]amix=inputs=3:duration=first:dropout_transition=0[out]",
+            "-map", "[out]",
+            "-ar", TARGET_SR, "-ac", "1",
+            str(output_path)
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except Exception as e:
+        print(f"   ⚠️ فشل تطبيق الخلطة: {e}")
+        shutil.copy(input_path, output_path)
+        return False
+
 def fetch_ayah_audio(s, a, out_path):
     filename = f"{s:03d}{a:03d}.mp3"
     url = f"https://everyayah.com/data/Abdullah_Basfar_192kbps/{filename}"
@@ -54,18 +80,7 @@ def fetch_ayah_audio(s, a, out_path):
         if r.status_code == 200 and len(r.content) > 10000:
             temp_mp3 = out_path.replace(".wav", "_temp.mp3")
             Path(temp_mp3).write_bytes(r.content)
-            
-            # ═══ التعديل الصوتي لتجنب حقوق النشر ═══
-            # تسريع 25% + تضخيم قوي + تقليل الحدة + حماية من التشويه
-            audio_filter = "atempo=1.25,equalizer=f=250:t=q:w=1.0:g=6,equalizer=f=3000:t=q:w=1.0:g=-4,bass=g=6,alimiter=limit=0.8"
-            
-            subprocess.run([
-                "ffmpeg", "-y", "-i", temp_mp3, 
-                "-af", audio_filter, 
-                "-ar", TARGET_SR, "-ac", "1", 
-                out_path
-            ], check=True, capture_output=True)
-            
+            apply_cocktail_mix(temp_mp3, out_path)
             Path(temp_mp3).unlink(missing_ok=True)
             return True
     except Exception as e:
@@ -98,13 +113,19 @@ def build_episode_audio(json_path, out_mp3):
     silence_path = work / "silence.wav"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
 
-    limit = 2 if os.environ.get("TEST_MODE") == "1" else 9999
-    print(f"⚙️ وضع الاختبار: {'مفعل (مقطعين فقط)' if limit == 2 else 'معطل (الحلقة كاملة)'}")
+    segments_list = ep.get("segments", [])
+    total_segs = len(segments_list)
+    test_mode = os.environ.get("TEST_MODE") == "1"
+    
+    if test_mode:
+        print("⚙️ وضع الاختبار مفعل: سيتم توليد أول مقطعين + آخر 3 مقاطع.")
+    else:
+        print("⚙️ وضع الاختبار معطل: سيتم توليد الحلقة كاملة.")
 
-    for idx, seg in enumerate(ep.get("segments", [])):
-        if idx >= limit:
-            print(f"⏹️ تم إيقاف التوليد بعد {limit} مقاطع لتوفير الحصة.")
-            break
+    for idx, seg in enumerate(segments_list):
+        is_ending_segment = (total_segs - idx) <= 3
+        if test_mode and idx >= 2 and not is_ending_segment:
+            continue
             
         stype = seg.get("type")
         text, display = "", ""
@@ -132,33 +153,30 @@ def build_episode_audio(json_path, out_mp3):
             
             if stype == "quran":
                 success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (بصفر - تعديل 25%)", flush=True)
+                if success: print(f"   ✅ تلاوة بشرية (مع الخلطة)", flush=True)
             
             if not success:
-                print(f"   ⚠️ استخدام Gemini...", flush=True)
-                chunk_fixed = apply_spelling_fixes(chunk)
-                for attempt in range(3):
-                    try:
-                        time.sleep(2)
-                        gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
-                        if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
-                            subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                            success = True
-                            break
-                    except Exception as e:
-                        print(f"   ⚠️ محاولة {attempt+1} فشلت: {str(e)[:50]}")
-                        time.sleep(2)
+                # محاولة Gemini مرة واحدة فقط (بدون انتظار طويل)
+                try:
+                    chunk_fixed = apply_spelling_fixes(chunk)
+                    gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
+                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                        success = True
+                        print(f"   ✅ Gemini", flush=True)
+                except Exception:
+                    pass
 
             if not success:
-                print(f"   🚨 استخدام Edge TTS كاحتياطي أخير...", flush=True)
+                print(f"   🚨 Edge TTS...", flush=True)
                 chunk_fixed = apply_spelling_fixes(chunk)
                 try:
                     edge_generate(chunk_fixed, str(temp_mp3))
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 2000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                         success = True
-                except Exception as e:
-                    print(f"   ❌ فشل Edge أيضاً: {str(e)[:50]}")
+                except Exception:
+                    pass
 
             if not success: continue
 
