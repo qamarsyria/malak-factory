@@ -28,25 +28,27 @@ class GeminiKeyPool:
         return None
 
     def get_current(self) -> str:
-        key = self._available_key()
-        if not key:
-            # إذا كانت كل المفاتيح في فترة تبريد، نأخذ أقرب وقت انتهاء
+        # نحاول 5 مرات، وإذا فشلنا ننتظر حتى يعود أول مفتاح
+        for _ in range(5):
+            key = self._available_key()
+            if key: return key
+            
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             
-            if wait > 600: # إذا كان الانتظار أكثر من 10 دقائق
+            # إذا كان الانتظار طويلاً جداً (أكثر من ساعة)، فهذا يعني أن الحصة اليومية انتهت
+            if wait > 3600: 
                 raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
             
             print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
-            time.sleep(wait)
-            key = self._available_key()
-            if not key: raise RuntimeError("❌ كل مفاتيح Gemini مستنفدة")
-        return key
+            time.sleep(wait + 2) # ننتظر قليلاً إضافياً للأمان
+            
+        raise RuntimeError("❌ فشل الحصول على مفتاح Gemini متاح")
 
     def _advance(self) -> None:
         self.current_index = (self.current_index + 1) % len(self.keys)
 
-    def mark_failed(self, cooldown_seconds: int = 60) -> None:
+    def mark_failed(self, cooldown_seconds: int = 65) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
         self.current_index = (self.current_index + 1) % len(self.keys)
@@ -205,18 +207,18 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
             try: 
                 result = _tts_single(chunk, wav_path, voice, key, prefer_lite=prefer_lite, style=style)
             except Exception: 
-                pool.mark_failed(30)
+                pool.mark_failed(65)
                 continue
 
             if result == "RATE_LIMIT": 
-                pool.mark_failed(60) 
+                pool.mark_failed(65) 
                 continue
                 
             if result is True: 
                 success = True
                 break
                 
-            pool.mark_failed(60)
+            pool.mark_failed(65)
 
         if not success: 
             raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}")
