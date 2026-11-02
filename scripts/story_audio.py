@@ -21,8 +21,6 @@ SPELLING_FIXES = {
     "الله": "اللَّه",
     "بالله": "بِاللَّه",
     "والله": "وَاللَّه",
-    "القناة": "الْقَنَاة",
-    "خطوة": "خَطْوَة"
 }
 
 def sanitize_for_tts(t):
@@ -55,8 +53,8 @@ def apply_cocktail_mix(input_path, output_path):
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
             "atempo=1.15,"
-            "equalizer=f=250:t=q:w=1.0:g=3,"     # تضخيم عمق خفيف
-            "aecho=0.8:0.88:40:0.2,"             # صدى غرفة خفيف جداً
+            "equalizer=f=250:t=q:w=1.0:g=3,"
+            "aecho=0.8:0.88:40:0.2,"
             "alimiter=limit=0.9",
             "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
@@ -97,23 +95,17 @@ def build_episode_audio(json_path, out_mp3):
     total_segs = len(segments_list)
     test_mode = os.environ.get("TEST_MODE") == "1"
     
-    print(f"⚙️ وضع الاختبار: {'مفعل (سرد + آية + نهاية)' if test_mode else 'معطل (الحلقة كاملة)'}")
-
-    taken_narration = False
-    taken_quran = False
+    print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل (الحلقة كاملة)'}")
 
     for idx, seg in enumerate(segments_list):
-        stype = seg.get("type")
-        is_ending_segment = (total_segs - idx) <= 3
-        
+        # ═══ إصلاح وضع الاختبار: نأخذ أول مقطعين + آخر 3 مقاطع ═══
         if test_mode:
-            if stype == "narration" and not taken_narration:
-                taken_narration = True
-            elif stype == "quran" and not taken_quran:
-                taken_quran = True
-            elif not is_ending_segment:
-                continue
-            
+            if idx < 2 or idx >= total_segs - 3:
+                pass # نكمل التوليد
+            else:
+                continue # نتخطى الباقي
+                
+        stype = seg.get("type")
         text, display = "", ""
         
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
@@ -145,7 +137,7 @@ def build_episode_audio(json_path, out_mp3):
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         apply_cocktail_mix(temp_mp3, str(raw_wav))
                         success = True
-                        print(f"   ✅ Gemini (مع صدى خفيف)", flush=True)
+                        print(f"   ✅ Gemini (مع صدى الآيات)", flush=True)
                 except Exception: pass
             
             if not success:
