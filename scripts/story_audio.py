@@ -18,6 +18,7 @@ except Exception as e:
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
+CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 
 # ============================================================
 # 1. دالة تطبيق صدى المسجد + الدفء
@@ -198,6 +199,11 @@ def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     final_wavs, all_segments_meta = [], []
+    
+    # 🌟 إنشاء مجلد الكاش
+    ep_name = Path(json_path).stem
+    ep_cache = CACHE_DIR / ep_name
+    ep_cache.mkdir(parents=True, exist_ok=True)
 
     silence_path = work / "silence.wav"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
@@ -246,10 +252,22 @@ def build_episode_audio(json_path, out_mp3):
         for c_idx, chunk in enumerate(chunks):
             if not chunk.strip(): continue
 
+            # 🌟 اسم ملف الكاش
+            cached_wav = ep_cache / f"seg_{idx}_{c_idx}.wav"
+            
+            # إذا كان الملف موجوداً في الكاش، استخدمه فوراً (توفير حصة)
+            if cached_wav.exists() and cached_wav.stat().st_size > 1000:
+                print(f"   ⏭️ [كاش] استخدام المقطع المحفوظ مسبقاً", flush=True)
+                final_wavs.append(cached_wav)
+                final_wavs.append(silence_path)
+                chunk_timings.append({"text": chunk, "duration": get_dur(cached_wav) + SILENCE_DUR})
+                continue
+
+            # إذا لم يكن موجوداً، نولده
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            # ═══ 1. الآيات (القرآن) ═══
+            # ═══ 1. الآيات ═══
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
@@ -260,7 +278,7 @@ def build_episode_audio(json_path, out_mp3):
                     else: 
                         print(f"   ✅ Gemini TTS (تجويد بدون صدى)", flush=True)
 
-            # ═══ 2. الحديث والفقه (نص موثق) ═══
+            # ═══ 2. الحديث والفقه ═══
             elif stype in ("hadith", "fiqh"):
                 try:
                     style_prompt = "أنت راوي حديث نبوي. اقرأ النص بصوت وقور، خاشع، وبطيء، يملؤه الهيبة والسكينة."
@@ -279,7 +297,7 @@ def build_episode_audio(json_path, out_mp3):
                     print(f"   ❌ Gemini فشل: {e}", flush=True)
                     raise e
 
-            # ═══ 3. همسات ملك (غزل) ═══
+            # ═══ 3. همسات ملك ═══
             elif stype == "malak":
                 try:
                     style_prompt = "أنت تهمس بكلمات حب صوفي، دافئة، حنونة، وعذبة. اقرأ النص بنبرة هادئة جداً تلامس الروح، مع توقف بسيط عند علامات الترقيم."
@@ -306,12 +324,18 @@ def build_episode_audio(json_path, out_mp3):
                     print(f"   ❌ Gemini فشل: {e}", flush=True)
                     raise e
 
+            # 🌟 إضافة تأخير بسيط لتجنب Rate Limit (4 ثوانٍ)
+            time.sleep(4)
+
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
                 subprocess.run(["ffmpeg", "-y", "-i", str(raw_wav), "-af", "afade=t=in:st=0:d=0.05,afade=t=out:st=" + str(c_dur-0.05) + ":d=0.05", str(faded)], check=True, capture_output=True)
             else: 
                 shutil.copy(raw_wav, faded)
+
+            # 🌟 حفظ المقطع في الكاش
+            shutil.copy(faded, cached_wav)
 
             final_wavs.append(faded)
             final_wavs.append(silence_path)
