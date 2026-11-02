@@ -43,10 +43,6 @@ VERIFIED_FIQH_FALLBACK = [
     }
 ]
 
-VERIFIED_ADHKAR = [
-    {"title": "سيد الاستغفار", "text": "اللَّهُمَّ أَنْتَ رَبِّي لا إِلَهَ إِلا أَنْتَ، خَلَقْتَنِي وَأَنَا عَبْدُكَ، وَأَنَا عَلَى عَهْدِكَ وَوَعْدِكَ مَا اسْتَطَعْتُ، أَعُوذُ بِكَ مِنْ شَرِّ مَا صَنَعْتُ، أَبُوءُ لَكَ بِنِعْمَتِكَ عَلَيَّ، وَأَبُوءُ لَكَ بِذَنْبِي فَاغْفِرْ لِي، فَإِنَّهُ لا يَغْفِرُ الذُّنُوبَ إِلا أَنْتَ", "source": "رواه البخاري"}
-]
-
 MALAK_FALLBACKS = {
     "maryam": ["يا مريم، في زمنٍ قلّ فيه الصفاء، أراد الله أن يطمئن قلبي، فخلق طهراً يسير بين البشر. اللهم احفظها لي بحفظك."],
     "malak": ["يقولون إن الملائكة خلقٌ لا نراه، لكنني أراه كل يوم في ملك. في نقائها، وسكينتها، ونورها."],
@@ -70,7 +66,6 @@ def fetch_verified_hadith(topic="الصبر"):
     except Exception as e:
         print(f"⚠️ فشل الاتصال بـ dorar.net ({e}). سيتم استخدام الحديث الاحتياطي.")
     
-    # الاحتياطي
     h = random.choice(VERIFIED_HADITHS_FALLBACK)
     print(f"✅ استخدام حديث احتياطي موثق ({h['rawi']})")
     return h
@@ -100,11 +95,14 @@ def fetch_ayah_and_tafsir():
     return None
 
 # ============================================================
-# 3. دوال مساعدة (نفس محرك القصص)
+# 3. دوال مساعدة (مُحسّنة للتعامل مع أعطال Gemini)
 # ============================================================
-def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
+def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
-    for model in discover_and_cache(force=False)[:5]:
+    models = discover_and_cache(force=False)[:3] # جرب أول 3 نماذج فقط لتوفير الوقت
+    if not models: print("   ❌ لا توجد نماذج متاحة!"); return None
+
+    for model in models:
         if breaker.is_open(f"model:{model}"): continue
         for attempt in range(2):
             try:
@@ -112,7 +110,11 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
+                
+                print(f"   ⏳ محاولة {model}...", flush=True)
                 r = requests.post(url, json=body, timeout=timeout)
+                print(f"   📡 استجابة {model}: HTTP {r.status_code}", flush=True)
+                
                 if r.status_code == 200:
                     parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     if not parts: break
@@ -126,9 +128,16 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
                         pool._advance(); breaker.record_success(f"model:{model}")
                         return parsed
                     except json.JSONDecodeError: break
-                elif r.status_code == 429: pool.mark_failed(3600)
-                elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
-            except Exception: pass
+                elif r.status_code == 429: 
+                    print("   ⚠️ 429 Rate Limit", flush=True)
+                    pool.mark_failed(3600)
+                elif r.status_code in (404, 503): 
+                    print(f"   ⚠️ {r.status_code} Model Unavailable", flush=True)
+                    breaker.record_failure(f"model:{model}"); break
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️ Timeout ({timeout}s) مع {model}", flush=True)
+            except Exception as e: 
+                print(f"   ⚠️ خطأ: {e}", flush=True)
     return None
 
 def clean_llm_text(text: str) -> str:
@@ -144,11 +153,13 @@ def apply_forced_tashkeel(text):
     return text
 
 def proofread_script(text):
+    print("🔍 جاري التدقيق اللغوي ووضع التشكيل...", flush=True)
     parts = re.split(r'(\[آية: \d+:\d+\])', text)
     corrected_parts = []
     for part in parts:
         if not part.strip(): continue
         if part.startswith("[آية:"): corrected_parts.append(part); continue
+        
         chunks = []; current = ""
         for sentence in re.split(r'(?<=[.!؟])\s+', part):
             if len(current) + len(sentence) < 300: current += " " + sentence
@@ -156,10 +167,11 @@ def proofread_script(text):
                 if current: chunks.append(current.strip())
                 current = sentence
         if current: chunks.append(current.strip())
+        
         for chunk in chunks:
             prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص. ممنوع تغيير أي كلمة. أعد النص فقط:\n{chunk}"
-            corrected = call_llm(prompt, is_json=False, timeout=60, max_tokens=1500)
-            if corrected and len(corrected) > len(chunk) * 0.8:
+            corrected = call_llm(prompt, is_json=False, timeout=30, max_tokens=1000)
+            if corrected and len(corrected) > len(chunk) * 0.7:
                 corrected_parts.append(apply_forced_tashkeel(clean_llm_text(corrected)))
             else: corrected_parts.append(chunk)
     return " ".join(corrected_parts)
@@ -236,7 +248,6 @@ def main():
     elif content_type == 2:
         data = fetch_ayah_and_tafsir()
         if data: prompt = build_ayah_story_prompt(data); content_title = "آية وحكاية"; segment_type = "quran"
-        else: sys.exit(1) # لا يمكن المتابعة بدون الآية والتفسير
     elif content_type == 3:
         name_type = "maryam"; prompt = build_malak_prompt(name_type); content_title = "همسات لمريم"; segment_type = "malak"
     elif content_type == 4:
@@ -244,18 +255,30 @@ def main():
     else:
         name_type = "malaak"; prompt = build_malak_prompt(name_type); content_title = "همسات لملاك"; segment_type = "malak"
 
+    if content_type < 3 and not data:
+        print("❌ فشل جلب المحتوى الموثق الأساسي. إيقاف.")
+        sys.exit(1)
+
     print(f"✍️ جاري كتابة سيناريو ({content_title})...", flush=True)
-    script_text = call_llm(prompt, is_json=False, timeout=120, max_tokens=1000)
+    script_text = call_llm(prompt, is_json=False, timeout=60, max_tokens=1000)
     
+    # 🌟 نظام احتياطي إذا فشل Gemini
     if not script_text:
-        if content_type >= 3: script_text = "[النص_الموثق] " + random.choice(MALAK_FALLBACKS[name_type])
-        else: sys.exit(1)
+        print("⚠️ فشل توليد السيناريو عبر Gemini. استخدام السيناريو الاحتياطي.", flush=True)
+        if content_type >= 3:
+            script_text = "[النص_الموثق] " + random.choice(MALAK_FALLBACKS[name_type])
+        elif content_type == 0:
+            script_text = f"في هذا المقطع، نتوقف مع حديث عظيم يضيء لنا الطريق. [النص_الموثق]"
+        elif content_type == 1:
+            script_text = f"كثيراً ما يبحث المسلم عن إجابة شافية. [النص_الموثق]"
+        else:
+            script_text = f"في آيات القرآن الكريم، توجد أسرار وعبر. [النص_الموثق]"
     
     script_text = proofread_script(script_text)
 
     segments = []
     parts = script_text.split("[النص_الموثق]")
-    if len(parts) == 1: parts = script_text.split("[النص_موثق]") # خطأ إملائي محتمل
+    if len(parts) == 1: parts = script_text.split("[النص_موثق]")
 
     if len(parts) == 2:
         for chunk in split_narration(parts[0]): segments.append({"type": "narration", "text": chunk.strip()})
