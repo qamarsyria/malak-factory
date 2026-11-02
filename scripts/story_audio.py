@@ -21,6 +21,8 @@ SPELLING_FIXES = {
     "الله": "اللَّه",
     "بالله": "بِاللَّه",
     "والله": "وَاللَّه",
+    "القناة": "الْقَنَاة",
+    "خطوة": "خَطْوَة"
 }
 
 def sanitize_for_tts(t):
@@ -48,14 +50,14 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # فلاتر الترددات والصدى لصوت Gemini (للآيات فقط)
-        # خفض النبرة 5%، زيادة الحنجرة 5% (طبيعي جداً)، تسريع 10%، صدى خفيف
+        # تسريع 15% (بسيط)، وصدى مسجد (aecho)، وتضخيم خفيف
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
-            "rubberband=pitch=0.95:formant=1.05," 
-            "atempo=1.10,"
-            "aecho=0.8:0.88:60:0.15,"
+            "atempo=1.15,"
+            "equalizer=f=250:t=q:w=1.0:g=3,"
+            "equalizer=f=3000:t=q:w=1.0:g=-3,"
+            "aecho=0.8:0.9:500|1000:0.4|0.3,"
             "alimiter=limit=0.9",
             "-ar", TARGET_SR, "-ac", "1", str(output_path)
         ]
@@ -137,22 +139,17 @@ def build_episode_audio(json_path, out_mp3):
             success = False
             
             if stype == "quran":
-                # ═══ الآيات: Gemini بتجويد بسيط ثم تطبيق الفلاتر ═══
                 try:
                     chunk_fixed = apply_spelling_fixes(chunk)
-                    # تعليمات صارمة للتجويد البسيط
-                    style = "Recite normally with very light and simple Tajweed, moderate pace, no exaggeration."
+                    style = "Recite normally with very light and simple Tajweed, moderate pace."
                     gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon", style=style)
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
-                        # تطبيق الخلطة (الترددات والصدى) على صوت Gemini
                         apply_cocktail_mix(temp_mp3, str(raw_wav))
                         success = True
-                        print(f"   ✅ Gemini (مع فلاتر الآيات)", flush=True)
-                except Exception as e:
-                    print(f"   ⚠️ Gemini Quran فشل: {str(e)[:50]}")
+                        print(f"   ✅ Gemini (مع صدى الآيات)", flush=True)
+                except Exception: pass
             
             if not success:
-                # ═══ السرد: Gemini بدون فلاتر ═══
                 try:
                     chunk_fixed = apply_spelling_fixes(chunk)
                     gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
