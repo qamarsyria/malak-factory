@@ -48,17 +48,13 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # 1. rubberband: خفض النبرة 10% وزيادة الحنجرة 10% (صوت رجولي دافئ)
-        # 2. atempo: تسريع 25%
-        # 3. aecho: صدى خفيف جداً (60ms)
-        # 4. equalizer: تضخيم العمق وتقليل الحدة
+        # فلاتر الترددات والصدى لصوت Gemini (للآيات فقط)
+        # خفض النبرة 5%، زيادة الحنجرة 5% (طبيعي جداً)، تسريع 10%، صدى خفيف
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
-            "rubberband=pitch=0.90:formant=1.10," 
-            "atempo=1.25,"
-            "equalizer=f=250:t=q:w=1.0:g=4,"
-            "equalizer=f=3000:t=q:w=1.0:g=-3,"
+            "rubberband=pitch=0.95:formant=1.05," 
+            "atempo=1.10,"
             "aecho=0.8:0.88:60:0.15,"
             "alimiter=limit=0.9",
             "-ar", TARGET_SR, "-ac", "1", str(output_path)
@@ -69,20 +65,6 @@ def apply_cocktail_mix(input_path, output_path):
         print(f"   ⚠️ فشل تطبيق الخلطة: {e}")
         shutil.copy(input_path, output_path)
         return False
-
-def fetch_ayah_audio(s, a, out_path):
-    filename = f"{s:03d}{a:03d}.mp3"
-    url = f"https://everyayah.com/data/Abdullah_Basfar_192kbps/{filename}"
-    try:
-        r = requests.get(url, timeout=60)
-        if r.status_code == 200 and len(r.content) > 10000:
-            temp_mp3 = out_path.replace(".wav", "_temp.mp3")
-            Path(temp_mp3).write_bytes(r.content)
-            apply_cocktail_mix(temp_mp3, out_path)
-            Path(temp_mp3).unlink(missing_ok=True)
-            return True
-    except Exception as e: pass
-    return False
 
 async def _edge_tts_async(text, out_path):
     comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
@@ -155,21 +137,33 @@ def build_episode_audio(json_path, out_mp3):
             success = False
             
             if stype == "quran":
-                success = fetch_ayah_audio(s, ayahs[0], str(raw_wav))
-                if success: print(f"   ✅ تلاوة بشرية (ترددات وهال)", flush=True)
+                # ═══ الآيات: Gemini بتجويد بسيط ثم تطبيق الفلاتر ═══
+                try:
+                    chunk_fixed = apply_spelling_fixes(chunk)
+                    # تعليمات صارمة للتجويد البسيط
+                    style = "Recite normally with very light and simple Tajweed, moderate pace, no exaggeration."
+                    gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon", style=style)
+                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                        # تطبيق الخلطة (الترددات والصدى) على صوت Gemini
+                        apply_cocktail_mix(temp_mp3, str(raw_wav))
+                        success = True
+                        print(f"   ✅ Gemini (مع فلاتر الآيات)", flush=True)
+                except Exception as e:
+                    print(f"   ⚠️ Gemini Quran فشل: {str(e)[:50]}")
             
             if not success:
+                # ═══ السرد: Gemini بدون فلاتر ═══
                 try:
                     chunk_fixed = apply_spelling_fixes(chunk)
                     gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                         success = True
-                        print(f"   ✅ Gemini", flush=True)
+                        print(f"   ✅ Gemini (سرد)", flush=True)
                 except Exception: pass
 
             if not success:
-                print(f"   🚨 Edge TTS...", flush=True)
+                print(f"   🚨 Edge TTS احتياطي...", flush=True)
                 chunk_fixed = apply_spelling_fixes(chunk)
                 try:
                     edge_generate(chunk_fixed, str(temp_mp3))
