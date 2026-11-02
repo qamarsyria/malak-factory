@@ -26,7 +26,7 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
@@ -51,7 +51,7 @@ def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     try:
-        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=180)
+        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"]
             if is_json:
@@ -139,24 +139,22 @@ def parse_script_with_verses(script_text):
     return segments
 
 def build_plan_prompt(story, ep_num):
-    return f'أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" من الولادة إلى الوفاة بتفاصيل دقيقة.\nاكتب خطة للحلقة {ep_num} تركز على جزء محدد من حياته، بحيث تشمل السلسلة كاملة حياته وتفاصيلها الدقيقة، مع ذكر العبر والفوائد والتواريخ الموثقة إن وجدت.\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
+    return f'أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" من الولادة إلى الوفاة بتفاصيل دقيقة.\nاكتب خطة للحلقة {ep_num} تركز على جزء محدد من حياته.\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
 
 def build_script_prompt(story, plan, ep_num):
     return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي موثوق.
 الخطة: {plan['title']} - {plan['summary']}
 القصة المطلوبة: {story['title']}
 
-نحن نقدم سلسلة تغطي حياة النبي بتفاصيلها الدقيقة من الولادة إلى الوفاة.
-مهمتك في هذه الحلقة (الحلقة {ep_num}):
+قواعد صارمة جداً:
 1. **يجب إدراج 4 إلى 6 آيات قرآنية** في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
 2. المصدر: القرآن، السنة، تفسير ابن كثير.
 3. ممنوع أي لغة سينمائية.
-4. **اكتب تفاصيل الأحداث الدقيقة الخاصة بهذه الحلقة فقط (لا تلخص السلسلة كلها)**، واذكر العبر والفوائد والمستفاد من القصة.
-5. **إذا وُجدت تواريخ موثقة** (مثل سنوات، أعمار، أحداث تاريخية كعام الفيل)، فيجب ذكرها بدقة.
+4. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. إذا لم تجد تفاصيل كافية، اكتفِ بما ورد. ممنوع منعاً باتاً اختراع أحداث أو سحب أحداث من قصص أنبياء آخرين (مثل قابيل أو طوفان نوح).**
+5. **إذا وُجدت تواريخ موثقة**، فيجب ذكرها بدقة.
 6. اكتب من 500 إلى 600 كلمة فقط.
 7. استخدم كلمات عربية بسيطة ومألوفة.
-8. **ممنوع منعاً باتاً ذكر أي نبي آخر في القصة** (إلا إذا كان مرتبطاً ارتباطاً مباشراً بالقصة).
-9. ابدأ السرد مباشرة.
+8. ابدأ السرد مباشرة.
 
 اكتب النص السردي فقط."""
 
