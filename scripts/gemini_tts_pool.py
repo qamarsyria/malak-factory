@@ -34,11 +34,9 @@ class GeminiKeyPool:
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             
-            # إذا كان الانتظار طويلاً جداً (أكثر من 10 دقائق)، فهذا يعني أن الحصة اليومية انتهت فعلاً
-            if wait > 600: 
+            if wait > 600: # إذا كان الانتظار أكثر من 10 دقائق
                 raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
             
-            # إذا كان الانتظار قصيراً (Rate limit)، ينتظر بهدوء ثم يكمل
             print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
             time.sleep(wait)
             key = self._available_key()
@@ -202,7 +200,6 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
         wav_path = work_dir / f"part_{idx:03d}.wav"
         success = False
         
-        # نحاول بعدد مرات يساوي عدد المفاتيح * 3 (فرصة أكبر للنجاح)
         for attempt in range(len(pool.keys) * 3):
             key = pool.get_current()
             try: 
@@ -212,7 +209,7 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
                 continue
 
             if result == "RATE_LIMIT": 
-                pool.mark_failed(60) # نضع المفتاح في انتظار دقيقة وننتقل لغيره
+                pool.mark_failed(60) 
                 continue
                 
             if result is True: 
