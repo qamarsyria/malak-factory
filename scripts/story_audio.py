@@ -339,7 +339,6 @@ def build_episode_audio(json_path, out_mp3):
                     print(f"   ❌ Gemini فشل: {e}", flush=True)
                     raise e
 
-            # 🌟 إضافة تأخير بسيط لتجنب Rate Limit (4 ثوانٍ)
             time.sleep(4)
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
