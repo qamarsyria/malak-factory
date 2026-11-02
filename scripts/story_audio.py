@@ -40,7 +40,7 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return False
 
 # ============================================================
-# 2. التحويل الصوتي الذكي (المُصحح بقواعد صارمة)
+# 2. التحويل الصوتي الذكي
 # ============================================================
 def phonemes_to_arabic_script(phoneme_text: str) -> str:
     if not phoneme_text or not phoneme_text.strip():
@@ -71,7 +71,6 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
         if token in CONS_MAP:
             char = CONS_MAP[token]
             
-            # إصلاح الهمزات في منتصف الكلمات
             if char == "ء":
                 next_token = tokens[i+1] if i+1 < len(tokens) else ""
                 if next_token in ("i", "ii"): char = "ئ"
@@ -110,29 +109,20 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
     result = "".join(arabic_chars)
     
-    # 🌟 إصلاحات ما بعد التحويل (تجميل الكلمة لتُقرأ بشكل صحيح):
-    
-    # 1. إصلاح واو الجماعة (قَالُو، فَسَجَدُوَ -> قَالُوا، فَسَجَدُوا)
     result = re.sub(r'ُوْ?\b', 'ُوا', result)
     result = re.sub(r'ُوَ\b', 'ُوا', result)
-    
-    # 2. إصلاح التاء المربوطة (جَنَّتَ، مَلَائِكَتِ -> جَنَّةَ، مَلَائِكَةِ)
     result = re.sub(r'تَ\b', 'ةَ', result)
     result = re.sub(r'تُ\b', 'ةُ', result)
     result = re.sub(r'تِ\b', 'ةِ', result)
-    
-    # 3. إصلاح التنوين (خَلِيفَتًنْ -> خَلِيفَةً)
     result = re.sub(r'َ(n|ن)\b', 'ً', result)
     result = re.sub(r'ُ(n|ن)\b', 'ٌ', result)
     result = re.sub(r'ِ(n|ن)\b', 'ٍ', result)
 
-    # 4. إصلاح همزة الوصل في بداية الكلمة (أَلْ -> الْ)
     if result.startswith("َ"): result = "ا" + result[1:]
     elif result.startswith("ِ"): result = "ا" + result[1:]
     elif result.startswith("ُ"): result = "ا" + result[1:]
     result = result.replace("ءَل", "ال").replace("أَل", "ال")
 
-    # 5. إزالة السكون المزدوج أو الأخطاء
     result = result.replace("ٌْ", "ٌ").replace("ًْ", "ً").replace("ٍْ", "ٍ").replace("ّْ", "ّ")
 
     return result
@@ -235,9 +225,16 @@ def build_episode_audio(json_path, out_mp3):
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
-            s, ayahs = seg["surah"], seg["ayah_numbers"]
-            text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
-            display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
+            if "surah" in seg:
+                s, ayahs = seg["surah"], seg["ayah_numbers"]
+                text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
+                display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
+            else:
+                text = seg.get("text", "")
+                display = seg.get("display", "")
+        elif stype in ("hadith", "fiqh", "malak"):
+            text = sanitize_for_tts(seg.get("text", ""))
+            display = seg.get("display", "")
 
         if not text: continue
 
@@ -252,7 +249,7 @@ def build_episode_audio(json_path, out_mp3):
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            # ═══ الآيات ═══
+            # ═══ 1. الآيات (القرآن) ═══
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
@@ -263,7 +260,40 @@ def build_episode_audio(json_path, out_mp3):
                     else: 
                         print(f"   ✅ Gemini TTS (تجويد بدون صدى)", flush=True)
 
-            # ═══ السرد ═══
+            # ═══ 2. الحديث والفقه (نص موثق) ═══
+            elif stype in ("hadith", "fiqh"):
+                try:
+                    style_prompt = "أنت راوي حديث نبوي. اقرأ النص بصوت وقور، خاشع، وبطيء، يملؤه الهيبة والسكينة."
+                    gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style=style_prompt)
+                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                        reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
+                        if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
+                            shutil.copy(reverb_wav, raw_wav)
+                            print(f"   ✅ Gemini TTS + صدى/دفء ({stype})", flush=True)
+                        else:
+                            print(f"   ✅ Gemini TTS ({stype} بدون صدى)", flush=True)
+                    else:
+                        raise RuntimeError("ملف الصوت المولد صغير جداً أو فارغ")
+                except Exception as e:
+                    print(f"   ❌ Gemini فشل: {e}", flush=True)
+                    raise e
+
+            # ═══ 3. همسات ملك (غزل) ═══
+            elif stype == "malak":
+                try:
+                    style_prompt = "أنت تهمس بكلمات حب صوفي، دافئة، حنونة، وعذبة. اقرأ النص بنبرة هادئة جداً تلامس الروح، مع توقف بسيط عند علامات الترقيم."
+                    gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style=style_prompt)
+                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                        print(f"   ✅ Gemini (همسة ملك)", flush=True)
+                    else:
+                        raise RuntimeError("ملف الصوت المولد صغير جداً أو فارغ")
+                except Exception as e:
+                    print(f"   ❌ Gemini فشل: {e}", flush=True)
+                    raise e
+
+            # ═══ 4. السرد ═══
             else:
                 try:
                     gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
