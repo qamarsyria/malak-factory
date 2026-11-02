@@ -10,6 +10,7 @@ from model_discovery import discover_and_cache
 from story_library import load_library, load_state, save_state, get_current_story, record_topic
 from outro_templates import OUTRO_TEMPLATES
 from utilities import notify_telegram, get_breaker
+from arabic_normalizer import normalize_narration
 
 OUTPUT_DIR = _REPO_ROOT / "data" / "stories" / "generated"
 PENDING_DIR = _REPO_ROOT / "state" / "pending"
@@ -64,40 +65,20 @@ def call_huggingface(prompt, is_json=True):
 def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
-def proofread_script(text):
-    print("🔍 جاري التدقيق اللغوي الشامل ووضع التشكيل...", flush=True)
-    parts = re.split(r'(\[آية: \d+:\d+\])', text)
-    corrected_parts = []
-    
-    for part in parts:
-        if not part.strip(): continue
-        if part.startswith("[آية:"):
-            corrected_parts.append(part)
-            continue
-            
-        prompt = f"""أنت مدقق لغوي عربي خبير ومتشدد جداً.
-مهمتك: تصحيح النص التالي بدقة متناهية.
-القواعد الصارمة:
-1. صحح **كل** الأخطاء الإملائية والسياقية.
-2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على **كل حرف** في النص.
-3. **ممنوع تماماً** تغيير الكلمات الصحيحة، أو إعادة الصياغة، أو تغيير المعنى.
-4. أعد النص المصحح فقط، دون أي مقدمات.
-
-النص:
-{part}"""
-        
-        corrected = call_llm_with_fallback(prompt, is_json=False, timeout=60, max_tokens=2000)
-        if corrected and len(corrected) > len(part) * 0.7:
-            corrected_parts.append(corrected.strip())
-        else:
-            corrected_parts.append(part)
-            
-    return " ".join(corrected_parts)
-
-def fix_arabic_tashkeel_minimal(text):
-    text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ").replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    text = text.replace("رضي الله عنه", "رَضِيَ اللَّهُ عَنْهُ").replace("رضي الله عنها", "رَضِيَ اللَّهُ عَنْهَا").replace("عليه السلام", "عَلَيْهِ السَّلَامُ")
-    return text
+def clean_llm_text(text: str) -> str:
+    """يزيل مقدمات meta والعناوين من أي نص LLM (teaser, summary)."""
+    if not text: return ""
+    t = text.strip()
+    bad_patterns = [
+        r'^\s*إليك\s+', r'^\s*هذا\s+', r'^\s*هذه\s+',
+        r'^\s*النص\s+', r'^\s*نص\s+', r'^\s*الحلقة\s+القادمة\s*[:：\-]',
+        r'^\s*في\s+الحلقة\s+القادمة\s*[,،:]', r'^\s*ترقبوا\s*[:：]?',
+        r'^\s*بالتأكيد\s*[,،]', r'^\s*طبعاً\s*[,،]', r'^\s*الخلاصة\s*[:：]',
+        r'^[«"\'\[\]]+', r'[»"\'\[\]]+$',
+    ]
+    for pat in bad_patterns:
+        t = re.sub(pat, '', t, count=1, flags=re.IGNORECASE).strip()
+    return t
 
 def split_narration(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
@@ -119,14 +100,14 @@ def parse_script_with_verses(script_text):
     for pat in patterns:
         parts = re.split(pat, text)
         if len(parts) > 1: break
-    if not parts or len(parts) == 1: return [{"type": "narration", "text": fix_arabic_tashkeel_minimal(c)} for c in split_narration(text)]
+    if not parts or len(parts) == 1: return [{"type": "narration", "text": c.strip()} for c in split_narration(text) if c.strip()]
 
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
             chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
             if len(chunk) > 5:
-                for piece in split_narration(chunk): segments.append({"type": "narration", "text": fix_arabic_tashkeel_minimal(piece)})
+                for piece in split_narration(chunk): segments.append({"type": "narration", "text": piece.strip()})
             i += 1
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
@@ -150,13 +131,23 @@ def build_script_prompt(story, plan, ep_num):
 1. **يجب إدراج 4 إلى 6 آيات قرآنية** في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
 2. المصدر: القرآن، السنة، تفسير ابن كثير.
 3. ممنوع أي لغة سينمائية.
-4. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. إذا لم تجد تفاصيل كافية، اكتفِ بما ورد. ممنوع منعاً باتاً اختراع أحداث أو سحب أحداث من قصص أنبياء آخرين (مثل قابيل أو طوفان نوح).**
+4. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. إذا لم تجد تفاصيل كافية، اكتفِ بما ورد. ممنوع منعاً باتاً اختراع أحداث أو سحب أحداث من قصص أنبياء آخرين.**
 5. **إذا وُجدت تواريخ موثقة**، فيجب ذكرها بدقة.
 6. اكتب من 500 إلى 600 كلمة فقط.
 7. استخدم كلمات عربية بسيطة ومألوفة.
 8. ابدأ السرد مباشرة.
 
 اكتب النص السردي فقط."""
+
+def build_teaser_prompt(story, ep_num):
+    return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
+قواعد صارمة:
+1. ابدأ **مباشرة** بسؤال درامي (مثل: "فكيف...؟" / "وماذا...؟" / "هل...؟") أو بجملة تفتح فضولاً.
+2. **ممنوع تمامًا** أن تبدأ بـ: "إليك"، "هذا"، "النص"، "الحلقة القادمة"، "في الحلقة القادمة"، "ترقبوا"، "بالتأكيد".
+3. لا تعلن عن النص. اكتب النص نفسه كأنك تحكي.
+4. أعد الجملة فقط، بدون علامات اقتباس.
+مثال صحيح: "فكيف ستواجه مريم قومها؟ وما السر الذي كتمته؟"
+أعد الجملة فقط."""
 
 def main():
     library, state = load_library(), load_state()
@@ -169,15 +160,31 @@ def main():
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
-    script_text = proofread_script(script_text)
+    print("🔍 تنظيف وتشكيل النص...", flush=True)
     segments = parse_script_with_verses(script_text)
     
-    summary_text = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر.", is_json=False, timeout=60, max_tokens=300)
-    segments.append({"type": "summary", "text": summary_text.strip() if summary_text else "وهكذا تتجلى العبرة.", "visual": "sunrise sky"})
+    # تطبيق التشكيل الآلي على مقاطع السرد فقط
+    for seg in segments:
+        if seg["type"] == "narration":
+            seg["text"] = normalize_narration(seg["text"])
+    
+    # توليد الخلاصة وتنظيفها
+    summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False, timeout=60, max_tokens=300)
+    summary_clean = clean_llm_text(summary_raw)
+    if not summary_clean or len(summary_clean) < 20:
+        summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
+    
+    segments.append({"type": "summary", "text": normalize_narration(summary_clean), "visual": "sunrise sky"})
 
-    teaser_text = call_llm_with_fallback(f"اكتب جملة تشويقية واحدة للحلقة {ep_num + 1} من قصة {story['title']}.", is_json=False, timeout=60, max_tokens=200)
-    segments.append({"type": "teaser", "text": teaser_text.strip() if teaser_text else "فماذا حدث بعد ذلك؟", "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
+    # توليد التشويق وتنظيفه
+    teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False, timeout=60, max_tokens=200)
+    teaser_clean = clean_llm_text(teaser_raw)
+    if not teaser_clean or len(teaser_clean) < 20:
+        teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
+    
+    segments.append({"type": "teaser", "text": normalize_narration(teaser_clean), "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
+    # إضافة CTA
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
 
