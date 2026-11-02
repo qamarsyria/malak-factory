@@ -40,7 +40,7 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return False
 
 # ============================================================
-# 2. التحويل الصوتي الذكي (المُصحح)
+# 2. التحويل الصوتي الذكي (المُصحح بقواعد صارمة)
 # ============================================================
 def phonemes_to_arabic_script(phoneme_text: str) -> str:
     if not phoneme_text or not phoneme_text.strip():
@@ -71,16 +71,12 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
         if token in CONS_MAP:
             char = CONS_MAP[token]
             
+            # إصلاح الهمزات في منتصف الكلمات
             if char == "ء":
                 next_token = tokens[i+1] if i+1 < len(tokens) else ""
-                is_start = (not arabic_chars or arabic_chars[-1].isspace())
-                if next_token in ("i", "ii"): char = "إ" if is_start else "ئ"
-                elif next_token in ("u", "uu"): char = "أ" if is_start else "ؤ"
-                else:
-                    if is_start: char = "أ"
-                    elif arabic_chars[-1] in ("ُ", "ُو"): char = "ؤ"
-                    elif arabic_chars[-1] in ("ِ", "ِي"): char = "ئ"
-                    else: char = "ء"
+                if next_token in ("i", "ii"): char = "ئ"
+                elif next_token in ("u", "uu"): char = "ؤ"
+                else: char = "ء"
 
             arabic_chars.append(char)
 
@@ -114,24 +110,30 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
     result = "".join(arabic_chars)
     
-    # إصلاح التنوين
-    result = re.sub(r'َ(nْ|ن)\b', 'ً', result)
-    result = re.sub(r'ُ(nْ|ن)\b', 'ٌ', result)
-    result = re.sub(r'ِ(nْ|ن)\b', 'ٍ', result)
+    # 🌟 إصلاحات ما بعد التحويل (تجميل الكلمة لتُقرأ بشكل صحيح):
     
-    # إصلاح واو الجماعة
-    result = re.sub(r'ُو\b', 'ُوا', result)
+    # 1. إصلاح واو الجماعة (قَالُو، فَسَجَدُوَ -> قَالُوا، فَسَجَدُوا)
+    result = re.sub(r'ُوْ?\b', 'ُوا', result)
+    result = re.sub(r'ُوَ\b', 'ُوا', result)
     
-    # إصلاح التاء المربوطة
-    if result.endswith("تَ"): result = result[:-2] + "َةً"
-    elif result.endswith("تُ"): result = result[:-2] + "َةٌ"
-    elif result.endswith("تِ"): result = result[:-2] + "َةٍ"
+    # 2. إصلاح التاء المربوطة (جَنَّتَ، مَلَائِكَتِ -> جَنَّةَ، مَلَائِكَةِ)
+    result = re.sub(r'تَ\b', 'ةَ', result)
+    result = re.sub(r'تُ\b', 'ةُ', result)
+    result = re.sub(r'تِ\b', 'ةِ', result)
+    
+    # 3. إصلاح التنوين (خَلِيفَتًنْ -> خَلِيفَةً)
+    result = re.sub(r'َ(n|ن)\b', 'ً', result)
+    result = re.sub(r'ُ(n|ن)\b', 'ٌ', result)
+    result = re.sub(r'ِ(n|ن)\b', 'ٍ', result)
 
-    # إصلاح همزة الوصل
-    result = result.replace("ءَل", "ال").replace("ءَ", "ا")
+    # 4. إصلاح همزة الوصل في بداية الكلمة (أَلْ -> الْ)
+    if result.startswith("َ"): result = "ا" + result[1:]
+    elif result.startswith("ِ"): result = "ا" + result[1:]
+    elif result.startswith("ُ"): result = "ا" + result[1:]
+    result = result.replace("ءَل", "ال").replace("أَل", "ال")
 
-    # إزالة السكون المزدوج
-    result = result.replace("ٌْ", "ٌ").replace("ًْ", "ً").replace("ٍْ", "ٍ")
+    # 5. إزالة السكون المزدوج أو الأخطاء
+    result = result.replace("ٌْ", "ٌ").replace("ًْ", "ً").replace("ٍْ", "ٍ").replace("ّْ", "ّ")
 
     return result
 
@@ -168,10 +170,10 @@ def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
         return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
     except Exception as e:
         print(f"   ❌ Gemini TTS فشل: {e}")
-        raise e # نرفع الخطأ لإيقاف السكربت بالكامل إذا نفدت الحصة
+        raise e 
 
 # ============================================================
-# 3. دوال مساعدة وتقسيم النصوص (مقطعين طويلين لتوفير الحصة)
+# 3. دوال مساعدة وتقسيم النصوص
 # ============================================================
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
@@ -272,7 +274,7 @@ def build_episode_audio(json_path, out_mp3):
                         raise RuntimeError("ملف الصوت المولد صغير جداً أو فارغ")
                 except Exception as e:
                     print(f"   ❌ Gemini فشل: {e}", flush=True)
-                    raise e # إيقاف السكربت بالكامل
+                    raise e
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
