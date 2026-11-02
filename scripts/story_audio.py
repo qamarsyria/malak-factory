@@ -20,6 +20,79 @@ except Exception as e:
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
+# ============================================================
+# خريطة تحويل فونيمات tilavet إلى نص عربي صوتي
+# ============================================================
+# الحروف الساكنة
+CONSONANT_MAP = {
+    "'": "ء", "b": "ب", "t": "ت", "th": "ث", "j": "ج", "H": "ح",
+    "kh": "خ", "d": "د", "dh": "ذ", "r": "ر", "z": "ز", "s": "س",
+    "sh": "ش", "S": "ص", "D": "ض", "T": "ط", "Z": "ظ", "3": "ع",
+    "gh": "غ", "f": "ف", "q": "ق", "k": "ك", "l": "ل", "L": "ل",
+    "m": "م", "n": "ن", "h": "ه", "w": "و", "y": "ي",
+}
+
+# الحركات القصيرة
+VOWEL_MAP = {"a": "َ", "i": "ِ", "u": "ُ"}
+
+# المدود الطويلة (حرف + حركة طويلة)
+LONG_VOWEL_MAP = {"aa": "َا", "ii": "ِي", "uu": "ُو", "aa6": "َا", "ii6": "ِي", "uu6": "ُو"}
+
+def phonemes_to_arabic_script(phoneme_text: str) -> str:
+    """
+    يحول سلسلة فونيمات tilavet (مثل 'b i s m i l l aa h i') إلى نص عربي صوتي.
+    """
+    if not phoneme_text or not phoneme_text.strip():
+        return ""
+
+    tokens = phoneme_text.strip().split()
+    arabic_chars = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        # 1. المدود الطويلة (aa, ii, uu, aa6, ii6, uu6)
+        if token in LONG_VOWEL_MAP:
+            arabic_chars.append(LONG_VOWEL_MAP[token])
+            i += 1
+            continue
+
+        # 2. الحروف الساكنة
+        if token in CONSONANT_MAP:
+            char = CONSONANT_MAP[token]
+            arabic_chars.append(char)
+
+            # التحقق من الشدة (إذا تكرر نفس الحرف في الفونيم التالي)
+            if i + 1 < len(tokens) and tokens[i + 1] == token:
+                arabic_chars.append("ّ")
+                i += 2  # تخطي التكرار
+                continue
+
+            # التحقق من الحركة القصيرة التالية
+            if i + 1 < len(tokens) and tokens[i + 1] in VOWEL_MAP:
+                arabic_chars.append(VOWEL_MAP[tokens[i + 1]])
+                i += 2
+            else:
+                # سكون (لا حركة)
+                arabic_chars.append("ْ")
+                i += 1
+            continue
+
+        # 3. الحركات القصيرة المنفردة (نادرًا ما تأتي وحدها)
+        if token in VOWEL_MAP:
+            arabic_chars.append(VOWEL_MAP[token])
+            i += 1
+            continue
+
+        # 4. تجاهل الرموز غير المعروفة
+        i += 1
+
+    result = "".join(arabic_chars)
+    # تنظيف بسيط للمسافات (إزالة السكون الزائد في نهاية الكلمة إن وجد)
+    result = re.sub(r'\s+', ' ', result).strip()
+    return result
+
+
 _tilavet_pm = None
 def get_tilavet_phonemizer():
     global _tilavet_pm
@@ -31,47 +104,49 @@ def get_tilavet_phonemizer():
             print(f"⚠️ Failed to initialize Tilavet Phonemizer: {e}")
     return _tilavet_pm
 
-def generate_quran_audio_espeak(uthmani_text: str, out_wav: str) -> bool:
-    """يولد صوت الآية باستخدام tilavet-phonemizer ثم espeak-ng."""
+
+def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
+    """يولد صوت الآية عبر Gemini TTS باستخدام النص العربي الصوتي المشتق من التجويد."""
     try:
         pm = get_tilavet_phonemizer()
         if not pm:
             return False
 
-        # 1. الحصول على الفونيمات (كنص)
+        # 1. الحصول على الفونيمات
         result = pm.phonemize(uthmani_text)
-        phoneme_text = result.text  # سلسلة نصية مثل "b i s m i l l aa h i"
+        phoneme_text = result.text if hasattr(result, 'text') else str(result)
         if not phoneme_text or not phoneme_text.strip():
             print("   ⚠️ لا توجد فونيمات")
             return False
 
-        # 2. تمرير الفونيمات إلى espeak-ng
-        # espeak-ng يقبل النص مع --ipa أو -x، لكن الفونيمات هنا مخصصة.
-        # نجرب تمريرها مباشرة كما هي.
-        subprocess.run([
-            "espeak-ng",
-            "-v", "ar",
-            "-s", "125",
-            "-p", "45",
-            "-a", "180",
-            "-w", out_wav,
-            phoneme_text,
-        ], check=True, capture_output=True, timeout=120)
+        # 2. تحويل الفونيمات إلى نص عربي صوتي
+        arabic_phonetic = phonemes_to_arabic_script(phoneme_text)
+        if not arabic_phonetic or len(arabic_phonetic) < 5:
+            print(f"   ⚠️ نص صوتي قصير جداً: {arabic_phonetic}")
+            return False
 
-        return Path(out_wav).exists() and Path(out_wav).stat().st_size > 2000
+        print(f"   🔄 النص الصوتي التجويدي: {arabic_phonetic[:80]}...")
+
+        # 3. توليد الصوت عبر Gemini TTS
+        gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon")
+
+        return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
     except Exception as e:
-        print(f"   ⚠️ espeak-ng فشل: {e}")
+        print(f"   ⚠️ Gemini TTS فشل: {e}")
         return False
+
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
+
 def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     try: return round(float(r.stdout.strip()), 3)
     except: return 0.0
+
 
 def fetch_ayah_uthmani(s, a):
     try:
@@ -83,12 +158,15 @@ def fetch_ayah_uthmani(s, a):
         print(f"⚠️ فشل جلب الآية {s}:{a} - {e}")
     return ""
 
+
 async def _edge_tts_async(text, out_path):
     comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
     await comm.save(out_path)
 
+
 def edge_generate(text, out_path):
     asyncio.run(_edge_tts_async(text, out_path))
+
 
 def split_text(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
@@ -100,6 +178,7 @@ def split_text(text, max_chars=150):
             current = s
     if current: chunks.append(current.strip())
     return chunks
+
 
 def build_episode_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
@@ -153,15 +232,16 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
 
-            # ═══ 1. الآيات: tilavet-phonemizer + espeak-ng ═══
+            # ═══ 1. الآيات: tilavet-phonemizer + Gemini TTS (نص عربي صوتي) ═══
             if stype == "quran":
-                if generate_quran_audio_espeak(chunk, str(raw_wav)):
+                if generate_quran_audio_gemini(chunk, str(temp_mp3)):
+                    subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     success = True
-                    print(f"   ✅ espeak-ng (تجويد)", flush=True)
+                    print(f"   ✅ Gemini TTS (نص تجويدي)", flush=True)
                 else:
-                    print(f"   ⚠️ espeak فشل، سيتم استخدام Gemini للآية كاحتياطي...", flush=True)
+                    print(f"   ⚠️ فشل التوليد التجويدي، سيتم استخدام Gemini TTS العادي...", flush=True)
 
-            # ═══ 2. السرد أو الاحتياطي: Gemini TTS ═══
+            # ═══ 2. السرد أو الاحتياطي: Gemini TTS العادي ═══
             if not success:
                 try:
                     gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
@@ -214,6 +294,7 @@ def build_episode_audio(json_path, out_mp3):
 
     print(f"✅ {out_mp3} | {get_dur(out_mp3)/60:.1f} دقيقة", flush=True)
     cleanup_dir(work)
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 3: sys.exit(1)
