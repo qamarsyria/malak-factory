@@ -21,19 +21,21 @@ TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
 # ============================================================
-# 1. دالة تطبيق صدى المسجد (Reverb) - مخفض 50%
+# 1. دالة تطبيق صدى المسجد + الدفء والخشوع
 # ============================================================
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
-    """يضيف صدى يحاكي المسجد (مخفض بنسبة 50% ليكون خفيفاً ومريحاً)."""
+    """يضيف صدى مسجد + يبطئ الإيقاع + يزيد الدفء (لتوليد الخشوع)."""
     try:
-        # فلاتر ffmpeg:
-        # 1. equalizer: تقليل الترددات الحادة جداً وزيادة الدفء
-        # 2. aecho: انعكاسات مخفضة (0.15, 0.10, 0.05 بدلاً من 0.3, 0.2, 0.1)
-        # 3. acompressor: لضبط المستوى ومنع التشويش
         filters = (
-            "equalizer=f=4000:t=q:w=1.0:g=-3,"    
-            "equalizer=f=200:t=q:w=1.0:g=2,"      
-            "aecho=0.8:0.7:60|180|320:0.15|0.10|0.05," 
+            # 1. إبطاء السرعة بنسبة 8% (سر الخشوع)
+            "atempo=0.92,"
+            # 2. تعميق الصوت وزيادة الدفء (ترددات منخفضة)
+            "equalizer=f=120:t=q:w=1.0:g=4,"
+            # 3. تقليل الحدة والجفاف (ترددات عالية)
+            "equalizer=f=4000:t=q:w=1.0:g=-4,"
+            # 4. صدى المسجد (مخفض 50%)
+            "aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,"
+            # 5. ضاغط صوت لمنع التشويش
             "acompressor=threshold=0.1:ratio=3:attack=20:release=200" 
         )
         
@@ -125,7 +127,13 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
         i += 1
 
-    return "".join(arabic_chars)
+    result = "".join(arabic_chars)
+    
+    # 🌟 إصلاح همزة الوصل (ءَل -> ال) لكي يقرأها Gemini بسلاسة
+    if result.startswith("ءَل") or result.startswith("ءَ"):
+        result = "ا" + result[2:] if result.startswith("ءَل") else "ا" + result[1:]
+
+    return result
 
 
 _tilavet_pm = None
@@ -141,13 +149,12 @@ def get_tilavet_phonemizer():
 
 
 def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
-    """يولد صوت الآية كلمة كلمة لضمان فصلها بمسافات واضحة."""
+    """يولد صوت الآية كلمة كلمة لضمان فصلها بمسافات واضحة، مع توجيه عاطفي دافئ."""
     try:
         pm = get_tilavet_phonemizer()
         if not pm:
             return False
 
-        # 🌟 تقسيم الآية إلى كلمات، ثم توليد فونيمات لكل كلمة على حدة
         words = uthmani_text.split()
         phonetic_words = []
         
@@ -161,14 +168,17 @@ def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
             if arabic_word:
                 phonetic_words.append(arabic_word)
                 
-        # 🌟 دمج الكلمات بمسافات
         arabic_phonetic = " ".join(phonetic_words)
         
         if not arabic_phonetic or len(arabic_phonetic) < 5:
             return False
 
         print(f"   🔄 النص الصوتي التجويدي: {arabic_phonetic[:80]}...")
-        gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon")
+        
+        # 🌟 التوجيه العاطفي الجديد (بدون حزن)
+        style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع، يملؤه السكينة والطمأنينة والهيبة. اقرأ ببطء وتأنٍ، مع إطالة المدود والوقوف عند الوقفات، بنبرة هادئة جداً وتلامس شغاف القلب."
+        
+        gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
 
         return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
     except Exception as e:
@@ -266,16 +276,16 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
 
-            # ═══ 1. الآيات: تجويد + Gemini TTS + صدى ═══
+            # ═══ 1. الآيات: تجويد + Gemini TTS + صدى/دفء ═══
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     
-                    # ✨ تطبيق صدى المسجد هنا ✨
+                    # ✨ تطبيق صدى المسجد والدفء هنا ✨
                     reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
                     if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
                         shutil.copy(reverb_wav, raw_wav)
-                        print(f"   ✅ Gemini TTS + صدى المسجد (تجويد)", flush=True)
+                        print(f"   ✅ Gemini TTS + صدى/دفء (تجويد)", flush=True)
                     else:
                         print(f"   ✅ Gemini TTS (تجويد بدون صدى)", flush=True)
                         
