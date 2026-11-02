@@ -160,8 +160,8 @@ def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
         gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
         return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
     except Exception as e:
-        print(f"   ❌ Gemini TTS فشل: {e}")
-        raise e 
+        print(f"   ⚠️ فشل التوليد التجويدي: {e}")
+        return False # لا نرفع الخطأ، لكي نستخدم الخطة البديلة
 
 # ============================================================
 # 3. دوال مساعدة وتقسيم النصوص
@@ -200,7 +200,6 @@ def build_episode_audio(json_path, out_mp3):
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     final_wavs, all_segments_meta = [], []
     
-    # 🌟 إنشاء مجلد الكاش
     ep_name = Path(json_path).stem
     ep_cache = CACHE_DIR / ep_name
     ep_cache.mkdir(parents=True, exist_ok=True)
@@ -252,10 +251,8 @@ def build_episode_audio(json_path, out_mp3):
         for c_idx, chunk in enumerate(chunks):
             if not chunk.strip(): continue
 
-            # 🌟 اسم ملف الكاش
             cached_wav = ep_cache / f"seg_{idx}_{c_idx}.wav"
             
-            # إذا كان الملف موجوداً في الكاش، استخدمه فوراً (توفير حصة)
             if cached_wav.exists() and cached_wav.stat().st_size > 1000:
                 print(f"   ⏭️ [كاش] استخدام المقطع المحفوظ مسبقاً", flush=True)
                 final_wavs.append(cached_wav)
@@ -263,9 +260,9 @@ def build_episode_audio(json_path, out_mp3):
                 chunk_timings.append({"text": chunk, "duration": get_dur(cached_wav) + SILENCE_DUR})
                 continue
 
-            # إذا لم يكن موجوداً، نولده
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
+            success = False
             
             # ═══ 1. الآيات ═══
             if stype == "quran":
@@ -277,6 +274,24 @@ def build_episode_audio(json_path, out_mp3):
                         print(f"   ✅ Gemini TTS + صدى/دفء (تجويد)", flush=True)
                     else: 
                         print(f"   ✅ Gemini TTS (تجويد بدون صدى)", flush=True)
+                    success = True
+                else:
+                    print(f"   ⚠️ فشل توليد التجويد، سيتم استخدام Gemini TTS للآية العادية...", flush=True)
+                    # 🌟 الخطة البديلة: قراءة الآية كنص عادي بصوت Gemini
+                    try:
+                        gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
+                        if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                            subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                            reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
+                            if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
+                                shutil.copy(reverb_wav, raw_wav)
+                            success = True
+                            print(f"   ✅ Gemini TTS + صدى (نص عادي)", flush=True)
+                        else:
+                            raise RuntimeError("ملف الصوت المولد صغير جداً أو فارغ")
+                    except Exception as e:
+                        print(f"   ❌ Gemini TTS فشل أيضاً: {e}", flush=True)
+                        raise e
 
             # ═══ 2. الحديث والفقه ═══
             elif stype in ("hadith", "fiqh"):
@@ -334,7 +349,6 @@ def build_episode_audio(json_path, out_mp3):
             else: 
                 shutil.copy(raw_wav, faded)
 
-            # 🌟 حفظ المقطع في الكاش
             shutil.copy(faded, cached_wav)
 
             final_wavs.append(faded)
