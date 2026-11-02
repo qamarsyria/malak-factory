@@ -9,9 +9,44 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
+# استيراد دوال LLM من generate_story لاستخدامها في توليد التجويد
+from generate_story import call_llm_with_fallback
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
+
+# كاش لتخزين الآيات المحولة صوتياً لتجنب استهلاك الحصة
+TAJWEED_CACHE_FILE = _REPO_ROOT / "state" / "tajweed_cache.json"
+_tajweed_cache = {}
+if TAJWEED_CACHE_FILE.exists():
+    try: _tajweed_cache = json.loads(TAJWEED_CACHE_FILE.read_text(encoding="utf-8"))
+    except: pass
+
+def save_tajweed_cache():
+    TAJWEED_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TAJWEED_CACHE_FILE.write_text(json.dumps(_tajweed_cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def get_tajweed_text(uthmani_text):
+    """يستخدم Gemini لإعادة كتابة النص القرآني بصيغة إملائية تجبر محرك الصوت على التجويد."""
+    if not uthmani_text: return ""
+    if uthmani_text in _tajweed_cache: return _tajweed_cache[uthmani_text]
+    
+    prompt = f"""أنت خبير في أحكام التجويد.
+مهمتك: إعادة كتابة الآية القرآنية التالية بطريقة إملائية صوتية تجبر محرك تحويل النص إلى كلام (TTS) على النطق بأحكام التجويد الصحيحة (الإدغام، الإقلاب، الإخفاء، المد، القلقلة).
+قواعد:
+1. لا تغير الكلمات، فقط عدل الإملاء لتوضيح النطق التجويدي.
+2. مثلاً: النون الساكنة قبل الباء تقلب ميماً (من بعد -> مِمْ بَعْد).
+3. مثلاً: إدغام النون في الراء (من ربهم -> مِرَّبِّهِم).
+4. أعد النص المعدل فقط بدون شرح أو مقدمات.
+
+الآية:
+{uthmani_text}"""
+    
+    res = call_llm_with_fallback(prompt, is_json=False, timeout=60, max_tokens=500)
+    final = res.strip() if res else uthmani_text
+    _tajweed_cache[uthmani_text] = final
+    save_tajweed_cache()
+    return final
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
@@ -24,7 +59,7 @@ def get_dur(p):
     except: return 0.0
 
 def fetch_ayah_uthmani(s, a):
-    """جلب النص العثماني المشكّل بدقة (للاستماع الصحيح)."""
+    """جلب النص العثماني المشكّل بدقة."""
     try:
         url = f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani"
         r = requests.get(url, timeout=10)
@@ -87,7 +122,9 @@ def build_episode_audio(json_path, out_mp3):
             text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             s, ayahs = seg["surah"], seg["ayah_numbers"]
-            text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
+            uthmani_text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
+            # ═══ خدعة التجويد: تحويل النص العثماني إلى نص إملائي صوتي ═══
+            text = get_tajweed_text(uthmani_text)
             display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
         
         if not text: continue
@@ -106,7 +143,6 @@ def build_episode_audio(json_path, out_mp3):
             
             # المحاولة الأساسية: Gemini TTS
             try:
-                # إضافة pause قصير للآيات لتحسين الإيقاع
                 chunk_to_send = chunk + " <short pause>" if stype == "quran" else chunk
                 gemini_tts_with_pool(chunk_to_send, str(temp_mp3), voice="Charon")
                 
