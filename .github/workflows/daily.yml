@@ -27,9 +27,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub mishkal
+          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
 
       - name: Discover Models
         env:
