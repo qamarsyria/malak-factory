@@ -21,19 +21,19 @@ TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
 # ============================================================
-# 1. دالة تطبيق صدى المسجد (Reverb)
+# 1. دالة تطبيق صدى المسجد (Reverb) - مخفض 50%
 # ============================================================
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
-    """يضيف صدى يحاكي المسجد/القاعة الواسعة لصوت الآيات."""
+    """يضيف صدى يحاكي المسجد (مخفض بنسبة 50% ليكون خفيفاً ومريحاً)."""
     try:
         # فلاتر ffmpeg:
-        # 1. equalizer: تقليل الترددات الحادة جداً (لتقليل الجفاف) وزيادة الدفء
-        # 2. aecho: 3 انعكاسات (تأخير 60ms، 180ms، 320ms) بمستويات متناقصة
+        # 1. equalizer: تقليل الترددات الحادة جداً وزيادة الدفء
+        # 2. aecho: انعكاسات مخفضة (0.15, 0.10, 0.05 بدلاً من 0.3, 0.2, 0.1)
         # 3. acompressor: لضبط المستوى ومنع التشويش
         filters = (
             "equalizer=f=4000:t=q:w=1.0:g=-3,"    
             "equalizer=f=200:t=q:w=1.0:g=2,"      
-            "aecho=0.8:0.9:60|180|320:0.3|0.2|0.1," 
+            "aecho=0.8:0.7:60|180|320:0.15|0.10|0.05," 
             "acompressor=threshold=0.1:ratio=3:attack=20:release=200" 
         )
         
@@ -55,11 +55,10 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
 # 2. دوال التجويد والمسافات
 # ============================================================
 def phonemes_to_arabic_script(phoneme_text: str) -> str:
-    """يحول سلسلة فونيمات tilavet إلى نص عربي متصل يعكس التجويد."""
+    """يحول سلسلة فونيمات كلمة واحدة إلى نص عربي متصل."""
     if not phoneme_text or not phoneme_text.strip():
         return ""
 
-    # tilavet يفصل الفونيمات بمسافات
     tokens = phoneme_text.strip().split()
     arabic_chars = []
     i = 0
@@ -77,12 +76,6 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
     while i < len(tokens):
         token = tokens[i]
 
-        # 🌟 إصلاح المسافات: إذا كان الرمز يشير لنهاية كلمة، نضع مسافة
-        if token in ("|", "PAUSE", "p", ";", ",", " "):
-            arabic_chars.append(" ")
-            i += 1
-            continue
-
         if token in LONG_VOWELS:
             arabic_chars.append(LONG_VOWELS[token])
             i += 1
@@ -92,7 +85,7 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
             char = CONS_MAP[token]
             arabic_chars.append(char)
 
-            # التحقق من الشدة (تكرار الحرف)
+            # التحقق من الشدة
             if i + 1 < len(tokens) and tokens[i + 1] == token:
                 arabic_chars.append("ّ")
                 i += 2
@@ -105,19 +98,18 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
                         i += 1
                 continue
 
-            # التحقق من الحركة القصيرة التالية
+            # التحقق من الحركة القصيرة
             if i + 1 < len(tokens) and tokens[i + 1] in SHORT_VOWELS:
                 arabic_chars.append(SHORT_VOWELS[tokens[i + 1]])
                 i += 2
                 continue
                 
-            # التحقق من المد الطويل التالي
+            # التحقق من المد الطويل
             if i + 1 < len(tokens) and tokens[i + 1] in LONG_VOWELS:
                 arabic_chars.append(LONG_VOWELS[tokens[i + 1]])
                 i += 2
                 continue
 
-            # إذا لم تتبع بحركة، نضع سكوناً
             arabic_chars.append("ْ")
             i += 1
             continue
@@ -133,10 +125,7 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
         i += 1
 
-    result = "".join(arabic_chars)
-    # تنظيف المسافات الزائدة
-    result = re.sub(r'\s+', ' ', result).strip()
-    return result
+    return "".join(arabic_chars)
 
 
 _tilavet_pm = None
@@ -152,18 +141,29 @@ def get_tilavet_phonemizer():
 
 
 def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
-    """يولد صوت الآية عبر Gemini TTS باستخدام النص العربي الصوتي المشتق من التجويد."""
+    """يولد صوت الآية كلمة كلمة لضمان فصلها بمسافات واضحة."""
     try:
         pm = get_tilavet_phonemizer()
         if not pm:
             return False
 
-        result = pm.phonemize(uthmani_text)
-        phoneme_text = result.text if hasattr(result, 'text') else str(result)
-        if not phoneme_text or not phoneme_text.strip():
-            return False
-
-        arabic_phonetic = phonemes_to_arabic_script(phoneme_text)
+        # 🌟 تقسيم الآية إلى كلمات، ثم توليد فونيمات لكل كلمة على حدة
+        words = uthmani_text.split()
+        phonetic_words = []
+        
+        for word in words:
+            result = pm.phonemize(word)
+            phoneme_text = result.text if hasattr(result, 'text') else str(result)
+            if not phoneme_text or not phoneme_text.strip():
+                continue
+                
+            arabic_word = phonemes_to_arabic_script(phoneme_text)
+            if arabic_word:
+                phonetic_words.append(arabic_word)
+                
+        # 🌟 دمج الكلمات بمسافات
+        arabic_phonetic = " ".join(phonetic_words)
+        
         if not arabic_phonetic or len(arabic_phonetic) < 5:
             return False
 
