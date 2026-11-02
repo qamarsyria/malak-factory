@@ -27,11 +27,19 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng espeak-ng-data
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
-          # إجبار ترقية phonemizer لإصلاح خطأ _DB مع espeak-ng
-          pip install --upgrade phonemizer
+          pip install phonemizer==3.3.0
+
+      - name: Diagnose Quranic Phonemizer
+        run: |
+          python -c "
+          from quranic_phonemizer import Phonemizer
+          pm = Phonemizer()
+          res = pm.phonemize('بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ')
+          print('TEST PHONEMES:', res)
+          "
 
       - name: Discover Models
         env:
@@ -59,7 +67,7 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          TEST_MODE: "1" # اجعلها 1 للتجربة السريعة
+          TEST_MODE: "1"
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
