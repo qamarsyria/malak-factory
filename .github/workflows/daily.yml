@@ -27,24 +27,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub
-          # تثبيت إصدار محدد وحديث من quranic-phonemizer
-          pip install quranic-phonemizer==2.13
-          # إبقاء phonemizer على الإصدار المتوافق
-          pip install --force-reinstall phonemizer==3.2.1
-
-      - name: Diagnose Phonemizer
-        run: |
-          python -c "
-          import phonemizer
-          print('Phonemizer version:', phonemizer.__version__)
-          from quranic_phonemizer import Phonemizer
-          pm = Phonemizer()
-          res = pm.phonemize('بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ')
-          print('TEST PHONEMES:', res)
-          "
+          pip install requests edge-tts pillow arabic-reshaper huggingface_hub tilavet-phonemizer
 
       - name: Discover Models
         env:
