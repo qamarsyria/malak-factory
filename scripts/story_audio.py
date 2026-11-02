@@ -22,7 +22,7 @@ SILENCE_DUR = 0.4
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 
 # ============================================================
-# 1. دوال الصدى والتحويل الصوتي (بدون تغيير)
+# 1. دوال الصدى والتحويل الصوتي
 # ============================================================
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
     try:
@@ -96,6 +96,7 @@ def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
                 if arabic_word: phonetic_words.append(arabic_word)
         arabic_phonetic = " ".join(phonetic_words)
         if not arabic_phonetic or len(arabic_phonetic) < 5: return False
+        print(f"   🔄 النص الصوتي: {arabic_phonetic[:80]}...")
         style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع، يملؤه السكينة والطمأنينة والهيبة. اقرأ ببطء وتأنٍ، مع إطالة المدود والوقوف عند الوقفات، بنبرة هادئة جداً وتلامس شغاف القلب."
         gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
         return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
@@ -154,9 +155,8 @@ def build_episode_audio(json_path, out_mp3):
     print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل'}")
 
     taken_narration = False; taken_quran = False
-
-    # 🌟 1. تجميع الصوت البشري فقط (بدون موسيقى)
     voice_wavs = []
+    all_segments_meta = []
     scene_counts = {}
     
     for idx, seg in enumerate(segments_list):
@@ -171,7 +171,6 @@ def build_episode_audio(json_path, out_mp3):
         text, display = "", ""
         scene = seg.get("visual", "calm").lower()
         
-        # حساب المشهد الأكثر تكراراً لاختيار الموسيقى الرئيسية
         if stype not in ("quran", "hadith", "fiqh"):
             scene_counts[scene] = scene_counts.get(scene, 0) + 1
 
@@ -180,15 +179,17 @@ def build_episode_audio(json_path, out_mp3):
             if "surah" in seg:
                 s, ayahs = seg["surah"], seg["ayah_numbers"]
                 text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
+                display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
             else:
-                text = seg.get("text", "")
+                text = seg.get("text", ""); display = seg.get("display", "")
         elif stype in ("hadith", "fiqh", "malak"):
-            text = sanitize_for_tts(seg.get("text", ""))
+            text = sanitize_for_tts(seg.get("text", "")); display = seg.get("display", "")
 
         if not text: continue
 
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...", flush=True)
+        chunk_timings = []
 
         for c_idx, chunk in enumerate(chunks):
             if not chunk.strip(): continue
@@ -197,6 +198,7 @@ def build_episode_audio(json_path, out_mp3):
             if cached_wav.exists() and cached_wav.stat().st_size > 1000:
                 print(f"   ⏭️ [كاش] استخدام المقطع المحفوظ", flush=True)
                 voice_wavs.append(cached_wav); voice_wavs.append(silence_path)
+                chunk_timings.append({"text": chunk, "duration": get_dur(cached_wav) + SILENCE_DUR})
                 continue
 
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
@@ -238,10 +240,14 @@ def build_episode_audio(json_path, out_mp3):
 
             shutil.copy(faded, cached_wav)
             voice_wavs.append(faded); voice_wavs.append(silence_path)
+            chunk_timings.append({"text": chunk, "duration": get_dur(faded) + SILENCE_DUR})
+
+        if chunk_timings:
+            all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": chunk_timings})
 
     if not voice_wavs: raise RuntimeError("لا يوجد صوت")
 
-    # 🌟 2. دمج الصوت البشري فقط أولاً
+    # دمج الصوت البشري
     voice_concat = work / "voice_concat.txt"
     voice_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in voice_wavs), encoding="utf-8")
     voice_merged = work / "voice_merged.wav"
@@ -249,31 +255,25 @@ def build_episode_audio(json_path, out_mp3):
     
     total_dur = get_dur(voice_merged)
     
-    # 🌟 3. اختيار موسيقى الحلقة الرئيسية (الفيلم الوثائقي)
-    # إذا كانت القصة تحتوي على "همسات ملك"، نستخدم الموسيقى الرومانسية
+    # اختيار موسيقى الحلقة الرئيسية
     is_malak_episode = any(seg.get("type") == "malak" for seg in segments_list)
-    
     main_music = None
     if is_malak_episode:
         main_music = MUSIC_DIR / "romantic.mp3"
     else:
-        # نختار المشهد الأكثر تكراراً
         main_scene = max(scene_counts, key=scene_counts.get) if scene_counts else "calm"
         ya_taybah = AUDIO_DIR / "ya_taybah.mp3"
-        
-        if main_scene == "calm" and ya_taybah.exists():
-            main_music = ya_taybah
+        if main_scene == "calm" and ya_taybah.exists(): main_music = ya_taybah
         else:
             scene_music_map = {"battle": "battle.mp3", "sad": "sad.mp3", "conspiracy": "conspiracy.mp3", "calm": "calm.mp3", "night": "calm.mp3"}
             main_music = MUSIC_DIR / scene_music_map.get(main_scene, "calm.mp3")
             if not main_music.exists(): main_music = MUSIC_DIR / "calm.mp3"
 
-    # 🌟 4. الدمج النهائي: الصوت البشري + موسيقى مستمرة
+    # الدمج النهائي: الصوت البشري + موسيقى مستمرة
     final_out = work / "final_with_music.mp3"
     
     if main_music and main_music.exists():
         print(f"🎬 دمج موسيقى الحلقة: {main_music.name} (بنسبة 35%)", flush=True)
-        # الموسيقى ملفوفة (loop) لتغطي كامل الحلقة، وتلاشى في البداية والنهاية
         filters = (
             f"[1:a]volume=0.35,afade=t=in:st=0:d=3,afade=t=out:st={total_dur-3}:d=3[music];"
             "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[out]"
@@ -287,13 +287,18 @@ def build_episode_audio(json_path, out_mp3):
         print("⚠️ لا توجد موسيقى متاحة، سيتم استخدام الصوت البشري فقط.", flush=True)
         subprocess.run(["ffmpeg", "-y", "-i", str(voice_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(final_out)], check=True, capture_output=True)
 
-    # 🌟 حفظ الملف النهائي
+    # حفظ الملف النهائي
     Path(out_mp3).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(final_out, out_mp3)
     
-    # (حفظ الميتا داتا للفيديو لاحقاً)
     meta_path = str(out_mp3).replace(".mp3", "_meta.json")
-    Path(meta_path).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "story_id": ep.get("story_id", ""), "total_duration": total_dur}, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(meta_path).write_text(json.dumps({
+        "episode": ep.get("episode_number", 1), 
+        "title": ep.get("title", ""), 
+        "story_id": ep.get("story_id", ""), 
+        "total_duration": total_dur,
+        "segments": all_segments_meta
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"✅ {out_mp3} | {total_dur/60:.1f} دقيقة", flush=True)
     cleanup_dir(work)
