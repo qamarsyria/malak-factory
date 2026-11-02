@@ -15,25 +15,15 @@ STATE_FILE = _REPO_ROOT / "state" / "daily_state.json"
 FAQ_JSON = _REPO_ROOT / "data" / "faq-data.json"
 
 # ============================================================
-# 1. المصادر الموثقة (المدمجة كاحتياطي في حال حظر السيرفر)
+# 1. المصادر الموثقة
 # ============================================================
 VERIFIED_HADITHS_FALLBACK = [
-    {
-        "text": "إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى، فَمَنْ كَانَتْ هِجْرَتُهُ إِلَى دُنْيَا يُصِيبُهَا أَوْ إِلَى امْرَأَةٍ يَنْكِحُهَا فَهِجْرَتُهُ إِلَى مَا هَاجَرَ إِلَيْهِ",
-        "rawi": "عمر بن الخطاب", "attribution": "رواه البخاري ومسلم (صحيح)"
-    },
-    {
-        "text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ",
-        "rawi": "تميم بن أوس الداري", "attribution": "رواه مسلم (صحيح)"
-    }
+    {"text": "إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى، فَمَنْ كَانَتْ هِجْرَتُهُ إِلَى دُنْيَا يُصِيبُهَا أَوْ إِلَى امْرَأَةٍ يَنْكِحُهَا فَهِجْرَتُهُ إِلَى مَا هَاجَرَ إِلَيْهِ", "rawi": "عمر بن الخطاب", "attribution": "رواه البخاري ومسلم (صحيح)"},
+    {"text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ", "rawi": "تميم بن أوس الداري", "attribution": "رواه مسلم (صحيح)"}
 ]
 
 VERIFIED_FIQH_FALLBACK = [
-    {
-        "question": "ما حكم بر الوالدين في الإسلام؟",
-        "answer": "بر الوالدين من أعظم القربات إلى الله تعالى، وهو واجب على كل مسلم. قال الله تعالى: (وَقَضَى رَبُّكَ أَلَّا تَعْبُدُوا إِلَّا إِيَّاهُ وَبِالْوَالِدَيْنِ إِحْسَانًا). ويكون البر بالطاعة في غير معصية، والإنفاق عليهما، وخفض الجناح لهما، والدعاء لهما.",
-        "source": "القرآن الكريم والسنة النبوية"
-    }
+    {"question": "ما حكم بر الوالدين في الإسلام؟", "answer": "بر الوالدين من أعظم القربات إلى الله تعالى، وهو واجب على كل مسلم. قال الله تعالى: (وَقَضَى رَبُّكَ أَلَّا تَعْبُدُوا إِلَّا إِيَّاهُ وَبِالْوَالِدَيْنِ إِحْسَانًا). ويكون البر بالطاعة في غير معصية، والإنفاق عليهما، وخفض الجناح لهما، والدعاء لهما.", "source": "القرآن الكريم والسنة النبوية"}
 ]
 
 MALAK_FALLBACKS = {
@@ -51,12 +41,8 @@ def fetch_verified_hadith(topic="الصبر"):
         if r.status_code == 200:
             for h in r.json().get("ahadith", {}).get("result", []):
                 if "صحيح" in h.get("grade", "") or "حسن" in h.get("grade", ""):
-                    return {
-                        "text": re.sub(r'<[^>]+>', '', h.get("hadith", "")), "rawi": h.get("rawi", ""),
-                        "attribution": f"رواه {h.get('mohdith', '')} في {h.get('book', '')} ({h.get('grade', '')})"
-                    }
+                    return {"text": re.sub(r'<[^>]+>', '', h.get("hadith", "")), "rawi": h.get("rawi", ""), "attribution": f"رواه {h.get('mohdith', '')} في {h.get('book', '')} ({h.get('grade', '')})"}
     except Exception: pass
-    
     h = random.choice(VERIFIED_HADITHS_FALLBACK)
     print(f"✅ استخدام حديث احتياطي موثق ({h['rawi']})")
     return h
@@ -128,24 +114,20 @@ def apply_forced_tashkeel(text):
     return text
 
 def proofread_script(text):
+    """تم التعديل: إرسال النص كاملاً في طلب واحد (لتوفير الحصة وتجنب Rate Limit)"""
     parts = re.split(r'(\[آية: \d+:\d+\])', text)
     corrected_parts = []
     for part in parts:
         if not part.strip(): continue
         if part.startswith("[آية:"): corrected_parts.append(part); continue
-        chunks = []; current = ""
-        for sentence in re.split(r'(?<=[.!؟])\s+', part):
-            if len(current) + len(sentence) < 300: current += " " + sentence
-            else:
-                if current: chunks.append(current.strip())
-                current = sentence
-        if current: chunks.append(current.strip())
-        for chunk in chunks:
-            prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص. ممنوع تغيير أي كلمة. أعد النص فقط:\n{chunk}"
-            corrected = call_llm(prompt, is_json=False, timeout=30, max_tokens=1000)
-            if corrected and len(corrected) > len(chunk) * 0.7:
+        
+        if len(part) > 5:
+            prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص التالي. ممنوع تغيير أي كلمة. أعد النص فقط:\n{part}"
+            corrected = call_llm(prompt, is_json=False, timeout=60, max_tokens=2000)
+            if corrected and len(corrected) > len(part) * 0.7:
                 corrected_parts.append(apply_forced_tashkeel(clean_llm_text(corrected)))
-            else: corrected_parts.append(chunk)
+            else: 
+                corrected_parts.append(part)
     return " ".join(corrected_parts)
 
 def split_narration(text, max_chars=150):
@@ -193,13 +175,12 @@ def build_malak_prompt(name_type):
 ضع علامة [النص_الموثق] في بداية الهمسة. أعد النص فقط."""
 
 # ============================================================
-# 5. التشغيل الرئيسي (نظام الدوران بالعداد)
+# 5. التشغيل الرئيسي
 # ============================================================
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     
-    # 🌟 عداد التشغيل (يزيد في كل مرة يتم تشغيل السكربت)
     state = {"run_count": 0}
     if STATE_FILE.exists():
         try: state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
