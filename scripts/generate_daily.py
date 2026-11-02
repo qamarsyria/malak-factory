@@ -1,5 +1,6 @@
 import os, re, sys, json, random, traceback
 from pathlib import Path
+from datetime import datetime
 import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -11,7 +12,6 @@ from utilities import notify_telegram, get_breaker
 
 OUTPUT_DIR = _REPO_ROOT / "data" / "daily" / "generated"
 OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
-ROTATION_FILE = _REPO_ROOT / "state" / "daily_rotation.json"
 FAQ_JSON = _REPO_ROOT / "data" / "faq-data.json"
 
 # ============================================================
@@ -27,6 +27,11 @@ VERIFIED_HADITHS_FALLBACK = [
         "text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ",
         "rawi": "تميم بن أوس الداري",
         "attribution": "رواه مسلم (صحيح)"
+    },
+    {
+        "text": "مَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيَقُلْ خَيْرًا أَوْ لِيَصْمُتْ، وَمَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيُكْرِمْ جَارَهُ، وَمَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيُكْرِمْ ضَيْفَهُ",
+        "rawi": "أبو هريرة",
+        "attribution": "رواه البخاري ومسلم (صحيح)"
     }
 ]
 
@@ -209,16 +214,12 @@ def build_malak_prompt(name_type):
 # ============================================================
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ROTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
     
-    rotation = {"index": 0}
-    if ROTATION_FILE.exists():
-        try: rotation = json.loads(ROTATION_FILE.read_text(encoding="utf-8"))
-        except: pass
+    # 🌟 نظام الدوران الجديد: يعتمد على تاريخ اليوم (لن يعيد المقطع الأول أبداً)
+    day_of_epoch = (datetime.now() - datetime(2024, 1, 1)).days
+    content_type = day_of_epoch % 6  
     
-    content_type = rotation["index"] % 6  
-    rotation["index"] = (content_type + 1) % 6
-    ROTATION_FILE.write_text(json.dumps(rotation), encoding="utf-8")
+    print(f"📅 اليوم رقم {day_of_epoch} من الدورة. نوع المحتوى المختار: {content_type}", flush=True)
 
     data, prompt, content_title, segment_type = None, "", "", ""
     name_type = ""
