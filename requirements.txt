@@ -10,9 +10,6 @@ Pillow>=10.0.0
 arabic-reshaper==3.0.0
 python-bidi==0.6.3
 
-# --- تشكيل النص العربي (إلزامي للسرد) ---
-mishkal>=0.4.0
-
 # --- TTS ---
 edge-tts>=6.1.19
 
@@ -35,3 +32,6 @@ huggingface_hub
 playwright
 beautifulsoup4
 pyotp
+
+# --- تجويد القرآن ---
+quranic-phonemizer
