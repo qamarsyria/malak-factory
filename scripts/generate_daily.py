@@ -14,28 +14,51 @@ OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 ROTATION_FILE = _REPO_ROOT / "state" / "daily_rotation.json"
 FAQ_JSON = _REPO_ROOT / "data" / "faq-data.json"
 
-# ------------------------------------------------------------
-# 1. النصوص الموثقة والاحتياطية
-# ------------------------------------------------------------
+# ============================================================
+# 1. المصادر الموثقة (المدمجة كاحتياطي في حال حظر السيرفر)
+# ============================================================
+VERIFIED_HADITHS_FALLBACK = [
+    {
+        "text": "إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى، فَمَنْ كَانَتْ هِجْرَتُهُ إِلَى دُنْيَا يُصِيبُهَا أَوْ إِلَى امْرَأَةٍ يَنْكِحُهَا فَهِجْرَتُهُ إِلَى مَا هَاجَرَ إِلَيْهِ",
+        "rawi": "عمر بن الخطاب",
+        "attribution": "رواه البخاري ومسلم (صحيح)"
+    },
+    {
+        "text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ",
+        "rawi": "تميم بن أوس الداري",
+        "attribution": "رواه مسلم (صحيح)"
+    },
+    {
+        "text": "مَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيَقُلْ خَيْرًا أَوْ لِيَصْمُتْ، وَمَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيُكْرِمْ جَارَهُ، وَمَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيُكْرِمْ ضَيْفَهُ",
+        "rawi": "أبو هريرة",
+        "attribution": "رواه البخاري ومسلم (صحيح)"
+    }
+]
+
+VERIFIED_FIQH_FALLBACK = [
+    {
+        "question": "ما حكم بر الوالدين في الإسلام؟",
+        "answer": "بر الوالدين من أعظم القربات إلى الله تعالى، وهو واجب على كل مسلم. قال الله تعالى: (وَقَضَى رَبُّكَ أَلَّا تَعْبُدُوا إِلَّا إِيَّاهُ وَبِالْوَالِدَيْنِ إِحْسَانًا). ويكون البر بالطاعة في غير معصية، والإنفاق عليهما، وخفض الجناح لهما، والدعاء لهما.",
+        "source": "القرآن الكريم والسنة النبوية"
+    }
+]
+
 VERIFIED_ADHKAR = [
-    {"title": "سيد الاستغفار", "text": "اللَّهُمَّ أَنْتَ رَبِّي لا إِلَهَ إِلا أَنْتَ...", "source": "رواه البخاري"}
+    {"title": "سيد الاستغفار", "text": "اللَّهُمَّ أَنْتَ رَبِّي لا إِلَهَ إِلا أَنْتَ، خَلَقْتَنِي وَأَنَا عَبْدُكَ، وَأَنَا عَلَى عَهْدِكَ وَوَعْدِكَ مَا اسْتَطَعْتُ، أَعُوذُ بِكَ مِنْ شَرِّ مَا صَنَعْتُ، أَبُوءُ لَكَ بِنِعْمَتِكَ عَلَيَّ، وَأَبُوءُ لَكَ بِذَنْبِي فَاغْفِرْ لِي، فَإِنَّهُ لا يَغْفِرُ الذُّنُوبَ إِلا أَنْتَ", "source": "رواه البخاري"}
 ]
 
 MALAK_FALLBACKS = {
-    "maryam": [
-        "يا مريم، في زمنٍ قلّ فيه الصفاء، أراد الله أن يطمئن قلبي، فخلق طهراً يسير بين البشر. اللهم احفظها لي بحفظك.",
-    ],
-    "malak": [
-        "يقولون إن الملائكة خلقٌ لا نراه، لكنني أراه كل يوم في ملك. في نقائها، وسكينتها، ونورها.",
-    ],
-    "malaak": [
-        "يا ملاك، اسمكِ النادر كجوهرة في قلب المحبين. اللهم كما جعلت اسمكِ فريداً، اجعل نصيبكِ من السكينة أوفر النصيب.",
-    ]
+    "maryam": ["يا مريم، في زمنٍ قلّ فيه الصفاء، أراد الله أن يطمئن قلبي، فخلق طهراً يسير بين البشر. اللهم احفظها لي بحفظك."],
+    "malak": ["يقولون إن الملائكة خلقٌ لا نراه، لكنني أراه كل يوم في ملك. في نقائها، وسكينتها، ونورها."],
+    "malaak": ["يا ملاك، اسمكِ النادر كجوهرة في قلب المحبين. اللهم كما جعلت اسمكِ فريداً، اجعل نصيبكِ من السكينة أوفر النصيب."]
 }
 
+# ============================================================
+# 2. دوال الجلب
+# ============================================================
 def fetch_verified_hadith(topic="الصبر"):
     try:
-        r = requests.get("https://dorar.net/dorar_api.json", params={"skey": topic, "page": 1}, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get("https://dorar.net/dorar_api.json", params={"skey": topic, "page": 1}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             for h in r.json().get("ahadith", {}).get("result", []):
                 if "صحيح" in h.get("grade", "") or "حسن" in h.get("grade", ""):
@@ -43,8 +66,14 @@ def fetch_verified_hadith(topic="الصبر"):
                         "text": re.sub(r'<[^>]+>', '', h.get("hadith", "")), "rawi": h.get("rawi", ""),
                         "attribution": f"رواه {h.get('mohdith', '')} في {h.get('book', '')} ({h.get('grade', '')})"
                     }
-    except: pass
-    return None
+        print(f"⚠️ dorar.net أعاد HTTP {r.status_code} أو لا يوجد حديث صحيح.")
+    except Exception as e:
+        print(f"⚠️ فشل الاتصال بـ dorar.net ({e}). سيتم استخدام الحديث الاحتياطي.")
+    
+    # الاحتياطي
+    h = random.choice(VERIFIED_HADITHS_FALLBACK)
+    print(f"✅ استخدام حديث احتياطي موثق ({h['rawi']})")
+    return h
 
 def fetch_verified_fiqh():
     if FAQ_JSON.exists():
@@ -54,7 +83,9 @@ def fetch_verified_fiqh():
                 item = random.choice(data)
                 return {"question": item.get("question", ""), "answer": item.get("answer", ""), "source": item.get("source", "")}
         except: pass
-    return None
+    
+    print("⚠️ ملف الفقه غير موجود أو فارغ. سيتم استخدام الفقه الاحتياطي.")
+    return random.choice(VERIFIED_FIQH_FALLBACK)
 
 def fetch_ayah_and_tafsir():
     surah, ayah = random.choice([(2, 255), (24, 35), (18, 10), (2, 286)])
@@ -64,12 +95,13 @@ def fetch_ayah_and_tafsir():
         if r.status_code == 200:
             data = r.json()["data"]
             return {"text": data["text"], "tafsir": data.get("tafsir", ""), "attribution": f"سورة {data['surah']['name']} - الآية {ayah}"}
-    except: pass
+    except Exception as e:
+        print(f"⚠️ فشل جلب الآية: {e}")
     return None
 
-# ------------------------------------------------------------
-# 2. دوال مساعدة
-# ------------------------------------------------------------
+# ============================================================
+# 3. دوال مساعدة (نفس محرك القصص)
+# ============================================================
 def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
     for model in discover_and_cache(force=False)[:5]:
@@ -143,9 +175,9 @@ def split_narration(text, max_chars=150):
     if current: chunks.append(current.strip())
     return chunks
 
-# ------------------------------------------------------------
-# 3. البرومبتات
-# ------------------------------------------------------------
+# ============================================================
+# 4. البرومبتات
+# ============================================================
 def build_hadith_prompt(hadith):
     return f"""أنت راوي محتوى إسلامي قصير. الحديث: "{hadith['text']}" (المصدر: {hadith['attribution']}).
 اكتب سيناريو قصير (100 كلمة) بهيكل:
@@ -165,24 +197,19 @@ def build_ayah_story_prompt(ayah):
 ممنوع الخروج عن التفسير. أعد النص فقط."""
 
 def build_malak_prompt(name_type):
-    if name_type == "maryam":
-        focus = "الاسم: مريم. ركز في همستك على الطهر، السكينة، البراءة، والاقتداء بالسيدة مريم عليها السلام."
-    elif name_type == "malak":
-        focus = "الاسم: ملك (بمعنى المَلَك، مفرد الملائكة). ركز في همستك على النور، الحماية، النقاء، والسمو الروحي."
-    else: # malaak
-        focus = "الاسم: ملاك (الاسم التقليدي النادر). ركز في همستك على الندرة، الجمال الروحي الخفي، والخصوصية."
-
+    if name_type == "maryam": focus = "الاسم: مريم. ركز على الطهر، السكينة، البراءة."
+    elif name_type == "malak": focus = "الاسم: ملك (مفرد ملائكة). ركز على النور، الحماية، النقاء."
+    else: focus = "الاسم: ملاك. ركز على الندرة، الجمال الروحي الخفي."
     return f"""أنت شاعر صوفي رومانسي محترم، تكتب همسات روحانية.
 {focus}
 اكتب مقطعاً غزلياً عفيفاً جداً (50 كلمة)، بطابع ديني راقٍ.
-تحدث عن صفات هذا الاسم، وادعُ الله أن يحفظها ويجمعك بها على طاعة.
-الأسلوب: دعاء، همسة، وخاطرة تلامس القلب.
-قاعدة صارمة: **ممنوع تماماً ذكر أي اسم آخر غير الاسم المطلوب**. المقطع يجب أن يكون مخصصاً لهذا الاسم فقط.
+ادعُ الله أن يحفظها ويجمعك بها على طاعة.
+ممنوع تماماً ذكر أي اسم آخر غير الاسم المطلوب.
 ضع علامة [النص_الموثق] في بداية الهمسة. أعد النص فقط."""
 
-# ------------------------------------------------------------
-# 4. التشغيل الرئيسي
-# ------------------------------------------------------------
+# ============================================================
+# 5. التشغيل الرئيسي
+# ============================================================
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ROTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +219,6 @@ def main():
         try: rotation = json.loads(ROTATION_FILE.read_text(encoding="utf-8"))
         except: pass
     
-    # دورة من 6 أيام
     content_type = rotation["index"] % 6  
     rotation["index"] = (content_type + 1) % 6
     ROTATION_FILE.write_text(json.dumps(rotation), encoding="utf-8")
@@ -210,25 +236,13 @@ def main():
     elif content_type == 2:
         data = fetch_ayah_and_tafsir()
         if data: prompt = build_ayah_story_prompt(data); content_title = "آية وحكاية"; segment_type = "quran"
+        else: sys.exit(1) # لا يمكن المتابعة بدون الآية والتفسير
     elif content_type == 3:
-        name_type = "maryam"
-        prompt = build_malak_prompt(name_type)
-        content_title = "همسات لمريم"
-        segment_type = "malak"
+        name_type = "maryam"; prompt = build_malak_prompt(name_type); content_title = "همسات لمريم"; segment_type = "malak"
     elif content_type == 4:
-        name_type = "malak"
-        prompt = build_malak_prompt(name_type)
-        content_title = "همسات لملك"
-        segment_type = "malak"
+        name_type = "malak"; prompt = build_malak_prompt(name_type); content_title = "همسات لملك"; segment_type = "malak"
     else:
-        name_type = "malaak"
-        prompt = build_malak_prompt(name_type)
-        content_title = "همسات لملاك"
-        segment_type = "malak"
-
-    if content_type < 3 and not data:
-        print("❌ فشل جلب المحتوى الموثق. إيقاف.")
-        sys.exit(1)
+        name_type = "malaak"; prompt = build_malak_prompt(name_type); content_title = "همسات لملاك"; segment_type = "malak"
 
     print(f"✍️ جاري كتابة سيناريو ({content_title})...", flush=True)
     script_text = call_llm(prompt, is_json=False, timeout=120, max_tokens=1000)
@@ -240,14 +254,12 @@ def main():
     script_text = proofread_script(script_text)
 
     segments = []
-    parts = script_text.split("[النص_موثق]")
-    if len(parts) == 1:
-         parts = script_text.split("[النص_الموثق]") # Just in case
+    parts = script_text.split("[النص_الموثق]")
+    if len(parts) == 1: parts = script_text.split("[النص_موثق]") # خطأ إملائي محتمل
 
     if len(parts) == 2:
         for chunk in split_narration(parts[0]): segments.append({"type": "narration", "text": chunk.strip()})
         
-        # إدراج النص الموثق
         if content_type >= 3:
             segments.append({"type": "malak", "text": parts[1].strip(), "display": content_title})
         else:
