@@ -13,57 +13,26 @@ from gemini_tts_pool import gemini_tts_with_pool
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
-SPELLING_FIXES = {
-    "تعالى": "تَعَالَى",
-    "منشغلة": "مُنْشَغِلَة",
-    "إرهاصا": "إِرْهَاصًا",
-    "اللله": "اللَّه",
-    "الله": "اللَّه",
-    "بالله": "بِاللَّه",
-    "والله": "وَاللَّه",
-}
-
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
-
-def apply_spelling_fixes(t):
-    for original, fixed in SPELLING_FIXES.items():
-        pattern = rf'(?<![ء-ي\u064B-\u0652]){re.escape(original)}(?![ء-ي\u064B-\u0652])'
-        t = re.sub(pattern, fixed, t)
-    return t
 
 def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     try: return round(float(r.stdout.strip()), 3)
     except: return 0.0
 
-def fetch_ayah(s, a):
+def fetch_ayah_uthmani(s, a):
+    """جلب النص العثماني المشكّل بدقة (للاستماع الصحيح)."""
     try:
-        r = requests.get(f"{QURAN_API}/ayah/{s}:{a}", timeout=10)
-        if r.status_code == 200: return r.json()["data"]["text"]
-    except: pass
-    return ""
-
-def apply_cocktail_mix(input_path, output_path):
-    try:
-        # صدى خفيف جداً + تسريع 15% + تضخيم خفيف
-        cmd = [
-            "ffmpeg", "-y", "-i", str(input_path),
-            "-af", 
-            "atempo=1.15,"
-            "equalizer=f=250:t=q:w=1.0:g=3,"
-            "aecho=0.8:0.88:40:0.2,"
-            "alimiter=limit=0.9",
-            "-ar", TARGET_SR, "-ac", "1", str(output_path)
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        return True
+        url = f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()["data"]["text"]
     except Exception as e:
-        print(f"   ⚠️ فشل تطبيق الخلطة: {e}")
-        shutil.copy(input_path, output_path)
-        return False
+        print(f"⚠️ فشل جلب الآية {s}:{a} - {e}")
+    return ""
 
 async def _edge_tts_async(text, out_path):
     comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
@@ -118,7 +87,7 @@ def build_episode_audio(json_path, out_mp3):
             text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             s, ayahs = seg["surah"], seg["ayah_numbers"]
-            text = " ".join(filter(None, (fetch_ayah(s, a) for a in ayahs)))
+            text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
             display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
         
         if not text: continue
@@ -135,38 +104,29 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
             
-            # ═══ إزالة style نهائياً، والاعتماد على التشكيل + وسوم التوقف ═══
-            if stype == "quran":
-                try:
-                    chunk_fixed = apply_spelling_fixes(chunk)
-                    # إضافة وقفة قصيرة بعد الآية لتحسين الإيقاع
-                    chunk_with_pause = chunk_fixed + " <short pause>"
-                    gemini_tts_with_pool(chunk_with_pause, str(temp_mp3), voice="Charon")
-                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
-                        apply_cocktail_mix(temp_mp3, str(raw_wav))
-                        success = True
-                        print(f"   ✅ Gemini (آية بتجويد التشكيل)", flush=True)
-                except Exception: pass
-            
-            if not success:
-                try:
-                    chunk_fixed = apply_spelling_fixes(chunk)
-                    gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
-                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
-                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                        success = True
-                        print(f"   ✅ Gemini (سرد)", flush=True)
-                except Exception: pass
+            # المحاولة الأساسية: Gemini TTS
+            try:
+                # إضافة pause قصير للآيات لتحسين الإيقاع
+                chunk_to_send = chunk + " <short pause>" if stype == "quran" else chunk
+                gemini_tts_with_pool(chunk_to_send, str(temp_mp3), voice="Charon")
+                
+                if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                    subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                    success = True
+                    print(f"   ✅ Gemini ({stype})", flush=True)
+            except Exception as e:
+                print(f"   ⚠️ Gemini فشل: {e}", flush=True)
 
+            # الاحتياطي: Edge TTS
             if not success:
                 print(f"   🚨 Edge TTS احتياطي...", flush=True)
-                chunk_fixed = apply_spelling_fixes(chunk)
                 try:
-                    edge_generate(chunk_fixed, str(temp_mp3))
+                    edge_generate(chunk, str(temp_mp3))
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 2000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                         success = True
-                except Exception: pass
+                except Exception as e:
+                    print(f"   ⚠️ Edge TTS فشل: {e}", flush=True)
 
             if not success: continue
 
