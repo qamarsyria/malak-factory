@@ -7,8 +7,6 @@ AUDIO_DIR = _REPO_ROOT / "assets" / "audio"
 MUSIC_DIR = AUDIO_DIR / "music"
 SFX_DIR = AUDIO_DIR / "sfx"
 
-# روابط تحميل مباشرة (مؤقتة) - سأضع هنا روابط موسيقى حقيقية
-# ملاحظة: سيتم تحميلها مرة واحدة فقط إذا لم تكن موجودة
 ASSETS = {
     # موسيقى القصص
     "music/calm.mp3": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3",
@@ -45,13 +43,12 @@ def ensure_assets():
             r = requests.get(url, timeout=30)
             if r.status_code == 200:
                 target.write_bytes(r.content)
-            else:
-                print(f"⚠️ فشل تحميل {rel_path} (HTTP {r.status_code})")
         except Exception as e:
             print(f"⚠️ فشل تحميل {rel_path}: {e}")
             
-    # ملاحظة: "يا طيبة" لا يمكن تحميلها من Pixabay، لذا سنترك مكاناً لها
-    # إذا أراد المستخدم وضعها، يضع ملف "ya_taybah.mp3" في مجلد music.
-    ya_taybah = MUSIC_DIR / "ya_taybah.mp3"
-    if not ya_taybah.exists():
-        print("ℹ️ نصيحة: يمكنك وضع أنشودة 'يا طيبة' باسم ya_taybah.mp3 في مجلد assets/audio/music")
+    # التحقق من وجود "يا طيبة" في المكان الذي رفعتها فيه
+    ya_taybah = AUDIO_DIR / "ya_taybah.mp3"
+    if ya_taybah.exists():
+        print("✅ تم العثور على أنشودة 'يا طيبة'")
+    else:
+        print("ℹ️ لم يتم العثور على 'يا طيبة'. إذا أردت استخدامها، ارفعها باسم ya_taybah.mp3 في مجلد assets/audio")
