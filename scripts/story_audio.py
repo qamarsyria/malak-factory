@@ -339,7 +339,7 @@ def build_episode_audio(json_path, out_mp3):
                     print(f"   ❌ Gemini فشل: {e}", flush=True)
                     raise e
 
-            time.sleep(4)
+            time.sleep(6)
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
