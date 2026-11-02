@@ -29,12 +29,16 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
-          pip install phonemizer==3.3.0
+          pip install requests edge-tts pillow arabic-reshaper huggingface_hub
+          pip install quranic-phonemizer
+          # إجبار تثبيت phonemizer 3.2.1 (المتوافق مع espeak-ng)
+          pip install --force-reinstall phonemizer==3.2.1
 
-      - name: Diagnose Quranic Phonemizer
+      - name: Diagnose Phonemizer
         run: |
           python -c "
+          import phonemizer
+          print('Phonemizer version:', phonemizer.__version__)
           from quranic_phonemizer import Phonemizer
           pm = Phonemizer()
           res = pm.phonemize('بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ')
