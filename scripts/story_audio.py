@@ -9,7 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
-from quranic_phonemizer import Phonemizer
+
+try:
+    from quranic_phonemizer import Phonemizer
+except ImportError:
+    Phonemizer = None
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
@@ -17,14 +21,20 @@ SILENCE_DUR = 0.4
 _quran_phonemizer = None
 def get_quran_phonemizer():
     global _quran_phonemizer
-    if _quran_phonemizer is None:
-        _quran_phonemizer = Phonemizer() 
+    if _quran_phonemizer is None and Phonemizer is not None:
+        try:
+            _quran_phonemizer = Phonemizer() 
+        except Exception as e:
+            print(f"   ⚠️ فشل تهيئة Phonemizer: {e}")
     return _quran_phonemizer
 
 def generate_quran_audio_espeak(uthmani_text: str, out_wav: str) -> bool:
     """يولد صوت الآية من الفونيمات التجويدية عبر espeak-ng."""
     try:
         pm = get_quran_phonemizer()
+        if not pm:
+            return False
+            
         phonemes = pm.phonemize(uthmani_text)
         if not phonemes:
             print("   ⚠️ لا توجد فونيمات")
@@ -141,9 +151,11 @@ def build_episode_audio(json_path, out_mp3):
                 if generate_quran_audio_espeak(chunk, str(raw_wav)):
                     success = True
                     print(f"   ✅ espeak-ng (تجويد)", flush=True)
+                else:
+                    print(f"   ⚠️ espeak فشل، سيتم استخدام Gemini للآية كاحتياطي...", flush=True)
             
-            # ═══ 2. السرد: Gemini TTS ═══
-            if not success and stype != "quran":
+            # ═══ 2. السرد أو الاحتياطي: Gemini TTS ═══
+            if not success:
                 try:
                     gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
@@ -153,8 +165,8 @@ def build_episode_audio(json_path, out_mp3):
                 except Exception as e:
                     print(f"   ⚠️ Gemini فشل: {e}", flush=True)
 
-            # ═══ 3. احتياطي للسرد: Edge TTS ═══
-            if not success and stype != "quran":
+            # ═══ 3. احتياطي أخير: Edge TTS ═══
+            if not success:
                 print(f"   🚨 Edge TTS احتياطي...", flush=True)
                 try:
                     edge_generate(chunk, str(temp_mp3))
