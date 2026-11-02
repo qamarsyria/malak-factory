@@ -12,8 +12,9 @@ from gemini_tts_pool import gemini_tts_with_pool
 
 try:
     from quranic_phonemizer import Phonemizer
-except ImportError as e:
-    print(f"❌ فشل استيراد quranic_phonemizer: {e}")
+    print("✅ quranic-phonemizer loaded successfully")
+except Exception as e:
+    print(f"❌ Failed to load quranic-phonemizer: {e}")
     Phonemizer = None
 
 TARGET_SR = "24000"
@@ -25,8 +26,9 @@ def get_quran_phonemizer():
     if _quran_phonemizer is None and Phonemizer is not None:
         try:
             _quran_phonemizer = Phonemizer()
+            print("✅ Phonemizer initialized")
         except Exception as e:
-            print(f"   ⚠️ فشل تهيئة Phonemizer: {e}")
+            print(f"⚠️ Failed to initialize Phonemizer: {e}")
     return _quran_phonemizer
 
 def generate_quran_audio_espeak(uthmani_text: str, out_wav: str) -> bool:
@@ -36,13 +38,11 @@ def generate_quran_audio_espeak(uthmani_text: str, out_wav: str) -> bool:
         if not pm:
             return False
 
-        # 1. توليد الفونيمات (باستخدام quranic-phonemizer)
         phonemes = pm.phonemize(uthmani_text)
         if not phonemes:
-            print("   ⚠️ لا توجد فونيمات")
+            print("   ⚠️ No phonemes generated")
             return False
 
-        # 2. تمرير الفونيمات إلى espeak-ng
         espeak_input = f"[[{phonemes}]]"
         subprocess.run([
             "espeak-ng",
@@ -56,7 +56,7 @@ def generate_quran_audio_espeak(uthmani_text: str, out_wav: str) -> bool:
 
         return Path(out_wav).exists() and Path(out_wav).stat().st_size > 2000
     except Exception as e:
-        print(f"   ⚠️ espeak-ng فشل: {e}")
+        print(f"   ⚠️ espeak-ng failed: {e}")
         return False
 
-# ... (باقي الكود كما هو دون تغيير)
+# ... (باقي الكود كما هو)
