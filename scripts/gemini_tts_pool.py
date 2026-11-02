@@ -31,7 +31,13 @@ class GeminiKeyPool:
         if not key:
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
-            if wait > 300: raise RuntimeError("🚫 كل المفاتيح مستنفدة لليوم!")
+            
+            # إذا كان الانتظار طويلاً جداً (أكثر من 5 دقائق)، فهذا يعني أن الحصة اليومية انتهت
+            if wait > 300: 
+                raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
+            
+            # إذا كان الانتظار قصيراً (بسبب ضغط الطلبات)، ينتظر بهدوء ثم يحاول مجدداً
+            print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
             time.sleep(wait)
             key = self._available_key()
             if not key: raise RuntimeError("❌ كل مفاتيح Gemini مستنفدة")
@@ -148,14 +154,12 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
             },
         }
         
-        # ═══ تمرير الـ style عبر systemInstruction (لا يُقرأ بصوت) ═══
         if style:
             body["systemInstruction"] = {"parts": [{"text": style}]}
 
         try:
             r = requests.post(url, json=body, timeout=180)
             
-            # إذا رفض الـ API الـ systemInstruction، نعيد المحاولة بدونه
             if r.status_code == 400 and style:
                 del body["systemInstruction"]
                 r = requests.post(url, json=body, timeout=180)
