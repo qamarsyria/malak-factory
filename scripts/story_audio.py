@@ -9,44 +9,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
-# استيراد دوال LLM من generate_story لاستخدامها في توليد التجويد
-from generate_story import call_llm_with_fallback
+from quranic_phonemizer import Phonemizer
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
-# كاش لتخزين الآيات المحولة صوتياً لتجنب استهلاك الحصة
-TAJWEED_CACHE_FILE = _REPO_ROOT / "state" / "tajweed_cache.json"
-_tajweed_cache = {}
-if TAJWEED_CACHE_FILE.exists():
-    try: _tajweed_cache = json.loads(TAJWEED_CACHE_FILE.read_text(encoding="utf-8"))
-    except: pass
+_quran_phonemizer = None
+def get_quran_phonemizer():
+    global _quran_phonemizer
+    if _quran_phonemizer is None:
+        _quran_phonemizer = Phonemizer() 
+    return _quran_phonemizer
 
-def save_tajweed_cache():
-    TAJWEED_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TAJWEED_CACHE_FILE.write_text(json.dumps(_tajweed_cache, ensure_ascii=False, indent=2), encoding="utf-8")
+def generate_quran_audio_espeak(uthmani_text: str, out_wav: str) -> bool:
+    """يولد صوت الآية من الفونيمات التجويدية عبر espeak-ng."""
+    try:
+        pm = get_quran_phonemizer()
+        phonemes = pm.phonemize(uthmani_text)
+        if not phonemes:
+            print("   ⚠️ لا توجد فونيمات")
+            return False
 
-def get_tajweed_text(uthmani_text):
-    """يستخدم Gemini لإعادة كتابة النص القرآني بصيغة إملائية تجبر محرك الصوت على التجويد."""
-    if not uthmani_text: return ""
-    if uthmani_text in _tajweed_cache: return _tajweed_cache[uthmani_text]
-    
-    prompt = f"""أنت خبير في أحكام التجويد.
-مهمتك: إعادة كتابة الآية القرآنية التالية بطريقة إملائية صوتية تجبر محرك تحويل النص إلى كلام (TTS) على النطق بأحكام التجويد الصحيحة (الإدغام، الإقلاب، الإخفاء، المد، القلقلة).
-قواعد:
-1. لا تغير الكلمات، فقط عدل الإملاء لتوضيح النطق التجويدي.
-2. مثلاً: النون الساكنة قبل الباء تقلب ميماً (من بعد -> مِمْ بَعْد).
-3. مثلاً: إدغام النون في الراء (من ربهم -> مِرَّبِّهِم).
-4. أعد النص المعدل فقط بدون شرح أو مقدمات.
+        espeak_input = f"[[{phonemes}]]"
+        subprocess.run([
+            "espeak-ng",
+            "-v", "ar",
+            "-s", "125",
+            "-p", "45",
+            "-a", "180",
+            "-w", out_wav,
+            espeak_input,
+        ], check=True, capture_output=True, timeout=120)
 
-الآية:
-{uthmani_text}"""
-    
-    res = call_llm_with_fallback(prompt, is_json=False, timeout=60, max_tokens=500)
-    final = res.strip() if res else uthmani_text
-    _tajweed_cache[uthmani_text] = final
-    save_tajweed_cache()
-    return final
+        return Path(out_wav).exists() and Path(out_wav).stat().st_size > 2000
+    except Exception as e:
+        print(f"   ⚠️ espeak-ng فشل: {e}")
+        return False
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
@@ -59,7 +57,6 @@ def get_dur(p):
     except: return 0.0
 
 def fetch_ayah_uthmani(s, a):
-    """جلب النص العثماني المشكّل بدقة."""
     try:
         url = f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani"
         r = requests.get(url, timeout=10)
@@ -122,9 +119,7 @@ def build_episode_audio(json_path, out_mp3):
             text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             s, ayahs = seg["surah"], seg["ayah_numbers"]
-            uthmani_text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
-            # ═══ خدعة التجويد: تحويل النص العثماني إلى نص إملائي صوتي ═══
-            text = get_tajweed_text(uthmani_text)
+            text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
             display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
         
         if not text: continue
@@ -141,20 +136,25 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
             
-            # المحاولة الأساسية: Gemini TTS
-            try:
-                chunk_to_send = chunk + " <short pause>" if stype == "quran" else chunk
-                gemini_tts_with_pool(chunk_to_send, str(temp_mp3), voice="Charon")
-                
-                if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
-                    subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+            # ═══ 1. الآيات: espeak-ng + تجويد ═══
+            if stype == "quran":
+                if generate_quran_audio_espeak(chunk, str(raw_wav)):
                     success = True
-                    print(f"   ✅ Gemini ({stype})", flush=True)
-            except Exception as e:
-                print(f"   ⚠️ Gemini فشل: {e}", flush=True)
+                    print(f"   ✅ espeak-ng (تجويد)", flush=True)
+            
+            # ═══ 2. السرد: Gemini TTS ═══
+            if not success and stype != "quran":
+                try:
+                    gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
+                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
+                        success = True
+                        print(f"   ✅ Gemini ({stype})", flush=True)
+                except Exception as e:
+                    print(f"   ⚠️ Gemini فشل: {e}", flush=True)
 
-            # الاحتياطي: Edge TTS
-            if not success:
+            # ═══ 3. احتياطي للسرد: Edge TTS ═══
+            if not success and stype != "quran":
                 print(f"   🚨 Edge TTS احتياطي...", flush=True)
                 try:
                     edge_generate(chunk, str(temp_mp3))
