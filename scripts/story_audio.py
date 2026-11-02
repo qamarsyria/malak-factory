@@ -48,6 +48,7 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
+        # صدى خفيف جداً (40ms) + تسريع 15% + تضخيم خفيف
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
@@ -103,7 +104,6 @@ def build_episode_audio(json_path, out_mp3):
         stype = seg.get("type")
         is_ending_segment = (total_segs - idx) <= 3
         
-        # ═══ إصلاح وضع الاختبار: نأخذ أول سرد وأول آية + آخر 3 ═══
         if test_mode:
             if stype == "narration" and not taken_narration:
                 taken_narration = True
@@ -135,11 +135,11 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
             
+            # ═══ تم إزالة style تماماً ═══
             if stype == "quran":
                 try:
                     chunk_fixed = apply_spelling_fixes(chunk)
-                    style = "Recite normally with very light and simple Tajweed, moderate pace."
-                    gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon", style=style)
+                    gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         apply_cocktail_mix(temp_mp3, str(raw_wav))
                         success = True
