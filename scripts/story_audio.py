@@ -269,14 +269,14 @@ def build_episode_audio(json_path, out_mp3):
             main_music = MUSIC_DIR / scene_music_map.get(main_scene, "calm.mp3")
             if not main_music.exists(): main_music = MUSIC_DIR / "calm.mp3"
 
-    # الدمج النهائي: الصوت البشري + موسيقى مستمرة
+    # الدمج النهائي: الصوت البشري + موسيقى مستمرة (بمستوى منخفض جداً 12%)
     final_out = work / "final_with_music.mp3"
     
     if main_music and main_music.exists():
-        print(f"🎬 دمج موسيقى الحلقة: {main_music.name} (بنسبة 35%)", flush=True)
+        print(f"🎬 دمج موسيقى الحلقة: {main_music.name} (بنسبة 12%)", flush=True)
         filters = (
-            f"[1:a]volume=0.35,afade=t=in:st=0:d=3,afade=t=out:st={total_dur-3}:d=3[music];"
-            "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[out]"
+            f"[1:a]volume=0.12,afade=t=in:st=0:d=3,afade=t=out:st={total_dur-3}:d=3[music];"
+            "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[out]"
         )
         subprocess.run([
             "ffmpeg", "-y", "-i", str(voice_merged), "-stream_loop", "-1", "-i", str(main_music),
