@@ -21,9 +21,6 @@ TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 
-# ============================================================
-# 1. دوال الصدى والتحويل الصوتي
-# ============================================================
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
     try:
         filters = (
@@ -103,9 +100,6 @@ def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
     except Exception as e:
         return False
 
-# ============================================================
-# 2. دوال مساعدة وتشغيل
-# ============================================================
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
@@ -230,7 +224,7 @@ def build_episode_audio(json_path, out_mp3):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     print(f"   ✅ Gemini TTS ({stype})", flush=True)
 
-            time.sleep(15) # تأخير لتجنب Rate Limit
+            time.sleep(15) # 🌟 وقت الانتظار 15 ثانية
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
@@ -247,7 +241,6 @@ def build_episode_audio(json_path, out_mp3):
 
     if not voice_wavs: raise RuntimeError("لا يوجد صوت")
 
-    # دمج الصوت البشري
     voice_concat = work / "voice_concat.txt"
     voice_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in voice_wavs), encoding="utf-8")
     voice_merged = work / "voice_merged.wav"
@@ -255,7 +248,6 @@ def build_episode_audio(json_path, out_mp3):
     
     total_dur = get_dur(voice_merged)
     
-    # اختيار موسيقى الحلقة الرئيسية
     is_malak_episode = any(seg.get("type") == "malak" for seg in segments_list)
     main_music = None
     if is_malak_episode:
@@ -269,7 +261,6 @@ def build_episode_audio(json_path, out_mp3):
             main_music = MUSIC_DIR / scene_music_map.get(main_scene, "calm.mp3")
             if not main_music.exists(): main_music = MUSIC_DIR / "calm.mp3"
 
-    # الدمج النهائي: الصوت البشري + موسيقى مستمرة (بمستوى منخفض جداً 12%)
     final_out = work / "final_with_music.mp3"
     
     if main_music and main_music.exists():
@@ -287,11 +278,9 @@ def build_episode_audio(json_path, out_mp3):
         print("⚠️ لا توجد موسيقى متاحة، سيتم استخدام الصوت البشري فقط.", flush=True)
         subprocess.run(["ffmpeg", "-y", "-i", str(voice_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(final_out)], check=True, capture_output=True)
 
-    # حفظ الملف النهائي
     Path(out_mp3).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(final_out, out_mp3)
     
-    # 🌟 حفظ ملف الميتا داتا (الذي كان مفقوداً ويسبب الخطأ)
     meta_path = str(out_mp3).replace(".mp3", "_meta.json")
     Path(meta_path).write_text(json.dumps({
         "episode": ep.get("episode_number", 1), 
