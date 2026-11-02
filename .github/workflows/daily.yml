@@ -27,9 +27,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng espeak-ng-data
           pip install --upgrade pip
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          # إجبار ترقية phonemizer لإصلاح خطأ _DB مع espeak-ng
+          pip install --upgrade phonemizer
 
       - name: Discover Models
         env:
