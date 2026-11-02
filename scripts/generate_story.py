@@ -64,30 +64,24 @@ def call_huggingface(prompt, is_json=True):
 def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
-# ═══ التدقيق الشامل (فقرة بفقرة لضمان الدقة) ═══
 def proofread_script(text):
     print("🔍 جاري التدقيق اللغوي الشامل ووضع التشكيل...", flush=True)
-    
-    # تقسيم النص إلى فقرات (بناءً على الآيات أو الجمل الطويلة)
     parts = re.split(r'(\[آية: \d+:\d+\])', text)
     corrected_parts = []
     
     for part in parts:
         if not part.strip(): continue
-        
-        # إذا كان الجزء هو علامة آية، نتركه كما هو
         if part.startswith("[آية:"):
             corrected_parts.append(part)
             continue
             
-        # إذا كان نصاً، نرسله للتدقيق الصارم
         prompt = f"""أنت مدقق لغوي عربي خبير ومتشدد جداً.
 مهمتك: تصحيح النص التالي بدقة متناهية.
 القواعد الصارمة:
-1. صحح **كل** الأخطاء الإملائية والسياقية. (مثال: إذا كُتبت "خطبة" والمقصود المشي، صححها إلى "خطوة").
+1. صحح **كل** الأخطاء الإملائية والسياقية.
 2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على **كل حرف** في النص.
-3. **ممنوع تماماً** تغيير الكلمات الصحيحة، أو إعادة الصياغة، أو تغيير المعنى. التزم بالنص الأصلي حرفياً.
-4. أعد النص المصحح فقط، دون أي مقدمات أو اعتذارات.
+3. **ممنوع تماماً** تغيير الكلمات الصحيحة، أو إعادة الصياغة، أو تغيير المعنى.
+4. أعد النص المصحح فقط، دون أي مقدمات.
 
 النص:
 {part}"""
@@ -96,7 +90,7 @@ def proofread_script(text):
         if corrected and len(corrected) > len(part) * 0.7:
             corrected_parts.append(corrected.strip())
         else:
-            corrected_parts.append(part) # نستخدم الأصل إذا فشل التدقيق
+            corrected_parts.append(part)
             
     return " ".join(corrected_parts)
 
@@ -150,6 +144,7 @@ def build_plan_prompt(story, ep_num):
 def build_script_prompt(story, plan, ep_num):
     return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي موثوق.
 الخطة: {plan['title']} - {plan['summary']}
+القصة المطلوبة: {story['title']}
 
 قواعد صارمة:
 1. المصدر: القرآن، السنة، تفسير ابن كثير.
@@ -157,8 +152,8 @@ def build_script_prompt(story, plan, ep_num):
 3. اكتب فقط تفاصيل أحداث هذه الحلقة المحددة. لا تلخص القصة بأكملها.
 4. اكتب من 500 إلى 600 كلمة فقط.
 5. استخدم كلمات عربية بسيطة ومألوفة.
-6. **الآيات**: اكتب فقط العلامة [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
-7. أدرج من 4 إلى 6 آيات.
+6. **ممنوع منعاً باتاً ذكر أي نبي آخر في القصة.** (مثال: إذا كانت القصة عن إدريس، لا تذكر إلياس أو غيره إطلاقاً).
+7. **يجب عليك كتابة 4 إلى 6 آيات قرآنية على الأقل**، وتضعها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
 8. ابدأ السرد مباشرة.
 
 اكتب النص السردي فقط."""
@@ -174,9 +169,7 @@ def main():
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
-    # ═══ التدقيق الشامل ═══
     script_text = proofread_script(script_text)
-    
     segments = parse_script_with_verses(script_text)
     
     summary_text = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر.", is_json=False, timeout=60, max_tokens=300)
