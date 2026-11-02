@@ -27,15 +27,10 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
     """يضيف صدى مسجد + يبطئ الإيقاع + يزيد الدفء (لتوليد الخشوع)."""
     try:
         filters = (
-            # 1. إبطاء السرعة بنسبة 8% (سر الخشوع)
             "atempo=0.92,"
-            # 2. تعميق الصوت وزيادة الدفء (ترددات منخفضة)
             "equalizer=f=120:t=q:w=1.0:g=4,"
-            # 3. تقليل الحدة والجفاف (ترددات عالية)
             "equalizer=f=4000:t=q:w=1.0:g=-4,"
-            # 4. صدى المسجد (مخفض 50%)
             "aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,"
-            # 5. ضاغط صوت لمنع التشويش
             "acompressor=threshold=0.1:ratio=3:attack=20:release=200" 
         )
         
@@ -54,10 +49,10 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return False
 
 # ============================================================
-# 2. دوال التجويد والمسافات
+# 2. دوال التجويد والمسافات (المصححة)
 # ============================================================
 def phonemes_to_arabic_script(phoneme_text: str) -> str:
-    """يحول سلسلة فونيمات كلمة واحدة إلى نص عربي متصل."""
+    """يحول سلسلة فونيمات كلمة واحدة إلى نص عربي متصل ومقروء."""
     if not phoneme_text or not phoneme_text.strip():
         return ""
 
@@ -85,6 +80,22 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
         if token in CONS_MAP:
             char = CONS_MAP[token]
+            
+            # 🌟 إصلاح الهمزات (ئ، ؤ، أ، إ) بناءً على الحرف التالي
+            if char == "ء":
+                next_token = tokens[i+1] if i+1 < len(tokens) else ""
+                is_start = (not arabic_chars or arabic_chars[-1].isspace())
+                
+                if next_token in ("i", "ii"):
+                    char = "إ" if is_start else "ئ"
+                elif next_token in ("u", "uu"):
+                    char = "أ" if is_start else "ؤ"
+                else:
+                    if is_start: char = "أ"
+                    elif arabic_chars[-1] in ("ُ", "ُو"): char = "ؤ"
+                    elif arabic_chars[-1] in ("ِ", "ِي"): char = "ئ"
+                    else: char = "ء"
+
             arabic_chars.append(char)
 
             # التحقق من الشدة
@@ -129,9 +140,19 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
     result = "".join(arabic_chars)
     
-    # 🌟 إصلاح همزة الوصل (ءَل -> ال) لكي يقرأها Gemini بسلاسة
-    if result.startswith("ءَل") or result.startswith("ءَ"):
-        result = "ا" + result[2:] if result.startswith("ءَل") else "ا" + result[1:]
+    # 🌟 معالجة ما بعد التحويل (تجميل الكلمة لتُقرأ بشكل صحيح)
+    # 1. إصلاح التنوين (نْ في نهاية الكلمة تعود تنويناً)
+    result = re.sub(r'َ(nْ|ن)\b', 'ً', result)
+    result = re.sub(r'ُ(nْ|ن)\b', 'ٌ', result)
+    result = re.sub(r'ِ(nْ|ن)\b', 'ٍ', result)
+    
+    # 2. إصلاح واو الجماعة (قَالُو -> قَالُوا)
+    result = re.sub(r'ُو\b', 'ُوا', result)
+    
+    # 3. إصلاح همزة الوصل في بداية الكلمة
+    result = result.replace("ءَل", "ال")
+    if result.startswith("ءَ"):
+        result = "ا" + result[2:]
 
     return result
 
@@ -175,7 +196,6 @@ def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
 
         print(f"   🔄 النص الصوتي التجويدي: {arabic_phonetic[:80]}...")
         
-        # 🌟 التوجيه العاطفي الجديد (بدون حزن)
         style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع، يملؤه السكينة والطمأنينة والهيبة. اقرأ ببطء وتأنٍ، مع إطالة المدود والوقوف عند الوقفات، بنبرة هادئة جداً وتلامس شغاف القلب."
         
         gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
@@ -281,7 +301,6 @@ def build_episode_audio(json_path, out_mp3):
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     
-                    # ✨ تطبيق صدى المسجد والدفء هنا ✨
                     reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
                     if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
                         shutil.copy(reverb_wav, raw_wav)
