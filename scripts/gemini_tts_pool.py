@@ -139,25 +139,32 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
     models = discover_tts_models(prefer_lite=prefer_lite)
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        prompt_text = text
-        if style:
-            prompt_text = f"[{style}] {text}"
+        
         body = {
-            "contents": [{"parts": [{"text": prompt_text}]}],
+            "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "languageCode": "ar-XA",
-                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}
-                },
+                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
             },
         }
+        
+        # ═══ تمرير الـ style عبر systemInstruction (لا يُقرأ بصوت) ═══
+        if style:
+            body["systemInstruction"] = {"parts": [{"text": style}]}
+
         try:
             r = requests.post(url, json=body, timeout=180)
+            
+            # إذا رفض الـ API الـ systemInstruction، نعيد المحاولة بدونه
+            if r.status_code == 400 and style:
+                del body["systemInstruction"]
+                r = requests.post(url, json=body, timeout=180)
+                
             if r.status_code == 429: return "RATE_LIMIT"
             if r.status_code == 400: return False
             if r.status_code == 404: continue
             if r.status_code != 200: continue
+
             data = r.json()
             cands = data.get("candidates") or []
             if not cands: continue
@@ -166,6 +173,7 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
             inline = parts[0].get("inlineData") or {}
             audio_b64 = inline.get("data")
             if not audio_b64: continue
+
             raw = base64.b64decode(audio_b64)
             with wave.open(str(out_wav), "wb") as wf:
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
@@ -179,9 +187,11 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
     out_mp3_path.parent.mkdir(parents=True, exist_ok=True)
     work_dir = out_mp3_path.parent / f"_tts_{int(time.time())}"
     work_dir.mkdir(exist_ok=True)
+
     chunks = _split_text(text)
     pool = get_pool()
     wav_parts: list[Path] = []
+
     for idx, chunk in enumerate(chunks):
         wav_path = work_dir / f"part_{idx:03d}.wav"
         success = False
@@ -189,19 +199,25 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
             key = pool.get_current()
             try: result = _tts_single(chunk, wav_path, voice, key, prefer_lite=prefer_lite, style=style)
             except Exception: pool.mark_failed(30); continue
+
             if result == "RATE_LIMIT": pool.mark_daily_exhausted(); continue
             if result is True: success = True; break
             pool.mark_failed(60)
+
         if not success: raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}")
+
         cleaned_path = work_dir / f"part_{idx:03d}_clean.wav"
         if _clean_chunk(wav_path, cleaned_path): wav_parts.append(cleaned_path)
         else: wav_parts.append(wav_path)
+
     merged_wav = work_dir / "merged.wav"
     with wave.open(str(merged_wav), "wb") as out:
         out.setnchannels(1); out.setsampwidth(2); out.setframerate(24000)
         for part in wav_parts:
             with wave.open(str(part), "rb") as inp: out.writeframes(inp.readframes(inp.getnframes()))
+
     subprocess.run(["ffmpeg", "-y", "-i", str(merged_wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(out_mp3_path)], check=True, capture_output=True, timeout=180)
+
     import shutil
     shutil.rmtree(work_dir, ignore_errors=True)
     return str(out_mp3_path)
