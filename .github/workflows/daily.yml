@@ -30,8 +30,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub
-          pip install quranic-phonemizer
-          # إجبار تثبيت phonemizer 3.2.1 (المتوافق مع espeak-ng)
+          # تثبيت إصدار محدد وحديث من quranic-phonemizer
+          pip install quranic-phonemizer==2.13
+          # إبقاء phonemizer على الإصدار المتوافق
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Diagnose Phonemizer
