@@ -31,10 +31,10 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         # 2. aecho: 3 انعكاسات (تأخير 60ms، 180ms، 320ms) بمستويات متناقصة
         # 3. acompressor: لضبط المستوى ومنع التشويش
         filters = (
-            "equalizer=f=4000:t=q:w=1.0:g=-3,"    # تقليل الحدة
-            "equalizer=f=200:t=q:w=1.0:g=2,"      # زيادة الدفء
-            "aecho=0.8:0.9:60|180|320:0.3|0.2|0.1," # صدى المسجد
-            "acompressor=threshold=0.1:ratio=3:attack=20:release=200" # ضبط الصوت
+            "equalizer=f=4000:t=q:w=1.0:g=-3,"    
+            "equalizer=f=200:t=q:w=1.0:g=2,"      
+            "aecho=0.8:0.9:60|180|320:0.3|0.2|0.1," 
+            "acompressor=threshold=0.1:ratio=3:attack=20:release=200" 
         )
         
         subprocess.run([
@@ -47,19 +47,19 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
     except Exception as e:
         print(f"   ⚠️ فشل تطبيق الصدى: {e}")
-        # في حال الفشل، ننسخ الملف الأصلي كما هو
         try: shutil.copy(input_wav, output_wav)
         except: pass
         return False
 
 # ============================================================
-# 2. دوال التجويد (بدون تغيير)
+# 2. دوال التجويد والمسافات
 # ============================================================
 def phonemes_to_arabic_script(phoneme_text: str) -> str:
     """يحول سلسلة فونيمات tilavet إلى نص عربي متصل يعكس التجويد."""
     if not phoneme_text or not phoneme_text.strip():
         return ""
 
+    # tilavet يفصل الفونيمات بمسافات
     tokens = phoneme_text.strip().split()
     arabic_chars = []
     i = 0
@@ -77,6 +77,12 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
     while i < len(tokens):
         token = tokens[i]
 
+        # 🌟 إصلاح المسافات: إذا كان الرمز يشير لنهاية كلمة، نضع مسافة
+        if token in ("|", "PAUSE", "p", ";", ",", " "):
+            arabic_chars.append(" ")
+            i += 1
+            continue
+
         if token in LONG_VOWELS:
             arabic_chars.append(LONG_VOWELS[token])
             i += 1
@@ -86,6 +92,7 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
             char = CONS_MAP[token]
             arabic_chars.append(char)
 
+            # التحقق من الشدة (تكرار الحرف)
             if i + 1 < len(tokens) and tokens[i + 1] == token:
                 arabic_chars.append("ّ")
                 i += 2
@@ -98,16 +105,19 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
                         i += 1
                 continue
 
+            # التحقق من الحركة القصيرة التالية
             if i + 1 < len(tokens) and tokens[i + 1] in SHORT_VOWELS:
                 arabic_chars.append(SHORT_VOWELS[tokens[i + 1]])
                 i += 2
                 continue
                 
+            # التحقق من المد الطويل التالي
             if i + 1 < len(tokens) and tokens[i + 1] in LONG_VOWELS:
                 arabic_chars.append(LONG_VOWELS[tokens[i + 1]])
                 i += 2
                 continue
 
+            # إذا لم تتبع بحركة، نضع سكوناً
             arabic_chars.append("ْ")
             i += 1
             continue
@@ -123,7 +133,10 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
         i += 1
 
-    return "".join(arabic_chars)
+    result = "".join(arabic_chars)
+    # تنظيف المسافات الزائدة
+    result = re.sub(r'\s+', ' ', result).strip()
+    return result
 
 
 _tilavet_pm = None
@@ -253,7 +266,7 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
 
-            # ═══ 1. الآيات: تجويد + Gemini TTS ═══
+            # ═══ 1. الآيات: تجويد + Gemini TTS + صدى ═══
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
