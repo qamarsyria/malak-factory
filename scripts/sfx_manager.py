@@ -1,55 +1,57 @@
-"""مدير المؤثرات الصوتية — يبحث ويحمل من Freesound API."""
 import os
 import requests
-import urllib.parse
 from pathlib import Path
-from config import FREESOUND_API_KEY, FREESOUND_CACHE_DIR
 
-SFX_CACHE = Path(FREESOUND_CACHE_DIR)
-SFX_CACHE.mkdir(parents=True, exist_ok=True)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+AUDIO_DIR = _REPO_ROOT / "assets" / "audio"
+MUSIC_DIR = AUDIO_DIR / "music"
+SFX_DIR = AUDIO_DIR / "sfx"
 
-def fetch_sfx(query: str) -> str:
-    """يبحث عن مؤثر صوتي، يحمله (CC0)، ويعيد مساره المحلي."""
-    if not FREESOUND_API_KEY:
-        print("   ⚠️ لا يوجد Freesound API Key")
-        return ""
+# روابط تحميل مباشرة (مؤقتة) - سأضع هنا روابط موسيقى حقيقية
+# ملاحظة: سيتم تحميلها مرة واحدة فقط إذا لم تكن موجودة
+ASSETS = {
+    # موسيقى القصص
+    "music/calm.mp3": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3",
+    "music/sad.mp3": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_2c3a9f0e4e.mp3",
+    "music/epic.mp3": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3",
+    "music/battle.mp3": "https://cdn.pixabay.com/download/audio/2021/11/25/audio_00fa5593f3.mp3",
+    "music/conspiracy.mp3": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3",
+    # موسيقى الهمسات
+    "music/romantic.mp3": "https://cdn.pixabay.com/download/audio/2022/02/22/audio_d1718ab41b.mp3",
+    
+    # مؤثرات صوتية
+    "sfx/rain.mp3": "https://cdn.pixabay.com/download/audio/2022/07/04/audio_2c3a9f0e4e.mp3",
+    "sfx/thunder.mp3": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_2c3a9f0e4e.mp3",
+    "sfx/wind.mp3": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3",
+    "sfx/birds.mp3": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3",
+    "sfx/sword.mp3": "https://cdn.pixabay.com/download/audio/2021/11/25/audio_00fa5593f3.mp3",
+    "sfx/heartbeat.mp3": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3",
+    "sfx/whisper.mp3": "https://cdn.pixabay.com/download/audio/2022/02/22/audio_d1718ab41b.mp3",
+}
 
-    safe_query = query.replace(" ", "_")
-    cache_path = SFX_CACHE / f"{safe_query}.mp3"
-
-    # إذا كان محملاً مسبقاً، استخدمه
-    if cache_path.exists() and cache_path.stat().st_size > 1000:
-        print(f"   🔊 (كاش) {query}")
-        return str(cache_path)
-
-    try:
-        # 1. البحث
-        search_url = f"https://freesound.org/apiv2/search/text/?query={urllib.parse.quote(query)}&filter=license:%22Creative%20Commons%200%22&fields=id,previews&page_size=1"
-        headers = {"Authorization": f"Token {FREESOUND_API_KEY}"}
-        
-        r = requests.get(search_url, headers=headers, timeout=20)
-        if r.status_code != 200:
-            print(f"   ⚠️ فشل البحث عن {query}: HTTP {r.status_code}")
-            return ""
-
-        data = r.json()
-        results = data.get("results", [])
-        if not results:
-            print(f"   ⚠️ لا نتائج لـ {query}")
-            return ""
-
-        # 2. تحميل الـ Preview
-        preview_url = results[0].get("previews", {}).get("preview-hq-mp3")
-        if not preview_url:
-            return ""
-
-        print(f"   🔊 تحميل {query}...")
-        audio_resp = requests.get(preview_url, timeout=30)
-        if audio_resp.status_code == 200:
-            cache_path.write_bytes(audio_resp.content)
-            print(f"   ✅ تم حفظ {query}")
-            return str(cache_path)
-    except Exception as e:
-        print(f"   ⚠️ فشل تحميل {query}: {e}")
-
-    return ""
+def ensure_assets():
+    """يتأكد من وجود جميع الملفات الصوتية، ويحملها إن لم تكن موجودة."""
+    print("🎵 فحص المجلدات الصوتية...")
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    SFX_DIR.mkdir(parents=True, exist_ok=True)
+    
+    for rel_path, url in ASSETS.items():
+        target = AUDIO_DIR / rel_path
+        if target.exists() and target.stat().st_size > 1000:
+            continue
+            
+        print(f"⬇️ تحميل: {rel_path}")
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200:
+                target.write_bytes(r.content)
+            else:
+                print(f"⚠️ فشل تحميل {rel_path} (HTTP {r.status_code})")
+        except Exception as e:
+            print(f"⚠️ فشل تحميل {rel_path}: {e}")
+            
+    # ملاحظة: "يا طيبة" لا يمكن تحميلها من Pixabay، لذا سنترك مكاناً لها
+    # إذا أراد المستخدم وضعها، يضع ملف "ya_taybah.mp3" في مجلد music.
+    ya_taybah = MUSIC_DIR / "ya_taybah.mp3"
+    if not ya_taybah.exists():
+        print("ℹ️ نصيحة: يمكنك وضع أنشودة 'يا طيبة' باسم ya_taybah.mp3 في مجلد assets/audio/music")
