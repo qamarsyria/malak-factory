@@ -1,6 +1,5 @@
 import os, re, sys, json, random, traceback
 from pathlib import Path
-from datetime import datetime
 import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -12,6 +11,7 @@ from utilities import notify_telegram, get_breaker
 
 OUTPUT_DIR = _REPO_ROOT / "data" / "daily" / "generated"
 OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
+STATE_FILE = _REPO_ROOT / "state" / "daily_state.json"
 FAQ_JSON = _REPO_ROOT / "data" / "faq-data.json"
 
 # ============================================================
@@ -20,13 +20,11 @@ FAQ_JSON = _REPO_ROOT / "data" / "faq-data.json"
 VERIFIED_HADITHS_FALLBACK = [
     {
         "text": "إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى، فَمَنْ كَانَتْ هِجْرَتُهُ إِلَى دُنْيَا يُصِيبُهَا أَوْ إِلَى امْرَأَةٍ يَنْكِحُهَا فَهِجْرَتُهُ إِلَى مَا هَاجَرَ إِلَيْهِ",
-        "rawi": "عمر بن الخطاب",
-        "attribution": "رواه البخاري ومسلم (صحيح)"
+        "rawi": "عمر بن الخطاب", "attribution": "رواه البخاري ومسلم (صحيح)"
     },
     {
         "text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ",
-        "rawi": "تميم بن أوس الداري",
-        "attribution": "رواه مسلم (صحيح)"
+        "rawi": "تميم بن أوس الداري", "attribution": "رواه مسلم (صحيح)"
     }
 ]
 
@@ -57,9 +55,7 @@ def fetch_verified_hadith(topic="الصبر"):
                         "text": re.sub(r'<[^>]+>', '', h.get("hadith", "")), "rawi": h.get("rawi", ""),
                         "attribution": f"رواه {h.get('mohdith', '')} في {h.get('book', '')} ({h.get('grade', '')})"
                     }
-        print(f"⚠️ dorar.net أعاد HTTP {r.status_code}.")
-    except Exception as e:
-        print(f"⚠️ فشل الاتصال بـ dorar.net ({e}).")
+    except Exception: pass
     
     h = random.choice(VERIFIED_HADITHS_FALLBACK)
     print(f"✅ استخدام حديث احتياطي موثق ({h['rawi']})")
@@ -73,8 +69,6 @@ def fetch_verified_fiqh():
                 item = random.choice(data)
                 return {"question": item.get("question", ""), "answer": item.get("answer", ""), "source": item.get("source", "")}
         except: pass
-    
-    print("⚠️ ملف الفقه غير موجود أو فارغ. سيتم استخدام الفقه الاحتياطي.")
     return random.choice(VERIFIED_FIQH_FALLBACK)
 
 def fetch_ayah_and_tafsir():
@@ -85,8 +79,7 @@ def fetch_ayah_and_tafsir():
         if r.status_code == 200:
             data = r.json()["data"]
             return {"text": data["text"], "tafsir": data.get("tafsir", ""), "attribution": f"سورة {data['surah']['name']} - الآية {ayah}"}
-    except Exception as e:
-        print(f"⚠️ فشل جلب الآية: {e}")
+    except Exception: pass
     return None
 
 # ============================================================
@@ -95,8 +88,6 @@ def fetch_ayah_and_tafsir():
 def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
     models = discover_and_cache(force=False)[:3]
-    if not models: print("   ❌ لا توجد نماذج متاحة!"); return None
-
     for model in models:
         if breaker.is_open(f"model:{model}"): continue
         for attempt in range(2):
@@ -105,7 +96,6 @@ def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
-                
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
                     parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
@@ -122,7 +112,6 @@ def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
                     except json.JSONDecodeError: break
                 elif r.status_code == 429: pool.mark_failed(3600)
                 elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
-            except requests.exceptions.Timeout: pass
             except Exception: pass
     return None
 
@@ -144,7 +133,6 @@ def proofread_script(text):
     for part in parts:
         if not part.strip(): continue
         if part.startswith("[آية:"): corrected_parts.append(part); continue
-        
         chunks = []; current = ""
         for sentence in re.split(r'(?<=[.!؟])\s+', part):
             if len(current) + len(sentence) < 300: current += " " + sentence
@@ -152,7 +140,6 @@ def proofread_script(text):
                 if current: chunks.append(current.strip())
                 current = sentence
         if current: chunks.append(current.strip())
-        
         for chunk in chunks:
             prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص. ممنوع تغيير أي كلمة. أعد النص فقط:\n{chunk}"
             corrected = call_llm(prompt, is_json=False, timeout=30, max_tokens=1000)
@@ -194,33 +181,35 @@ def build_ayah_story_prompt(ayah):
 ممنوع الخروج عن التفسير. أعد النص فقط."""
 
 def build_malak_prompt(name_type):
-    if name_type == "maryam": 
-        focus = "الاسم: مريم. ركز على الطهر، السكينة، البراءة."
-    elif name_type == "malak": 
-        focus = "الاسم: مَلَك (بفتح الميم واللام، مفرد ملائكة، وليس مَلِك بمعنى حاكم). ركز على النور، الحماية، النقاء، وأنها ملاك في صورة إنسان."
-    else: 
-        focus = "الاسم: ملاك. ركز على الندرة، الجمال الروحي الخفي."
-        
+    if name_type == "maryam": focus = "الاسم: مريم. ركز على الطهر، السكينة، البراءة."
+    elif name_type == "malak": focus = "الاسم: مَلَك (بفتح الميم واللام، مفرد ملائكة). ركز على النور، الحماية، النقاء."
+    else: focus = "الاسم: ملاك. ركز على الندرة، الجمال الروحي الخفي."
     return f"""أنت شاعر صوفي رومانسي محترم، تكتب همسات روحانية.
 {focus}
 اكتب مقطعاً غزلياً عفيفاً جداً (50 كلمة)، بطابع ديني راقٍ.
-**مهم جداً**: عندما تذكر اسم "مَلَك"، اكتبها دائماً مشكولة هكذا: "مَلَك" (بفتح الميم واللام) لكي يُقرأ النص بشكل صحيح، ولا تكتبها "ملك" بدون تشكيل.
+**مهم جداً**: عندما تذكر اسم "مَلَك"، اكتبها دائماً مشكولة هكذا: "مَلَك" (بفتح الميم واللام).
 ادعُ الله أن يحفظها ويجمعك بها على طاعة.
-ممنوع تماماً ذكر أي اسم آخر غير الاسم المطلوب.
-**ممنوع تماماً كتابة أي عبارات تشويقية للحلقة القادمة، أو ذكر اسم القناة، أو طلب المشاركة. النص يجب أن يكون همسة غزل صافية فقط.**
+ممنوع تماماً كتابة أي عبارات تشويقية أو ذكر اسم القناة. النص همسة غزل صافية فقط.
 ضع علامة [النص_الموثق] في بداية الهمسة. أعد النص فقط."""
 
 # ============================================================
-# 5. التشغيل الرئيسي
+# 5. التشغيل الرئيسي (نظام الدوران بالعداد)
 # ============================================================
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     
-    # 🌟 نظام الدوران الجديد: يعتمد على تاريخ اليوم (لن يعيد المقطع الأول أبداً)
-    day_of_epoch = (datetime.now() - datetime(2024, 1, 1)).days
-    content_type = day_of_epoch % 6  
+    # 🌟 عداد التشغيل (يزيد في كل مرة يتم تشغيل السكربت)
+    state = {"run_count": 0}
+    if STATE_FILE.exists():
+        try: state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except: pass
     
-    print(f"📅 اليوم رقم {day_of_epoch} من الدورة. نوع المحتوى المختار: {content_type}", flush=True)
+    content_type = state["run_count"] % 6
+    state["run_count"] += 1
+    STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+    
+    print(f"🔄 رقم التشغيل: {state['run_count']} | نوع المحتوى المختار: {content_type}", flush=True)
 
     data, prompt, content_title, segment_type = None, "", "", ""
     name_type = ""
@@ -243,22 +232,14 @@ def main():
         name_type = "malaak"; prompt = build_malak_prompt(name_type); content_title = "همسات لملاك"; segment_type = "malak"
 
     if content_type < 3 and not data:
-        print("❌ فشل جلب المحتوى الموثق الأساسي. إيقاف.")
         sys.exit(1)
 
     print(f"✍️ جاري كتابة سيناريو ({content_title})...", flush=True)
     script_text = call_llm(prompt, is_json=False, timeout=60, max_tokens=1000)
     
     if not script_text:
-        print("⚠️ فشل توليد السيناريو عبر Gemini. استخدام السيناريو الاحتياطي.", flush=True)
-        if content_type >= 3:
-            script_text = "[النص_الموثق] " + random.choice(MALAK_FALLBACKS[name_type])
-        elif content_type == 0:
-            script_text = f"في هذا المقطع، نتوقف مع حديث عظيم يضيء لنا الطريق. [النص_الموثق]"
-        elif content_type == 1:
-            script_text = f"كثيراً ما يبحث المسلم عن إجابة شافية. [النص_الموثق]"
-        else:
-            script_text = f"في آيات القرآن الكريم، توجد أسرار وعبر. [النص_الموثق]"
+        if content_type >= 3: script_text = "[النص_الموثق] " + random.choice(MALAK_FALLBACKS[name_type])
+        else: sys.exit(1)
     
     script_text = proofread_script(script_text)
 
@@ -268,22 +249,16 @@ def main():
 
     if len(parts) == 2:
         for chunk in split_narration(parts[0]): segments.append({"type": "narration", "text": chunk.strip()})
-        
-        if content_type >= 3:
-            segments.append({"type": "malak", "text": parts[1].strip(), "display": content_title})
-        else:
-            segments.append({"type": segment_type, "text": data["text"], "display": data.get("attribution", data.get("source", ""))})
-            
+        if content_type >= 3: segments.append({"type": "malak", "text": parts[1].strip(), "display": content_title})
+        else: segments.append({"type": segment_type, "text": data["text"], "display": data.get("attribution", data.get("source", ""))})
         if content_type < 3 and len(parts) > 1:
             for chunk in split_narration(parts[1]): segments.append({"type": "narration", "text": chunk.strip()})
     else:
-        if content_type >= 3:
-            segments.append({"type": "malak", "text": script_text.strip(), "display": content_title})
+        if content_type >= 3: segments.append({"type": "malak", "text": script_text.strip(), "display": content_title})
         else:
             for chunk in split_narration(script_text): segments.append({"type": "narration", "text": chunk.strip()})
             segments.append({"type": segment_type, "text": data["text"], "display": data.get("attribution", data.get("source", ""))})
 
-    # 🌟 شرط جديد: لا نضيف CTA إطلاقاً إذا كان المحتوى "همسات ملك" (رومانسيات)
     if content_type < 3:
         segments.append({"type": "cta", "text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». شارك المقطع. ملاك المعرفة.", "visual": "mosque architecture"})
 
