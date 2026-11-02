@@ -1,14 +1,15 @@
 {
   "current_story_id": "nuh",
   "current_story_index": 2,
-  "episode_num": 2,
+  "episode_num": 3,
   "covered_topics": [
-    "العالم قبل البعثة: نشأة الشرك ونسب نوح عليه السلام ونشأته"
+    "العالم قبل البعثة: نشأة الشرك ونسب نوح عليه السلام ونشأته",
+    "بداية الدعوة وتاريخ الأصنام"
   ],
   "completed_stories": [
     "adam",
     "idris"
   ],
   "cycle": 0,
-  "last_updated": "2026-11-02T10:52:49.902397+00:00"
+  "last_updated": "2026-11-02T11:04:00.805600+00:00"
 }
