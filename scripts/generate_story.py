@@ -26,7 +26,7 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
@@ -51,7 +51,7 @@ def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     try:
-        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 4000}, timeout=180)
+        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"]
             if is_json:
@@ -64,40 +64,41 @@ def call_huggingface(prompt, is_json=True):
 def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
-# ═══ قاموس إصلاح الأخطاء الإملائية الإجباري (Failsafe) ═══
-MANUAL_FIXES = {
-    "أسجدت": "سجدت",
-    "أبعاطها": "أبعادها",
-    "تعالى": "تَعَالَى",
-    "منشغلة": "مُنْشَغِلَة",
-    "إرهاصا": "إِرْهَاصًا",
-    "هاذا": "هَذَا",
-    "هاذه": "هَذِهِ"
-}
-
-def force_manual_fixes(text):
-    for wrong, right in MANUAL_FIXES.items():
-        text = text.replace(wrong, right)
-    return text
-
+# ═══ التدقيق الشامل (فقرة بفقرة لضمان الدقة) ═══
 def proofread_script(text):
-    print("🔍 جاري التدقيق الإملائي ووضع التشكيل...", flush=True)
-    text = force_manual_fixes(text) # إصلاح إجباري أولاً
+    print("🔍 جاري التدقيق اللغوي الشامل ووضع التشكيل...", flush=True)
     
-    prompt = f"""أنت مدقق لغوي عربي خبير ومتشدد جداً.
-مهمتك: تصحيح النص التالي.
+    # تقسيم النص إلى فقرات (بناءً على الآيات أو الجمل الطويلة)
+    parts = re.split(r'(\[آية: \d+:\d+\])', text)
+    corrected_parts = []
+    
+    for part in parts:
+        if not part.strip(): continue
+        
+        # إذا كان الجزء هو علامة آية، نتركه كما هو
+        if part.startswith("[آية:"):
+            corrected_parts.append(part)
+            continue
+            
+        # إذا كان نصاً، نرسله للتدقيق الصارم
+        prompt = f"""أنت مدقق لغوي عربي خبير ومتشدد جداً.
+مهمتك: تصحيح النص التالي بدقة متناهية.
 القواعد الصارمة:
-1. صحح أي أخطاء إملائية أو نحوية أو في همزات الوصل والقطع.
-2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على **كل حرف** في النص بدون استثناء.
-3. حافظ على علامات الآيات [آية: X:Y] كما هي تماماً.
+1. صحح **كل** الأخطاء الإملائية والسياقية. (مثال: إذا كُتبت "خطبة" والمقصود المشي، صححها إلى "خطوة").
+2. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على **كل حرف** في النص.
+3. **ممنوع تماماً** تغيير الكلمات الصحيحة، أو إعادة الصياغة، أو تغيير المعنى. التزم بالنص الأصلي حرفياً.
 4. أعد النص المصحح فقط، دون أي مقدمات أو اعتذارات.
 
 النص:
-{text}"""
-    corrected = call_llm_with_fallback(prompt, is_json=False, timeout=180, max_tokens=8192)
-    if corrected and len(corrected) > len(text) * 0.8:
-        return corrected
-    return text
+{part}"""
+        
+        corrected = call_llm_with_fallback(prompt, is_json=False, timeout=60, max_tokens=2000)
+        if corrected and len(corrected) > len(part) * 0.7:
+            corrected_parts.append(corrected.strip())
+        else:
+            corrected_parts.append(part) # نستخدم الأصل إذا فشل التدقيق
+            
+    return " ".join(corrected_parts)
 
 def fix_arabic_tashkeel_minimal(text):
     text = text.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ").replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
@@ -143,7 +144,7 @@ def parse_script_with_verses(script_text):
             i += 2
     return segments
 
-def build_plan_prompt(story, ep_num, covered_topics):
+def build_plan_prompt(story, ep_num):
     return f'أنت مؤرخ إسلامي. اكتب خطة للحلقة {ep_num} من "{story["title"]}".\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
 
 def build_script_prompt(story, plan, ep_num):
@@ -169,11 +170,13 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state.get("covered_topics", []))) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
+    # ═══ التدقيق الشامل ═══
     script_text = proofread_script(script_text)
+    
     segments = parse_script_with_verses(script_text)
     
     summary_text = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر.", is_json=False, timeout=60, max_tokens=300)
