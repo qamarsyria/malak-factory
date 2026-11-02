@@ -27,11 +27,6 @@ VERIFIED_HADITHS_FALLBACK = [
         "text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ",
         "rawi": "تميم بن أوس الداري",
         "attribution": "رواه مسلم (صحيح)"
-    },
-    {
-        "text": "مَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيَقُلْ خَيْرًا أَوْ لِيَصْمُتْ، وَمَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيُكْرِمْ جَارَهُ، وَمَنْ كَانَ يُؤْمِنُ بِاللَّهِ وَالْيَوْمِ الآخِرِ فَلْيُكْرِمْ ضَيْفَهُ",
-        "rawi": "أبو هريرة",
-        "attribution": "رواه البخاري ومسلم (صحيح)"
     }
 ]
 
@@ -62,9 +57,9 @@ def fetch_verified_hadith(topic="الصبر"):
                         "text": re.sub(r'<[^>]+>', '', h.get("hadith", "")), "rawi": h.get("rawi", ""),
                         "attribution": f"رواه {h.get('mohdith', '')} في {h.get('book', '')} ({h.get('grade', '')})"
                     }
-        print(f"⚠️ dorar.net أعاد HTTP {r.status_code} أو لا يوجد حديث صحيح.")
+        print(f"⚠️ dorar.net أعاد HTTP {r.status_code}.")
     except Exception as e:
-        print(f"⚠️ فشل الاتصال بـ dorar.net ({e}). سيتم استخدام الحديث الاحتياطي.")
+        print(f"⚠️ فشل الاتصال بـ dorar.net ({e}).")
     
     h = random.choice(VERIFIED_HADITHS_FALLBACK)
     print(f"✅ استخدام حديث احتياطي موثق ({h['rawi']})")
@@ -95,11 +90,11 @@ def fetch_ayah_and_tafsir():
     return None
 
 # ============================================================
-# 3. دوال مساعدة (مُحسّنة للتعامل مع أعطال Gemini)
+# 3. دوال مساعدة
 # ============================================================
 def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
-    models = discover_and_cache(force=False)[:3] # جرب أول 3 نماذج فقط لتوفير الوقت
+    models = discover_and_cache(force=False)[:3]
     if not models: print("   ❌ لا توجد نماذج متاحة!"); return None
 
     for model in models:
@@ -111,10 +106,7 @@ def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
                 body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 
-                print(f"   ⏳ محاولة {model}...", flush=True)
                 r = requests.post(url, json=body, timeout=timeout)
-                print(f"   📡 استجابة {model}: HTTP {r.status_code}", flush=True)
-                
                 if r.status_code == 200:
                     parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     if not parts: break
@@ -128,16 +120,10 @@ def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
                         pool._advance(); breaker.record_success(f"model:{model}")
                         return parsed
                     except json.JSONDecodeError: break
-                elif r.status_code == 429: 
-                    print("   ⚠️ 429 Rate Limit", flush=True)
-                    pool.mark_failed(3600)
-                elif r.status_code in (404, 503): 
-                    print(f"   ⚠️ {r.status_code} Model Unavailable", flush=True)
-                    breaker.record_failure(f"model:{model}"); break
-            except requests.exceptions.Timeout:
-                print(f"   ⚠️ Timeout ({timeout}s) مع {model}", flush=True)
-            except Exception as e: 
-                print(f"   ⚠️ خطأ: {e}", flush=True)
+                elif r.status_code == 429: pool.mark_failed(3600)
+                elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
+            except requests.exceptions.Timeout: pass
+            except Exception: pass
     return None
 
 def clean_llm_text(text: str) -> str:
@@ -153,7 +139,6 @@ def apply_forced_tashkeel(text):
     return text
 
 def proofread_script(text):
-    print("🔍 جاري التدقيق اللغوي ووضع التشكيل...", flush=True)
     parts = re.split(r'(\[آية: \d+:\d+\])', text)
     corrected_parts = []
     for part in parts:
@@ -241,10 +226,10 @@ def main():
     if content_type == 0:
         topics = ["الصبر", "بر الوالدين", "الصدق", "الرحمة", "حسن الخلق"]
         data = fetch_verified_hadith(random.choice(topics))
-        if data: prompt = build_hadith_prompt(data); content_title = f"حديث: {data['rawi']}"; segment_type = "quran"
+        if data: prompt = build_hadith_prompt(data); content_title = f"حديث: {data['rawi']}"; segment_type = "hadith"
     elif content_type == 1:
         data = fetch_verified_fiqh()
-        if data: prompt = build_fiqh_prompt(data); content_title = "فائدة فقهية"; segment_type = "quran"
+        if data: prompt = build_fiqh_prompt(data); content_title = "فائدة فقهية"; segment_type = "fiqh"
     elif content_type == 2:
         data = fetch_ayah_and_tafsir()
         if data: prompt = build_ayah_story_prompt(data); content_title = "آية وحكاية"; segment_type = "quran"
@@ -262,7 +247,6 @@ def main():
     print(f"✍️ جاري كتابة سيناريو ({content_title})...", flush=True)
     script_text = call_llm(prompt, is_json=False, timeout=60, max_tokens=1000)
     
-    # 🌟 نظام احتياطي إذا فشل Gemini
     if not script_text:
         print("⚠️ فشل توليد السيناريو عبر Gemini. استخدام السيناريو الاحتياطي.", flush=True)
         if content_type >= 3:
