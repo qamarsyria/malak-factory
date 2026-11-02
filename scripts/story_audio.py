@@ -1,7 +1,6 @@
-import os, sys, json, subprocess, tempfile, shutil, re, time, asyncio
+import os, sys, json, subprocess, tempfile, shutil, re, time
 from pathlib import Path
 import requests
-import edge_tts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -21,10 +20,9 @@ TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 
 # ============================================================
-# 1. دالة تطبيق صدى المسجد + الدفء والخشوع
+# 1. دالة تطبيق صدى المسجد + الدفء
 # ============================================================
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
-    """يضيف صدى مسجد + يبطئ الإيقاع + يزيد الدفء (لتوليد الخشوع)."""
     try:
         filters = (
             "atempo=0.92,"
@@ -33,14 +31,7 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
             "aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,"
             "acompressor=threshold=0.1:ratio=3:attack=20:release=200" 
         )
-        
-        subprocess.run([
-            "ffmpeg", "-y", "-i", input_wav,
-            "-af", filters,
-            "-ar", TARGET_SR, "-ac", "1",
-            output_wav
-        ], check=True, capture_output=True, timeout=60)
-        
+        subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
     except Exception as e:
         print(f"   ⚠️ فشل تطبيق الصدى: {e}")
@@ -49,10 +40,9 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return False
 
 # ============================================================
-# 2. دوال التجويد والمسافات (المصححة)
+# 2. التحويل الصوتي الذكي (المُصحح)
 # ============================================================
 def phonemes_to_arabic_script(phoneme_text: str) -> str:
-    """يحول سلسلة فونيمات كلمة واحدة إلى نص عربي متصل ومقروء."""
     if not phoneme_text or not phoneme_text.strip():
         return ""
 
@@ -81,15 +71,11 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
         if token in CONS_MAP:
             char = CONS_MAP[token]
             
-            # 🌟 إصلاح الهمزات (ئ، ؤ، أ، إ) بناءً على الحرف التالي
             if char == "ء":
                 next_token = tokens[i+1] if i+1 < len(tokens) else ""
                 is_start = (not arabic_chars or arabic_chars[-1].isspace())
-                
-                if next_token in ("i", "ii"):
-                    char = "إ" if is_start else "ئ"
-                elif next_token in ("u", "uu"):
-                    char = "أ" if is_start else "ؤ"
+                if next_token in ("i", "ii"): char = "إ" if is_start else "ئ"
+                elif next_token in ("u", "uu"): char = "أ" if is_start else "ؤ"
                 else:
                     if is_start: char = "أ"
                     elif arabic_chars[-1] in ("ُ", "ُو"): char = "ؤ"
@@ -98,7 +84,6 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
 
             arabic_chars.append(char)
 
-            # التحقق من الشدة
             if i + 1 < len(tokens) and tokens[i + 1] == token:
                 arabic_chars.append("ّ")
                 i += 2
@@ -111,13 +96,11 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
                         i += 1
                 continue
 
-            # التحقق من الحركة القصيرة
             if i + 1 < len(tokens) and tokens[i + 1] in SHORT_VOWELS:
                 arabic_chars.append(SHORT_VOWELS[tokens[i + 1]])
                 i += 2
                 continue
                 
-            # التحقق من المد الطويل
             if i + 1 < len(tokens) and tokens[i + 1] in LONG_VOWELS:
                 arabic_chars.append(LONG_VOWELS[tokens[i + 1]])
                 i += 2
@@ -127,32 +110,28 @@ def phonemes_to_arabic_script(phoneme_text: str) -> str:
             i += 1
             continue
 
-        if token in SHORT_VOWELS:
-            arabic_chars.append(SHORT_VOWELS[token])
-            i += 1
-            continue
-        if token in LONG_VOWELS:
-            arabic_chars.append(LONG_VOWELS[token])
-            i += 1
-            continue
-
         i += 1
 
     result = "".join(arabic_chars)
     
-    # 🌟 معالجة ما بعد التحويل (تجميل الكلمة لتُقرأ بشكل صحيح)
-    # 1. إصلاح التنوين (نْ في نهاية الكلمة تعود تنويناً)
+    # إصلاح التنوين
     result = re.sub(r'َ(nْ|ن)\b', 'ً', result)
     result = re.sub(r'ُ(nْ|ن)\b', 'ٌ', result)
     result = re.sub(r'ِ(nْ|ن)\b', 'ٍ', result)
     
-    # 2. إصلاح واو الجماعة (قَالُو -> قَالُوا)
+    # إصلاح واو الجماعة
     result = re.sub(r'ُو\b', 'ُوا', result)
     
-    # 3. إصلاح همزة الوصل في بداية الكلمة
-    result = result.replace("ءَل", "ال")
-    if result.startswith("ءَ"):
-        result = "ا" + result[2:]
+    # إصلاح التاء المربوطة
+    if result.endswith("تَ"): result = result[:-2] + "َةً"
+    elif result.endswith("تُ"): result = result[:-2] + "َةٌ"
+    elif result.endswith("تِ"): result = result[:-2] + "َةٍ"
+
+    # إصلاح همزة الوصل
+    result = result.replace("ءَل", "ال").replace("ءَ", "ا")
+
+    # إزالة السكون المزدوج
+    result = result.replace("ٌْ", "ٌ").replace("ًْ", "ً").replace("ٍْ", "ٍ")
 
     return result
 
@@ -161,51 +140,39 @@ _tilavet_pm = None
 def get_tilavet_phonemizer():
     global _tilavet_pm
     if _tilavet_pm is None and TilavetPhonemizer is not None:
-        try:
-            _tilavet_pm = TilavetPhonemizer()
-            print("✅ Tilavet Phonemizer initialized")
-        except Exception as e:
-            print(f"⚠️ Failed to initialize Tilavet Phonemizer: {e}")
+        try: _tilavet_pm = TilavetPhonemizer()
+        except Exception as e: print(f"⚠️ Failed to init Phonemizer: {e}")
     return _tilavet_pm
 
-
 def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
-    """يولد صوت الآية كلمة كلمة لضمان فصلها بمسافات واضحة، مع توجيه عاطفي دافئ."""
     try:
         pm = get_tilavet_phonemizer()
-        if not pm:
-            return False
+        if not pm: return False
 
         words = uthmani_text.split()
         phonetic_words = []
-        
         for word in words:
             result = pm.phonemize(word)
             phoneme_text = result.text if hasattr(result, 'text') else str(result)
-            if not phoneme_text or not phoneme_text.strip():
-                continue
-                
-            arabic_word = phonemes_to_arabic_script(phoneme_text)
-            if arabic_word:
-                phonetic_words.append(arabic_word)
+            if phoneme_text:
+                arabic_word = phonemes_to_arabic_script(phoneme_text)
+                if arabic_word: phonetic_words.append(arabic_word)
                 
         arabic_phonetic = " ".join(phonetic_words)
-        
-        if not arabic_phonetic or len(arabic_phonetic) < 5:
-            return False
+        if not arabic_phonetic or len(arabic_phonetic) < 5: return False
 
         print(f"   🔄 النص الصوتي التجويدي: {arabic_phonetic[:80]}...")
-        
         style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع، يملؤه السكينة والطمأنينة والهيبة. اقرأ ببطء وتأنٍ، مع إطالة المدود والوقوف عند الوقفات، بنبرة هادئة جداً وتلامس شغاف القلب."
         
         gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
-
         return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
     except Exception as e:
-        print(f"   ⚠️ Gemini TTS فشل: {e}")
-        return False
+        print(f"   ❌ Gemini TTS فشل: {e}")
+        raise e # نرفع الخطأ لإيقاف السكربت بالكامل إذا نفدت الحصة
 
-
+# ============================================================
+# 3. دوال مساعدة وتقسيم النصوص (مقطعين طويلين لتوفير الحصة)
+# ============================================================
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
@@ -220,20 +187,11 @@ def fetch_ayah_uthmani(s, a):
     try:
         url = f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani"
         r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            return r.json()["data"]["text"]
-    except Exception as e:
-        print(f"⚠️ فشل جلب الآية {s}:{a} - {e}")
+        if r.status_code == 200: return r.json()["data"]["text"]
+    except Exception as e: print(f"⚠️ فشل جلب الآية {s}:{a} - {e}")
     return ""
 
-async def _edge_tts_async(text, out_path):
-    comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
-    await comm.save(out_path)
-
-def edge_generate(text, out_path):
-    asyncio.run(_edge_tts_async(text, out_path))
-
-def split_text(text, max_chars=150):
+def split_text(text, max_chars=1500):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
     for s in sentences:
@@ -266,12 +224,9 @@ def build_episode_audio(json_path, out_mp3):
         is_ending_segment = (total_segs - idx) <= 3
 
         if test_mode:
-            if stype == "narration" and not taken_narration:
-                taken_narration = True
-            elif stype == "quran" and not taken_quran:
-                taken_quran = True
-            elif not is_ending_segment:
-                continue
+            if stype == "narration" and not taken_narration: taken_narration = True
+            elif stype == "quran" and not taken_quran: taken_quran = True
+            elif not is_ending_segment: continue
 
         text, display = "", ""
 
@@ -294,53 +249,36 @@ def build_episode_audio(json_path, out_mp3):
 
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-            success = False
-
-            # ═══ 1. الآيات: تجويد + Gemini TTS + صدى/دفء ═══
+            
+            # ═══ الآيات ═══
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                    
                     reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
                     if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
                         shutil.copy(reverb_wav, raw_wav)
                         print(f"   ✅ Gemini TTS + صدى/دفء (تجويد)", flush=True)
-                    else:
+                    else: 
                         print(f"   ✅ Gemini TTS (تجويد بدون صدى)", flush=True)
-                        
-                    success = True
-                else:
-                    print(f"   ⚠️ فشل التوليد التجويدي، سيتم استخدام Gemini TTS العادي...", flush=True)
 
-            # ═══ 2. السرد أو الاحتياطي: Gemini TTS العادي ═══
-            if not success:
+            # ═══ السرد ═══
+            else:
                 try:
                     gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                        success = True
                         print(f"   ✅ Gemini ({stype})", flush=True)
+                    else:
+                        raise RuntimeError("ملف الصوت المولد صغير جداً أو فارغ")
                 except Exception as e:
-                    print(f"   ⚠️ Gemini فشل: {e}", flush=True)
-
-            # ═══ 3. احتياطي أخير: Edge TTS ═══
-            if not success:
-                print(f"   🚨 Edge TTS احتياطي...", flush=True)
-                try:
-                    edge_generate(chunk, str(temp_mp3))
-                    if temp_mp3.exists() and temp_mp3.stat().st_size > 2000:
-                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                        success = True
-                except Exception as e:
-                    print(f"   ⚠️ Edge TTS فشل: {e}", flush=True)
-
-            if not success: continue
+                    print(f"   ❌ Gemini فشل: {e}", flush=True)
+                    raise e # إيقاف السكربت بالكامل
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
                 subprocess.run(["ffmpeg", "-y", "-i", str(raw_wav), "-af", "afade=t=in:st=0:d=0.05,afade=t=out:st=" + str(c_dur-0.05) + ":d=0.05", str(faded)], check=True, capture_output=True)
-            else:
+            else: 
                 shutil.copy(raw_wav, faded)
 
             final_wavs.append(faded)
