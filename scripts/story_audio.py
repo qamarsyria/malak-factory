@@ -48,7 +48,6 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # صدى خفيف جداً (40ms) + تسريع 15% + تضخيم خفيف
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
@@ -95,17 +94,24 @@ def build_episode_audio(json_path, out_mp3):
     total_segs = len(segments_list)
     test_mode = os.environ.get("TEST_MODE") == "1"
     
-    print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل (الحلقة كاملة)'}")
+    print(f"⚙️ وضع الاختبار: {'مفعل (سرد + آية + نهاية)' if test_mode else 'معطل (الحلقة كاملة)'}")
+
+    taken_narration = False
+    taken_quran = False
 
     for idx, seg in enumerate(segments_list):
-        # ═══ إصلاح وضع الاختبار: نأخذ أول مقطعين + آخر 3 مقاطع ═══
-        if test_mode:
-            if idx < 2 or idx >= total_segs - 3:
-                pass # نكمل التوليد
-            else:
-                continue # نتخطى الباقي
-                
         stype = seg.get("type")
+        is_ending_segment = (total_segs - idx) <= 3
+        
+        # ═══ إصلاح وضع الاختبار: نأخذ أول سرد وأول آية + آخر 3 ═══
+        if test_mode:
+            if stype == "narration" and not taken_narration:
+                taken_narration = True
+            elif stype == "quran" and not taken_quran:
+                taken_quran = True
+            elif not is_ending_segment:
+                continue
+            
         text, display = "", ""
         
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
