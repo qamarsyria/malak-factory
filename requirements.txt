@@ -35,3 +35,4 @@ pyotp
 
 # --- تجويد القرآن ---
 quranic-phonemizer
+phonemizer>=3.3.0
