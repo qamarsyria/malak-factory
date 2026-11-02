@@ -48,7 +48,7 @@ def fetch_ayah(s, a):
 
 def apply_cocktail_mix(input_path, output_path):
     try:
-        # صدى خفيف جداً (40ms) + تسريع 15% + تضخيم خفيف
+        # صدى خفيف جداً + تسريع 15% + تضخيم خفيف
         cmd = [
             "ffmpeg", "-y", "-i", str(input_path),
             "-af", 
@@ -95,7 +95,7 @@ def build_episode_audio(json_path, out_mp3):
     total_segs = len(segments_list)
     test_mode = os.environ.get("TEST_MODE") == "1"
     
-    print(f"⚙️ وضع الاختبار: {'مفعل (سرد + آية + نهاية)' if test_mode else 'معطل (الحلقة كاملة)'}")
+    print(f"⚙️ وضع الاختبار: {'مفعل' if test_mode else 'معطل'}")
 
     taken_narration = False
     taken_quran = False
@@ -135,15 +135,17 @@ def build_episode_audio(json_path, out_mp3):
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             success = False
             
-            # ═══ تم إزالة style تماماً ═══
+            # ═══ إزالة style نهائياً، والاعتماد على التشكيل + وسوم التوقف ═══
             if stype == "quran":
                 try:
                     chunk_fixed = apply_spelling_fixes(chunk)
-                    gemini_tts_with_pool(chunk_fixed, str(temp_mp3), voice="Charon")
+                    # إضافة وقفة قصيرة بعد الآية لتحسين الإيقاع
+                    chunk_with_pause = chunk_fixed + " <short pause>"
+                    gemini_tts_with_pool(chunk_with_pause, str(temp_mp3), voice="Charon")
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         apply_cocktail_mix(temp_mp3, str(raw_wav))
                         success = True
-                        print(f"   ✅ Gemini (مع صدى الآيات)", flush=True)
+                        print(f"   ✅ Gemini (آية بتجويد التشكيل)", flush=True)
                 except Exception: pass
             
             if not success:
