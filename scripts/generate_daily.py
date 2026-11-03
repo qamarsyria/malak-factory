@@ -1,256 +1,162 @@
-import os, re, sys, json, random, traceback
+import os
+import re
+import sys
+import json
+import gzip
+import random
 from pathlib import Path
-import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from gemini_tts_pool import get_pool
-from model_discovery import discover_and_cache
-from utilities import notify_telegram, get_breaker
-
 OUTPUT_DIR = _REPO_ROOT / "data" / "daily" / "generated"
 OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 STATE_FILE = _REPO_ROOT / "state" / "daily_state.json"
-FAQ_JSON = _REPO_ROOT / "data" / "faq-data.json"
+LIBRARIES_DIR = _REPO_ROOT / "data" / "libraries"
 
-# ============================================================
-# 1. المصادر الموثقة
-# ============================================================
-VERIFIED_HADITHS_FALLBACK = [
-    {"text": "إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى، فَمَنْ كَانَتْ هِجْرَتُهُ إِلَى دُنْيَا يُصِيبُهَا أَوْ إِلَى امْرَأَةٍ يَنْكِحُهَا فَهِجْرَتُهُ إِلَى مَا هَاجَرَ إِلَيْهِ", "rawi": "عمر بن الخطاب", "attribution": "رواه البخاري ومسلم (صحيح)"},
-    {"text": "الدِّينُ النَّصِيحَةُ. قُلْنَا: لِمَنْ؟ قَالَ: لِلَّهِ، وَلِكِتَابِهِ، وَلِرَسُولِهِ، وَلِأَئِمَّةِ الْمُسْلِمِينَ وَعَامَّتِهِمْ", "rawi": "تميم بن أوس الداري", "attribution": "رواه مسلم (صحيح)"}
+# كلمات بحث الخلفيات الحالمة (Dreamy Visuals)
+DREAMY_VISUALS = [
+    "enchanted forest magical",
+    "rose garden butterflies",
+    "dreamy fantasy landscape",
+    "starry night sky milky way",
+    "waterfall magical nature",
+    "cherry blossom spring",
+    "islamic architecture mosque sunset"
 ]
 
-VERIFIED_FIQH_FALLBACK = [
-    {"question": "ما حكم بر الوالدين في الإسلام؟", "answer": "بر الوالدين من أعظم القربات إلى الله تعالى، وهو واجب على كل مسلم. قال الله تعالى: (وَقَضَى رَبُّكَ أَلَّا تَعْبُدُوا إِلَّا إِيَّاهُ وَبِالْوَالِدَيْنِ إِحْسَانًا). ويكون البر بالطاعة في غير معصية، والإنفاق عليهما، وخفض الجناح لهما، والدعاء لهما.", "source": "القرآن الكريم والسنة النبوية"}
-]
-
-MALAK_FALLBACKS = {
-    "maryam": ["يا مريم، في زمنٍ قلّ فيه الصفاء، أراد الله أن يطمئن قلبي، فخلق طهراً يسير بين البشر. اللهم احفظها لي بحفظك."],
-    "malak": ["يقولون إن الملائكة خلقٌ لا نراه، لكنني أراه كل يوم في مَلَك. في نقائها، وسكينتها، ونورها."],
-    "malaak": ["يا ملاك، اسمكِ النادر كجوهرة في قلب المحبين. اللهم كما جعلت اسمكِ فريداً، اجعل نصيبكِ من السكينة أوفر النصيب."]
-}
-
-# ============================================================
-# 2. دوال الجلب
-# ============================================================
-def fetch_verified_hadith(topic="الصبر"):
+def load_library(filename):
+    """تحميل المكتبة المضغوطة بأمان"""
+    path = LIBRARIES_DIR / filename
+    if not path.exists():
+        print(f"⚠️ المكتبة غير موجودة: {path}")
+        return []
     try:
-        r = requests.get("https://dorar.net/dorar_api.json", params={"skey": topic, "page": 1}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200:
-            for h in r.json().get("ahadith", {}).get("result", []):
-                if "صحيح" in h.get("grade", "") or "حسن" in h.get("grade", ""):
-                    return {"text": re.sub(r'<[^>]+>', '', h.get("hadith", "")), "rawi": h.get("rawi", ""), "attribution": f"رواه {h.get('mohdith', '')} في {h.get('book', '')} ({h.get('grade', '')})"}
-    except Exception: pass
-    h = random.choice(VERIFIED_HADITHS_FALLBACK)
-    print(f"✅ استخدام حديث احتياطي موثق ({h['rawi']})")
-    return h
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"❌ خطأ في قراءة {filename}: {e}")
+        return []
 
-def fetch_verified_fiqh():
-    if FAQ_JSON.exists():
-        try:
-            data = json.loads(FAQ_JSON.read_text(encoding="utf-8"))
-            if isinstance(data, list) and data:
-                item = random.choice(data)
-                return {"question": item.get("question", ""), "answer": item.get("answer", ""), "source": item.get("source", "")}
-        except: pass
-    return random.choice(VERIFIED_FIQH_FALLBACK)
-
-def fetch_ayah_and_tafsir():
-    surah, ayah = random.choice([(2, 255), (24, 35), (18, 10), (2, 286)])
-    try:
-        url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/ar.muyassar"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()["data"]
-            return {"text": data["text"], "tafsir": data.get("tafsir", ""), "attribution": f"سورة {data['surah']['name']} - الآية {ayah}"}
-    except Exception: pass
-    return None
-
-# ============================================================
-# 3. دوال مساعدة
-# ============================================================
-def call_llm(prompt, is_json=True, timeout=45, max_tokens=8192):
-    pool = get_pool(); breaker = get_breaker()
-    models = discover_and_cache(force=False)[:3]
-    for model in models:
-        if breaker.is_open(f"model:{model}"): continue
-        for attempt in range(2):
-            try:
-                key = pool.get_current()
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
-                if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
-                r = requests.post(url, json=body, timeout=timeout)
-                if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    if not parts: break
-                    text = parts[0].get("text", "")
-                    if is_json:
-                        s, e = text.find("{"), text.rfind("}")
-                        if s == -1 or e <= s: break
-                        text = text[s:e + 1]
-                    try:
-                        parsed = json.loads(text) if is_json else text
-                        pool._advance(); breaker.record_success(f"model:{model}")
-                        return parsed
-                    except json.JSONDecodeError: break
-                elif r.status_code == 429: pool.mark_failed(3600)
-                elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
-            except Exception: pass
-    return None
-
-def clean_llm_text(text: str) -> str:
+def clean_text(text):
+    """تنظيف النص من أي رموز HTML أو علامات غير مرغوبة"""
     if not text: return ""
-    t = text.strip()
-    for pat in [r'^\s*إليك\s+', r'^\s*هذا\s+', r'^\s*هذه\s+', r'^\s*بالتأكيد\s*[,،]']:
-        t = re.sub(pat, '', t, count=1, flags=re.IGNORECASE).strip()
-    return t.strip('«»"\'[]')
+    text = re.sub(r'<[^>]+>', '', text) # إزالة وسوم HTML
+    text = re.sub(r'\s+', ' ', text)    # إزالة المسافات الزائدة
+    return text.strip()
 
-def apply_forced_tashkeel(text):
-    for wrong, right in {"الله": "اللَّه", "الرحمن": "الرَّحْمَن"}.items():
-        text = re.sub(rf'(?<![ء-ي\u064B-\u0652]){re.escape(wrong)}(?![ء-ي\u064B-\u0652])', right, text)
-    return text
+def pick_random_valid(items, text_keys, min_len=100, max_len=1200):
+    """اختيار عنصر عشوائي مع ضمان أن يكون طوله مناسباً لفيديو قصير"""
+    valid_items = []
+    for item in items:
+        text = ""
+        for key in text_keys:
+            if key in item:
+                text = item[key]
+                break
+        if text and min_len <= len(text) <= max_len:
+            valid_items.append(item)
+            
+    if valid_items:
+        return random.choice(valid_items)
+    
+    # إذا لم نجد عنصراً في النطاق المطلوب، نأخذ أي عنصر عشوائي
+    return random.choice(items) if items else None
 
-def proofread_script(text):
-    """تم التعديل: إرسال النص كاملاً في طلب واحد (لتوفير الحصة وتجنب Rate Limit)"""
-    parts = re.split(r'(\[آية: \d+:\d+\])', text)
-    corrected_parts = []
-    for part in parts:
-        if not part.strip(): continue
-        if part.startswith("[آية:"): corrected_parts.append(part); continue
-        
-        if len(part) > 5:
-            prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص التالي. ممنوع تغيير أي كلمة. أعد النص فقط:\n{part}"
-            corrected = call_llm(prompt, is_json=False, timeout=60, max_tokens=2000)
-            if corrected and len(corrected) > len(part) * 0.7:
-                corrected_parts.append(apply_forced_tashkeel(clean_llm_text(corrected)))
-            else: 
-                corrected_parts.append(part)
-    return " ".join(corrected_parts)
-
-def split_narration(text, max_chars=150):
-    sentences = re.split(r'(?<=[.!؟])\s+', text)
-    chunks, current = [], ""
-    for s in sentences:
-        if len(current) + len(s) < max_chars: current += " " + s
-        else:
-            if current: chunks.append(current.strip())
-            current = s
-    if current: chunks.append(current.strip())
-    return chunks
-
-# ============================================================
-# 4. البرومبتات
-# ============================================================
-def build_hadith_prompt(hadith):
-    return f"""أنت راوي محتوى إسلامي قصير. الحديث: "{hadith['text']}" (المصدر: {hadith['attribution']}).
-اكتب سيناريو قصير (100 كلمة) بهيكل:
-1. مقدمة مشوقة. 2. شرح مبسط. 3. ضع علامة [النص_الموثق] ليُقرأ الحديث. 4. عبرة.
-ممنوع اختراع أي شيء. أعد النص فقط."""
-
-def build_fiqh_prompt(fiqh):
-    return f"""أنت راوي محتوى إسلامي قصير. المسألة: "{fiqh['question']}"، الجواب: "{fiqh['answer']}" (المصدر: {fiqh['source']}).
-اكتب سيناريو قصير (100 كلمة) بهيكل:
-1. طرح السؤال. 2. ضع علامة [النص_الموثق] للجواب. 3. فائدة ختامية.
-ممنوع تغيير الفتوى. أعد النص فقط."""
-
-def build_ayah_story_prompt(ayah):
-    return f"""أنت راوي قصصي. الآية: "{ayah['text']}"، التفسير الميسر: "{ayah['tafsir']}".
-اكتب سيناريو قصير (100 كلمة) يحكي القصة أو السياق بناءً على التفسير فقط.
-ضع علامة [النص_الموثق] ليُقرأ النص القرآني.
-ممنوع الخروج عن التفسير. أعد النص فقط."""
-
-def build_malak_prompt(name_type):
-    if name_type == "maryam": focus = "الاسم: مريم. ركز على الطهر، السكينة، البراءة."
-    elif name_type == "malak": focus = "الاسم: مَلَك (بفتح الميم واللام، مفرد ملائكة). ركز على النور، الحماية، النقاء."
-    else: focus = "الاسم: ملاك. ركز على الندرة، الجمال الروحي الخفي."
-    return f"""أنت شاعر صوفي رومانسي محترم، تكتب همسات روحانية.
-{focus}
-اكتب مقطعاً غزلياً عفيفاً جداً (50 كلمة)، بطابع ديني راقٍ.
-**مهم جداً**: عندما تذكر اسم "مَلَك"، اكتبها دائماً مشكولة هكذا: "مَلَك" (بفتح الميم واللام).
-ادعُ الله أن يحفظها ويجمعك بها على طاعة.
-ممنوع تماماً كتابة أي عبارات تشويقية أو ذكر اسم القناة. النص همسة غزل صافية فقط.
-ضع علامة [النص_الموثق] في بداية الهمسة. أعد النص فقط."""
-
-# ============================================================
-# 5. التشغيل الرئيسي
-# ============================================================
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     
+    # 🌟 عداد التشغيل (لدوران المحتوى)
     state = {"run_count": 0}
     if STATE_FILE.exists():
         try: state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except: pass
     
-    content_type = state["run_count"] % 6
+    content_type = state["run_count"] % 4  # 0: حديث, 1: فقه, 2: آية, 3: أذكار
     state["run_count"] += 1
     STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
     
     print(f"🔄 رقم التشغيل: {state['run_count']} | نوع المحتوى المختار: {content_type}", flush=True)
 
-    data, prompt, content_title, segment_type = None, "", "", ""
-    name_type = ""
+    segments = []
+    content_title = ""
 
     if content_type == 0:
-        topics = ["الصبر", "بر الوالدين", "الصدق", "الرحمة", "حسن الخلق"]
-        data = fetch_verified_hadith(random.choice(topics))
-        if data: prompt = build_hadith_prompt(data); content_title = f"حديث: {data['rawi']}"; segment_type = "hadith"
+        # 📚 1. الحديث الشريف
+        lib = load_library("hadith-library.json.gz")
+        item = pick_random_valid(lib, ["text"], 100, 1500)
+        if not item:
+            print("❌ مكتبة الحديث فارغة!"); sys.exit(1)
+        
+        content_title = f"حديث: {item.get('chapter', 'من صحيح البخاري ومسلم')}"
+        visual = random.choice(DREAMY_VISUALS)
+        
+        segments.append({"type": "narration", "text": "في هذا المقطع، نتوقف مع حديث نبوي شريف، يضيء لنا الطريق.", "visual": visual})
+        segments.append({"type": "hadith", "text": clean_text(item["text"]), "display": item.get("book", "صحيح"), "visual": visual})
+        segments.append({"type": "narration", "text": f"رواه {item.get('book', '')}، في {item.get('chapter', '')}.", "visual": visual})
+
     elif content_type == 1:
-        data = fetch_verified_fiqh()
-        if data: prompt = build_fiqh_prompt(data); content_title = "فائدة فقهية"; segment_type = "fiqh"
+        # ⚖️ 2. الفقه
+        lib = load_library("fiqh-library.json.gz")
+        item = pick_random_valid(lib, ["answer"], 200, 1500)
+        if not item:
+            print("❌ مكتبة الفقه فارغة!"); sys.exit(1)
+        
+        content_title = "فائدة فقهية"
+        visual = random.choice(DREAMY_VISUALS)
+        
+        segments.append({"type": "narration", "text": "كثيراً ما يبحث المسلم عن إجابة شافية، في مسألة فقهية.", "visual": visual})
+        segments.append({"type": "narration", "text": clean_text(item["question"]), "visual": visual})
+        segments.append({"type": "fiqh", "text": clean_text(item["answer"]), "display": "منهج السلف", "visual": visual})
+
     elif content_type == 2:
-        data = fetch_ayah_and_tafsir()
-        if data: prompt = build_ayah_story_prompt(data); content_title = "آية وحكاية"; segment_type = "quran"
-    elif content_type == 3:
-        name_type = "maryam"; prompt = build_malak_prompt(name_type); content_title = "همسات لمريم"; segment_type = "malak"
-    elif content_type == 4:
-        name_type = "malak"; prompt = build_malak_prompt(name_type); content_title = "همسات لمَلَك"; segment_type = "malak"
+        # 📖 3. آية وحكاية
+        lib = load_library("ayah-library.json.gz")
+        item = pick_random_valid(lib, ["tafsir"], 200, 1200)
+        if not item:
+            print("❌ مكتبة الآيات فارغة!"); sys.exit(1)
+        
+        content_title = f"آية وحكاية: {item['surah_name']}"
+        visual = random.choice(DREAMY_VISUALS)
+        
+        segments.append({"type": "narration", "text": f"في سورة {item['surah_name']}، يقول الله تعالى:", "visual": visual})
+        segments.append({"type": "quran", "text": clean_text(item["text"]), "display": f"{item['surah_name']}: {item['ayah_number']}", "visual": visual})
+        segments.append({"type": "narration", "text": f"يقول التفسير الميسر: {clean_text(item['tafsir'])}", "visual": visual})
+
     else:
-        name_type = "malaak"; prompt = build_malak_prompt(name_type); content_title = "همسات لملاك"; segment_type = "malak"
+        # 📿 4. الأذكار
+        lib = load_library("adhkar-library.json.gz")
+        item = pick_random_valid(lib, ["text"], 20, 800)
+        if not item:
+            print("❌ مكتبة الأذكار فارغة!"); sys.exit(1)
+        
+        content_title = f"ذكر: {item.get('category', 'من حصن المسلم')}"
+        visual = random.choice(DREAMY_VISUALS)
+        
+        segments.append({"type": "narration", "text": "من أذكار حصن المسلم، التي تطمئن بها القلوب.", "visual": visual})
+        segments.append({"type": "adhkar", "text": clean_text(item["text"]), "display": item.get("reference", ""), "visual": visual})
 
-    if content_type < 3 and not data:
-        sys.exit(1)
+    # إضافة الخاتمة والدعوة للمشاركة (بدون موسيقى)
+    segments.append({
+        "type": "cta", 
+        "text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». شارك المقطع لتعم الفائدة. ملاك المعرفة.", 
+        "visual": "mosque architecture sunset"
+    })
 
-    print(f"✍️ جاري كتابة سيناريو ({content_title})...", flush=True)
-    script_text = call_llm(prompt, is_json=False, timeout=60, max_tokens=1000)
-    
-    if not script_text:
-        if content_type >= 3: script_text = "[النص_الموثق] " + random.choice(MALAK_FALLBACKS[name_type])
-        else: sys.exit(1)
-    
-    script_text = proofread_script(script_text)
-
-    segments = []
-    parts = script_text.split("[النص_الموثق]")
-    if len(parts) == 1: parts = script_text.split("[النص_موثق]")
-
-    if len(parts) == 2:
-        for chunk in split_narration(parts[0]): segments.append({"type": "narration", "text": chunk.strip()})
-        if content_type >= 3: segments.append({"type": "malak", "text": parts[1].strip(), "display": content_title})
-        else: segments.append({"type": segment_type, "text": data["text"], "display": data.get("attribution", data.get("source", ""))})
-        if content_type < 3 and len(parts) > 1:
-            for chunk in split_narration(parts[1]): segments.append({"type": "narration", "text": chunk.strip()})
-    else:
-        if content_type >= 3: segments.append({"type": "malak", "text": script_text.strip(), "display": content_title})
-        else:
-            for chunk in split_narration(script_text): segments.append({"type": "narration", "text": chunk.strip()})
-            segments.append({"type": segment_type, "text": data["text"], "display": data.get("attribution", data.get("source", ""))})
-
-    if content_type < 3:
-        segments.append({"type": "cta", "text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». شارك المقطع. ملاك المعرفة.", "visual": "mosque architecture"})
-
-    ep_data = {"episode_number": 1, "story_id": "daily", "title": content_title, "segments": segments}
+    # بناء ملف JSON النهائي
+    ep_data = {
+        "episode_number": 1, 
+        "story_id": "daily", 
+        "title": content_title, 
+        "segments": segments
+    }
     
     output_path = OUTPUT_DIR / "daily-latest.json"
     output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
     OUT_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_FILE_PATH.write_text(str(output_path), encoding="utf-8")
-    print(f"✅ تم إنشاء المقطع اليومي: {output_path}", flush=True)
+    print(f"✅ تم إنشاء المقطع اليومي من المكتبة الموثقة: {output_path}", flush=True)
 
 if __name__ == "__main__":
-    try: main()
-    except Exception as e: traceback.print_exc(); sys.exit(1)
+    main()
