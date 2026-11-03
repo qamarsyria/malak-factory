@@ -1,0 +1,30 @@
+name: Test Single Ayah
+
+on:
+  workflow_dispatch: # يسمح لك بتشغيله يدوياً بضغطة زر
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install requests edge-tts
+
+      - name: Run Test
+        run: python scripts/test_single_ayah.py
+
+      - name: Upload Audio Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ayah-Audio
+          path: out/test_ayah.mp3
