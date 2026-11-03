@@ -11,19 +11,17 @@ from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACC
 from utilities import cleanup_dir
 
 def _find_arabic_font():
-    candidates = ["/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf", "/usr/share/fonts/opentype/fonts/hosny-amiri/Amiri-BoldItalic.ttf"]
+    candidates = ["/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf"]
     for c in candidates:
         if os.path.exists(c): return c
     r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
     files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
     return files[0] if files else ""
 
-def _shape(text):
-    return arabic_reshaper.reshape(str(text))
+def _shape(text): return arabic_reshaper.reshape(str(text))
 
 def _wrap(text, font, max_w, draw):
-    words = text.split()
-    lines, current = [], ""
+    words = text.split(); lines, current = [], ""
     for w in words:
         trial = (current + " " + w).strip() if current else w
         bbox = draw.textbbox((0, 0), trial, font=font)
@@ -41,12 +39,7 @@ def get_duration(path):
 
 def get_visual_query(seg):
     if seg.get("type") == "malak":
-        malak_queries = [
-            "butterflies flowers", "rain old damascus", "hijab girl flowers",
-            "birds nature", "romantic nature", "rain window", "roses garden"
-        ]
-        return random.choice(malak_queries)
-        
+        return random.choice(["butterflies flowers", "rain old damascus", "hijab girl flowers", "birds nature", "romantic nature", "rain window", "roses garden"])
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     if "بحر" in text or "موج" in text: return "sea waves"
     if "جبل" in text or "طور" in text: return "mountain peak"
@@ -64,8 +57,7 @@ def _find_local(query):
     for base in (Path(BG_VIDEOS_DIR), Path(BG_IMAGES_DIR)):
         if not base.exists(): continue
         for f in base.glob(f"*{slug}*"):
-            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: 
-                return str(f)
+            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: return str(f)
     return None
 
 def fetch_media(query, work_dir, used_urls):
@@ -75,7 +67,7 @@ def fetch_media(query, work_dir, used_urls):
     for q in queries:
         if not PIXABAY_KEY: break
         try:
-            time.sleep(1)
+            time.sleep(0.5) # تقليل وقت الانتظار
             r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
             if r.status_code == 200:
                 hits = r.json().get("hits", [])
@@ -93,8 +85,7 @@ def fetch_media(query, work_dir, used_urls):
                     except: pass
         except: pass
     if Path(BG_VIDEOS_DIR).exists():
-        videos = list(Path(BG_VIDEOS_DIR).glob("*.*"))
-        videos = [v for v in videos if v.suffix.lower() in ('.mp4', '.mov', '.webm', '.jpg', '.png')]
+        videos = [v for v in Path(BG_VIDEOS_DIR).glob("*.*") if v.suffix.lower() in ('.mp4', '.mov', '.webm', '.jpg', '.png')]
         if videos: return str(random.choice(videos))
     out = work_dir / "black.jpg"
     if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
@@ -172,7 +163,8 @@ def build_video(audio_path, meta_path, output_mp4):
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.endswith(('.jpg', '.jpeg', '.png'))
-                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(temp_bg)]
+                # 🌟 تسريع 1: preset ultrafast بدلاً من fast
+                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
                 
@@ -206,12 +198,14 @@ def build_video(audio_path, meta_path, output_mp4):
                 subprocess.run(["ffmpeg", "-y"] + text_inputs + ["-filter_complex", ";".join(text_filters), "-map", "[text]", "-t", str(seg_duration), "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)], check=True, capture_output=True)
 
             out_seg = work_dir / f"seg_{i}.mp4"
-            subprocess.run(["ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
+            # 🌟 تسريع 2: preset ultrafast للفيديو النهائي
+            subprocess.run(["ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
             concat_lines.append(f"file '{out_seg}'")
 
         audio_dur = get_duration(audio_path)
         (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
+        # 🌟 تسريع 3: preset ultrafast للدمج النهائي
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
         print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
         cleanup_dir(work_dir)
