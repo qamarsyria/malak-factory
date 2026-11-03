@@ -40,9 +40,7 @@ def get_duration(path):
     except: return 0.0
 
 def get_visual_query(seg):
-    # 🌟 صور مخصصة لهمسات ملك (رومانسية)
     if seg.get("type") == "malak":
-        # قائمة كلمات بحث رومانسية (فراشات، مطر، ورد، نساء محجبات، الشام القديمة)
         malak_queries = [
             "butterflies flowers", "rain old damascus", "hijab girl flowers",
             "birds nature", "romantic nature", "rain window", "roses garden"
