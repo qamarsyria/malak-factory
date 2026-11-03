@@ -120,24 +120,27 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
 
         if not text and stype != "quran": continue
 
+        # 🌟 1. الآيات
         if stype == "quran" and "surah" in seg:
             s, ayahs = seg["surah"], seg["ayah_numbers"]
             if mode == "youtube":
                 print(f"🎙️ المقطع {idx+1} [quran] - Gemini...")
                 for a in ayahs:
                     cache_a = ep_cache / f"gemini_{s}_{a}.wav"
+                    text_a = requests.get(f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani").json()["data"]["text"]
                     if not cache_a.exists():
-                        text_a = requests.get(f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani").json()["data"]["text"]
                         tmp_mp3 = work / "tmp.mp3"
                         if generate_quran_gemini(text_a, str(tmp_mp3)):
                             subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     if cache_a.exists():
                         voice_wavs.append(cache_a); voice_wavs.append(silence_path)
-                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": "آية", "duration": get_dur(cache_a)+SILENCE_DUR}]})
+                        # 🌟 إصلاح: وضع النص الفعلي للآية بدلاً من كلمة "آية"
+                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(cache_a)+SILENCE_DUR}]})
             else:
                 print(f"🎙️ المقطع {idx+1} [quran] - بشري...")
                 for a in ayahs:
                     cache_a = ep_cache / f"human_{s}_{a}.mp3"
+                    text_a = requests.get(f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani").json()["data"]["text"]
                     if not download_human_ayah(s, a, str(cache_a)): continue
                     stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
                     reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
@@ -146,9 +149,11 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                         apply_mosque_reverb(str(stealth_a), str(reverb_a))
                     if reverb_a.exists():
                         voice_wavs.append(reverb_a); voice_wavs.append(silence_path)
-                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": "آية", "duration": get_dur(reverb_a)+SILENCE_DUR}]})
+                        # 🌟 إصلاح: وضع النص الفعلي للآية
+                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(reverb_a)+SILENCE_DUR}]})
             continue
 
+        # 🌟 2. السرد
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
         chunk_timings = []
@@ -170,7 +175,7 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
             if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                 subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                 
-                # إضافة الصدى فقط (بدون موسيقى)
+                # 🌟 إضافة صدى المسجد فقط للسرد (بدون أي موسيقى)
                 if stype in ("narration", "hadith", "fiqh", "adhkar"):
                     reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
                     if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
@@ -205,6 +210,11 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
     Path(meta_path).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": total_dur, "segments": all_segments_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"✅ {out_mp3} | {total_dur/60:.1f} دقيقة")
+    
+    # 🌟 مسح الكاش تلقائياً لمنع التداخل
+    print("🧹 مسح الكاش...")
+    shutil.rmtree(ep_cache, ignore_errors=True)
+    
     cleanup_dir(work)
 
 if __name__ == "__main__":
