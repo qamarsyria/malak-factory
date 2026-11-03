@@ -3,19 +3,14 @@ import sys
 import subprocess
 import asyncio
 import requests
-from pathlib import Path
 import edge_tts
 
-# ============================================================
-# إعدادات التجربة
-# ============================================================
-SURAH = 1      # رقم السورة (مثلاً 1 للفاتحة)
-AYAH = 1       # رقم الآية
-VOICE = "ar-SA-HamedNeural" # صوت سعودي وقور
-OUTPUT_FILE = "test_ayah.mp3"
+SURAH = 1      # يمكنك تغيير رقم السورة
+AYAH = 1       # يمكنك تغيير رقم الآية
+VOICE = "ar-SA-HamedNeural" 
+OUTPUT_FILE = "out/test_ayah.mp3"
 
 def fetch_ayah_text(surah, ayah):
-    """جلب النص العثماني للآية من الإنترنت"""
     print(f"📖 جاري جلب الآية {surah}:{ayah}...")
     try:
         url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/quran-uthmani"
@@ -29,15 +24,12 @@ def fetch_ayah_text(surah, ayah):
     return None
 
 async def generate_audio(text, out_path):
-    """توليد الصوت باستخدام Edge TTS (مجاني، بدون حصة)"""
     print(f"🎙️ جاري توليد الصوت باستخدام {VOICE}...")
-    # إبطاء السرعة قليلاً (-10%) لإعطاء طابع الخشوع
     communicate = edge_tts.Communicate(text, VOICE, rate="-10%")
     await communicate.save(out_path)
     print(f"✅ تم إنشاء الملف الصوتي الخام: {out_path}")
 
 def apply_mosque_effect(input_path, output_path):
-    """تطبيق صدى المسجد وإبطاء بسيط (بنفس فلاتر المعمل)"""
     print("🎛️ جاري تطبيق صدى المسجد والتحسينات...")
     try:
         filters = (
@@ -60,31 +52,19 @@ def apply_mosque_effect(input_path, output_path):
         return False
 
 def main():
-    print("=" * 50)
-    print("🧪 بدء تجربة الآية الواحدة (معزولة تماماً عن المعمل)")
-    print("=" * 50)
-
-    # 1. جلب النص
+    print("🧪 بدء تجربة الآية الواحدة (معزولة تماماً)")
     text = fetch_ayah_text(SURAH, AYAH)
-    if not text:
-        sys.exit(1)
+    if not text: sys.exit(1)
 
-    # 2. توليد الصوت الخام
-    raw_file = "raw_ayah.mp3"
+    raw_file = "out/raw_ayah.mp3"
+    os.makedirs("out", exist_ok=True)
     asyncio.run(generate_audio(text, raw_file))
 
-    # 3. تطبيق الصدى
     if os.path.exists(raw_file):
         apply_mosque_effect(raw_file, OUTPUT_FILE)
-        
-        # تنظيف الملف المؤقت
-        if os.path.exists(raw_file):
-            os.remove(raw_file)
+        if os.path.exists(raw_file): os.remove(raw_file)
 
-    print("=" * 50)
-    print(f"🎉 التجربة انتهت! استمع للملف: {OUTPUT_FILE}")
-    print("ملاحظة: هذا الصوت مجاني 100% ولا يستهلك حصة Gemini.")
-    print("=" * 50)
+    print(f"🎉 التجربة انتهت! الملف: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()
