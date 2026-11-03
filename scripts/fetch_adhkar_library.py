@@ -9,7 +9,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = _REPO_ROOT / "data" / "libraries"
 OUTPUT_FILE = OUTPUT_DIR / "adhkar-library.json.gz"
 
-URL = "https://raw.githubusercontent.com/osamayy/azkar-db/master/azkar.json"
+# رابط جديد ومضمون لمكتبة أذكار
+URL = "https://raw.githubusercontent.com/nawafalqari/azkar-api/main/data/azkar.json"
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -19,24 +20,29 @@ def main():
         r = requests.get(URL, timeout=30)
         if r.status_code != 200:
             print(f"❌ فشل التحميل: HTTP {r.status_code}")
-            sys.exit(1)
+            sys.exit(1) # إيقاف العملية بإخطار
             
         data = r.json()
         adhkar_list = []
         
-        for idx, item in enumerate(data):
-            zekr = item.get("zekr", "").strip()
-            if not zekr: continue
+        # بنية الملف الجديد عبارة عن أقسام (Categories)
+        for category_item in data:
+            category = category_item.get("category", "")
+            array_items = category_item.get("array", [])
             
-            adhkar_list.append({
-                "id": f"adhkar-{idx+1:05d}",
-                "text": zekr,
-                "category": item.get("category", ""),
-                "count": item.get("count", ""),
-                "reference": item.get("reference", ""),
-                "type": "adhkar"
-            })
-            
+            for zekr_item in array_items:
+                zekr = zekr_item.get("text", "").strip()
+                if not zekr: continue
+                
+                adhkar_list.append({
+                    "id": f"adhkar-{len(adhkar_list)+1:05d}",
+                    "text": zekr,
+                    "category": category,
+                    "count": zekr_item.get("count", ""),
+                    "reference": zekr_item.get("reference", ""),
+                    "type": "adhkar"
+                })
+                
         print(f"📝 تم تجميع {len(adhkar_list)} ذكر/دعاء.")
         
         print("🗜️ جاري ضغط الملف...")
@@ -48,6 +54,7 @@ def main():
         
     except Exception as e:
         print(f"❌ حدث خطأ: {e}")
+        sys.exit(1) # 🌟 إجبار السكربت على إظهار الخطأ
 
 if __name__ == "__main__":
     main()
