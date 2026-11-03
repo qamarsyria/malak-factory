@@ -40,6 +40,15 @@ def get_duration(path):
     except: return 0.0
 
 def get_visual_query(seg):
+    # 🌟 صور مخصصة لهمسات ملك (رومانسية)
+    if seg.get("type") == "malak":
+        # قائمة كلمات بحث رومانسية (فراشات، مطر، ورد، نساء محجبات، الشام القديمة)
+        malak_queries = [
+            "butterflies flowers", "rain old damascus", "hijab girl flowers",
+            "birds nature", "romantic nature", "rain window", "roses garden"
+        ]
+        return random.choice(malak_queries)
+        
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     if "بحر" in text or "موج" in text: return "sea waves"
     if "جبل" in text or "طور" in text: return "mountain peak"
@@ -125,7 +134,6 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         overlay.save(out_path); return
 
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
-    # عرض الآية: نص الآية فقط، ثم المرجع في سطر منفصل
     display_text = chunk_text + (f"\n﴿ {display_ref} ﴾" if is_quran and display_ref else "")
     font, lines, lh = _fit_text(display_text, font_path, VIDEO_W - 120, VIDEO_H - 400, 70, 45)
     
