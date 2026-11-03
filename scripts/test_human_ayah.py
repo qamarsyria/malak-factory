@@ -1,11 +1,11 @@
 import os
 import subprocess
 import requests
-from pathlib import Path
 
-SURAH = 1      # رقم السورة (يمكنك تغييره)
-AYAH = 1       # رقم الآية
-RECITER = "Husary_128kbps" 
+# غيرت القارئ إلى العفاسي لأنه أسرع وأعذب من الحصري
+SURAH = 1      
+AYAH = 1       
+RECITER = "Alafasy_128kbps" # مشاري العفاسي
 OUTPUT_FILE = "out/test_human_ayah.mp3"
 TEMP_FILE = "out/temp_human_ayah.mp3"
 
@@ -29,19 +29,17 @@ def download_human_ayah(surah, ayah, reciter):
     return False
 
 def apply_stealth_filters(input_path, output_path):
-    """تطبيق فلتر يغير البصمة الصوتية لكسر Content ID"""
-    print("🎛️ تطبيق الفلتر الخفي (Stealth Mix) لكسر بصمة يوتيوب...")
+    """فلتر خفي يكسر بصمة يوتيوب بدون التأثير على السرعة أو جودة الصوت"""
+    print("🎛️ تطبيق الفلتر الخفي (بدون تبطيء)...")
     try:
-        # 1. asetrate: يغير التردد (Pitch) بشكل طفيف جداً (خفض 3%)
-        # 2. atempo: يعيد السرعة لطبيعتها بعد تغيير التردد (1.03)
-        # 3. aecho: صدى خفيف جداً يكسر البصمة ويعطي طابع خشوع
-        # 4. highpass/lowpass: قص الترددات العالية جداً والمنخفضة جداً لتغيير شكل الموجة
+        # لقد حذفنا asetrate الذي كان يسبب البطء الشديد
+        # نستخدم تعديل الترددات والصدى الخفيف جداً لتغيير بصمة الصوت
         filters = (
-            "asetrate=22050*0.97,"   # خفض النبرة 3%
-            "atempo=1.03,"           # تعويض السرعة
-            "aecho=0.8:0.88:40:0.15," # صدى خفيف جداً
-            "highpass=f=80,"         # قطع الترددات المنخفضة جداً
-            "lowpass=f=10000"        # قطع الترددات العالية جداً
+            "atempo=1.05,"                 # تسريع بسيط جداً (5%) لجعله أكثر حيوية
+            "equalizer=f=200:t=q:w=1.0:g=2," # تعميق الصوت قليلاً
+            "aecho=0.8:0.9:20:0.1,"        # صدى خفيف جداً (لتغيير البصمة)
+            "highpass=f=100,"              # قطع الترددات المنخفضة جداً
+            "lowpass=f=12000"              # قطع الترددات العالية جداً
         )
         
         subprocess.run([
