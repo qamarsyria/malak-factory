@@ -6,6 +6,7 @@ import gzip
 import random
 from datetime import datetime
 from pathlib import Path
+import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,15 +33,38 @@ def clean_text(text):
     if not text: return ""
     return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text)).strip()
 
+def fetch_sharh_from_dorar(hadith_text):
+    """جلب الشرح الموثق من موقع الدرر السنية"""
+    print("🔎 جاري البحث عن شرح الحديث في الدرر السنية...")
+    try:
+        # نأخذ أول 50 حرف من الحديث للبحث
+        search_key = hadith_text[:50]
+        r = requests.get(
+            "https://dorar.net/dorar_api.json",
+            params={"skey": search_key},
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("ahadith", {}).get("result", [])
+            if results:
+                sharh = results[0].get("sharh", "")
+                if sharh:
+                    # تنظيف الشرح من وسوم HTML
+                    return clean_text(re.sub(r'<[^>]+>', '', sharh))
+    except Exception as e:
+        print(f"⚠️ تعذر جلب الشرح: {e}")
+    return ""
+
 def pick_unused(items, text_key, used_ids, min_len=50, max_len=1500):
-    """اختيار عنصر عشوائي لم يُستخدم من قبل"""
     valid_items = [i for i in items if min_len <= len(i.get(text_key, "")) <= max_len]
     unused_items = [i for i in valid_items if i.get("id") not in used_ids]
     
     if not unused_items:
-        print(f"♻️ تم استهلاك جميع العناصر ({len(valid_items)})، إعادة تصفير الذاكرة لهذا القسم...")
+        print(f"♻️ تم استهلاك جميع العناصر، إعادة تصفير الذاكرة...")
         unused_items = valid_items
-        used_ids = [] # تصفير القائمة
+        used_ids = []
         
     if not unused_items: return None, used_ids
     
@@ -52,7 +76,6 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     
-    # 🌟 تحميل الحالة (العداد + العناصر المستخدمة)
     state = {"run_count": 0, "used_ids": {"hadith": [], "fiqh": [], "quran": [], "adhkar": []}}
     if STATE_FILE.exists():
         try: 
@@ -75,12 +98,23 @@ def main():
 
     if content_type == 0:
         lib = load_library("hadith-library.json.gz")
-        item, used_list = pick_unused(lib, "text", used_list, 100, 1500)
+        item, used_list = pick_unused(lib, "text", used_list, 100, 1000)
         if not item: sys.exit(1)
+        
+        hadith_text = clean_text(item["text"])
         content_title = f"حديث: {item.get('chapter', 'من صحيح البخاري ومسلم')}"
+        
         segments.append({"type": "narration", "text": "في هذا المقطع، نتوقف مع حديث نبوي شريف، يضيء لنا الطريق.", "visual": visual})
-        segments.append({"type": "hadith", "text": clean_text(item["text"]), "display": item.get("book", "صحيح"), "visual": visual})
+        segments.append({"type": "hadith", "text": hadith_text, "display": item.get("book", "صحيح"), "visual": visual})
         segments.append({"type": "narration", "text": f"رواه {item.get('book', '')}، في {item.get('chapter', '')}.", "visual": visual})
+        
+        # 🌟 جلب الشرح وإضافته
+        sharh = fetch_sharh_from_dorar(hadith_text)
+        if sharh:
+            segments.append({"type": "narration", "text": "يقول الشرح الموثق لهذا الحديث:", "visual": visual})
+            segments.append({"type": "narration", "text": sharh, "visual": visual})
+        else:
+            segments.append({"type": "narration", "text": "وهذا الحديث أصل عظيم في بابه، يجب على المسلم تدبره والعمل به.", "visual": visual})
 
     elif content_type == 1:
         lib = load_library("fiqh-library.json.gz")
@@ -112,7 +146,6 @@ def main():
 
     ep_data = {"episode_number": 1, "story_id": "daily", "title": content_title, "segments": segments}
     
-    # حفظ الحالة الجديدة
     state["used_ids"][current_type_name] = used_list
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     
