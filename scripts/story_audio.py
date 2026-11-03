@@ -10,16 +10,13 @@ from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
 from sfx_manager import ensure_assets, MUSIC_DIR, SFX_DIR, AUDIO_DIR
 
-try:
-    from tilavet_phonemizer import Phonemizer as TilavetPhonemizer
-    print("✅ tilavet-phonemizer loaded")
-except Exception as e:
-    print(f"❌ Failed to load tilavet-phonemizer: {e}")
-    TilavetPhonemizer = None
-
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
+
+# 🌟 الإعدادات الجديدة للصوت البشري (الآيات فقط)
+RECITER = "Alafasy_128kbps" 
+QURAN_BASE_URL = "https://everyayah.com/data"
 
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
     try:
@@ -35,70 +32,34 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         except: pass
         return False
 
-def phonemes_to_arabic_script(phoneme_text: str) -> str:
-    if not phoneme_text or not phoneme_text.strip(): return ""
-    tokens = phoneme_text.strip().split(); arabic_chars = []; i = 0
-    CONS_MAP = {"'": "ء", "2": "ء", "b": "ب", "t": "ت", "th": "ث", "j": "ج", "H": "ح", "kh": "خ", "d": "د", "dh": "ذ", "r": "ر", "z": "ز", "s": "س", "sh": "ش", "S": "ص", "D": "ض", "T": "ط", "Z": "ظ", "3": "ع", "gh": "غ", "f": "ف", "q": "ق", "k": "ك", "l": "ل", "L": "ل", "m": "م", "n": "ن", "h": "ه", "w": "و", "y": "ي"}
-    SHORT_VOWELS = {"a": "َ", "i": "ِ", "u": "ُ"}; LONG_VOWELS = {"aa": "َا", "ii": "ِي", "uu": "ُو", "aa6": "َا", "ii6": "ِي", "uu6": "ُو"}
-    while i < len(tokens):
-        token = tokens[i]
-        if token in LONG_VOWELS: arabic_chars.append(LONG_VOWELS[token]); i += 1; continue
-        if token in CONS_MAP:
-            char = CONS_MAP[token]
-            if char == "ء":
-                next_token = tokens[i+1] if i+1 < len(tokens) else ""
-                if next_token in ("i", "ii"): char = "ئ"
-                elif next_token in ("u", "uu"): char = "ؤ"
-                else: char = "ء"
-            arabic_chars.append(char)
-            if i + 1 < len(tokens) and tokens[i + 1] == token:
-                arabic_chars.append("ّ"); i += 2
-                if i < len(tokens):
-                    if tokens[i] in SHORT_VOWELS: arabic_chars.append(SHORT_VOWELS[tokens[i]]); i += 1
-                    elif tokens[i] in LONG_VOWELS: arabic_chars.append(LONG_VOWELS[tokens[i]]); i += 1
-                continue
-            if i + 1 < len(tokens) and tokens[i + 1] in SHORT_VOWELS: arabic_chars.append(SHORT_VOWELS[tokens[i + 1]]); i += 2; continue
-            if i + 1 < len(tokens) and tokens[i + 1] in LONG_VOWELS: arabic_chars.append(LONG_VOWELS[tokens[i + 1]]); i += 2; continue
-            arabic_chars.append("ْ"); i += 1; continue
-        i += 1
-    result = "".join(arabic_chars)
-    result = re.sub(r'ُوْ?\b', 'ُوا', result); result = re.sub(r'ُوَ\b', 'ُوا', result)
-    result = re.sub(r'تَ\b', 'ةَ', result); result = re.sub(r'تُ\b', 'ةُ', result); result = re.sub(r'تِ\b', 'ةِ', result)
-    result = re.sub(r'َ(n|ن)\b', 'ً', result); result = re.sub(r'ُ(n|ن)\b', 'ٌ', result); result = re.sub(r'ِ(n|ن)\b', 'ٍ', result)
-    if result.startswith("َ"): result = "ا" + result[1:]
-    elif result.startswith("ِ"): result = "ا" + result[1:]
-    elif result.startswith("ُ"): result = "ا" + result[1:]
-    result = result.replace("ءَل", "ال").replace("أَل", "ال")
-    result = result.replace("ٌْ", "ٌ").replace("ًْ", "ً").replace("ٍْ", "ٍ").replace("ّْ", "ّ")
-    return result
-
-_tilavet_pm = None
-def get_tilavet_phonemizer():
-    global _tilavet_pm
-    if _tilavet_pm is None and TilavetPhonemizer is not None:
-        try: _tilavet_pm = TilavetPhonemizer()
-        except Exception as e: pass
-    return _tilavet_pm
-
-def generate_quran_audio_gemini(uthmani_text: str, out_mp3: str) -> bool:
+def apply_stealth_filter(input_wav: str, output_wav: str) -> bool:
     try:
-        pm = get_tilavet_phonemizer()
-        if not pm: return False
-        words = uthmani_text.split(); phonetic_words = []
-        for word in words:
-            result = pm.phonemize(word)
-            phoneme_text = result.text if hasattr(result, 'text') else str(result)
-            if phoneme_text:
-                arabic_word = phonemes_to_arabic_script(phoneme_text)
-                if arabic_word: phonetic_words.append(arabic_word)
-        arabic_phonetic = " ".join(phonetic_words)
-        if not arabic_phonetic or len(arabic_phonetic) < 5: return False
-        print(f"   🔄 النص الصوتي: {arabic_phonetic[:80]}...")
-        style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع، يملؤه السكينة والطمأنينة والهيبة. اقرأ ببطء وتأنٍ، مع إطالة المدود والوقوف عند الوقفات، بنبرة هادئة جداً وتلامس شغاف القلب."
-        gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
-        return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
+        filters = (
+            "atempo=1.05,"                 
+            "equalizer=f=200:t=q:w=1.0:g=2," 
+            "aecho=0.8:0.9:20:0.1,"        
+            "highpass=f=100,"              
+            "lowpass=f=12000"              
+        )
+        subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
+        return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
     except Exception as e:
+        print(f"   ⚠️ فشل تطبيق الفلتر السري: {e}")
+        shutil.copy(input_wav, output_wav)
         return False
+
+def download_human_ayah(surah, ayah, out_path):
+    filename = f"{surah:03d}{ayah:03d}.mp3"
+    url = f"{QURAN_BASE_URL}/{RECITER}/{filename}"
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            with open(out_path, "wb") as f:
+                f.write(r.content)
+            return True
+    except Exception as e:
+        print(f"   ⚠️ فشل تحميل الآية البشرية: {e}")
+    return False
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
@@ -109,14 +70,6 @@ def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
     try: return round(float(r.stdout.strip()), 3)
     except: return 0.0
-
-def fetch_ayah_uthmani(s, a):
-    try:
-        url = f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200: return r.json()["data"]["text"]
-    except Exception as e: pass
-    return ""
 
 def split_text(text, max_chars=1500):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
@@ -134,7 +87,6 @@ def mix_audio_layers(voice_wav: str, output_wav: str, music_file: str, sfx_file:
         v_dur = get_dur(voice_wav)
         inputs = ["-i", voice_wav]
         filters = []
-        
         idx = 1
         if music_file and Path(music_file).exists():
             inputs.extend(["-stream_loop", "-1", "-i", str(music_file)])
@@ -142,14 +94,12 @@ def mix_audio_layers(voice_wav: str, output_wav: str, music_file: str, sfx_file:
             idx += 1
         else:
             filters.append(f"[0:a]anull[music]")
-
         if sfx_file and Path(sfx_file).exists():
             inputs.extend(["-stream_loop", "-1", "-i", str(sfx_file)])
             filters.append(f"[{idx}:a]volume=0.35,afade=t=in:st=0:d=1,afade=t=out:st={v_dur-1}:d=1[sfx]")
             filters.append(f"[0:a][music][sfx]amix=inputs=3:duration=first:normalize=0[out]")
         else:
             filters.append(f"[0:a][music]amix=inputs=2:duration=first:normalize=0[out]")
-
         subprocess.run(["ffmpeg", "-y"] + inputs + ["-filter_complex", ";".join(filters), "-map", "[out]", "-t", str(v_dur), "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return True
     except Exception as e:
@@ -196,15 +146,41 @@ def build_episode_audio(json_path, out_mp3):
         elif stype == "quran":
             if "surah" in seg:
                 s, ayahs = seg["surah"], seg["ayah_numbers"]
-                text = " ".join(filter(None, (fetch_ayah_uthmani(s, a) for a in ayahs)))
                 display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
             else:
                 text = seg.get("text", ""); display = seg.get("display", "")
         elif stype in ("hadith", "fiqh", "malak"):
             text = sanitize_for_tts(seg.get("text", "")); display = seg.get("display", "")
 
-        if not text: continue
+        if not text and stype != "quran": continue
 
+        # 🌟 النظام الهجين: الآيات بصوت بشري
+        if stype == "quran" and "surah" in seg:
+            print(f"🎙️ المقطع {idx+1} [quran] - تحميل صوت بشري...", flush=True)
+            s, ayahs = seg["surah"], seg["ayah_numbers"]
+            human_ayeh_wavs = []
+            
+            for a in ayahs:
+                cached_ayeh = ep_cache / f"human_{s}_{a}.mp3"
+                if not cached_ayeh.exists():
+                    if download_human_ayah(s, a, str(cached_ayeh)):
+                        stealth_out = ep_cache / f"stealth_{s}_{a}.wav"
+                        reverb_out = ep_cache / f"reverb_{s}_{a}.wav"
+                        apply_stealth_filter(str(cached_ayeh), str(stealth_out))
+                        apply_mosque_reverb(str(stealth_out), str(reverb_out))
+                        shutil.copy(reverb_out, cached_ayeh.with_suffix('.wav'))
+                
+                final_ayeh_wav = cached_ayeh.with_suffix('.wav')
+                if final_ayeh_wav.exists():
+                    human_ayeh_wavs.append(final_ayeh_wav)
+                    voice_wavs.append(final_ayeh_wav); voice_wavs.append(silence_path)
+                    
+            if human_ayeh_wavs:
+                dur = sum(get_dur(w) for w in human_ayeh_wavs) + (SILENCE_DUR * len(human_ayeh_wavs))
+                all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": "آية", "duration": dur}]})
+            continue 
+
+        # 🌟 السرد والحديث (Gemini TTS)
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...", flush=True)
         chunk_timings = []
@@ -222,13 +198,7 @@ def build_episode_audio(json_path, out_mp3):
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            if stype == "quran":
-                if generate_quran_audio_gemini(chunk, str(temp_mp3)):
-                    subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                    reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
-                    if apply_mosque_reverb(str(raw_wav), str(reverb_wav)): shutil.copy(reverb_wav, raw_wav)
-                    print(f"   ✅ Gemini TTS + صدى (تجويد)", flush=True)
-            elif stype in ("hadith", "fiqh"):
+            if stype in ("hadith", "fiqh"):
                 style_prompt = "أنت راوي حديث نبوي. اقرأ النص بصوت وقور، خاشع، وبطيء، يملؤه الهيبة والسكينة."
                 gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style=style_prompt)
                 if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
@@ -260,23 +230,19 @@ def build_episode_audio(json_path, out_mp3):
                 music_name = scene_music_map.get(scene, "calm.mp3")
                 music = MUSIC_DIR / music_name
                 if not music.exists(): music = MUSIC_DIR / "calm.mp3"
-
                 scene_sfx_map = {"battle": "sword.mp3", "sad": "heartbeat.mp3", "conspiracy": "whisper.mp3", "calm": "birds.mp3", "night": "wind.mp3"}
                 sfx_name = scene_sfx_map.get(scene)
                 sfx = SFX_DIR / sfx_name if sfx_name else ""
-
                 mixed_wav = work / f"mixed_{idx}_{c_idx}.wav"
                 if mix_audio_layers(str(raw_wav), str(mixed_wav), str(music), str(sfx)):
                     shutil.copy(mixed_wav, raw_wav)
 
             time.sleep(5) 
-
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
                 subprocess.run(["ffmpeg", "-y", "-i", str(raw_wav), "-af", "afade=t=in:st=0:d=0.05,afade=t=out:st=" + str(c_dur-0.05) + ":d=0.05", str(faded)], check=True, capture_output=True)
             else: shutil.copy(raw_wav, faded)
-
             shutil.copy(faded, cached_wav)
             voice_wavs.append(faded); voice_wavs.append(silence_path)
             chunk_timings.append({"text": chunk, "duration": get_dur(faded) + SILENCE_DUR})
