@@ -2,17 +2,13 @@ name: Daily Content
 
 on:
   schedule:
-    - cron: '0 6 * * *' # يعمل يومياً الساعة 6 صباحاً
+    - cron: '0 6 * * *'
   workflow_dispatch:
-
-concurrency:
-  group: daily-content
-  cancel-in-progress: false
 
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -27,9 +23,10 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub tilavet-phonemizer
+          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install --force-reinstall phonemizer==3.2.1
 
       - name: Discover Models
         env:
@@ -40,6 +37,7 @@ jobs:
         id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/generate_daily.py
           if [ -f out/latest_episode.txt ]; then
@@ -50,76 +48,109 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio
-        id: aud
+      # 🌟 بناء صوت اليوتيوب (جيميني)
+      - name: Build Audio (YouTube - Gemini)
+        id: aud_yt
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TEST_MODE: "0"
         run: |
-          # يستخدم نفس محرك القصص!
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
-            "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            "youtube"
 
-      - name: Build Video
-        id: vid
-        if: steps.aud.outcome == 'success'
+      # 🌟 بناء صوت السوشيال ميديا (بشري)
+      - name: Build Audio (Social - Human)
+        id: aud_soc
+        if: steps.gen.outputs.EP_FILE != ''
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TEST_MODE: "0"
+        run: |
+          python scripts/story_audio.py \
+            "${{ steps.gen.outputs.EP_FILE }}" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
+            "social"
+
+      - name: Build Video (YouTube)
+        id: vid_yt
+        if: steps.aud_yt.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
-          # يستخدم نفس محرك القصص!
           python scripts/story_video.py \
-            "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
-            "out/${{ steps.gen.outputs.EP_NAME }}_meta.json" \
-            "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
 
-      - name: Upload to Telegram
-        id: tg
-        if: steps.vid.outcome == 'success'
+      - name: Build Video (Social)
+        id: vid_soc
+        if: steps.aud_soc.outcome == 'success'
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+
+      - name: Upload to Telegram (Both with Compression)
+        if: steps.vid_yt.outcome == 'success' && steps.vid_soc.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          META="out/${{ steps.gen.outputs.EP_NAME }}_meta.json"
+          META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','مقطع يومي'))")
-          CAPTION=$(printf "🎬 %s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
           
-          VIDEO_PATH="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
-          UPLOAD_PATH="$VIDEO_PATH"
-          
-          SIZE_BYTES=$(stat -c%s "$VIDEO_PATH")
-          SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
-          
-          if [ "$SIZE_MB" -gt 25 ]; then
-            COMPRESSED_PATH="videos/${{ steps.gen.outputs.EP_NAME }}_tg.mp4"
-            ffmpeg -y -i "$VIDEO_PATH" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$COMPRESSED_PATH"
-            UPLOAD_PATH="$COMPRESSED_PATH"
+          YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+          YT_UPLOAD="$YT_VIDEO"
+          SIZE=$(stat -c%s "$YT_VIDEO")
+          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
+            YT_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
+            ffmpeg -y -i "$YT_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$YT_COMPRESSED"
+            YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          MAX_RETRIES=3
-          ATTEMPT=1
-          MSG=""
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "video=@${YT_UPLOAD}" \
+            -F "caption=${CAPTION_YT}" \
+            -F "supports_streaming=true"
+            
+          SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+          SOC_UPLOAD="$SOC_VIDEO"
+          SIZE=$(stat -c%s "$SOC_VIDEO")
+          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
+            SOC_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_social_tg.mp4"
+            ffmpeg -y -i "$SOC_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$SOC_COMPRESSED"
+            SOC_UPLOAD="$SOC_COMPRESSED"
+          fi
           
-          while [ $ATTEMPT -le $MAX_RETRIES ]; do
-            RESP=$(curl -s -X POST \
-              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-              -F "chat_id=${TELEGRAM_CHAT_ID}" \
-              -F "video=@${UPLOAD_PATH}" \
-              -F "caption=${CAPTION}" \
-              -F "supports_streaming=true")
-              
-            MSG=$(echo "$RESP" | grep -oP '"message_id":\K[0-9]+' || true)
-            if [ -n "$MSG" ]; then break; fi
-            ATTEMPT=$((ATTEMPT + 1))
-            sleep 10
-          done
-          
-          if [ -z "$MSG" ]; then exit 1; fi
-          echo "MSG_ID=$MSG" >> $GITHUB_OUTPUT
+          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "video=@${SOC_UPLOAD}" \
+            -F "caption=${CAPTION_SOC}" \
+            -F "supports_streaming=true"
+
+      - name: Commit Cache (Save Progress)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add out/audio_cache/ || true
+          git commit -m "💾 حفظ كاش اليوميات" || echo "لا تغييرات"
+          git push || true
 
       - name: Cleanup
         if: always()
         run: |
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
+          rm -rf data/daily/generated/*.json
           rm -f out/latest_episode.txt
