@@ -95,8 +95,8 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
             "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
 
-      # 🌟 الرفع إلى تلغرام (الفيديوهين معاً)
-      - name: Upload to Telegram (Both)
+      # 🌟 الرفع إلى تلغرام (مع ضغط الفيديو ليكون أقل من 50 ميجا)
+      - name: Upload to Telegram (Both with Compression)
         if: steps.vid_yt.outcome == 'success' && steps.vid_soc.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -105,19 +105,41 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           
+          # --- 1. معالجة وضغط فيديو اليوتيوب ---
+          YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+          YT_UPLOAD="$YT_VIDEO"
+          SIZE=$(stat -c%s "$YT_VIDEO")
+          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
+            echo "ضغط فيديو اليوتيوب..."
+            YT_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
+            ffmpeg -y -i "$YT_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$YT_COMPRESSED"
+            YT_UPLOAD="$YT_COMPRESSED"
+          fi
+          
           # إرسال نسخة اليوتيوب
           CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4" \
+            -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" \
             -F "supports_streaming=true"
             
+          # --- 2. معالجة وضغط فيديو السوشيال ميديا ---
+          SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+          SOC_UPLOAD="$SOC_VIDEO"
+          SIZE=$(stat -c%s "$SOC_VIDEO")
+          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
+            echo "ضغط فيديو السوشيال..."
+            SOC_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_social_tg.mp4"
+            ffmpeg -y -i "$SOC_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$SOC_COMPRESSED"
+            SOC_UPLOAD="$SOC_COMPRESSED"
+          fi
+          
           # إرسال نسخة السوشيال ميديا
           CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "video=@videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4" \
+            -F "video=@${SOC_UPLOAD}" \
             -F "caption=${CAPTION_SOC}" \
             -F "supports_streaming=true"
 
