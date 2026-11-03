@@ -1,7 +1,7 @@
-name: Test Single Ayah
+name: Test Human Ayah
 
 on:
-  workflow_dispatch: # يسمح لك بتشغيله يدوياً بضغطة زر
+  workflow_dispatch: # يسمح لك بتشغيله يدوياً
 
 jobs:
   test:
@@ -18,13 +18,13 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
-          pip install requests edge-tts
+          pip install requests
 
-      - name: Run Test
-        run: python scripts/test_single_ayah.py
+      - name: Run Test Script
+        run: python scripts/test_human_ayah.py
 
-      - name: Upload Audio Artifact
+      - name: Upload Audio
         uses: actions/upload-artifact@v4
         with:
-          name: Ayah-Audio
-          path: out/test_ayah.mp3
+          name: Human-Ayah-Audio
+          path: out/test_human_ayah.mp3
