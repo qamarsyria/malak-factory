@@ -1,7 +1,7 @@
 name: Fetch Fiqh Library
 
 on:
-  workflow_dispatch: # يسمح بالتشغيل اليدوي
+  workflow_dispatch: 
 
 jobs:
   fetch:
