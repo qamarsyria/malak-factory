@@ -43,12 +43,11 @@ jobs:
           if [ -f out/latest_episode.txt ]; then
             EP_FILE=$(cat out/latest_episode.txt)
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
-            echo "EP_NAME=daily-latest" >> $GITHUB_OUTPUT
+            echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
             exit 1
           fi
 
-      # 🌟 بناء صوت اليوتيوب (جيميني)
       - name: Build Audio (YouTube - Gemini)
         id: aud_yt
         if: steps.gen.outputs.EP_FILE != ''
@@ -61,7 +60,6 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
             "youtube"
 
-      # 🌟 بناء صوت السوشيال ميديا (بشري)
       - name: Build Audio (Social - Human)
         id: aud_soc
         if: steps.gen.outputs.EP_FILE != ''
@@ -116,12 +114,10 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-            -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "video=@${YT_UPLOAD}" \
-            -F "caption=${CAPTION_YT}" \
-            -F "supports_streaming=true"
+            -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
+            -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
@@ -132,20 +128,19 @@ jobs:
             SOC_UPLOAD="$SOC_COMPRESSED"
           fi
           
-          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
+          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-            -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "video=@${SOC_UPLOAD}" \
-            -F "caption=${CAPTION_SOC}" \
-            -F "supports_streaming=true"
+            -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${SOC_UPLOAD}" \
+            -F "caption=${CAPTION_SOC}" -F "supports_streaming=true"
 
-      - name: Commit Cache (Save Progress)
+      # 🌟 الخطوة السحرية: حفظ الحالة (العداد + العناصر المستخدمة) في GitHub
+      - name: Commit State
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add out/audio_cache/ || true
-          git commit -m "💾 حفظ كاش اليوميات" || echo "لا تغييرات"
+          git add state/daily_state.json || true
+          git commit -m "💾 تحديث حالة المحتوى اليومي (منع التكرار)" || echo "لا تغييرات"
           git push || true
 
       - name: Cleanup
@@ -154,3 +149,4 @@ jobs:
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
           rm -rf data/daily/generated/*.json
           rm -f out/latest_episode.txt
+          rm -rf out/audio_cache
