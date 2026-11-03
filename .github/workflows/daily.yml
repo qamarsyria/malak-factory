@@ -8,7 +8,7 @@ on:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # زيادة الوقت لبناء فيديوين
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -43,7 +43,7 @@ jobs:
             exit 1
           fi
 
-      # 🌟 بناء صوت اليوتيوب (جيميني)
+      # 🌟 إذا كان الكاش موجوداً، سيتخطى جيميني فوراً
       - name: Build Audio (YouTube - Gemini)
         id: aud_yt
         if: steps.gen.outputs.EP_FILE != ''
@@ -56,7 +56,7 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
             "youtube"
 
-      # 🌟 بناء صوت السوشيال ميديا (بشري)
+      # 🌟 سيستخدم كاش السرد الذي تم بناؤه في الخطوة السابقة
       - name: Build Audio (Social - Human)
         id: aud_soc
         if: steps.gen.outputs.EP_FILE != ''
@@ -69,7 +69,6 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
             "social"
 
-      # 🌟 بناء فيديو اليوتيوب
       - name: Build Video (YouTube)
         id: vid_yt
         if: steps.aud_yt.outcome == 'success'
@@ -82,7 +81,6 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
             "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
 
-      # 🌟 بناء فيديو السوشيال ميديا
       - name: Build Video (Social)
         id: vid_soc
         if: steps.aud_soc.outcome == 'success'
@@ -95,7 +93,6 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
             "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
 
-      # 🌟 الرفع إلى تلغرام (مع ضغط الفيديو ليكون أقل من 50 ميجا)
       - name: Upload to Telegram (Both with Compression)
         if: steps.vid_yt.outcome == 'success' && steps.vid_soc.outcome == 'success'
         env:
@@ -105,18 +102,15 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           
-          # --- 1. معالجة وضغط فيديو اليوتيوب ---
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
           if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
-            echo "ضغط فيديو اليوتيوب..."
             YT_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
             ffmpeg -y -i "$YT_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$YT_COMPRESSED"
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          # إرسال نسخة اليوتيوب
           CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -124,18 +118,15 @@ jobs:
             -F "caption=${CAPTION_YT}" \
             -F "supports_streaming=true"
             
-          # --- 2. معالجة وضغط فيديو السوشيال ميديا ---
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
           if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
-            echo "ضغط فيديو السوشيال..."
             SOC_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_social_tg.mp4"
             ffmpeg -y -i "$SOC_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$SOC_COMPRESSED"
             SOC_UPLOAD="$SOC_COMPRESSED"
           fi
           
-          # إرسال نسخة السوشيال ميديا
           CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -143,10 +134,20 @@ jobs:
             -F "caption=${CAPTION_SOC}" \
             -F "supports_streaming=true"
 
+      # 🌟 حفظ الكاش في GitHub لكي لا نبدأ من الصفر أبداً
+      - name: Commit Cache (Save Progress)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add out/audio_cache/ || true
+          git commit -m "💾 حفظ كاش الصوت (تقدم المعمل)" || echo "لا تغييرات"
+          git push || true
+
       - name: Cleanup
         if: always()
         run: |
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
           rm -rf data/stories/generated/*.json
           rm -f out/latest_episode.txt
-          rm -rf out/audio_cache
+          # 🌟 لقد حذفنا أمر مسح الكاش لأنه الآن محفوظ في GitHub
