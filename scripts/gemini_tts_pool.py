@@ -6,6 +6,16 @@ import requests
 MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 24 * 3600
 
+# 🌟 إضافة نظام تحديد المعدل (Rate Limiter) لمنع الحظر
+_last_request_time = 0
+def _wait_for_rate_limit():
+    global _last_request_time
+    now = time.time()
+    elapsed = now - _last_request_time
+    if elapsed < 5.0: # طلب واحد كل 5 ثوانٍ لتجنب حظر جوجل
+        time.sleep(5.0 - elapsed)
+    _last_request_time = time.time()
+
 def _log(msg: str) -> None:
     print(f"[gemini-tts] {msg}", flush=True)
 
@@ -28,20 +38,18 @@ class GeminiKeyPool:
         return None
 
     def get_current(self) -> str:
-        # نحاول 5 مرات، وإذا فشلنا ننتظر حتى يعود أول مفتاح
-        for _ in range(5):
+        for _ in range(10): 
             key = self._available_key()
             if key: return key
             
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             
-            # إذا كان الانتظار طويلاً جداً (أكثر من ساعة)، فهذا يعني أن الحصة اليومية انتهت
             if wait > 3600: 
                 raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
             
             print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
-            time.sleep(wait + 2) # ننتظر قليلاً إضافياً للأمان
+            time.sleep(wait + 2)
             
         raise RuntimeError("❌ فشل الحصول على مفتاح Gemini متاح")
 
@@ -55,7 +63,7 @@ class GeminiKeyPool:
 
     def mark_daily_exhausted(self) -> None:
         key = self.keys[self.current_index]
-        self.cooldowns[key] = time.time() + 86400  # 24 ساعة
+        self.cooldowns[key] = time.time() + 86400
         self.current_index = (self.current_index + 1) % len(self.keys)
 
 _pool: GeminiKeyPool | None = None
@@ -92,6 +100,7 @@ def discover_tts_models(prefer_lite: bool = False) -> list[str]:
     p = get_pool()
     key = p.get_current()
     try:
+        _wait_for_rate_limit()
         r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=30)
         if r.status_code != 200: return ["gemini-2.5-flash-preview-tts"]
         models = r.json().get("models", [])
@@ -160,10 +169,12 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
             body["systemInstruction"] = {"parts": [{"text": style}]}
 
         try:
+            _wait_for_rate_limit() # 🌟 تحديد السرعة
             r = requests.post(url, json=body, timeout=180)
             
             if r.status_code == 400 and style:
                 del body["systemInstruction"]
+                _wait_for_rate_limit()
                 r = requests.post(url, json=body, timeout=180)
                 
             if r.status_code == 429: return "RATE_LIMIT"
@@ -202,8 +213,14 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
         wav_path = work_dir / f"part_{idx:03d}.wav"
         success = False
         
-        for attempt in range(len(pool.keys) * 3):
-            key = pool.get_current()
+        for attempt in range(len(pool.keys) * 5): 
+            try:
+                key = pool.get_current()
+            except Exception as e:
+                print(f"   ⚠️ {e}")
+                time.sleep(60)
+                continue
+
             try: 
                 result = _tts_single(chunk, wav_path, voice, key, prefer_lite=prefer_lite, style=style)
             except Exception: 
