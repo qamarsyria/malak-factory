@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
-from sfx_manager import ensure_assets, MUSIC_DIR, SFX_DIR, AUDIO_DIR
 
 try:
     from tilavet_phonemizer import Phonemizer as TilavetPhonemizer
@@ -130,8 +129,6 @@ def split_text(text, max_chars=1500):
     return chunks
 
 def build_episode_audio(json_path, out_mp3):
-    ensure_assets() 
-    
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     
@@ -151,7 +148,6 @@ def build_episode_audio(json_path, out_mp3):
     taken_narration = False; taken_quran = False
     voice_wavs = []
     all_segments_meta = []
-    scene_counts = {}
     
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
@@ -163,11 +159,6 @@ def build_episode_audio(json_path, out_mp3):
             elif not is_ending_segment: continue
 
         text, display = "", ""
-        scene = seg.get("visual", "calm").lower()
-        
-        if stype not in ("quran", "hadith", "fiqh"):
-            scene_counts[scene] = scene_counts.get(scene, 0) + 1
-
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             if "surah" in seg:
@@ -224,7 +215,7 @@ def build_episode_audio(json_path, out_mp3):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     print(f"   ✅ Gemini TTS ({stype})", flush=True)
 
-            time.sleep(15) # 🌟 وقت الانتظار 15 ثانية
+            time.sleep(15) 
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
@@ -247,40 +238,10 @@ def build_episode_audio(json_path, out_mp3):
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(voice_concat), "-c", "copy", str(voice_merged)], check=True, capture_output=True)
     
     total_dur = get_dur(voice_merged)
-    
-    is_malak_episode = any(seg.get("type") == "malak" for seg in segments_list)
-    main_music = None
-    if is_malak_episode:
-        main_music = MUSIC_DIR / "romantic.mp3"
-    else:
-        main_scene = max(scene_counts, key=scene_counts.get) if scene_counts else "calm"
-        ya_taybah = AUDIO_DIR / "ya_taybah.mp3"
-        if main_scene == "calm" and ya_taybah.exists(): main_music = ya_taybah
-        else:
-            scene_music_map = {"battle": "battle.mp3", "sad": "sad.mp3", "conspiracy": "conspiracy.mp3", "calm": "calm.mp3", "night": "calm.mp3"}
-            main_music = MUSIC_DIR / scene_music_map.get(main_scene, "calm.mp3")
-            if not main_music.exists(): main_music = MUSIC_DIR / "calm.mp3"
-
-    final_out = work / "final_with_music.mp3"
-    
-    if main_music and main_music.exists():
-        print(f"🎬 دمج موسيقى الحلقة: {main_music.name} (بنسبة 12%)", flush=True)
-        filters = (
-            f"[1:a]volume=0.12,afade=t=in:st=0:d=3,afade=t=out:st={total_dur-3}:d=3[music];"
-            "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[out]"
-        )
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(voice_merged), "-stream_loop", "-1", "-i", str(main_music),
-            "-filter_complex", filters, "-map", "[out]", "-t", str(total_dur),
-            "-c:a", "libmp3lame", "-b:a", "192k", str(final_out)
-        ], check=True, capture_output=True, timeout=180)
-    else:
-        print("⚠️ لا توجد موسيقى متاحة، سيتم استخدام الصوت البشري فقط.", flush=True)
-        subprocess.run(["ffmpeg", "-y", "-i", str(voice_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(final_out)], check=True, capture_output=True)
 
     Path(out_mp3).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(final_out, out_mp3)
-    
+    subprocess.run(["ffmpeg", "-y", "-i", str(voice_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3)], check=True, capture_output=True)
+
     meta_path = str(out_mp3).replace(".mp3", "_meta.json")
     Path(meta_path).write_text(json.dumps({
         "episode": ep.get("episode_number", 1), 
