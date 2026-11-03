@@ -1,0 +1,34 @@
+name: Fetch Fiqh Library
+
+on:
+  workflow_dispatch: # يسمح بالتشغيل اليدوي
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install datasets requests
+
+      - name: Run Fetch Script
+        run: python scripts/fetch_fiqh_library.py
+
+      - name: Commit Fiqh Library
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/libraries/fiqh-library.json
+          git commit -m "📚 بناء المكتبة الفقهية الضخمة (آلاف الفتاوى)" || echo "لا تغييرات"
+          git push || true
