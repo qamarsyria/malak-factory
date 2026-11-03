@@ -103,7 +103,7 @@ def proofread_script(text):
         if current: chunks.append(current.strip())
         
         for chunk in chunks:
-            prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص. ممنوع تغيير أي كلمة. أعد النص فقط:\n{chunk}"
+            prompt = f"أنت مدقق لغوي. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على النص التالي. ممنوع تغيير أي كلمة. أعد النص فقط:\n{chunk}"
             corrected = call_llm_with_fallback(prompt, is_json=False, timeout=45, max_tokens=2000)
             if corrected and len(corrected) > len(chunk) * 0.8:
                 corrected_parts.append(apply_forced_tashkeel(clean_llm_text(corrected)))
@@ -126,19 +126,11 @@ def parse_script_with_verses(script_text):
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
     
-    # التقاط أي صيغة للآية (بأقواس أو بدونها)
-    patterns = [
-        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",
-        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",
-        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",
-        r"آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)" # بدون أقواس (لحل مشكلة الصورة)
-    ]
-    
+    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]", r"آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)"]
     parts = None
     for pat in patterns:
         parts = re.split(pat, text)
         if len(parts) > 1: break
-        
     if not parts or len(parts) == 1: 
         return [{"type": "narration", "text": c.strip()} for c in split_narration(text) if c.strip()]
 
@@ -169,11 +161,11 @@ def build_script_prompt(story, plan, ep_num):
 القصة المطلوبة: {story['title']}
 
 قواعد صارمة جداً:
-1. **اكتب بأسلوب روائي متصل ومتدفق**. ممنوع تماماً كتابة عناوين فرعية.
-2. **يجب إدراج 4 إلى 6 آيات قرآنية**، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
+1. **اكتب بأسلوب روائي متصل ومتدفق**. ممنوع تماماً كتابة عناوين فرعية (مثل: المشهد الأول، الفصل، مقدمة، خاتمة).
+2. **يجب إدراج 4 إلى 6 آيات قرآنية** في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
 3. المصدر: القرآن، السنة، تفسير ابن كثير.
 4. ممنوع أي لغة سينمائية.
-5. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. ممنوع منعاً باتاً اختراع أحداث.**
+5. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. ممنوع منعاً باتاً اختراع أحداث أو كلمات (مثل كلمة "ترخا").** التزم حرفياً بالألفاظ القرآنية (صلصال، حمأ مسنون، طين لازب، إلخ).
 6. اكتب من 500 إلى 600 كلمة فقط.
 7. ابدأ السرد مباشرة بالحدث.
 
