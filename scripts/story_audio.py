@@ -17,7 +17,7 @@ except:
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
-CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
+CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"  # 🌟 سيتم رفع هذا المجلد إلى GitHub
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
 
@@ -79,16 +79,10 @@ def split_text(text, max_chars=1500):
     return chunks
 
 def mix_sfx_only(voice_wav: str, output_wav: str, sfx_file: str) -> bool:
-    """دمج المؤثرات الصوتية فقط (بدون موسيقى)"""
     try:
         v_dur = get_dur(voice_wav)
         inputs = ["-i", voice_wav]
-        filters = []
-        
-        # نضع الصوت البشري كما هو
-        filters.append(f"[0:a]anull[voice]")
-        
-        # إضافة المؤثر الصوتي (بنسبة 20%)
+        filters = ["[0:a]anull[voice]"]
         if sfx_file and Path(sfx_file).exists():
             fade_out_sfx = max(0.1, v_dur - 1)
             inputs.extend(["-stream_loop", "-1", "-i", str(sfx_file)])
@@ -96,11 +90,9 @@ def mix_sfx_only(voice_wav: str, output_wav: str, sfx_file: str) -> bool:
             filters.append(f"[voice][sfx]amix=inputs=2:duration=first:normalize=0[out]")
         else:
             filters.append(f"[voice]anull[out]")
-            
         subprocess.run(["ffmpeg", "-y"] + inputs + ["-filter_complex", ";".join(filters), "-map", "[out]", "-t", str(v_dur), "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return True
-    except Exception as e:
-        print(f"   ⚠️ فشل دمج المؤثرات: {e}")
+    except Exception:
         shutil.copy(voice_wav, output_wav)
         return False
 
@@ -108,9 +100,7 @@ def generate_quran_gemini(uthmani_text: str, out_mp3: str) -> bool:
     try:
         pm = TilavetPhonemizer() if TilavetPhonemizer else None
         if not pm: return False
-        # (نفس دوال التحويل التي كتبناها سابقاً)
-        # للاختصار، سنفترض أن الدالة تعمل وتنتج النص الصوتي
-        arabic_phonetic = uthmani_text # يمكنك ترك دالة التحويل هنا
+        arabic_phonetic = uthmani_text # نمرر النص العثماني مباشرة لجيميني
         style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع."
         gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
         return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
@@ -123,7 +113,8 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     
     ep_name = Path(json_path).stem
-    ep_cache = CACHE_DIR / f"{ep_name}_{mode}"
+    # 🌟 كاش مشترك للسرد (لتوفير الحصة)
+    ep_cache = CACHE_DIR / ep_name
     ep_cache.mkdir(parents=True, exist_ok=True)
 
     silence_path = work / "silence.wav"
@@ -160,8 +151,10 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                 for a in ayahs:
                     cache_a = ep_cache / f"gemini_{s}_{a}.wav"
                     if not cache_a.exists():
-                        # (جلب النص وتوليده بصوت جيميني)
-                        pass
+                        text_a = requests.get(f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani").json()["data"]["text"]
+                        tmp_mp3 = work / "tmp.mp3"
+                        if generate_quran_gemini(text_a, str(tmp_mp3)):
+                            subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     if cache_a.exists():
                         voice_wavs.append(cache_a); voice_wavs.append(silence_path)
                         all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": "آية", "duration": get_dur(cache_a)+SILENCE_DUR}]})
@@ -172,22 +165,24 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                     if not download_human_ayah(s, a, str(cache_a)): continue
                     stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
                     reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
-                    apply_stealth_filter(str(cache_a), str(stealth_a))
-                    apply_mosque_reverb(str(stealth_a), str(reverb_a))
+                    if not reverb_a.exists():
+                        apply_stealth_filter(str(cache_a), str(stealth_a))
+                        apply_mosque_reverb(str(stealth_a), str(reverb_a))
                     if reverb_a.exists():
                         voice_wavs.append(reverb_a); voice_wavs.append(silence_path)
                         all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": "آية", "duration": get_dur(reverb_a)+SILENCE_DUR}]})
             continue
 
-        # 🌟 2. السرد والحديث (Gemini TTS)
+        # 🌟 2. السرد (يُحفظ في الكاش المشترك)
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
         chunk_timings = []
 
         for c_idx, chunk in enumerate(chunks):
             if not chunk.strip(): continue
-            cached_wav = ep_cache / f"seg_{idx}_{c_idx}.wav"
+            cached_wav = ep_cache / f"seg_{idx}_{c_idx}.wav" # 🌟 بدون اسم النمط ليُستخدم في كلا الفيديوين
             if cached_wav.exists() and cached_wav.stat().st_size > 1000:
+                print(f"   ⏭️ [كاش] سرد محفوظ", flush=True)
                 voice_wavs.append(cached_wav); voice_wavs.append(silence_path)
                 chunk_timings.append({"text": chunk, "duration": get_dur(cached_wav) + SILENCE_DUR})
                 continue
@@ -201,22 +196,17 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
             if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                 subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                 
-                # إضافة المؤثرات (بدون موسيقى)
                 if stype in ("narration", "summary", "teaser", "malak"):
                     sfx_map = {"battle": "sword.mp3", "sad": "heartbeat.mp3", "conspiracy": "whisper.mp3", "calm": "birds.mp3", "night": "wind.mp3"}
                     sfx_file = SFX_DIR / sfx_map.get(scene, "birds.mp3")
-                    
                     mixed = work / f"mix_{idx}_{c_idx}.wav"
                     if mix_sfx_only(str(raw_wav), str(mixed), str(sfx_file)):
                         shutil.copy(mixed, raw_wav)
-                        
-                    # إضافة صدى مسجد خفيف للسرد ليعطي طابعاً وثائقياً
                     if stype == "narration":
                         reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
                         if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
                             shutil.copy(reverb_wav, raw_wav)
 
-            time.sleep(5)
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
             if c_dur > 0.2:
