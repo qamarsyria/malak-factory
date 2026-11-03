@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir, notify_telegram
 from gemini_tts_pool import gemini_tts_with_pool
+from sfx_manager import ensure_assets, MUSIC_DIR, SFX_DIR, AUDIO_DIR
 
 try:
     from tilavet_phonemizer import Phonemizer as TilavetPhonemizer
@@ -128,7 +129,40 @@ def split_text(text, max_chars=1500):
     if current: chunks.append(current.strip())
     return chunks
 
+def mix_audio_layers(voice_wav: str, output_wav: str, music_file: str, sfx_file: str) -> bool:
+    """يدمج الصوت البشري + موسيقى + مؤثر صوتي بنسب مناسبة."""
+    try:
+        v_dur = get_dur(voice_wav)
+        inputs = ["-i", voice_wav]
+        filters = []
+        
+        idx = 1
+        # إضافة الموسيقى إن وجدت
+        if music_file and Path(music_file).exists():
+            inputs.extend(["-stream_loop", "-1", "-i", str(music_file)])
+            filters.append(f"[{idx}:a]volume=0.12,afade=t=in:st=0:d=2,afade=t=out:st={v_dur-2}:d=2[music]")
+            idx += 1
+        else:
+            filters.append(f"[0:a]anull[music]") # تمرير الصوت كما هو
+
+        # إضافة المؤثرات إن وجدت (صوتها 35% كما طلبت)
+        if sfx_file and Path(sfx_file).exists():
+            inputs.extend(["-stream_loop", "-1", "-i", str(sfx_file)])
+            filters.append(f"[{idx}:a]volume=0.35,afade=t=in:st=0:d=1,afade=t=out:st={v_dur-1}:d=1[sfx]")
+            filters.append(f"[0:a][music][sfx]amix=inputs=3:duration=first:normalize=0[out]")
+        else:
+            filters.append(f"[0:a][music]amix=inputs=2:duration=first:normalize=0[out]")
+
+        subprocess.run(["ffmpeg", "-y"] + inputs + ["-filter_complex", ";".join(filters), "-map", "[out]", "-t", str(v_dur), "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
+        return True
+    except Exception as e:
+        print(f"   ⚠️ فشل دمج الموسيقى/المؤثرات: {e}")
+        shutil.copy(voice_wav, output_wav)
+        return False
+
 def build_episode_audio(json_path, out_mp3):
+    ensure_assets() 
+    
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     
@@ -159,6 +193,8 @@ def build_episode_audio(json_path, out_mp3):
             elif not is_ending_segment: continue
 
         text, display = "", ""
+        scene = seg.get("visual", "calm").lower()
+        
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             if "surah" in seg:
@@ -189,6 +225,7 @@ def build_episode_audio(json_path, out_mp3):
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
+            # التوليد الأساسي للصوت
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
@@ -209,13 +246,37 @@ def build_episode_audio(json_path, out_mp3):
                 if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     print(f"   ✅ Gemini TTS (همسة)", flush=True)
-            else:
+            else: # narration, summary, teaser, cta
                 gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
                 if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     print(f"   ✅ Gemini TTS ({stype})", flush=True)
 
-            time.sleep(15) 
+            # إضافة الموسيقى والمؤثرات
+            if stype in ("quran", "hadith", "fiqh"):
+                pass # ممنوع الموسيقى والمؤثرات (احتراماً)
+            elif stype == "malak":
+                # موسيقى رومانسية فقط (بدون مؤثرات)
+                music = MUSIC_DIR / "romantic.mp3"
+                mixed_wav = work / f"mixed_{idx}_{c_idx}.wav"
+                if mix_audio_layers(str(raw_wav), str(mixed_wav), str(music), ""):
+                    shutil.copy(mixed_wav, raw_wav)
+            else: # narration, summary, teaser, cta
+                # موسيقى حسب المشهد + مؤثر صوتي
+                scene_music_map = {"battle": "battle.mp3", "sad": "sad.mp3", "conspiracy": "conspiracy.mp3", "calm": "calm.mp3", "night": "calm.mp3"}
+                music_name = scene_music_map.get(scene, "calm.mp3")
+                music = MUSIC_DIR / music_name
+                if not music.exists(): music = MUSIC_DIR / "calm.mp3"
+
+                scene_sfx_map = {"battle": "sword.mp3", "sad": "heartbeat.mp3", "conspiracy": "whisper.mp3", "calm": "birds.mp3", "night": "wind.mp3"}
+                sfx_name = scene_sfx_map.get(scene)
+                sfx = SFX_DIR / sfx_name if sfx_name else ""
+
+                mixed_wav = work / f"mixed_{idx}_{c_idx}.wav"
+                if mix_audio_layers(str(raw_wav), str(mixed_wav), str(music), str(sfx)):
+                    shutil.copy(mixed_wav, raw_wav)
+
+            time.sleep(15) # تأخير لتجنب الحظر
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
