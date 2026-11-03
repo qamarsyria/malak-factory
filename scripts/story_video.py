@@ -125,6 +125,7 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         overlay.save(out_path); return
 
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
+    # عرض الآية: نص الآية فقط، ثم المرجع في سطر منفصل
     display_text = chunk_text + (f"\n﴿ {display_ref} ﴾" if is_quran and display_ref else "")
     font, lines, lh = _fit_text(display_text, font_path, VIDEO_W - 120, VIDEO_H - 400, 70, 45)
     
