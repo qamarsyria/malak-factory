@@ -1,69 +1,34 @@
-import os
-import json
-import sys
-from pathlib import Path
+name: Fetch Fiqh Library
 
-# محاولة استيراد مكتبة datasets
-try:
-    from datasets import load_dataset
-except ImportError:
-    print("❌ مكتبة 'datasets' غير مثبتة. يرجى تثبيتها عبر pip install datasets")
-    sys.exit(1)
+on:
+  workflow_dispatch: # يسمح بالتشغيل اليدوي
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = _REPO_ROOT / "data" / "libraries"
-OUTPUT_FILE = OUTPUT_DIR / "fiqh-library.json"
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    print("⬇️ جاري تحميل قاعدة البيانات الفقهية الضخمة (IslamQA)...")
-    print("⏳ قد يستغرق هذا بضع دقائق، يرجى الانتظار...")
-    
-    try:
-        # تحميل مجموعة بيانات الفتاوى الإسلامية من HuggingFace (الصحيحة)
-        dataset = load_dataset("abdulmunimjemal/IslamQA-Multilingual-Dataset", split="train")
-        
-        print(f"✅ تم التحميل بنجاح! عدد الفتاوى الإجمالي: {len(dataset)}")
-        
-        fiqh_library = []
-        
-        for idx, item in enumerate(dataset):
-            # نأخذ الفتاوى العربية فقط
-            if item.get("lang") != "ar":
-                continue
-                
-            conversations = item.get("conversations", [])
-            question = ""
-            answer = ""
-            
-            # استخراج السؤال والجواب من المحادثة
-            for msg in conversations:
-                if msg.get("from") == "human":
-                    question = msg.get("value", "").strip()
-                elif msg.get("from") == "gpt":
-                    answer = msg.get("value", "").strip()
-            
-            if not question or not answer or len(answer) < 50:
-                continue
-                
-            fiqh_library.append({
-                "id": f"fiqh-{idx+1:05d}",
-                "question": question,
-                "answer": answer,
-                "source": "IslamQA (المنهج السلفي)",
-                "url": item.get("url", ""),
-                "type": "fiqh"
-            })
-            
-        print(f"📝 تم تصفية {len(fiqh_library)} فتوى عربية صالحة للاستخدام.")
-        
-        # حفظ الملف
-        OUTPUT_FILE.write_text(json.dumps(fiqh_library, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ تم حفظ المكتبة الفقهية بنجاح في: {OUTPUT_FILE}")
-        
-    except Exception as e:
-        print(f"❌ حدث خطأ أثناء التحميل: {e}")
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-if __name__ == "__main__":
-    main()
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install datasets requests
+
+      - name: Run Fetch Script
+        run: python scripts/fetch_fiqh_library.py
+
+      - name: Commit Fiqh Library
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/libraries/fiqh-library.json.gz
+          git commit -m "📚 بناء المكتبة الفقهية الضخمة (آلاف الفتاوى المضغوطة)" || echo "لا تغييرات"
+          git push || true
