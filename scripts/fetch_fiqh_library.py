@@ -3,66 +3,58 @@ import json
 import sys
 import gzip
 from pathlib import Path
-
-try:
-    from datasets import load_dataset
-except ImportError:
-    print("❌ مكتبة 'datasets' غير مثبتة.")
-    sys.exit(1)
+import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = _REPO_ROOT / "data" / "libraries"
-OUTPUT_FILE = OUTPUT_DIR / "fiqh-library.json.gz"
+OUTPUT_FILE = OUTPUT_DIR / "adhkar-library.json.gz"
+
+# الرابط المباشر الصحيح (من مستودع rn0x/Adhkar-json)
+URL = "https://raw.githubusercontent.com/rn0x/Adhkar-json/main/adhkar.json"
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    print("⬇️ جاري تحميل قاعدة البيانات الفقهية الضخمة (IslamQA)...")
-    print("⏳ قد يستغرق هذا بضع دقائق، يرجى الانتظار...")
+    print("⬇️ جاري تحميل مكتبة الأذكار والأدعية (حصن المسلم)...")
     
     try:
-        dataset = load_dataset("abdulmunimjemal/IslamQA-Multilingual-Dataset", split="train")
-        print(f"✅ تم التحميل بنجاح! عدد الفتاوى الإجمالي: {len(dataset)}")
+        r = requests.get(URL, timeout=30)
+        if r.status_code != 200:
+            print(f"❌ فشل التحميل: HTTP {r.status_code}")
+            sys.exit(1) # إيقاف العملية بإخطار
+            
+        data = r.json()
+        adhkar_list = []
         
-        fiqh_library = []
-        
-        for idx, item in enumerate(dataset):
-            if item.get("lang") != "ar":
-                continue
+        # بنية الملف: قائمة من الفئات، كل فئة لها "category" و "array" من الأذكار
+        for category_item in data:
+            category = category_item.get("category", "")
+            array_items = category_item.get("array", [])
+            
+            for zekr_item in array_items:
+                zekr = zekr_item.get("text", "").strip()
+                if not zekr: continue
                 
-            conversations = item.get("conversations", [])
-            question = ""
-            answer = ""
-            
-            for msg in conversations:
-                if msg.get("from") == "human":
-                    question = msg.get("value", "").strip()
-                elif msg.get("from") == "gpt":
-                    answer = msg.get("value", "").strip()
-            
-            if not question or not answer or len(answer) < 50:
-                continue
+                adhkar_list.append({
+                    "id": f"adhkar-{len(adhkar_list)+1:05d}",
+                    "text": zekr,
+                    "category": category,
+                    "count": zekr_item.get("count", ""),
+                    "reference": zekr_item.get("reference", ""), # قد لا يكون موجوداً في كل الأذكار
+                    "type": "adhkar"
+                })
                 
-            fiqh_library.append({
-                "id": f"fiqh-{idx+1:05d}",
-                "question": question,
-                "answer": answer,
-                "source": "IslamQA (المنهج السلفي)",
-                "url": item.get("url", ""),
-                "type": "fiqh"
-            })
-            
-        print(f"📝 تم تصفية {len(fiqh_library)} فتوى عربية صالحة للاستخدام.")
+        print(f"📝 تم تجميع {len(adhkar_list)} ذكر/دعاء.")
         
-        print("🗜️ جاري ضغط الملف لتقليل حجمه...")
+        print("🗜️ جاري ضغط الملف...")
         with gzip.open(OUTPUT_FILE, "wt", encoding="utf-8") as f:
-            json.dump(fiqh_library, f, ensure_ascii=False)
+            json.dump(adhkar_list, f, ensure_ascii=False)
             
         size_mb = OUTPUT_FILE.stat().st_size / (1024 * 1024)
-        print(f"✅ تم حفظ المكتبة الفقهية بنجاح في: {OUTPUT_FILE} (الحجم: {size_mb:.1f} ميجابايت)")
+        print(f"✅ تم حفظ مكتبة الأذكار بنجاح في: {OUTPUT_FILE} (الحجم: {size_mb:.1f} ميجابايت)")
         
     except Exception as e:
-        print(f"❌ حدث خطأ أثناء التحميل: {e}")
+        print(f"❌ حدث خطأ: {e}")
+        sys.exit(1) # إجبار السكربت على إظهار الخطأ
 
 if __name__ == "__main__":
     main()
