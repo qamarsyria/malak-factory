@@ -130,22 +130,19 @@ def split_text(text, max_chars=1500):
     return chunks
 
 def mix_audio_layers(voice_wav: str, output_wav: str, music_file: str, sfx_file: str) -> bool:
-    """يدمج الصوت البشري + موسيقى + مؤثر صوتي بنسب مناسبة."""
     try:
         v_dur = get_dur(voice_wav)
         inputs = ["-i", voice_wav]
         filters = []
         
         idx = 1
-        # إضافة الموسيقى إن وجدت
         if music_file and Path(music_file).exists():
             inputs.extend(["-stream_loop", "-1", "-i", str(music_file)])
             filters.append(f"[{idx}:a]volume=0.12,afade=t=in:st=0:d=2,afade=t=out:st={v_dur-2}:d=2[music]")
             idx += 1
         else:
-            filters.append(f"[0:a]anull[music]") # تمرير الصوت كما هو
+            filters.append(f"[0:a]anull[music]")
 
-        # إضافة المؤثرات إن وجدت (صوتها 35% كما طلبت)
         if sfx_file and Path(sfx_file).exists():
             inputs.extend(["-stream_loop", "-1", "-i", str(sfx_file)])
             filters.append(f"[{idx}:a]volume=0.35,afade=t=in:st=0:d=1,afade=t=out:st={v_dur-1}:d=1[sfx]")
@@ -225,7 +222,6 @@ def build_episode_audio(json_path, out_mp3):
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            # التوليد الأساسي للصوت
             if stype == "quran":
                 if generate_quran_audio_gemini(chunk, str(temp_mp3)):
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
@@ -246,23 +242,20 @@ def build_episode_audio(json_path, out_mp3):
                 if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     print(f"   ✅ Gemini TTS (همسة)", flush=True)
-            else: # narration, summary, teaser, cta
+            else: 
                 gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
                 if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                     subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
                     print(f"   ✅ Gemini TTS ({stype})", flush=True)
 
-            # إضافة الموسيقى والمؤثرات
             if stype in ("quran", "hadith", "fiqh"):
-                pass # ممنوع الموسيقى والمؤثرات (احتراماً)
+                pass 
             elif stype == "malak":
-                # موسيقى رومانسية فقط (بدون مؤثرات)
                 music = MUSIC_DIR / "romantic.mp3"
                 mixed_wav = work / f"mixed_{idx}_{c_idx}.wav"
                 if mix_audio_layers(str(raw_wav), str(mixed_wav), str(music), ""):
                     shutil.copy(mixed_wav, raw_wav)
-            else: # narration, summary, teaser, cta
-                # موسيقى حسب المشهد + مؤثر صوتي
+            else: 
                 scene_music_map = {"battle": "battle.mp3", "sad": "sad.mp3", "conspiracy": "conspiracy.mp3", "calm": "calm.mp3", "night": "calm.mp3"}
                 music_name = scene_music_map.get(scene, "calm.mp3")
                 music = MUSIC_DIR / music_name
@@ -276,7 +269,7 @@ def build_episode_audio(json_path, out_mp3):
                 if mix_audio_layers(str(raw_wav), str(mixed_wav), str(music), str(sfx)):
                     shutil.copy(mixed_wav, raw_wav)
 
-            time.sleep(15) # تأخير لتجنب الحظر
+            time.sleep(5) 
 
             faded = work / f"faded_{idx}_{c_idx}.wav"
             c_dur = get_dur(raw_wav)
