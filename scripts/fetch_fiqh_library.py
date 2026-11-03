@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-# محاولة استيراد مكتبة datasets (تحتاج تثبيت)
+# محاولة استيراد مكتبة datasets
 try:
     from datasets import load_dataset
 except ImportError:
@@ -17,22 +17,32 @@ OUTPUT_FILE = OUTPUT_DIR / "fiqh-library.json"
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    print("⬇️ جاري تحميل قاعدة البيانات الفقهية الضخمة (IslamQA - منهج السلف)...")
+    print("⬇️ جاري تحميل قاعدة البيانات الفقهية الضخمة (IslamQA)...")
     print("⏳ قد يستغرق هذا بضع دقائق، يرجى الانتظار...")
     
     try:
-        # تحميل مجموعة بيانات الفتاوى الإسلامية من HuggingFace
-        # نستخدم مجموعة بيانات موثوقة تحتوي على أسئلة وأجوبة فقهية
-        dataset = load_dataset("Omar40/IslamQA", split="train")
+        # تحميل مجموعة بيانات الفتاوى الإسلامية من HuggingFace (الصحيحة)
+        dataset = load_dataset("abdulmunimjemal/IslamQA-Multilingual-Dataset", split="train")
         
-        print(f"✅ تم التحميل بنجاح! عدد الفتاوى المتاحة: {len(dataset)}")
+        print(f"✅ تم التحميل بنجاح! عدد الفتاوى الإجمالي: {len(dataset)}")
         
         fiqh_library = []
         
         for idx, item in enumerate(dataset):
-            # استخراج الحقول (تختلف أسماء الحقول حسب الداتا سيت، سنقوم بتوحيدها)
-            question = item.get("question", "").strip()
-            answer = item.get("answer", "").strip()
+            # نأخذ الفتاوى العربية فقط
+            if item.get("lang") != "ar":
+                continue
+                
+            conversations = item.get("conversations", [])
+            question = ""
+            answer = ""
+            
+            # استخراج السؤال والجواب من المحادثة
+            for msg in conversations:
+                if msg.get("from") == "human":
+                    question = msg.get("value", "").strip()
+                elif msg.get("from") == "gpt":
+                    answer = msg.get("value", "").strip()
             
             if not question or not answer or len(answer) < 50:
                 continue
@@ -42,10 +52,11 @@ def main():
                 "question": question,
                 "answer": answer,
                 "source": "IslamQA (المنهج السلفي)",
+                "url": item.get("url", ""),
                 "type": "fiqh"
             })
             
-        print(f"📝 تم تصفية {len(fiqh_library)} فتوى صالحة للاستخدام.")
+        print(f"📝 تم تصفية {len(fiqh_library)} فتوى عربية صالحة للاستخدام.")
         
         # حفظ الملف
         OUTPUT_FILE.write_text(json.dumps(fiqh_library, ensure_ascii=False, indent=2), encoding="utf-8")
