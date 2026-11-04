@@ -211,10 +211,6 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
 
     print(f"✅ {out_mp3} | {total_dur/60:.1f} دقيقة")
     
-    # 🌟 مسح الكاش تلقائياً لمنع التداخل
-    print("🧹 مسح الكاش...")
-    shutil.rmtree(ep_cache, ignore_errors=True)
-    
     cleanup_dir(work)
 
 if __name__ == "__main__":
