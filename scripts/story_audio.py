@@ -1,6 +1,7 @@
-import os, sys, json, subprocess, tempfile, shutil, re, time
+import os, sys, json, subprocess, tempfile, shutil, re, time, asyncio
 from pathlib import Path
 import requests
+import edge_tts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,7 +21,12 @@ CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
 
+async def _edge_tts_async(text, out_path):
+    comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
+    await comm.save(out_path)
+
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
+    """تطبيق صدى المسجد (يُستخدم للآيات فقط)"""
     try:
         filters = (
             "atempo=0.92,equalizer=f=120:t=q:w=1.0:g=4,equalizer=f=4000:t=q:w=1.0:g=-4,"
@@ -34,6 +40,7 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return False
 
 def apply_stealth_filter(input_wav: str, output_wav: str) -> bool:
+    """الفلتر السري للصوت البشري (للفيسبوك)"""
     try:
         filters = (
             "atempo=1.05,equalizer=f=200:t=q:w=1.0:g=2,"
@@ -84,7 +91,15 @@ def generate_quran_gemini(uthmani_text: str, out_mp3: str) -> bool:
         arabic_phonetic = uthmani_text
         style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع."
         gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
-        return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000
+        if Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000:
+            return True
+    except Exception:
+        pass
+    
+    print("   ⚠️ فشل Gemini TTS للآية، استخدام Edge TTS احتياطي...")
+    try:
+        asyncio.run(_edge_tts_async(uthmani_text, out_mp3))
+        return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 1000
     except Exception:
         return False
 
@@ -120,7 +135,7 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
 
         if not text and stype != "quran": continue
 
-        # 🌟 1. الآيات
+        # 🌟 1. الآيات (الصدى للآيات فقط)
         if stype == "quran" and "surah" in seg:
             s, ayahs = seg["surah"], seg["ayah_numbers"]
             if mode == "youtube":
@@ -133,9 +148,14 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                         if generate_quran_gemini(text_a, str(tmp_mp3)):
                             subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     if cache_a.exists():
-                        voice_wavs.append(cache_a); voice_wavs.append(silence_path)
-                        # 🌟 إصلاح: وضع النص الفعلي للآية بدلاً من كلمة "آية"
-                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(cache_a)+SILENCE_DUR}]})
+                        # 🌟 تطبيق الصدى على الآية
+                        final_a = ep_cache / f"final_{s}_{a}.wav"
+                        if apply_mosque_reverb(str(cache_a), str(final_a)):
+                            voice_wavs.append(final_a)
+                        else:
+                            voice_wavs.append(cache_a)
+                        voice_wavs.append(silence_path)
+                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(voice_wavs[-2])+SILENCE_DUR}]})
             else:
                 print(f"🎙️ المقطع {idx+1} [quran] - بشري...")
                 for a in ayahs:
@@ -149,11 +169,10 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                         apply_mosque_reverb(str(stealth_a), str(reverb_a))
                     if reverb_a.exists():
                         voice_wavs.append(reverb_a); voice_wavs.append(silence_path)
-                        # 🌟 إصلاح: وضع النص الفعلي للآية
                         all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(reverb_a)+SILENCE_DUR}]})
             continue
 
-        # 🌟 2. السرد
+        # 🌟 2. السرد (بدون أي صدى أو مؤثرات - صوت نقي)
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
         chunk_timings = []
@@ -169,17 +188,12 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            style_prompt = "أنت راوي قصص." if stype=="narration" else "أنت راوي حديث."
-            gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon", style=style_prompt)
+            # 🌟 بدون style_prompt ليقرأ النص حرفياً
+            gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
             
             if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                 subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                
-                # 🌟 إضافة صدى المسجد فقط للسرد (بدون أي موسيقى)
-                if stype in ("narration", "hadith", "fiqh", "adhkar"):
-                    reverb_wav = work / f"reverb_{idx}_{c_idx}.wav"
-                    if apply_mosque_reverb(str(raw_wav), str(reverb_wav)):
-                        shutil.copy(reverb_wav, raw_wav)
+                # 🌟 لا يوجد تطبيق صدى هنا (السرد جاف)
 
             time.sleep(5)
             faded = work / f"faded_{idx}_{c_idx}.wav"
@@ -210,7 +224,6 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
     Path(meta_path).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": total_dur, "segments": all_segments_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"✅ {out_mp3} | {total_dur/60:.1f} دقيقة")
-    
     cleanup_dir(work)
 
 if __name__ == "__main__":
