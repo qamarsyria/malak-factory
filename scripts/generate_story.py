@@ -18,11 +18,6 @@ OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
 SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
-FORCED_TASHKEEL = {
-    "الله": "اللَّه", "لله": "لِلَّه", "بالله": "بِاللَّه", "والله": "وَاللَّه",
-    "الرحمن": "الرَّحْمَن", "الرحيم": "الرَّحِيم", "إبراهيم": "إِبْرَاهِيم",
-}
-
 def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
     for model in discover_and_cache(force=False)[:5]:
@@ -72,6 +67,21 @@ def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
 def clean_llm_text(text: str) -> str:
     if not text: return ""
     t = text.strip()
+    
+    # 🌟 1. إزالة أي حروف إنجليزية
+    t = re.sub(r'[a-zA-Z]', '', t)
+    
+    # 🌟 2. إصلاح رمز الصلاة ودمج الكلمات
+    t = t.replace("ﷺ", "صلى الله عليه وسلم ")
+    t = t.replace("صلى الله عليه وسلم", "صلى الله عليه وسلم ")
+    t = t.replace("عليه السلام", "عليه السلام ")
+    
+    # 🌟 3. إزالة أي كلمات مهينة أو تقلل من شأن الأنبياء والملائكة
+    bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
+    for bw in bad_words:
+        t = t.replace(bw, "")
+        
+    # 🌟 4. إزالة المقدمات
     bad_patterns = [
         r'^\s*إليك\s+', r'^\s*هذا\s+', r'^\s*هذه\s+', r'^\s*النص\s+', r'^\s*نص\s+',
         r'^\s*الحلقة\s+القادمة\s*[:：\-]', r'^\s*في\s+الحلقة\s+القادمة\s*[,،:]',
@@ -79,36 +89,9 @@ def clean_llm_text(text: str) -> str:
     ]
     for pat in bad_patterns: t = re.sub(pat, '', t, count=1, flags=re.IGNORECASE).strip()
     t = t.strip('«»"\'[]')
+    
+    t = re.sub(r'\s+', ' ', t).strip()
     return t
-
-def apply_forced_tashkeel(text):
-    for wrong, right in FORCED_TASHKEEL.items():
-        text = re.sub(rf'(?<![ء-ي\u064B-\u0652]){re.escape(wrong)}(?![ء-ي\u064B-\u0652])', right, text)
-    return text
-
-def proofread_script(text):
-    print("🔍 جاري التدقيق اللغوي ووضع التشكيل...", flush=True)
-    parts = re.split(r'(\[آية: \d+:\d+\])', text)
-    corrected_parts = []
-    for part in parts:
-        if not part.strip(): continue
-        if part.startswith("[آية:"): corrected_parts.append(part); continue
-        
-        chunks = []; current = ""
-        for sentence in re.split(r'(?<=[.!؟])\s+', part):
-            if len(current) + len(sentence) < 300: current += " " + sentence
-            else:
-                if current: chunks.append(current.strip())
-                current = sentence
-        if current: chunks.append(current.strip())
-        
-        for chunk in chunks:
-            prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص التالي حرفياً دون تغيير أي كلمة أو حرف. أعد النص فقط:\n{chunk}"
-            corrected = call_llm_with_fallback(prompt, is_json=False, timeout=45, max_tokens=2000)
-            if corrected and len(corrected) > len(chunk) * 0.8:
-                corrected_parts.append(apply_forced_tashkeel(clean_llm_text(corrected)))
-            else: corrected_parts.append(chunk)
-    return " ".join(corrected_parts)
 
 def split_narration(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
@@ -172,8 +155,9 @@ def build_script_prompt(story, plan, ep_num):
 3. المصدر: القرآن، السنة، تفسير ابن كثير.
 4. ممنوع أي لغة سينمائية.
 5. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. ممنوع منعاً باتاً اختراع أحداث.**
-6. اكتب من 500 إلى 600 كلمة فقط.
-7. ابدأ السرد مباشرة بالحدث.
+6. **احترام مطلق**: لا تصف الملائكة أو الأنبياء أو الصحابة بأي وصف مهين، ولا تقل أنهم وبخوا أو عوتبوا أو أخطأوا. ممنوع اختراع أي موقف يقلل من شأنهم. استخدم دائماً ألفاظ التوقير والاحترام.
+7. اكتب من 500 إلى 600 كلمة فقط.
+8. ابدأ السرد مباشرة بالحدث.
 
 اكتب النص السردي فقط."""
 
@@ -198,19 +182,19 @@ def main():
     if not script_text: sys.exit(1)
     
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
-    script_text = proofread_script(script_text)
+    script_text = clean_llm_text(script_text)
     segments = parse_script_with_verses(script_text)
     
     summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False, timeout=60, max_tokens=300)
-    summary_clean = apply_forced_tashkeel(clean_llm_text(summary_raw))
+    summary_clean = clean_llm_text(summary_raw)
     if not summary_clean or len(summary_clean) < 20:
-        summary_clean = "وَهَكَذَا تَتَجَلَّى عَظَمَةُ تَدْبِيرِ اللَّهِ، وَأَنَّ الصَّبْرَ وَالتَّوَكُّلَ هُمَا زَادُ الْمُؤْمِنِ."
+        summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
     segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
     teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False, timeout=60, max_tokens=200)
-    teaser_clean = apply_forced_tashkeel(clean_llm_text(teaser_raw))
+    teaser_clean = clean_llm_text(teaser_raw)
     if not teaser_clean or len(teaser_clean) < 20:
-        teaser_clean = "فَمَاذَا حَدَثَ بَعْدَ ذَلِكَ؟ تَابِعُوا الْحَلَقَةَ الْقَادِمَةَ."
+        teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
     segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
     outro = random.choice(OUTRO_TEMPLATES)
