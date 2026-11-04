@@ -28,12 +28,12 @@ jobs:
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
-      # 🌟 استعادة الكاش (إذا كان هناك تشغيل سابق فشل، سنستأنف منه)
+      # 🌟 السر الأول: الكاش مربوط ببصمة الكود (hashFiles). أي تعديل في السكربتات يعتبره كاش جديد.
       - name: Restore Audio Cache
         uses: actions/cache@v4
         with:
           path: out/audio_cache
-          key: audio-cache-${{ github.run_id }}
+          key: audio-cache-${{ hashFiles('scripts/*.py') }}
           restore-keys: |
             audio-cache-
 
@@ -138,7 +138,6 @@ jobs:
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${SOC_UPLOAD}" \
             -F "caption=${CAPTION_SOC}" -F "supports_streaming=true"
 
-      # 🌟 الخطوة السحرية: حفظ الحالة (لضمان عدم التكرار)
       - name: Commit State
         if: steps.tg.outcome == 'success'
         run: |
@@ -149,11 +148,21 @@ jobs:
           git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push || true
 
-      # 🌟 مسح الملفات المؤقتة فقط إذا نجح الرفع
-      - name: Cleanup (On Success)
+      # 🌟 السر الثاني: حذف الكاش من سيرفرات GitHub فقط إذا نجح الرفع على تلغرام
+      - name: Delete Cache on Success
+        if: steps.tg.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "✅ نجح الرفع على تلغرام! جاري مسح الكاش من GitHub..."
+          gh cache delete "audio-cache-${{ hashFiles('scripts/*.py') }}" || true
+
+      # تنظيف الملفات المؤقتة (لأن الكاش انمسح بالفعل من GitHub)
+      - name: Cleanup Local Files
         if: steps.tg.outcome == 'success'
         run: |
-          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
+          rm -rf videos/*.mp4 
+          rm -rf out/*.mp3 
+          rm -rf out/*_meta.json
           rm -rf data/stories/generated/*.json
           rm -f out/latest_episode.txt
-          rm -rf out/audio_cache/*  # مسح الكاش بعد النجاح الكامل
