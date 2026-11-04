@@ -31,7 +31,7 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 r = requests.post(url, json=body, timeout=timeout)
                 if r.status_code == 200:
@@ -56,7 +56,7 @@ def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     try:
-        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}, timeout=180)
+        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"]
             if is_json:
@@ -96,14 +96,14 @@ def proofread_script(text):
         
         chunks = []; current = ""
         for sentence in re.split(r'(?<=[.!؟])\s+', part):
-            if len(current) + len(sentence) < 500: current += " " + sentence
+            if len(current) + len(sentence) < 300: current += " " + sentence
             else:
                 if current: chunks.append(current.strip())
                 current = sentence
         if current: chunks.append(current.strip())
         
         for chunk in chunks:
-            prompt = f"أنت مدقق لغوي. ضع التشكيل التام (فتحة، ضمة، كسرة، سكون، شدة) على النص التالي. ممنوع تغيير أي كلمة. أعد النص فقط:\n{chunk}"
+            prompt = f"أنت مدقق لغوي. ضع التشكيل التام على النص التالي حرفياً دون تغيير أي كلمة أو حرف. أعد النص فقط:\n{chunk}"
             corrected = call_llm_with_fallback(prompt, is_json=False, timeout=45, max_tokens=2000)
             if corrected and len(corrected) > len(chunk) * 0.8:
                 corrected_parts.append(apply_forced_tashkeel(clean_llm_text(corrected)))
@@ -126,21 +126,19 @@ def parse_script_with_verses(script_text):
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
     
-    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]", r"آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)"]
+    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
     parts = None
     for pat in patterns:
         parts = re.split(pat, text)
         if len(parts) > 1: break
-    if not parts or len(parts) == 1: 
-        return [{"type": "narration", "text": c.strip()} for c in split_narration(text) if c.strip()]
+    if not parts or len(parts) == 1: return [{"type": "narration", "text": c.strip()} for c in split_narration(text) if c.strip()]
 
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
-            chunk = re.sub(r"[\[\(]?آ[يی]ة[^\]]*[\]\)]?", "", parts[i]).strip()
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
             if len(chunk) > 5:
-                for piece in split_narration(chunk): 
-                    segments.append({"type": "narration", "text": piece.strip()})
+                for piece in split_narration(chunk): segments.append({"type": "narration", "text": piece.strip()})
             i += 1
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
@@ -161,11 +159,11 @@ def build_script_prompt(story, plan, ep_num):
 القصة المطلوبة: {story['title']}
 
 قواعد صارمة جداً:
-1. **اكتب بأسلوب روائي متصل ومتدفق**. ممنوع تماماً كتابة عناوين فرعية (مثل: المشهد الأول، الفصل، مقدمة، خاتمة).
+1. **اكتب بأسلوب روائي متصل ومتدفق**. ممنوع تماماً كتابة عناوين فرعية.
 2. **يجب إدراج 4 إلى 6 آيات قرآنية** في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
 3. المصدر: القرآن، السنة، تفسير ابن كثير.
 4. ممنوع أي لغة سينمائية.
-5. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. ممنوع منعاً باتاً اختراع أحداث أو كلمات (مثل كلمة "ترخا").** التزم حرفياً بالألفاظ القرآنية (صلصال، حمأ مسنون، طين لازب، إلخ).
+5. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. ممنوع منعاً باتاً اختراع أحداث.**
 6. اكتب من 500 إلى 600 كلمة فقط.
 7. ابدأ السرد مباشرة بالحدث.
 
