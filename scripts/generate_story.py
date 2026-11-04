@@ -150,8 +150,16 @@ def parse_script_with_verses(script_text):
             i += 2
     return segments
 
-def build_plan_prompt(story, ep_num):
-    return f'أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" بتفاصيل دقيقة.\nاكتب خطة للحلقة {ep_num} تركز على جزء محدد من حياته.\n\nأعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع"}}'
+def build_plan_prompt(story, ep_num, state):
+    covered = state.get("covered_topics", [])
+    covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
+    
+    return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
+المواضيع التي تمت تغطيتها في الحلقات السابقة:
+{covered_str}
+
+اكتب خطة للحلقة {ep_num} تركز على جزء محدد وجديد من حياته (لم يتم تغطيته سابقاً).
+أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
 
 def build_script_prompt(story, plan, ep_num):
     return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي موثوق.
@@ -185,7 +193,7 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
