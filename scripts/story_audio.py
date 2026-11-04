@@ -26,7 +26,6 @@ async def _edge_tts_async(text, out_path):
     await comm.save(out_path)
 
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
-    """تطبيق صدى المسجد (يُستخدم للآيات فقط)"""
     try:
         filters = (
             "atempo=0.92,equalizer=f=120:t=q:w=1.0:g=4,equalizer=f=4000:t=q:w=1.0:g=-4,"
@@ -40,7 +39,6 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         return False
 
 def apply_stealth_filter(input_wav: str, output_wav: str) -> bool:
-    """الفلتر السري للصوت البشري (للفيسبوك)"""
     try:
         filters = (
             "atempo=1.05,equalizer=f=200:t=q:w=1.0:g=2,"
@@ -135,7 +133,6 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
 
         if not text and stype != "quran": continue
 
-        # 🌟 1. الآيات (الصدى للآيات فقط)
         if stype == "quran" and "surah" in seg:
             s, ayahs = seg["surah"], seg["ayah_numbers"]
             if mode == "youtube":
@@ -148,7 +145,6 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                         if generate_quran_gemini(text_a, str(tmp_mp3)):
                             subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     if cache_a.exists():
-                        # 🌟 تطبيق الصدى على الآية
                         final_a = ep_cache / f"final_{s}_{a}.wav"
                         if apply_mosque_reverb(str(cache_a), str(final_a)):
                             voice_wavs.append(final_a)
@@ -172,7 +168,6 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                         all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(reverb_a)+SILENCE_DUR}]})
             continue
 
-        # 🌟 2. السرد (بدون أي صدى أو مؤثرات - صوت نقي)
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
         chunk_timings = []
@@ -188,12 +183,10 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
             raw_wav = work / f"c_{idx}_{c_idx}.wav"
             temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
             
-            # 🌟 بدون style_prompt ليقرأ النص حرفياً
             gemini_tts_with_pool(chunk, str(temp_mp3), voice="Charon")
             
             if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                 subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(raw_wav)], check=True, capture_output=True)
-                # 🌟 لا يوجد تطبيق صدى هنا (السرد جاف)
 
             time.sleep(5)
             faded = work / f"faded_{idx}_{c_idx}.wav"
