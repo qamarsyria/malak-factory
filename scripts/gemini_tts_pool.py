@@ -6,13 +6,12 @@ import requests
 MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 24 * 3600
 
-# 🌟 إضافة نظام تحديد المعدل (Rate Limiter) لمنع الحظر
 _last_request_time = 0
 def _wait_for_rate_limit():
     global _last_request_time
     now = time.time()
     elapsed = now - _last_request_time
-    if elapsed < 5.0: # طلب واحد كل 5 ثوانٍ لتجنب حظر جوجل
+    if elapsed < 5.0:
         time.sleep(5.0 - elapsed)
     _last_request_time = time.time()
 
@@ -140,15 +139,25 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
     if buf: chunks.append(buf)
     return chunks
 
-def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 250) -> bool:
+def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 120) -> bool:
+    """🌟 الحل الوسط: قص 120 مللي ثانية فقط، مع تلاشي ناعم جداً يغطي التشويش"""
     try:
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(input_wav)], capture_output=True, text=True, timeout=10)
         duration = float(probe.stdout.strip() or 0)
         if duration <= 0.4:
             import shutil; shutil.copy(str(input_wav), str(output_wav)); return True
+            
         cut_duration = duration - (trim_ms / 1000.0)
+        # نبدأ التلاشي قبل القص بـ 150 مللي ثانية لتغطية التشويش بسلاسة
         fade_start = max(0, cut_duration - 0.15)
-        subprocess.run(["ffmpeg", "-y", "-i", str(input_wav), "-t", str(cut_duration), "-af", f"afade=t=out:st={fade_start}:d=0.15", "-ar", "24000", "-ac", "1", str(output_wav)], check=True, capture_output=True, timeout=60)
+        
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(input_wav), 
+            "-t", str(cut_duration), 
+            "-af", f"afade=t=out:st={fade_start}:d=0.15", 
+            "-ar", "24000", "-ac", "1", str(output_wav)
+        ], check=True, capture_output=True, timeout=60)
+        
         return output_wav.exists() and output_wav.stat().st_size > 1000
     except Exception: return False
 
@@ -169,7 +178,7 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
             body["systemInstruction"] = {"parts": [{"text": style}]}
 
         try:
-            _wait_for_rate_limit() # 🌟 تحديد السرعة
+            _wait_for_rate_limit()
             r = requests.post(url, json=body, timeout=180)
             
             if r.status_code == 400 and style:
