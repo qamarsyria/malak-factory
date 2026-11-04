@@ -14,9 +14,7 @@ def _find_arabic_font():
     candidates = ["/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf"]
     for c in candidates:
         if os.path.exists(c): return c
-    r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
-    files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
-    return files[0] if files else ""
+    return ""
 
 def _shape(text): return arabic_reshaper.reshape(str(text))
 
@@ -37,20 +35,28 @@ def get_duration(path):
     try: return float(r.stdout.strip())
     except: return 0.0
 
+# 🌟 كلمات البحث الخيالية + منع النساء غير المنقبات
 def get_visual_query(seg):
     if seg.get("type") == "malak":
-        return random.choice(["butterflies flowers", "rain old damascus", "hijab girl flowers", "birds nature", "romantic nature", "rain window", "roses garden"])
+        return random.choice([
+            "niqab woman garden", "niqab woman flowers", "niqab woman nature"
+        ])
+    
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
-    if "بحر" in text or "موج" in text: return "sea waves"
-    if "جبل" in text or "طور" in text: return "mountain peak"
-    if "ماء" in text or "نهر" in text or "عين" in text: return "river water"
-    if "سماء" in text or "نجم" in text or "قمر" in text: return "starry sky night"
-    if "شجر" in text or "نخل" in text: return "palm trees desert"
-    if "صحراء" in text or "رمل" in text: return "sand dunes desert"
-    if "مسجد" in text or "محراب" in text: return "mosque architecture"
-    if "نار" in text: return "fire flames"
-    if seg.get("type") == "quran": return "quran book islamic"
-    return "islamic nature landscape"
+    
+    if "بحر" in text or "موج" in text: return "enchanted ocean magical"
+    if "جبل" in text or "طور" in text: return "misty mountain fantasy"
+    if "ماء" in text or "نهر" in text or "عين" in text: return "magical river glowing"
+    if "سماء" in text or "نجم" in text or "قمر" in text: return "dreamy starry night milky way"
+    if "شجر" in text or "نخل" in text: return "enchanted forest magical trees"
+    if "صحراء" in text or "رمل" in text: return "fantasy desert dunes sunset"
+    if "مسجد" in text or "محراب" in text: return "islamic architecture mosque magical"
+    if "نار" in text: return "magical glowing fire"
+    
+    return random.choice([
+        "enchanted forest magical", "fantasy landscape glowing", 
+        "starry night dreamy", "islamic architecture sunset"
+    ])
 
 def _find_local(query):
     slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
@@ -63,11 +69,11 @@ def _find_local(query):
 def fetch_media(query, work_dir, used_urls):
     local = _find_local(query)
     if local: return local
-    queries = [query, "islamic nature", "desert dunes", "sky clouds", "mosque architecture", "ocean waves"]
+    queries = [query, "enchanted forest", "fantasy nature"]
     for q in queries:
         if not PIXABAY_KEY: break
         try:
-            time.sleep(0.5) # تقليل وقت الانتظار
+            time.sleep(1)
             r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
             if r.status_code == 200:
                 hits = r.json().get("hits", [])
@@ -84,12 +90,7 @@ def fetch_media(query, work_dir, used_urls):
                         return str(out)
                     except: pass
         except: pass
-    if Path(BG_VIDEOS_DIR).exists():
-        videos = [v for v in Path(BG_VIDEOS_DIR).glob("*.*") if v.suffix.lower() in ('.mp4', '.mov', '.webm', '.jpg', '.png')]
-        if videos: return str(random.choice(videos))
-    out = work_dir / "black.jpg"
-    if not out.exists(): Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(out)
-    return str(out)
+    return ""
 
 def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
     dummy = Image.new("RGB", (10, 10)); ddraw = ImageDraw.Draw(dummy)
@@ -119,8 +120,7 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
 
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
-    if not chunk_text and not is_quran: 
-        overlay.save(out_path); return
+    if not chunk_text and not is_quran: overlay.save(out_path); return
 
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
     display_text = chunk_text + (f"\n﴿ {display_ref} ﴾" if is_quran and display_ref else "")
@@ -156,14 +156,19 @@ def build_video(audio_path, meta_path, output_mp4):
             query = get_visual_query(seg)
             num_bgs = max(1, math.ceil(seg_duration / 15))
             bg_files = [fetch_media(query, work_dir, used_urls) for _ in range(num_bgs)]
+            bg_files = [bg for bg in bg_files if bg] # إزالة الفارغ
+            if not bg_files:
+                # خلفية احتياطية سوداء
+                black = work_dir / "black.jpg"
+                Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(black)
+                bg_files = [str(black)]
             
-            bg_duration = seg_duration / num_bgs
+            bg_duration = seg_duration / len(bg_files)
             processed_bgs = []
             
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.endswith(('.jpg', '.jpeg', '.png'))
-                # 🌟 تسريع 1: preset ultrafast بدلاً من fast
                 cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
@@ -198,13 +203,11 @@ def build_video(audio_path, meta_path, output_mp4):
                 subprocess.run(["ffmpeg", "-y"] + text_inputs + ["-filter_complex", ";".join(text_filters), "-map", "[text]", "-t", str(seg_duration), "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)], check=True, capture_output=True)
 
             out_seg = work_dir / f"seg_{i}.mp4"
-            # 🌟 تسريع 2: preset ultrafast للفيديو النهائي
             subprocess.run(["ffmpeg", "-y", "-i", str(bg_video_path), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
             concat_lines.append(f"file '{out_seg}'")
 
         audio_dur = get_duration(audio_path)
         (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        # 🌟 تسريع 3: preset ultrafast للدمج النهائي
         subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
         print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
