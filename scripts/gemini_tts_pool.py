@@ -11,12 +11,10 @@ def _wait_for_rate_limit():
     global _last_request_time
     now = time.time()
     elapsed = now - _last_request_time
-    if elapsed < 5.0:
-        time.sleep(5.0 - elapsed)
+    if elapsed < 5.0: time.sleep(5.0 - elapsed)
     _last_request_time = time.time()
 
-def _log(msg: str) -> None:
-    print(f"[gemini-tts] {msg}", flush=True)
+def _log(msg: str) -> None: print(f"[gemini-tts] {msg}", flush=True)
 
 class GeminiKeyPool:
     def __init__(self) -> None:
@@ -31,8 +29,7 @@ class GeminiKeyPool:
         now = time.time()
         for _ in range(len(self.keys)):
             key = self.keys[self.current_index]
-            if now >= self.cooldowns.get(key, 0): 
-                return key
+            if now >= self.cooldowns.get(key, 0): return key
             self.current_index = (self.current_index + 1) % len(self.keys)
         return None
 
@@ -40,29 +37,17 @@ class GeminiKeyPool:
         for _ in range(10): 
             key = self._available_key()
             if key: return key
-            
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
-            
-            if wait > 3600: 
-                raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
-            
+            if wait > 3600: raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
             print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
             time.sleep(wait + 2)
-            
         raise RuntimeError("❌ فشل الحصول على مفتاح Gemini متاح")
 
-    def _advance(self) -> None:
-        self.current_index = (self.current_index + 1) % len(self.keys)
-
+    def _advance(self) -> None: self.current_index = (self.current_index + 1) % len(self.keys)
     def mark_failed(self, cooldown_seconds: int = 65) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
-        self.current_index = (self.current_index + 1) % len(self.keys)
-
-    def mark_daily_exhausted(self) -> None:
-        key = self.keys[self.current_index]
-        self.cooldowns[key] = time.time() + 86400
         self.current_index = (self.current_index + 1) % len(self.keys)
 
 _pool: GeminiKeyPool | None = None
@@ -73,28 +58,16 @@ def get_pool() -> GeminiKeyPool:
 
 _MODEL_CACHE: list[str] | None = None
 
-def _load_model_cache() -> list[str] | None:
+def discover_tts_models(prefer_lite: bool = False) -> list[str]:
+    global _MODEL_CACHE
+    if _MODEL_CACHE is not None: return _MODEL_CACHE
     try:
         if Path(MODEL_CACHE_FILE).exists():
             data = json.loads(Path(MODEL_CACHE_FILE).read_text(encoding="utf-8"))
             if time.time() - data.get("timestamp", 0) < MODEL_CACHE_TTL:
-                return data["models"]
-    except Exception: pass
-    return None
-
-def _save_model_cache(models: list[str]):
-    try:
-        Path(MODEL_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
-        Path(MODEL_CACHE_FILE).write_text(json.dumps({"timestamp": time.time(), "models": models}, ensure_ascii=False), encoding="utf-8")
-    except Exception: pass
-
-def discover_tts_models(prefer_lite: bool = False) -> list[str]:
-    global _MODEL_CACHE
-    if _MODEL_CACHE is not None: return _MODEL_CACHE
-    cached = _load_model_cache()
-    if cached:
-        _MODEL_CACHE = cached
-        return cached
+                _MODEL_CACHE = data["models"]
+                return _MODEL_CACHE
+    except: pass
 
     p = get_pool()
     key = p.get_current()
@@ -111,60 +84,53 @@ def discover_tts_models(prefer_lite: bool = False) -> list[str]:
             version = float(m.group(1)) if m else 0
             is_lite = 0 if "lite" in name.lower() else 1
             is_preview = 1 if "preview" in name.lower() else 0
-            if prefer_lite: return (is_lite, -version, is_preview, name)
-            return (-version, is_lite, is_preview, name)
+            return (is_lite, -version, is_preview, name) if prefer_lite else (-version, is_lite, is_preview, name)
 
         tts_models.sort(key=rank)
         _MODEL_CACHE = tts_models
-        _save_model_cache(tts_models)
+        Path(MODEL_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(MODEL_CACHE_FILE).write_text(json.dumps({"timestamp": time.time(), "models": tts_models}), encoding="utf-8")
         return tts_models
-    except Exception: return ["gemini-2.5-flash-preview-tts"]
+    except: return ["gemini-2.5-flash-preview-tts"]
 
-MAX_CHARS_PER_REQUEST = 1800
-
-def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
+# 🌟 تقسيم النص إلى جمل قصيرة جداً لمنع الهلوسة
+def _split_text(text: str, max_chars: int = 150) -> list[str]:
     text = text.strip()
-    if len(text) <= max_chars: return [text]
-    parts = re.split(r"(?<=[.!?؟।\n])\s+", text)
-    chunks: list[str] = []
-    buf = ""
+    if not text: return []
+    # تقسيم عند علامات الترقيم
+    parts = re.split(r'(?<=[.!؟])\s+', text)
+    chunks = []
     for part in parts:
-        if len(buf) + len(part) + 1 <= max_chars: buf = f"{buf} {part}".strip()
+        if len(part) <= max_chars:
+            if part.strip(): chunks.append(part.strip())
         else:
-            if buf: chunks.append(buf)
-            while len(part) > max_chars:
-                chunks.append(part[:max_chars])
-                part = part[max_chars:]
-            buf = part
-    if buf: chunks.append(buf)
+            # إذا كانت الجملة طويلة، نقسمها عند الفواصل
+            sub_parts = re.split(r'(?<=[،,])\s+', part)
+            buf = ""
+            for sp in sub_parts:
+                if len(buf) + len(sp) < max_chars: buf += " " + sp
+                else:
+                    if buf.strip(): chunks.append(buf.strip())
+                    buf = sp
+            if buf.strip(): chunks.append(buf.strip())
     return chunks
 
-def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 120) -> bool:
-    # 🌟 إصلاح السعلة: قص 120 مللي ثانية مع تلاشي 150 مللي ثانية
+def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
     try:
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(input_wav)], capture_output=True, text=True, timeout=10)
         duration = float(probe.stdout.strip() or 0)
         if duration <= 0.4:
             import shutil; shutil.copy(str(input_wav), str(output_wav)); return True
-            
-        cut_duration = duration - (trim_ms / 1000.0)
+        cut_duration = duration - 0.12
         fade_start = max(0, cut_duration - 0.15)
-        
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(input_wav), 
-            "-t", str(cut_duration), 
-            "-af", f"afade=t=out:st={fade_start}:d=0.15", 
-            "-ar", "24000", "-ac", "1", str(output_wav)
-        ], check=True, capture_output=True, timeout=60)
-        
+        subprocess.run(["ffmpeg", "-y", "-i", str(input_wav), "-t", str(cut_duration), "-af", f"afade=t=out:st={fade_start}:d=0.15", "-ar", "24000", "-ac", "1", str(output_wav)], check=True, capture_output=True, timeout=60)
         return output_wav.exists() and output_wav.stat().st_size > 1000
-    except Exception: return False
+    except: return False
 
-def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: bool = False, style: str = None) -> bool | str:
-    models = discover_tts_models(prefer_lite=prefer_lite)
+def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
+    models = discover_tts_models()
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        
         body = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
@@ -172,22 +138,12 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
             },
         }
-        
-        if style:
-            body["systemInstruction"] = {"parts": [{"text": style}]}
-
+        # 🌟 لا يوجد systemInstruction هنا. قراءة حرفية.
         try:
             _wait_for_rate_limit()
             r = requests.post(url, json=body, timeout=180)
-            
-            if r.status_code == 400 and style:
-                del body["systemInstruction"]
-                _wait_for_rate_limit()
-                r = requests.post(url, json=body, timeout=180)
-                
             if r.status_code == 429: return "RATE_LIMIT"
-            if r.status_code == 400: return False
-            if r.status_code == 404: continue
+            if r.status_code in (400, 404): return False
             if r.status_code != 200: continue
 
             data = r.json()
@@ -204,10 +160,10 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, prefer_lite: boo
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
                 wf.writeframes(raw)
             return True
-        except Exception: continue
+        except: continue
     return False
 
-def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_lite: bool = False, style: str = None) -> str:
+def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
     out_mp3_path = Path(out_mp3)
     out_mp3_path.parent.mkdir(parents=True, exist_ok=True)
     work_dir = out_mp3_path.parent / f"_tts_{int(time.time())}"
@@ -220,34 +176,17 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
     for idx, chunk in enumerate(chunks):
         wav_path = work_dir / f"part_{idx:03d}.wav"
         success = False
-        
         for attempt in range(len(pool.keys) * 5): 
-            try:
-                key = pool.get_current()
-            except Exception as e:
-                print(f"   ⚠️ {e}")
-                time.sleep(60)
-                continue
+            try: key = pool.get_current()
+            except: time.sleep(60); continue
+            try: result = _tts_single(chunk, wav_path, voice, key)
+            except: pool.mark_failed(65); continue
 
-            try: 
-                result = _tts_single(chunk, wav_path, voice, key, prefer_lite=prefer_lite, style=style)
-            except Exception: 
-                pool.mark_failed(65)
-                continue
-
-            if result == "RATE_LIMIT": 
-                pool.mark_failed(65) 
-                continue
-                
-            if result is True: 
-                success = True
-                break
-                
+            if result == "RATE_LIMIT": pool.mark_failed(65); continue
+            if result is True: success = True; break
             pool.mark_failed(65)
 
-        if not success: 
-            raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}")
-
+        if not success: raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}")
         cleaned_path = work_dir / f"part_{idx:03d}_clean.wav"
         if _clean_chunk(wav_path, cleaned_path): wav_parts.append(cleaned_path)
         else: wav_parts.append(wav_path)
@@ -259,7 +198,5 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon", prefer_
             with wave.open(str(part), "rb") as inp: out.writeframes(inp.readframes(inp.getnframes()))
 
     subprocess.run(["ffmpeg", "-y", "-i", str(merged_wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(out_mp3_path)], check=True, capture_output=True, timeout=180)
-
-    import shutil
-    shutil.rmtree(work_dir, ignore_errors=True)
+    import shutil; shutil.rmtree(work_dir, ignore_errors=True)
     return str(out_mp3_path)
