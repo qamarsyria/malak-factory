@@ -11,7 +11,7 @@ def _wait_for_rate_limit():
     global _last_request_time
     now = time.time()
     elapsed = now - _last_request_time
-    if elapsed < 5.0: time.sleep(5.0 - elapsed)
+    if elapsed < 3.0: time.sleep(3.0 - elapsed)
     _last_request_time = time.time()
 
 def _log(msg: str) -> None: print(f"[gemini-tts] {msg}", flush=True)
@@ -59,52 +59,37 @@ def get_pool() -> GeminiKeyPool:
 _MODEL_CACHE: list[str] | None = None
 
 def discover_tts_models(prefer_lite: bool = False) -> list[str]:
+    # 🌟 قائمة النماذج الصوتية المعروفة والمضمونة فقط
+    known_tts_models = [
+        "gemini-2.5-flash-preview-tts",
+        "gemini-3.8-flash-tts",
+        "gemini-3.1-flash-tts-preview"
+    ]
     global _MODEL_CACHE
     if _MODEL_CACHE is not None: return _MODEL_CACHE
+    
     try:
         if Path(MODEL_CACHE_FILE).exists():
             data = json.loads(Path(MODEL_CACHE_FILE).read_text(encoding="utf-8"))
             if time.time() - data.get("timestamp", 0) < MODEL_CACHE_TTL:
-                _MODEL_CACHE = data["models"]
-                return _MODEL_CACHE
+                tts_only = [m for m in data["models"] if "tts" in m.lower()]
+                if tts_only:
+                    _MODEL_CACHE = tts_only
+                    return _MODEL_CACHE
     except: pass
+    
+    _MODEL_CACHE = known_tts_models
+    return _MODEL_CACHE
 
-    p = get_pool()
-    key = p.get_current()
-    try:
-        _wait_for_rate_limit()
-        r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=30)
-        if r.status_code != 200: return ["gemini-2.5-flash-preview-tts"]
-        models = r.json().get("models", [])
-        tts_models = [m.get("name", "").replace("models/", "") for m in models if "generateContent" in m.get("supportedGenerationMethods", []) and any(x in m.get("name", "").lower() for x in ["tts", "speech", "audio"])]
-        if not tts_models: return ["gemini-2.5-flash-preview-tts"]
-
-        def rank(name):
-            m = re.search(r'(\d+\.\d+)', name)
-            version = float(m.group(1)) if m else 0
-            is_lite = 0 if "lite" in name.lower() else 1
-            is_preview = 1 if "preview" in name.lower() else 0
-            return (is_lite, -version, is_preview, name) if prefer_lite else (-version, is_lite, is_preview, name)
-
-        tts_models.sort(key=rank)
-        _MODEL_CACHE = tts_models
-        Path(MODEL_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
-        Path(MODEL_CACHE_FILE).write_text(json.dumps({"timestamp": time.time(), "models": tts_models}), encoding="utf-8")
-        return tts_models
-    except: return ["gemini-2.5-flash-preview-tts"]
-
-# 🌟 تقسيم النص إلى جمل قصيرة جداً لمنع الهلوسة
 def _split_text(text: str, max_chars: int = 150) -> list[str]:
     text = text.strip()
     if not text: return []
-    # تقسيم عند علامات الترقيم
     parts = re.split(r'(?<=[.!؟])\s+', text)
     chunks = []
     for part in parts:
         if len(part) <= max_chars:
             if part.strip(): chunks.append(part.strip())
         else:
-            # إذا كانت الجملة طويلة، نقسمها عند الفواصل
             sub_parts = re.split(r'(?<=[،,])\s+', part)
             buf = ""
             for sp in sub_parts:
@@ -138,12 +123,13 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
             },
         }
-        # 🌟 لا يوجد systemInstruction هنا. قراءة حرفية.
         try:
             _wait_for_rate_limit()
-            r = requests.post(url, json=body, timeout=180)
+            print(f"   🔄 محاولة {model}...", flush=True)
+            r = requests.post(url, json=body, timeout=45)
+            
             if r.status_code == 429: return "RATE_LIMIT"
-            if r.status_code in (400, 404): return False
+            if r.status_code in (400, 404): continue
             if r.status_code != 200: continue
 
             data = r.json()
@@ -160,7 +146,11 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
                 wf.writeframes(raw)
             return True
-        except: continue
+        except requests.exceptions.Timeout:
+            print(f"   ⚠️ Timeout مع {model}", flush=True)
+            continue
+        except Exception as e: 
+            continue
     return False
 
 def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
@@ -176,7 +166,7 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
     for idx, chunk in enumerate(chunks):
         wav_path = work_dir / f"part_{idx:03d}.wav"
         success = False
-        for attempt in range(len(pool.keys) * 5): 
+        for attempt in range(len(pool.keys) * 3):
             try: key = pool.get_current()
             except: time.sleep(60); continue
             try: result = _tts_single(chunk, wav_path, voice, key)
