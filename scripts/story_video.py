@@ -11,7 +11,6 @@ from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACC
 from utilities import cleanup_dir
 
 def _find_arabic_font():
-    # 1. المسارات المعتادة
     candidates = [
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
@@ -21,17 +20,14 @@ def _find_arabic_font():
     for c in candidates:
         if os.path.exists(c): return c
     
-    # 2. البحث في النظام عن أي خط عربي (حل جذري لمشكلة GitHub)
     try:
         r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
         files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
         if files: return files[0]
-    except Exception:
-        pass
+    except Exception: pass
         
-    raise RuntimeError("❌ لم يتم العثور على أي خط عربي في النظام! تأكد من تثبيت fonts-hosny-amiri في الـ Workflow.")
+    raise RuntimeError("❌ لم يتم العثور على أي خط عربي في النظام!")
 
-# نحاول جلب الخط مرة واحدة عند بدء التشغيل
 try:
     FONT_PATH = _find_arabic_font()
     print(f"✅ تم العثور على الخط: {FONT_PATH}")
@@ -62,6 +58,7 @@ def get_visual_query(seg):
     stype = seg.get("type")
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     
+    # همسات مالك (منقبات فقط)
     if stype == "malak":
         return random.choice([
             "niqab woman flowers", "muslim woman niqab garden", 
@@ -69,6 +66,7 @@ def get_visual_query(seg):
             "islamic woman roses"
         ])
     
+    # الآيات (أماكن مقدسة بدون بشر)
     if stype == "quran":
         return random.choice([
             "kaaba mecca", "al aqsa mosque", "prophet mosque madinah",
@@ -76,6 +74,7 @@ def get_visual_query(seg):
             "islamic architecture animation", "quran book glowing"
         ])
     
+    # السرد (طبيعة فقط، بدون بشر)
     if "بحر" in text or "موج" in text: return random.choice(["ocean waves cinematic", "magical sea sunset", "glowing water animation"])
     if "جبل" in text or "طور" in text: return random.choice(["misty mountain fantasy", "mountain clouds cinematic"])
     if "ماء" in text or "نهر" in text or "عين" in text: return random.choice(["magical waterfall", "glowing river animation", "crystal water nature"])
@@ -126,6 +125,12 @@ def fetch_media(query, work_dir, used_urls):
             hits = r.json().get("hits", [])
             random.shuffle(hits)
             for hit in hits:
+                # 🌟 فلتر إضافي: رفض أي فيديو يحتوي على بشر (إلا في همسات مالك)
+                tags = hit.get("tags", "").lower()
+                if "niqab" not in query:
+                    if any(bad in tags for bad in ["man", "woman", "person", "people", "face", "child", "boy", "girl", "human"]):
+                        continue
+                        
                 url = hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url")
                 if not url or url in used_urls: continue
                 
@@ -168,13 +173,18 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         raise RuntimeError("لا يمكن رسم النص بدون خط عربي.")
 
     if ep_title:
+        ep_title = re.sub(r'[a-zA-Z]', '', ep_title)
         try: ft = ImageFont.truetype(FONT_PATH, 38, layout_engine=ImageFont.Layout.RAQM)
         except: ft = ImageFont.truetype(FONT_PATH, 38)
         _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black")
 
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
     chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
-    if not chunk_text and not is_quran: overlay.save(out_path); return
+    chunk_text = chunk_text.replace("ﷺ", "صلى الله عليه وسلم ")
+    chunk_text = chunk_text.replace("صلى الله عليه وسلم", "صلى الله عليه وسلم ") 
+    
+    if not chunk_text and not is_quran: 
+        overlay.save(out_path); return
 
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
     display_text = chunk_text + (f"\n﴿ {display_ref} ﴾" if is_quran and display_ref else "")
