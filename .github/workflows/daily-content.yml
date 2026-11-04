@@ -2,7 +2,7 @@ name: Daily Content
 
 on:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *' # يعمل يومياً الساعة 6 صباحاً
   workflow_dispatch:
 
 jobs:
@@ -27,6 +27,13 @@ jobs:
           pip install --upgrade pip
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
+
+      # 🌟 كاش منفصل لليوميات (لكي لا يتداخل مع كاش القصص)
+      - name: Restore Audio Cache
+        uses: actions/cache@v4
+        with:
+          path: out/audio_cache
+          key: audio-cache-daily-${{ hashFiles('scripts/*.py') }}
 
       - name: Discover Models
         env:
@@ -97,6 +104,7 @@ jobs:
             "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
 
       - name: Upload to Telegram (Both with Compression)
+        id: tg
         if: steps.vid_yt.outcome == 'success' && steps.vid_soc.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -114,7 +122,7 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
@@ -128,20 +136,27 @@ jobs:
             SOC_UPLOAD="$SOC_COMPRESSED"
           fi
           
-          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
+          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#حديث_صحيح #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${SOC_UPLOAD}" \
             -F "caption=${CAPTION_SOC}" -F "supports_streaming=true"
 
-      # 🌟 الخطوة السحرية: حفظ الحالة (العداد + العناصر المستخدمة) في GitHub
       - name: Commit State
-        if: always()
+        if: steps.tg.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/daily_state.json || true
-          git commit -m "💾 تحديث حالة المحتوى اليومي (منع التكرار)" || echo "لا تغييرات"
+          git add state/ || true
+          git commit -m "📝 مقطع يومي جديد" || echo "لا تغييرات"
           git push || true
+
+      - name: Delete Cache on Success
+        if: steps.tg.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "✅ نجح الرفع! جاري مسح الكاش..."
+          gh cache delete "audio-cache-daily-${{ hashFiles('scripts/*.py') }}" || true
 
       - name: Cleanup
         if: always()
@@ -149,4 +164,3 @@ jobs:
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
           rm -rf data/daily/generated/*.json
           rm -f out/latest_episode.txt
-          rm -rf out/audio_cache
