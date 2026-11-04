@@ -1,7 +1,6 @@
 import os, sys, json, subprocess, tempfile, shutil, re, time, asyncio
 from pathlib import Path
 import requests
-import edge_tts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,10 +19,6 @@ SILENCE_DUR = 0.4
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
-
-async def _edge_tts_async(text, out_path):
-    comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-10%")
-    await comm.save(out_path)
 
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
     try:
@@ -61,6 +56,20 @@ def download_human_ayah(surah, ayah, out_path):
     except Exception: pass
     return False
 
+def fetch_ayah_text_strict(surah, ayah):
+    """جلب نص الآية بصرامة. إذا فشل، ينهار المعمل لكي لا نضع نصاً خاطئاً"""
+    for attempt in range(5):
+        try:
+            r = requests.get(f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/quran-uthmani", timeout=15)
+            if r.status_code == 200:
+                txt = r.json()["data"]["text"]
+                if txt and len(txt) > 5: return txt
+        except Exception as e:
+            print(f"   ⚠️ محاولة {attempt+1} لجلب الآية فشلت: {e}")
+            time.sleep(2)
+            
+    raise RuntimeError(f"❌ فشل جلب نص الآية {surah}:{ayah} من السيرفر! المعمل سيتوقف.")
+
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
@@ -82,24 +91,18 @@ def split_text(text, max_chars=1500):
     if current: chunks.append(current.strip())
     return chunks
 
-def generate_quran_gemini(uthmani_text: str, out_mp3: str) -> bool:
+def generate_quran_gemini_strict(uthmani_text: str, out_mp3: str) -> bool:
+    """توليد الآية بجيميني حصراً. بدون أي بدائل."""
     try:
-        pm = TilavetPhonemizer() if TilavetPhonemizer else None
-        if not pm: return False
-        arabic_phonetic = uthmani_text
         style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع."
-        gemini_tts_with_pool(arabic_phonetic, out_mp3, voice="Charon", style=style_prompt)
-        if Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 3000:
+        gemini_tts_with_pool(uthmani_text, out_mp3, voice="Charon", style=style_prompt)
+        if Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 5000:
             return True
-    except Exception:
-        pass
-    
-    print("   ⚠️ فشل Gemini TTS للآية، استخدام Edge TTS احتياطي...")
-    try:
-        asyncio.run(_edge_tts_async(uthmani_text, out_mp3))
-        return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 1000
-    except Exception:
-        return False
+        else:
+            raise RuntimeError("الملف الناتج فارغ أو صغير جداً")
+    except Exception as e:
+        print(f"   ❌ فشل جيميني في قراءة الآية: {e}")
+        raise e # نرفع الخطأ لإيقاف المعمل بدلاً من استخدام بديل
 
 def build_episode_audio(json_path, out_mp3, mode="youtube"):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
@@ -133,31 +136,37 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
 
         if not text and stype != "quran": continue
 
+        # 🌟 1. الآيات (جيميني حصراً)
         if stype == "quran" and "surah" in seg:
             s, ayahs = seg["surah"], seg["ayah_numbers"]
             if mode == "youtube":
                 print(f"🎙️ المقطع {idx+1} [quran] - Gemini...")
                 for a in ayahs:
                     cache_a = ep_cache / f"gemini_{s}_{a}.wav"
-                    text_a = requests.get(f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani").json()["data"]["text"]
+                    text_a = fetch_ayah_text_strict(s, a) # جلب صارم
+                    
                     if not cache_a.exists():
                         tmp_mp3 = work / "tmp.mp3"
-                        if generate_quran_gemini(text_a, str(tmp_mp3)):
-                            subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
-                    if cache_a.exists():
-                        final_a = ep_cache / f"final_{s}_{a}.wav"
-                        if apply_mosque_reverb(str(cache_a), str(final_a)):
-                            voice_wavs.append(final_a)
-                        else:
-                            voice_wavs.append(cache_a)
-                        voice_wavs.append(silence_path)
-                        all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(voice_wavs[-2])+SILENCE_DUR}]})
+                        generate_quran_gemini_strict(text_a, str(tmp_mp3)) # توليد صارم
+                        subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
+                    
+                    final_a = ep_cache / f"final_{s}_{a}.wav"
+                    if apply_mosque_reverb(str(cache_a), str(final_a)):
+                        voice_wavs.append(final_a)
+                    else:
+                        voice_wavs.append(cache_a)
+                        
+                    voice_wavs.append(silence_path)
+                    all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(voice_wavs[-2])+SILENCE_DUR}]})
             else:
                 print(f"🎙️ المقطع {idx+1} [quran] - بشري...")
                 for a in ayahs:
                     cache_a = ep_cache / f"human_{s}_{a}.mp3"
-                    text_a = requests.get(f"https://api.alquran.cloud/v1/ayah/{s}:{a}/quran-uthmani").json()["data"]["text"]
-                    if not download_human_ayah(s, a, str(cache_a)): continue
+                    text_a = fetch_ayah_text_strict(s, a)
+                    
+                    if not download_human_ayah(s, a, str(cache_a)): 
+                        raise RuntimeError(f"فشل تحميل الصوت البشري للآية {s}:{a}")
+                        
                     stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
                     reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
                     if not reverb_a.exists():
@@ -168,6 +177,7 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                         all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(reverb_a)+SILENCE_DUR}]})
             continue
 
+        # 🌟 2. السرد
         chunks = split_text(text)
         print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
         chunk_timings = []
