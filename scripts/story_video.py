@@ -35,27 +35,43 @@ def get_duration(path):
     try: return float(r.stdout.strip())
     except: return 0.0
 
-# 🌟 كلمات البحث الخيالية + منع النساء غير المنقبات
+# 🌟 المخرج السينمائي: كلمات بحث دقيقة جداً لجلب السحر والخيال والمشاهد الإسلامية
 def get_visual_query(seg):
-    if seg.get("type") == "malak":
-        return random.choice([
-            "niqab woman garden", "niqab woman flowers", "niqab woman nature"
-        ])
-    
+    stype = seg.get("type")
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     
-    if "بحر" in text or "موج" in text: return "enchanted ocean magical"
-    if "جبل" in text or "طور" in text: return "misty mountain fantasy"
-    if "ماء" in text or "نهر" in text or "عين" in text: return "magical river glowing"
-    if "سماء" in text or "نجم" in text or "قمر" in text: return "dreamy starry night milky way"
-    if "شجر" in text or "نخل" in text: return "enchanted forest magical trees"
-    if "صحراء" in text or "رمل" in text: return "fantasy desert dunes sunset"
-    if "مسجد" in text or "محراب" in text: return "islamic architecture mosque magical"
-    if "نار" in text: return "magical glowing fire"
+    # 1. همسات ملك (نساء منقبات وزهور وفراشات)
+    if stype == "malak":
+        return random.choice([
+            "niqab woman flowers", "muslim woman niqab garden", 
+            "hijab woman nature", "niqab woman butterflies", 
+            "islamic woman roses"
+        ])
     
+    # 2. الآيات (مشاهد إسلامية مقدسة وروحانية)
+    if stype == "quran":
+        return random.choice([
+            "kaaba mecca", "al aqsa mosque", "prophet mosque madinah",
+            "old damascus syria", "mosque sunset cinematic", 
+            "islamic architecture animation", "quran book glowing"
+        ])
+    
+    # 3. السرد (طبيعة ساحرة، خيالية، وأماكن تاريخية)
+    if "بحر" in text or "موج" in text: return random.choice(["ocean waves cinematic", "magical sea sunset", "glowing water animation"])
+    if "جبل" in text or "طور" in text: return random.choice(["misty mountain fantasy", "mountain clouds cinematic"])
+    if "ماء" in text or "نهر" in text or "عين" in text: return random.choice(["magical waterfall", "glowing river animation", "crystal water nature"])
+    if "سماء" in text or "نجم" in text or "قمر" in text: return random.choice(["starry night milky way", "magical night sky", "fantasy galaxy animation"])
+    if "شجر" in text or "نخل" in text or "خريف" in text: return random.choice(["autumn leaves forest", "enchanted forest magical", "glowing trees fantasy"])
+    if "صحراء" in text or "رمل" in text: return random.choice(["desert dunes sunset", "magical desert night"])
+    if "مطر" in text or "غيوم" in text: return random.choice(["rain window cozy", "magical rain nature", "thunderstorm cinematic"])
+    if "زهر" in text or "ورد" in text: return random.choice(["roses flowers blooming", "magical flowers animation"])
+    if "شام" in text or "دمشق" in text or "قدس" in text: return random.choice(["old damascus street", "al aqsa mosque", "islamic history"])
+    
+    # 4. الخلفيات الافتراضية (في حال لم يتم التقاط كلمة مفتاحية)
     return random.choice([
-        "enchanted forest magical", "fantasy landscape glowing", 
-        "starry night dreamy", "islamic architecture sunset"
+        "enchanted forest magical", "fantasy waterfall glowing",
+        "autumn forest sun rays", "misty mountains cinematic",
+        "starry night sky", "islamic mosque sunset"
     ])
 
 def _find_local(query):
@@ -63,33 +79,54 @@ def _find_local(query):
     for base in (Path(BG_VIDEOS_DIR), Path(BG_IMAGES_DIR)):
         if not base.exists(): continue
         for f in base.glob(f"*{slug}*"):
-            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: return str(f)
+            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: 
+                return str(f)
     return None
 
 def fetch_media(query, work_dir, used_urls):
     local = _find_local(query)
     if local: return local
-    queries = [query, "enchanted forest", "fantasy nature"]
-    for q in queries:
-        if not PIXABAY_KEY: break
-        try:
-            time.sleep(1)
-            r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 1080}, timeout=20)
-            if r.status_code == 200:
-                hits = r.json().get("hits", [])
-                random.shuffle(hits)
-                for hit in hits:
-                    url = hit.get("videos", {}).get("medium", {}).get("url") or hit.get("videos", {}).get("small", {}).get("url")
-                    if not url or url in used_urls: continue
-                    slug = re.sub(r"[^a-z0-9]+", "-", q.lower())[:30]
-                    out = work_dir / f"vid_{slug}_{hit['id']}.mp4"
-                    try:
-                        with open(out, "wb") as f:
-                            for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192): f.write(chunk)
-                        used_urls.add(url)
-                        return str(out)
-                    except: pass
-        except: pass
+    
+    if not PIXABAY_KEY:
+        print("⚠️ PIXABAY_KEY غير موجود!")
+        return ""
+
+    try:
+        # نجبر الموقع على جلب فيديوهات فقط (Videos API) بجودة عالية
+        r = requests.get(
+            "https://pixabay.com/api/videos/", 
+            params={
+                "key": PIXABAY_KEY, 
+                "q": query, 
+                "video_type": "film", # فيديوهات سينمائية
+                "safesearch": "true", 
+                "per_page": 30, 
+                "min_width": 1080
+            }, 
+            timeout=20
+        )
+        if r.status_code == 200:
+            hits = r.json().get("hits", [])
+            random.shuffle(hits)
+            for hit in hits:
+                # نختار أعلى جودة متاحة (Large أو Medium)
+                url = hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url")
+                if not url or url in used_urls: continue
+                
+                slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
+                out = work_dir / f"vid_{slug}_{hit['id']}.mp4"
+                try:
+                    with open(out, "wb") as f:
+                        for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192): f.write(chunk)
+                    used_urls.add(url)
+                    return str(out)
+                except Exception as e:
+                    pass
+        else:
+            print(f"⚠️ فشل جلب فيديو ({query}): HTTP {r.status_code}")
+    except Exception as e:
+        print(f"⚠️ خطأ في جلب الفيديو: {e}")
+        
     return ""
 
 def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
@@ -154,11 +191,14 @@ def build_video(audio_path, meta_path, output_mp4):
             if seg_duration <= 0: continue
             
             query = get_visual_query(seg)
+            print(f"🎬 جلب مشهد: {query}")
+            
             num_bgs = max(1, math.ceil(seg_duration / 15))
             bg_files = [fetch_media(query, work_dir, used_urls) for _ in range(num_bgs)]
-            bg_files = [bg for bg in bg_files if bg] # إزالة الفارغ
+            bg_files = [bg for bg in bg_files if bg]
+            
+            # إذا فشل جلب أي فيديو، نضع شاشة سوداء (احتياطي)
             if not bg_files:
-                # خلفية احتياطية سوداء
                 black = work_dir / "black.jpg"
                 Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(black)
                 bg_files = [str(black)]
