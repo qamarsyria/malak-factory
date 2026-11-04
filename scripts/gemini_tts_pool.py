@@ -140,7 +140,7 @@ def _split_text(text: str, max_chars: int = MAX_CHARS_PER_REQUEST) -> list[str]:
     return chunks
 
 def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 120) -> bool:
-    """🌟 الحل الوسط: قص 120 مللي ثانية فقط، مع تلاشي ناعم جداً يغطي التشويش"""
+    # 🌟 إصلاح السعلة: قص 120 مللي ثانية مع تلاشي 150 مللي ثانية
     try:
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(input_wav)], capture_output=True, text=True, timeout=10)
         duration = float(probe.stdout.strip() or 0)
@@ -148,7 +148,6 @@ def _clean_chunk(input_wav: Path, output_wav: Path, trim_ms: int = 120) -> bool:
             import shutil; shutil.copy(str(input_wav), str(output_wav)); return True
             
         cut_duration = duration - (trim_ms / 1000.0)
-        # نبدأ التلاشي قبل القص بـ 150 مللي ثانية لتغطية التشويش بسلاسة
         fade_start = max(0, cut_duration - 0.15)
         
         subprocess.run([
