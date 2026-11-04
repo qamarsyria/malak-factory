@@ -1,4 +1,4 @@
-import os, sys, json, subprocess, tempfile, shutil, re, time, asyncio
+import os, sys, json, subprocess, tempfile, shutil, re, time, gzip
 from pathlib import Path
 import requests
 
@@ -11,14 +11,31 @@ from gemini_tts_pool import gemini_tts_with_pool
 
 try:
     from tilavet_phonemizer import Phonemizer as TilavetPhonemizer
-except:
-    TilavetPhonemizer = None
+except: TilavetPhonemizer = None
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
+
+# 🌟 تحميل مكتبة الآيات المحلية مرة واحدة
+_ayah_lib = {}
+try:
+    lib_path = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
+    if lib_path.exists():
+        with gzip.open(lib_path, "rt", encoding="utf-8") as f:
+            data = json.load(f)
+            for item in data:
+                key = f"{item['surah_number']}:{item['ayah_number']}"
+                _ayah_lib[key] = item['text']
+        print(f"✅ تم تحميل {len(_ayah_lib)} آية من الملف المحلي.")
+except Exception as e:
+    print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
+
+def get_local_ayah_text(surah, ayah):
+    key = f"{surah}:{ayah}"
+    return _ayah_lib.get(key, "")
 
 def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
     try:
@@ -28,7 +45,7 @@ def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
         )
         subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
-    except Exception:
+    except: 
         try: shutil.copy(input_wav, output_wav)
         except: pass
         return False
@@ -41,7 +58,7 @@ def apply_stealth_filter(input_wav: str, output_wav: str) -> bool:
         )
         subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
-    except Exception:
+    except: 
         shutil.copy(input_wav, output_wav)
         return False
 
@@ -53,22 +70,8 @@ def download_human_ayah(surah, ayah, out_path):
         if r.status_code == 200:
             with open(out_path, "wb") as f: f.write(r.content)
             return True
-    except Exception: pass
+    except: pass
     return False
-
-def fetch_ayah_text_strict(surah, ayah):
-    """جلب نص الآية بصرامة. إذا فشل، ينهار المعمل لكي لا نضع نصاً خاطئاً"""
-    for attempt in range(5):
-        try:
-            r = requests.get(f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/quran-uthmani", timeout=15)
-            if r.status_code == 200:
-                txt = r.json()["data"]["text"]
-                if txt and len(txt) > 5: return txt
-        except Exception as e:
-            print(f"   ⚠️ محاولة {attempt+1} لجلب الآية فشلت: {e}")
-            time.sleep(2)
-            
-    raise RuntimeError(f"❌ فشل جلب نص الآية {surah}:{ayah} من السيرفر! المعمل سيتوقف.")
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
@@ -91,25 +94,13 @@ def split_text(text, max_chars=1500):
     if current: chunks.append(current.strip())
     return chunks
 
-def generate_quran_gemini_strict(uthmani_text: str, out_mp3: str) -> bool:
-    """توليد الآية بجيميني حصراً. بدون أي بدائل."""
-    try:
-        style_prompt = "أنت قارئ قرآن خاشع. اقرأ هذا النص القرآني بصوت دافئ، حنون، وخاشع."
-        gemini_tts_with_pool(uthmani_text, out_mp3, voice="Charon", style=style_prompt)
-        if Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 5000:
-            return True
-        else:
-            raise RuntimeError("الملف الناتج فارغ أو صغير جداً")
-    except Exception as e:
-        print(f"   ❌ فشل جيميني في قراءة الآية: {e}")
-        raise e # نرفع الخطأ لإيقاف المعمل بدلاً من استخدام بديل
-
 def build_episode_audio(json_path, out_mp3, mode="youtube"):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     
     ep_name = Path(json_path).stem
-    ep_cache = CACHE_DIR / ep_name
+    # 🌟 كاش منفصل لكل نمط + اسم الملف
+    ep_cache = CACHE_DIR / f"{ep_name}_{mode}"
     ep_cache.mkdir(parents=True, exist_ok=True)
 
     silence_path = work / "silence.wav"
@@ -126,35 +117,35 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
         text, display = "", ""
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
-            if "surah" in seg:
-                s, ayahs = seg["surah"], seg["ayah_numbers"]
-                display = f"{seg.get('surah_name', '')}: {ayahs[0]}"
-            else:
-                text = seg.get("text", ""); display = seg.get("display", "")
+            s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
+            display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
         elif stype in ("hadith", "fiqh", "adhkar"):
             text = sanitize_for_tts(seg.get("text", "")); display = seg.get("display", "")
 
         if not text and stype != "quran": continue
 
-        # 🌟 1. الآيات (جيميني حصراً)
-        if stype == "quran" and "surah" in seg:
-            s, ayahs = seg["surah"], seg["ayah_numbers"]
+        # 🌟 1. الآيات
+        if stype == "quran":
+            s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
+            if not ayahs: continue
+            
             if mode == "youtube":
                 print(f"🎙️ المقطع {idx+1} [quran] - Gemini...")
                 for a in ayahs:
                     cache_a = ep_cache / f"gemini_{s}_{a}.wav"
-                    text_a = fetch_ayah_text_strict(s, a) # جلب صارم
-                    
+                    text_a = get_local_ayah_text(s, a)
+                    if not text_a:
+                        print(f"   ⚠️ الآية {s}:{a} غير موجودة في الملف المحلي، سيتم تخطيها.")
+                        continue
+                        
                     if not cache_a.exists():
                         tmp_mp3 = work / "tmp.mp3"
-                        generate_quran_gemini_strict(text_a, str(tmp_mp3)) # توليد صارم
+                        gemini_tts_with_pool(text_a, str(tmp_mp3))
                         subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     
                     final_a = ep_cache / f"final_{s}_{a}.wav"
-                    if apply_mosque_reverb(str(cache_a), str(final_a)):
-                        voice_wavs.append(final_a)
-                    else:
-                        voice_wavs.append(cache_a)
+                    if apply_mosque_reverb(str(cache_a), str(final_a)): voice_wavs.append(final_a)
+                    else: voice_wavs.append(cache_a)
                         
                     voice_wavs.append(silence_path)
                     all_segments_meta.append({"index": idx, "type": stype, "display": display, "chunks": [{"text": text_a, "duration": get_dur(voice_wavs[-2])+SILENCE_DUR}]})
@@ -162,11 +153,10 @@ def build_episode_audio(json_path, out_mp3, mode="youtube"):
                 print(f"🎙️ المقطع {idx+1} [quran] - بشري...")
                 for a in ayahs:
                     cache_a = ep_cache / f"human_{s}_{a}.mp3"
-                    text_a = fetch_ayah_text_strict(s, a)
+                    text_a = get_local_ayah_text(s, a)
+                    if not text_a: continue
                     
-                    if not download_human_ayah(s, a, str(cache_a)): 
-                        raise RuntimeError(f"فشل تحميل الصوت البشري للآية {s}:{a}")
-                        
+                    if not download_human_ayah(s, a, str(cache_a)): continue
                     stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
                     reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
                     if not reverb_a.exists():
