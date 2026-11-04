@@ -11,10 +11,33 @@ from config import VIDEO_W, VIDEO_H, TEXT_COLOR, TEXT_STROKE, TEXT_STROKE_W, ACC
 from utilities import cleanup_dir
 
 def _find_arabic_font():
-    candidates = ["/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf"]
+    # 1. المسارات المعتادة
+    candidates = [
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+        "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf"
+    ]
     for c in candidates:
         if os.path.exists(c): return c
-    return ""
+    
+    # 2. البحث في النظام عن أي خط عربي (حل جذري لمشكلة GitHub)
+    try:
+        r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
+        files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
+        if files: return files[0]
+    except Exception:
+        pass
+        
+    raise RuntimeError("❌ لم يتم العثور على أي خط عربي في النظام! تأكد من تثبيت fonts-hosny-amiri في الـ Workflow.")
+
+# نحاول جلب الخط مرة واحدة عند بدء التشغيل
+try:
+    FONT_PATH = _find_arabic_font()
+    print(f"✅ تم العثور على الخط: {FONT_PATH}")
+except Exception as e:
+    print(f"⚠️ تحذير: {e}")
+    FONT_PATH = None
 
 def _shape(text): return arabic_reshaper.reshape(str(text))
 
@@ -35,12 +58,10 @@ def get_duration(path):
     try: return float(r.stdout.strip())
     except: return 0.0
 
-# 🌟 المخرج السينمائي: كلمات بحث دقيقة جداً لجلب السحر والخيال والمشاهد الإسلامية
 def get_visual_query(seg):
     stype = seg.get("type")
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     
-    # 1. همسات ملك (نساء منقبات وزهور وفراشات)
     if stype == "malak":
         return random.choice([
             "niqab woman flowers", "muslim woman niqab garden", 
@@ -48,7 +69,6 @@ def get_visual_query(seg):
             "islamic woman roses"
         ])
     
-    # 2. الآيات (مشاهد إسلامية مقدسة وروحانية)
     if stype == "quran":
         return random.choice([
             "kaaba mecca", "al aqsa mosque", "prophet mosque madinah",
@@ -56,7 +76,6 @@ def get_visual_query(seg):
             "islamic architecture animation", "quran book glowing"
         ])
     
-    # 3. السرد (طبيعة ساحرة، خيالية، وأماكن تاريخية)
     if "بحر" in text or "موج" in text: return random.choice(["ocean waves cinematic", "magical sea sunset", "glowing water animation"])
     if "جبل" in text or "طور" in text: return random.choice(["misty mountain fantasy", "mountain clouds cinematic"])
     if "ماء" in text or "نهر" in text or "عين" in text: return random.choice(["magical waterfall", "glowing river animation", "crystal water nature"])
@@ -67,7 +86,6 @@ def get_visual_query(seg):
     if "زهر" in text or "ورد" in text: return random.choice(["roses flowers blooming", "magical flowers animation"])
     if "شام" in text or "دمشق" in text or "قدس" in text: return random.choice(["old damascus street", "al aqsa mosque", "islamic history"])
     
-    # 4. الخلفيات الافتراضية (في حال لم يتم التقاط كلمة مفتاحية)
     return random.choice([
         "enchanted forest magical", "fantasy waterfall glowing",
         "autumn forest sun rays", "misty mountains cinematic",
@@ -92,13 +110,12 @@ def fetch_media(query, work_dir, used_urls):
         return ""
 
     try:
-        # نجبر الموقع على جلب فيديوهات فقط (Videos API) بجودة عالية
         r = requests.get(
             "https://pixabay.com/api/videos/", 
             params={
                 "key": PIXABAY_KEY, 
                 "q": query, 
-                "video_type": "film", # فيديوهات سينمائية
+                "video_type": "film",
                 "safesearch": "true", 
                 "per_page": 30, 
                 "min_width": 1080
@@ -109,7 +126,6 @@ def fetch_media(query, work_dir, used_urls):
             hits = r.json().get("hits", [])
             random.shuffle(hits)
             for hit in hits:
-                # نختار أعلى جودة متاحة (Large أو Medium)
                 url = hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url")
                 if not url or url in used_urls: continue
                 
@@ -120,8 +136,7 @@ def fetch_media(query, work_dir, used_urls):
                         for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192): f.write(chunk)
                     used_urls.add(url)
                     return str(out)
-                except Exception as e:
-                    pass
+                except: pass
         else:
             print(f"⚠️ فشل جلب فيديو ({query}): HTTP {r.status_code}")
     except Exception as e:
@@ -148,11 +163,13 @@ def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill):
 def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font_path = _find_arabic_font()
     
+    if not FONT_PATH:
+        raise RuntimeError("لا يمكن رسم النص بدون خط عربي.")
+
     if ep_title:
-        try: ft = ImageFont.truetype(font_path, 38, layout_engine=ImageFont.Layout.RAQM)
-        except: ft = ImageFont.truetype(font_path, 38)
+        try: ft = ImageFont.truetype(FONT_PATH, 38, layout_engine=ImageFont.Layout.RAQM)
+        except: ft = ImageFont.truetype(FONT_PATH, 38)
         _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black")
 
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
@@ -161,7 +178,7 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
 
     color = ACCENT_COLOR if is_quran else TEXT_COLOR
     display_text = chunk_text + (f"\n﴿ {display_ref} ﴾" if is_quran and display_ref else "")
-    font, lines, lh = _fit_text(display_text, font_path, VIDEO_W - 120, VIDEO_H - 400, 70, 45)
+    font, lines, lh = _fit_text(display_text, FONT_PATH, VIDEO_W - 120, VIDEO_H - 400, 70, 45)
     
     total_h = len(lines) * lh
     y = max(200, (VIDEO_H - total_h) // 2)
@@ -171,8 +188,8 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         _draw_centered(draw, y, line, font, line_color, 6 if not is_quran else 8, "black")
         y += lh
         
-    try: wm_font = ImageFont.truetype(font_path, 40, layout_engine=ImageFont.Layout.RAQM)
-    except: wm_font = ImageFont.truetype(font_path, 40)
+    try: wm_font = ImageFont.truetype(FONT_PATH, 40, layout_engine=ImageFont.Layout.RAQM)
+    except: wm_font = ImageFont.truetype(FONT_PATH, 40)
     wm_text = _shape("ملاك المعرفة")
     wm_bbox = draw.textbbox((0,0), wm_text, font=wm_font)
     draw.text((VIDEO_W - (wm_bbox[2] - wm_bbox[0]) - 40, VIDEO_H - 80), wm_text, font=wm_font, fill="#D4AF37", stroke_width=4, stroke_fill="black")
@@ -197,7 +214,6 @@ def build_video(audio_path, meta_path, output_mp4):
             bg_files = [fetch_media(query, work_dir, used_urls) for _ in range(num_bgs)]
             bg_files = [bg for bg in bg_files if bg]
             
-            # إذا فشل جلب أي فيديو، نضع شاشة سوداء (احتياطي)
             if not bg_files:
                 black = work_dir / "black.jpg"
                 Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(black)
