@@ -28,14 +28,12 @@ jobs:
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
-      # 🌟 السر الأول: الكاش مربوط ببصمة الكود (hashFiles). أي تعديل في السكربتات يعتبره كاش جديد.
+      # 🌟 الكاش مربوط ببصمة الكود (أي تعديل يمسح الكاش تلقائياً)
       - name: Restore Audio Cache
         uses: actions/cache@v4
         with:
           path: out/audio_cache
           key: audio-cache-${{ hashFiles('scripts/*.py') }}
-          restore-keys: |
-            audio-cache-
 
       - name: Generate Story
         id: gen
@@ -148,16 +146,15 @@ jobs:
           git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push || true
 
-      # 🌟 السر الثاني: حذف الكاش من سيرفرات GitHub فقط إذا نجح الرفع على تلغرام
+      # 🌟 مسح الكاش من سيرفرات GitHub فقط إذا نجح الرفع
       - name: Delete Cache on Success
         if: steps.tg.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          echo "✅ نجح الرفع على تلغرام! جاري مسح الكاش من GitHub..."
+          echo "✅ نجح الرفع! جاري مسح الكاش..."
           gh cache delete "audio-cache-${{ hashFiles('scripts/*.py') }}" || true
 
-      # تنظيف الملفات المؤقتة (لأن الكاش انمسح بالفعل من GitHub)
       - name: Cleanup Local Files
         if: steps.tg.outcome == 'success'
         run: |
