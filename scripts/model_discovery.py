@@ -1,4 +1,4 @@
-"""اكتشاف النماذج المتاحة من Gemini كل 24 ساعة وحفظها في cache."""
+"""اكتشاف النماذج النصية المتاحة من Gemini وحفظها في cache."""
 import os
 import json
 import time
@@ -16,30 +16,31 @@ def fetch_available_models(api_key: str) -> list:
         r = requests.get(url, timeout=20)
         if r.status_code != 200:
             return []
+            
         models = []
         for m in r.json().get("models", []):
             name = m.get("name", "").replace("models/", "")
             methods = m.get("supportedGenerationMethods", [])
+            
+            # 🌟 1. يجب أن يدعم توليد النصوص
             if "generateContent" not in methods:
                 continue
-            if "embedding" in name or "aqa" in name:
+                
+            # 🌟 2. استبعاد نماذج الصوت والصور والترجمة
+            if any(bad in name.lower() for bad in ["tts", "speech", "audio", "image", "embedding", "aqa", "vision"]):
                 continue
+                
             models.append(name)
 
+        # 🌟 3. ترتيب النماذج: نفضل النماذج السريعة والمستقرة
         def score(n):
             s = 0
-            if "flash" in n:
-                s += 10
-            if "pro" in n:
-                s += 5
-            if "2.5" in n:
-                s += 3
-            if "2.0" in n:
-                s += 2
-            if "1.5" in n:
-                s += 1
-            if "latest" in n:
-                s += 4
+            if "flash" in n: s += 10
+            if "pro" in n: s += 5
+            if "1.5" in n: s += 8  # الأكثر استقراراً
+            if "2.0" in n: s += 6
+            if "2.5" in n: s += 4  # قد يكون غير متاح للجميع
+            if "latest" in n: s += 2
             return -s
 
         return sorted(models, key=score)
@@ -54,7 +55,6 @@ def discover_and_cache(force=False) -> list:
             cache = json.loads(MODELS_CACHE.read_text(encoding="utf-8"))
             age_hours = (time.time() - cache.get("timestamp", 0)) / 3600
             if age_hours < MAX_AGE_HOURS and cache.get("models"):
-                print(f"✅ cache النماذج (عمرها {age_hours:.1f}h)", flush=True)
                 return cache["models"]
         except Exception:
             pass
@@ -63,7 +63,7 @@ def discover_and_cache(force=False) -> list:
     keys = [k.strip() for k in keys if k.strip()]
     if not keys:
         print("⚠️ لا توجد مفاتيح Gemini", flush=True)
-        return []
+        return ["gemini-1.5-flash", "gemini-2.0-flash"] # احتياطي
 
     all_models, seen = [], set()
     for key in keys[:2]:
@@ -83,7 +83,9 @@ def discover_and_cache(force=False) -> list:
         )
         print(f"✅ اكتُشفت {len(all_models)} نماذج", flush=True)
     else:
-        all_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        # احتياطي في حال فشل الاتصال
+        all_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+        print(f"⚠️ استخدام النماذج الاحتياطية", flush=True)
 
     return all_models
 
