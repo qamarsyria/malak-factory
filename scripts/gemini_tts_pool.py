@@ -16,9 +16,6 @@ def _wait_for_rate_limit():
 
 def _log(msg: str) -> None: print(f"[gemini-tts] {msg}", flush=True)
 
-class DailyQuotaExceeded(Exception):
-    pass
-
 class GeminiKeyPool:
     def __init__(self) -> None:
         raw = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
@@ -26,38 +23,25 @@ class GeminiKeyPool:
         if not self.keys: raise RuntimeError("❌ لا مفاتيح Gemini")
         self.current_index = 0
         self.cooldowns: dict[str, float] = {}
-        self.daily_exhausted = set() # 🌟 تتبع المفاتيح التي انتهت حصتها اليومية
         _log(f"🔑 محمّل {len(self.keys)} مفتاح Gemini")
 
     def _available_key(self) -> str | None:
         now = time.time()
         for _ in range(len(self.keys)):
             key = self.keys[self.current_index]
-            if key in self.daily_exhausted:
-                self.current_index = (self.current_index + 1) % len(self.keys)
-                continue
             if now >= self.cooldowns.get(key, 0): return key
             self.current_index = (self.current_index + 1) % len(self.keys)
         return None
 
     def get_current(self) -> str:
-        for _ in range(3): 
+        for _ in range(10): 
             key = self._available_key()
             if key: return key
-            
-            # إذا كانت كل المفاتيح في إجازة قصيرة (Rate limit مؤقت)، ننتظر قليلاً
-            active_cooldowns = [v for k, v in self.cooldowns.items() if k not in self.daily_exhausted]
-            if not active_cooldowns:
-                raise DailyQuotaExceeded("🚫 جميع المفاتيح استنفدت حصتها اليومية بالكامل!")
-                
-            soonest = min(active_cooldowns)
+            soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
-            if wait > 60: 
-                raise DailyQuotaExceeded("🚫 الانتظار طويل جداً (الحصة اليومية انتهت).")
-                
+            if wait > 3600: raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
             print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
             time.sleep(wait + 2)
-            
         raise RuntimeError("❌ فشل الحصول على مفتاح Gemini متاح")
 
     def _advance(self) -> None: self.current_index = (self.current_index + 1) % len(self.keys)
@@ -67,19 +51,11 @@ class GeminiKeyPool:
         self.cooldowns[key] = time.time() + cooldown_seconds
         self.current_index = (self.current_index + 1) % len(self.keys)
 
-    def mark_daily_exhausted(self) -> None:
-        key = self.keys[self.current_index]
-        self.daily_exhausted.add(key)
-        _log(f"⚠️ المفتاح {key[:8]}... انتهت حصته اليومية.")
-        self.current_index = (self.current_index + 1) % len(self.keys)
-
 _pool: GeminiKeyPool | None = None
 def get_pool() -> GeminiKeyPool:
     global _pool
     if _pool is None: _pool = GeminiKeyPool()
     return _pool
-
-_MODEL_CACHE: list[str] | None = None
 
 def discover_tts_models(prefer_lite: bool = False) -> list[str]:
     known_tts_models = [
@@ -133,9 +109,7 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
         }
         try:
             _wait_for_rate_limit()
-            # 🌟 تقليل وقت الانتظار إلى 30 ثانية
-            r = requests.post(url, json=body, timeout=30) 
-            
+            r = requests.post(url, json=body, timeout=45) 
             if r.status_code == 429: return "RATE_LIMIT"
             if r.status_code in (400, 404): continue
             if r.status_code != 200: continue
@@ -174,29 +148,24 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
         wav_path = work_dir / f"part_{idx:03d}.wav"
         success = False
         
-        # 🌟 محاولة واحدة لكل مفتاح (إذا فشل، ننتقل للذي بعده)
-        for attempt in range(len(pool.keys)): 
+        for attempt in range(len(pool.keys) * 3): 
             try: key = pool.get_current()
-            except DailyQuotaExceeded as e:
-                raise RuntimeError(f"❌ {e} المقطع {idx+1}")
-            except: time.sleep(5); continue
-            
+            except: time.sleep(10); continue
             try: result = _tts_single(chunk, wav_path, voice, key)
-            except: 
-                pool.mark_failed(60); continue
+            except: pool.mark_failed(65); continue
 
             if result == "RATE_LIMIT": 
-                pool.mark_daily_exhausted() # 🌟 نعتبره مستنفداً لليوم
+                pool.mark_failed(65)
                 continue
                 
             if result is True: 
                 success = True
                 break
                 
-            pool.mark_failed(60)
+            pool.mark_failed(65)
 
         if not success: 
-            raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1} (الحصة اليومية انتهت)")
+            raise RuntimeError(f"❌ فشل توليد المقطع {idx + 1}")
 
         cleaned_path = work_dir / f"part_{idx:03d}_clean.wav"
         if _clean_chunk(wav_path, cleaned_path): wav_parts.append(cleaned_path)
