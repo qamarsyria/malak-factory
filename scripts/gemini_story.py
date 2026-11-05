@@ -1,249 +1,250 @@
-import os, json, requests, sys, time, random, traceback, re
+import os, re, sys, json, random, traceback
 from pathlib import Path
+import requests
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from gemini_tts_pool import get_pool
+from model_discovery import discover_and_cache
+from story_library import load_library, load_state, save_state, get_current_story, record_topic
+from outro_templates import OUTRO_TEMPLATES
+from utilities import notify_telegram, get_breaker
 
-STATE_FILE = "state/story_state.json"
-OUTPUT_DIR = Path("data/stories/generated")
-PENDING_DIR = Path("state/pending")
-MODELS_CACHE_FILE = Path("state/models_cache.json")
-STORIES_ORDER = ["مريم", "زكريا", "يحيى", "عيسى"]
-MAX_EPISODES_PER_STORY = 40
+OUTPUT_DIR = _REPO_ROOT / "data" / "stories" / "generated"
+PENDING_DIR = _REPO_ROOT / "state" / "pending"
+OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 
-OUTRO_TEXTS = [
-    {"text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». كن أنت الدال على الخير، شارك هذه الحلقة مع من تحب، فلك مثل أجره. مَلَاك المَعْرِفَة.", "voice_style": "(in a calm, dignified tone)"},
-    {"text": "قال ﷺ: «مَن دعا إلى هُدًى كان له من الأجرِ مثلُ أجورِ مَن تبِعَه». كل شخص يهتدي بهذه الكلمة، لك مثل أجره. انشر العلم. مَلَاك المَعْرِفَة.", "voice_style": "(in a warm, narrative tone)"},
-]
+SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
+SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
-def get_working_models():
-    if Path(MODELS_CACHE_FILE).exists():
-        try:
-            cache = json.loads(Path(MODELS_CACHE_FILE).read_text(encoding="utf-8"))
-            models = [m for m in cache.get("models", []) if "2.5" not in m]
-            if models: return models
-        except: pass
-    return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-
-def call_gemini(prompt, is_json=True, timeout=120, max_tokens=8192):
-    pool = get_pool()
-    for model in get_working_models()[:3]:
+def call_llm(prompt, is_json=True, timeout=300, max_tokens=8192):
+    pool = get_pool(); breaker = get_breaker()
+    models = discover_and_cache(force=False)[:5]
+    if not models:
+        print("   ❌ لا توجد نماذج متاحة!")
+        return None
+        
+    for model in models:
+        if breaker.is_open(f"model:{model}"): continue
         for attempt in range(2):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
+                
                 r = requests.post(url, json=body, timeout=timeout)
+                
                 if r.status_code == 200:
-                    parts = r.json().get('candidates', [{}])[0].get('content', {}).get('parts', [])
+                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     if not parts: 
-                        print("      [Gemini] ⚠️ لا يوجد parts", flush=True)
+                        print(f"   ⚠️ {model}: لا يوجد parts في الرد")
                         break
-                    text = parts[0].get('text', '')
-                    if not text: 
-                        print("      [Gemini] ⚠️ نص فارغ", flush=True)
-                        break
-                    if is_json: 
-                        text = text[text.find('{'):text.rfind('}')+1]
+                    text = parts[0].get("text", "")
+                    if is_json:
+                        s, e = text.find("{"), text.rfind("}")
+                        if s == -1 or e <= s: break
+                        text = text[s:e + 1]
                     try:
                         parsed = json.loads(text) if is_json else text
-                        pool._advance()
+                        pool._advance(); breaker.record_success(f"model:{model}")
                         return parsed
-                    except json.JSONDecodeError as e:
-                        print(f"      [Gemini] ⚠️ JSON مقطوع: {str(e)[:50]}... الرد: {text[:100]}", flush=True)
+                    except json.JSONDecodeError:
+                        print(f"   ⚠️ {model}: فشل تحويل JSON")
                         break
-                elif r.status_code == 429:
+                elif r.status_code == 429: 
+                    print(f"   ⚠️ {model}: 429 Rate Limit")
                     pool.mark_failed(3600)
-                elif r.status_code in [404, 503]:
+                elif r.status_code in (404, 503): 
+                    print(f"   ⚠️ {model}: {r.status_code} Model Error")
+                    breaker.record_failure(f"model:{model}")
                     break
-            except Exception as e:
-                print(f"      [Gemini] ⚠️ استثناء: {str(e)[:80]}", flush=True)
-                break
+                else:
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}")
+                    break
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️ {model}: Timeout")
+            except Exception as e: 
+                print(f"   ⚠️ {model}: {str(e)[:100]}")
     return None
 
 def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token: 
-        print("      [HF] ⚠️ HF_TOKEN غير موجود", flush=True)
-        return None
-    model_id = "mistralai/Mistral-7B-Instruct-v0.3"
-    url = f"https://api-inference.huggingface.co/models/{model_id}/v1/chat/completions"
+    if not hf_token: return None
     try:
-        print(f"      [HF] محاولة...", flush=True)
-        r = requests.post(url, headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-            json={"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 4000}, timeout=120)
+        print("   🔄 محاولة HuggingFace...")
+        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
-            text = r.json()['choices'][0]['message']['content']
-            if is_json: 
-                text = text[text.find('{'):text.rfind('}')+1]
-            try:
-                return json.loads(text) if is_json else text
-            except json.JSONDecodeError as e:
-                print(f"      [HF] ⚠️ JSON مقطوع: {str(e)[:50]}...", flush=True)
-                return None
+            text = r.json()["choices"][0]["message"]["content"]
+            if is_json:
+                s, e = text.find("{"), text.rfind("}")
+                if s != -1 and e > s: text = text[s:e + 1]
+            return json.loads(text) if is_json else text
         else:
-            print(f"      [HF] ⚠️ فشل: HTTP {r.status_code}", flush=True)
-    except Exception as e:
-        print(f"      [HF] ⚠️ استثناء: {str(e)[:80]}", flush=True)
+            print(f"   ⚠️ HuggingFace: HTTP {r.status_code}")
+    except Exception as e: 
+        print(f"   ⚠️ HuggingFace: {str(e)[:100]}")
     return None
 
-def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
-    res = call_gemini(prompt, is_json, timeout, max_tokens)
-    if res: return res
-    print("⚠️ Gemini فشل، تجربة Hugging Face...", flush=True)
-    res = call_huggingface(prompt, is_json)
-    if res: return res
-    return None
+def call_llm_with_fallback(prompt, is_json=True, timeout=300, max_tokens=8192):
+    return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
-def verify_ayah(surah_num, ayah_num):
-    try:
-        r = requests.get(f"https://api.alquran.cloud/v1/ayah/{surah_num}:{ayah_num}", timeout=10)
-        if r.status_code == 200:
-            name = r.json()['data']['surah']['name'].replace("سُورَةُ ", "").strip()
-            return name, True
-    except: pass
-    return f"سورة {surah_num}", False
+def clean_narration_text(t: str) -> str:
+    if not t: return ""
+    # إزالة الحروف الإنجليزية والأرقام
+    t = re.sub(r'[a-zA-Z]+', '', t)
+    t = re.sub(r'\b\d+\b', '', t)
+    t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
+    
+    # إزالة الكلمات المهينة
+    bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
+    for bw in bad_words: t = t.replace(bw, "")
+    
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
+def split_narration(text, max_chars=150):
+    sentences = re.split(r'(?<=[.!؟])\s+', text)
+    chunks, current = [], ""
+    for s in sentences:
+        if len(current) + len(s) < max_chars: current += " " + s
+        else:
+            if current: chunks.append(current.strip())
+            current = s
+    if current: chunks.append(current.strip())
+    return chunks
 
 def parse_script_with_verses(script_text):
-    pattern = r'\[آية[:\s]*(\d+)[:\s]+(\d+)\]'
-    parts = re.split(pattern, script_text)
-    segments = []
-    i = 0
+    text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    for name, num in SURAH_NAME_TO_NUM.items(): 
+        text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
+    
+    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
+    parts = None
+    for pat in patterns:
+        parts = re.split(pat, text)
+        if len(parts) > 1: break
+        
+    if not parts or len(parts) == 1: 
+        return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
+
+    segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
-            text = parts[i].strip()
-            text = re.sub(r'\[آية[^\]]*\]', '', text).strip()
-            if len(text) > 5:
-                segments.append({"type": "narration", "text": text})
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
+            chunk = clean_narration_text(chunk)
+            if len(chunk) > 5:
+                for piece in split_narration(chunk): 
+                    segments.append({"type": "narration", "text": piece.strip()})
             i += 1
-        elif i % 3 == 1:
-            try:
-                surah, ayah = int(parts[i]), int(parts[i+1])
-            except (ValueError, IndexError):
-                i += 2; continue
-            surah_name, valid = verify_ayah(surah, ayah)
-            if valid:
-                segments.append({
-                    "type": "quran", "surah": surah, "surah_name": surah_name,
-                    "ayah_numbers": [ayah], "display": f"{surah_name}: {ayah}"
-                })
+        else:
+            try: surah, ayah = int(parts[i]), int(parts[i + 1])
+            except: i += 2; continue
+            
+            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286:
+                i += 2
+                continue
+                
+            ayah_key = f"{surah}:{ayah}"
+            if ayah_key not in used_ayahs:
+                segments.append({"type": "quran", "surah": surah, "surah_name": SURAH_NAMES.get(surah), "ayah_numbers": [ayah], "display": f"{SURAH_NAMES.get(surah)}: {ayah}"})
+                used_ayahs.add(ayah_key)
             i += 2
     return segments
 
-def load_state():
-    default = {"story_index": 0, "episode_num": 1}
-    if Path(STATE_FILE).exists():
-        try:
-            saved = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
-            for k, v in default.items(): saved.setdefault(k, v)
-            return saved
-        except: pass
-    return default
+def build_plan_prompt(story, ep_num, state):
+    covered = state.get("covered_topics", [])
+    covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
+    
+    return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
+المواضيع التي تمت تغطيتها في الحلقات السابقة:
+{covered_str}
+
+اكتب خطة للحلقة {ep_num} تركز على جزء محدد وجديد من حياته (لم يتم تغطيته سابقاً).
+أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
+
+def build_script_prompt(story, plan, ep_num):
+    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي متخصص في التفسير (تفسير ابن كثير، التفسير الميسر، وفتاوى ابن تيمية).
+الخطة: {plan['title']} - {plan['summary']}
+القصة المطلوبة: {story['title']}
+
+قواعد صارمة جداً (أرجو الالتزام التام):
+1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 800 إلى 1000 كلمة).
+2. **التوثيق 100%**: لا تكتب أي معلومة غير واردة في القرآن الكريم، أو تفسير ابن كثير، أو التفسير الميسر، أو آراء ابن تيمية. ممنوع منعاً باتاً ذكر الإسرائيليات أو الروايات الضعيفة.
+3. **الآيات**: يجب إدراج 6 إلى 8 آيات قرآنية في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. 
+   **ممنوع منعاً باتاً كتابة أي كلمة أو رقم أو مرجع أو حرف إنجليزي بعد القوس مباشرة.** اترك مسافة وضع الجملة التالية فوراً.
+4. **احترام مطلق**: لا تصف الملائكة أو الأنبياء بأي وصف مهين. استخدم ألفاظ التوقير.
+5. **الأسلوب**: روائي متدفق، بدون عناوين فرعية.
+اكتب النص السردي فقط."""
+
+def build_teaser_prompt(story, ep_num):
+    return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
+قواعد صارمة:
+1. ابدأ **مباشرة** بسؤال درامي (مثل: "فكيف...؟" / "وماذا...؟" / "هل...؟").
+2. **ممنوع تمامًا** أن تبدأ بـ: "إليك"، "هذا"، "النص"، "الحلقة القادمة"، "في الحلقة القادمة"، "ترقبوا"، "بالتأكيد".
+3. أعد الجملة فقط، بدون علامات اقتباس.
+مثال صحيح: "فكيف ستواجه مريم قومها؟ وما السر الذي كتمته؟"
+أعد الجملة فقط."""
 
 def main():
-    state = load_state()
-    story_name = STORIES_ORDER[state["story_index"]]
-    ep_num = state["episode_num"]
+    library, state = load_library(), load_state()
+    story = get_current_story(library, state)
+    ep_num = state.get("episode_num", 1)
+    save_state(state)
+    print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
+
+    print("📝 جاري توليد الخطة...", flush=True)
+    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     
-    print(f"🚀 [1/5] بدء: {story_name} - الحلقة {ep_num}", flush=True)
-    pending_file = PENDING_DIR / f"pending-{story_name}-{ep_num}.json"
-    plan = None
+    raw_title = plan.get("title", "")
+    cleaned_title = re.sub(r'الحلقة\s*\d+[:\s\-]*', '', raw_title).strip()
+    if not cleaned_title: cleaned_title = f"الحلقة {ep_num}"
+    plan["title"] = cleaned_title
+
+    print("✍️ جاري توليد السرد...", flush=True)
+    script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=300, max_tokens=8192)
     
-    if pending_file.exists():
-        try:
-            loaded = json.loads(pending_file.read_text(encoding="utf-8"))
-            if "title" in loaded and "summary" in loaded and len(str(loaded.get("summary", ""))) > 50:
-                plan = loaded
-        except: pass
-
-    if not plan:
-        print("📝 [2/5] توليد خطة الحلقة...", flush=True)
-        # 🌟 تخفيف البرومبت: لا نمنع كل شيء، بل نوجه
-        plan_prompt = f"""أنت مؤرخ إسلامي.
-اكتب خطة للحلقة {ep_num} من قصة {story_name}.
-اعتمد على القرآن الكريم (سورة آل عمران، سورة مريم) وتفسير ابن كثير.
-ابتعد عن الإسرائيليات والروايات غير الموثوقة.
-أعد النتيجة بصيغة JSON فقط:
-{{"title": "عنوان الحلقة", "summary": "ملخص درامي دقيق (300 كلمة) مبني على الآيات والتفسير..."}}"""
-        
-        plan = call_llm(plan_prompt)
-        
-        # 🌟 التحقق الصارم
-        if not plan or "title" not in plan or "summary" not in plan or len(str(plan.get("summary", ""))) < 50:
-            print("⚠️ الخطة غير صالحة أو فشل التوليد. استخدام خطة احتياطية.", flush=True)
-            # خطة احتياطية تضمن استمرار المعمل
-            plan = {
-                "title": f"قصة {story_name} - الحلقة {ep_num}",
-                "summary": f"نتعرف في هذه الحلقة على تفاصيل جديدة من قصة {story_name}، وكيف تكفل الله بها ورعاها، والصبر والعبادة التي تحلت بها، مستندين في ذلك إلى ما ورد في القرآن الكريم وتفسير ابن كثير."
-            }
-            
-        PENDING_DIR.mkdir(parents=True, exist_ok=True)
-        pending_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-        print(f"💾 خطة جاهزة: {plan['title']}", flush=True)
-
-    print(f"📜 العنوان: {plan['title']}", flush=True)
-
-    print("✍️ [3/5] توليد السرد...", flush=True)
-    script_prompt = f"""أنت كاتب سيناريو إسلامي.
-اكتب نصاً سردياً درامياً (1500 كلمة) لهذه الحلقة.
-القصة: {story_name}
-العنوان: {plan['title']}
-الملخص: {plan['summary']}
-
-قواعد صارمة:
-1. اكتب النص كاملاً في فقرات، بدون أي رموز JSON.
-2. عندما تريد إدراج آية قرآنية تدعم الكلام، ضع علامة بهذا الشكل بالضبط: [آية: 3:35]
-3. ضع العلامة **بعد الجملة التي تدعمها الآية مباشرة**.
-4. لا تكتب نص الآية بنفسك.
-5. عدد الآيات: من 5 إلى 8 آيات فقط.
-
-اكتب النص فقط."""
-    script_text = call_llm(script_prompt, is_json=False, timeout=120, max_tokens=8192)
+    if not script_text: 
+        print("❌ فشل توليد النص السردي من جميع النماذج!")
+        sys.exit(1)
     
-    if not script_text:
-        print("⚠️ فشل توليد السرد. استخدام نص احتياطي مؤقت.", flush=True)
-        script_text = f"في هذه الحلقة من قصة {story_name}، نتأمل في عظيم قدرة الله. [آية: 3:35] وهكذا تتجلى العبرة لكل مؤمن."
-        if len(script_text.split()) < 100: # إذا كان احتياطياً، نكرره ليكون أطول
-            script_text = (script_text + " ") * 50
-
-    print("🔍 [4/6] تدقيق لغوي وإملائي...", flush=True)
-    review_prompt = f"""أنت مدقق لغوي خبير.
-راجع النص التالي وصحح أي أخطاء إملائية أو سياقية.
-حافظ على علامات الآيات [آية: X:Y] كما هي.
-أعد النص المصحح فقط.
-
-النص:
-{script_text[:5000]}"""
-    corrected_text = call_llm(review_prompt, is_json=False, timeout=120, max_tokens=8192)
+    script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
+    segments = parse_script_with_verses(script_text)
     
-    if corrected_text and len(corrected_text.split()) > 500:
-        print("   ✅ تم تصحيح النص بنجاح.", flush=True)
-        script_text = corrected_text
-    else:
-        print("   ⚠️ فشل التدقيق، سنستخدم النص الأصلي.", flush=True)
+    print("📝 جاري توليد الخلاصة...", flush=True)
+    summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False, timeout=60, max_tokens=300)
+    summary_clean = clean_narration_text(summary_raw)
+    if not summary_clean or len(summary_clean) < 20:
+        summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
+    segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
-    print("🛠️ [5/6] استخراج المقاطع والتحقق من الآيات...", flush=True)
-    verified = parse_script_with_verses(script_text)
+    print("📢 جاري توليد التشويق...", flush=True)
+    teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False, timeout=60, max_tokens=200)
+    teaser_clean = clean_narration_text(teaser_raw)
+    if not teaser_clean or len(teaser_clean) < 20:
+        teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
+    segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
-    outro = random.choice(OUTRO_TEXTS)
-    verified.append({"type": "outro", "text": outro["text"], "emotion_hint": outro["voice_style"], "visual": "mosque", "sfx": ""})
+    outro = random.choice(OUTRO_TEMPLATES)
+    segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
+
+    ep_data = {
+        "episode_number": ep_num, "story_id": story["id"], "story_title": story["title"],
+        "title": f"{story['title']} — الحلقة {ep_num} — {plan['title']}", 
+        "segments": segments
+    }
     
-    next_title = f"الحلقة {ep_num + 1}"
-    verified.append({"type": "teaser", "text": f"الحلقة القادمة: {next_title}.", "emotion_hint": "(in a calm, inviting tone)", "next_episode_title": next_title, "next_episode_source": story_name, "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
-
-    print("💾 [6/6] حفظ...", flush=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = OUTPUT_DIR / f"{story_name}-{ep_num:02d}.json"
-    out_file.write_text(json.dumps({"episode_number": ep_num, "title": f"{story_name} - {plan['title']}", "segments": verified}, ensure_ascii=False, indent=2), encoding="utf-8")
-    
-    Path("out").mkdir(exist_ok=True)
-    Path("out/latest_episode.txt").write_text(str(out_file), encoding="utf-8")
-    state["episode_num"] += 1
-    Path(STATE_FILE).write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    if pending_file.exists(): pending_file.unlink()
-    print(f"✅ نجح: {out_file}", flush=True)
+    output_path = OUTPUT_DIR / f"{story['id']}-{ep_num:02d}.json"
+    output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUT_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_FILE_PATH.write_text(str(output_path), encoding="utf-8")
+
+    if plan.get("topic"): record_topic(state, plan["topic"])
+    save_state(state)
+    print(f"✅ تم التوليد ({len(segments)} مقطع)", flush=True)
 
 if __name__ == "__main__":
     try: main()
-    except Exception as e:
-        traceback.print_exc()
-        sys.exit(1)
+    except Exception as e: traceback.print_exc(); sys.exit(1)
