@@ -18,7 +18,7 @@ OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
 SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
-def call_llm(prompt, is_json=True, timeout=300, max_tokens=8192):
+def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
     try:
         models = discover_and_cache(force=False)[:5]
@@ -54,10 +54,20 @@ def call_llm(prompt, is_json=True, timeout=300, max_tokens=8192):
                         pool._advance(); breaker.record_success(f"model:{model}")
                         return parsed
                     except json.JSONDecodeError: break
-                elif r.status_code == 429: pool.mark_failed(3600)
-                elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
+                elif r.status_code == 429: 
+                    print(f"   ⚠️ {model}: 429 Rate Limit", flush=True)
+                    pool.mark_failed(3600)
+                elif r.status_code == 400:
+                    print(f"   ⚠️ {model}: 400 Bad Request (Prompt rejected)", flush=True)
+                    break
+                elif r.status_code in (404, 503): 
+                    print(f"   ⚠️ {model}: {r.status_code} Error", flush=True)
+                    breaker.record_failure(f"model:{model}"); break
+                else:
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    break
             except requests.exceptions.Timeout:
-                pass
+                print(f"   ⚠️ {model}: Timeout (120s)", flush=True)
             except Exception as e: 
                 print(f"   ⚠️ {model}: {str(e)[:100]}", flush=True)
     return None
@@ -66,6 +76,7 @@ def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     try:
+        print("   🔄 محاولة HuggingFace...", flush=True)
         r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"]
@@ -73,23 +84,20 @@ def call_huggingface(prompt, is_json=True):
                 s, e = text.find("{"), text.rfind("}")
                 if s != -1 and e > s: text = text[s:e + 1]
             return json.loads(text) if is_json else text
-    except Exception: pass
+    except Exception as e: 
+        print(f"   ⚠️ HuggingFace: {str(e)[:100]}", flush=True)
     return None
 
-def call_llm_with_fallback(prompt, is_json=True, timeout=300, max_tokens=8192):
+def call_llm_with_fallback(prompt, is_json=True, timeout=120, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
 def clean_narration_text(t: str) -> str:
     if not t: return ""
-    # إزالة الحروف الإنجليزية والأرقام
     t = re.sub(r'[a-zA-Z]+', '', t)
     t = re.sub(r'\b\d+\b', '', t)
     t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
-    
-    # إزالة علامات الآيات من السرد إذا تسربت
     t = re.sub(r'[﴿﴾\(\)]', '', t)
     
-    # إزالة الكلمات المهينة
     bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
     for bw in bad_words: t = t.replace(bw, "")
     
@@ -111,7 +119,6 @@ def parse_script_with_verses(script_text):
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
     
-    # البحث عن [آية: سورة:آية] أو أي صيغة مشابهة
     patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
     parts = None
     for pat in patterns:
@@ -125,12 +132,8 @@ def parse_script_with_verses(script_text):
     while i < len(parts):
         if i % 3 == 0:
             chunk = parts[i].strip()
-            
-            # 🌟 سحر إضافي: حذف أي نص للآية قد يكون جيميني كتبه قبل القوس
-            # (مثلاً: (وإذ قال ربك...) [آية: 2:30]) -> سيحذف ما بين الأقواس
             chunk = re.sub(r'[\(\[﴿].*?[\)\]﴾]', '', chunk) 
             chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", chunk).strip()
-            
             chunk = clean_narration_text(chunk)
             if len(chunk) > 5:
                 for piece in split_narration(chunk): 
@@ -157,23 +160,32 @@ def build_plan_prompt(story, ep_num, state):
 اكتب خطة للحلقة {ep_num} تركز على جزء محدد وجديد من حياته (لم يتم تغطيته سابقاً).
 أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
 
-def build_script_prompt(story, plan, ep_num):
+def build_script_prompt_part1(story, plan, ep_num):
     return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي متخصص في التفسير (تفسير ابن كثير، التفسير الميسر، وفتاوى ابن تيمية).
 الخطة: {plan['title']} - {plan['summary']}
 القصة المطلوبة: {story['title']}
 
-قواعد صارمة جداً (أرجو الالتزام التام):
-1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 800 إلى 1000 كلمة) يشرح التفسير ويسرد القصة بالتفصيل الممل.
-2. **التوثيق 100%**: اعتمد على القرآن الكريم، تفسير ابن كثير، التفسير الميسر، وآراء ابن تيمية. ممنوع منعاً باتاً ذكر الإسرائيليات.
-3. **الآيات**: 
-   - يجب إدراج 6 إلى 8 آيات قرآنية.
-   - **ممنوع منعاً باتاً كتابة نص الآية نفسها** (لا تكتب الآية بين أقواس أو بدونها).
-   - ضع علامة الاستشهاد بهذه الصيغة فقط: [آية: رقم_السورة:رقم_الآية].
-   - **ممنوع منعاً باتاً كتابة أي كلمة أو حرف أو رقم بعد القوس مباشرة.**
-   - اكتب القوس ثم اترك مسافة ثم أكمل السرد أو التفسير فوراً.
-4. **احترام مطلق**: لا تصف الملائكة أو الأنبياء بأي وصف مهين.
-5. **الأسلوب**: روائي متدفق، بدون عناوين فرعية.
-اكتب النص السردي فقط."""
+قواعد صارمة جداً:
+1. اكتب **الجزء الأول** من السرد (حوالي 500 كلمة) يشرح بداية القصة وتفاصيلها الدقيقة.
+2. **التوثيق 100%**: اعتمد على المصادر المذكورة. ممنوع الإسرائيليات.
+3. **الآيات**: يجب إدراج 3 إلى 4 آيات في هذا الجزء، بالصيغة التالية فقط: [آية: رقم_السورة:رقم_الآية]. **ممنوع منعاً باتاً كتابة نص الآية.** اترك مسافة بعد القوس.
+4. احترام مطلق للأنبياء والملائكة.
+5. اكتب النص السردي فقط، بدون عناوين."""
+
+def build_script_prompt_part2(story, plan, ep_num, part1_text):
+    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي.
+هذا هو الجزء الأول من القصة الذي كتبته للتو:
+{part1_text[-500:]}
+
+الخطة: {plan['title']} - {plan['summary']}
+القصة المطلوبة: {story['title']}
+
+قواعد صارمة جداً:
+1. اكتب **الجزء الثاني والتكملة والخاتمة** للسرد (حوالي 500 كلمة)، لكي تكتمل القصة.
+2. **التوثيق 100%**: اعتمد على المصادر المذكورة. ممنوع الإسرائيليات.
+3. **الآيات**: يجب إدراج 3 إلى 4 آيات في هذا الجزء، بالصيغة التالية فقط: [آية: رقم_السورة:رقم_الآية]. **ممنوع منعاً باتاً كتابة نص الآية.** اترك مسافة بعد القوس.
+4. احترام مطلق للأنبياء والملائكة.
+5. اكتب النص السردي فقط، بدون عناوين. لا تكرر ما كتبته في الجزء الأول."""
 
 def build_teaser_prompt(story, ep_num):
     return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
@@ -199,12 +211,20 @@ def main():
     if not cleaned_title: cleaned_title = f"الحلقة {ep_num}"
     plan["title"] = cleaned_title
 
-    print("✍️ جاري توليد السرد...", flush=True)
-    script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=300, max_tokens=8192)
-    
-    if not script_text: 
-        print("❌ فشل توليد النص السردي من جميع النماذج!", flush=True)
+    print("✍️ جاري توليد السرد (الجزء الأول)...", flush=True)
+    part1 = call_llm_with_fallback(build_script_prompt_part1(story, plan, ep_num), is_json=False, timeout=120, max_tokens=4000)
+    if not part1:
+        print("❌ فشل الجزء الأول!", flush=True)
         sys.exit(1)
+
+    print("✍️ جاري توليد السرد (الجزء الثاني)...", flush=True)
+    part2 = call_llm_with_fallback(build_script_prompt_part2(story, plan, ep_num, part1), is_json=False, timeout=120, max_tokens=4000)
+    if not part2:
+        print("❌ فشل الجزء الثاني!", flush=True)
+        # إذا فشل الجزء الثاني، نكتفي بالجزء الأول لكي لا نفقد كل شيء
+        part2 = ""
+
+    script_text = part1 + "\n" + part2
     
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
     segments = parse_script_with_verses(script_text)
