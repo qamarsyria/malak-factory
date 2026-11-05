@@ -39,7 +39,7 @@ def retrieve_context(surah_name, limit=10):
     return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
 
 # ═══════════════════════════════════════════════════════════
-# 2. محركات التوليد (GitHub Models -> Hugging Face)
+# 2. محركات التوليد
 # ═══════════════════════════════════════════════════════════
 def call_github_models(prompt, is_json=True, model="gpt-4o"):
     token = os.environ.get("GITHUB_TOKEN")
@@ -56,52 +56,47 @@ def call_github_models(prompt, is_json=True, model="gpt-4o"):
 
 def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        print("   ❌ HF_TOKEN غير متوفر!")
-        return None
-    
-    # نستخدم Qwen 2.5 72B لأنه من أفضل النماذج في اللغة العربية
-    model = "Qwen/Qwen2.5-72B-Instruct"
-    url = f"https://api-inference.huggingface.co/models/{model}"
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 3000,
-            "temperature": 0.2,
-            "return_full_text": False
-        }
-    }
-    
+    if not hf_token: return None
+    # استخدام الرابط الجديد Router بدلاً من القديم المحظور
+    url = "https://router.huggingface.co/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
+    payload = {"model": "Qwen/Qwen2.5-72B-Instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+    if is_json: payload["response_format"] = {"type": "json_object"}
     try:
-        print(f"   🔄 محاولة الاتصال بـ HuggingFace ({model})...", flush=True)
+        print(f"   🔄 محاولة الاتصال بـ HuggingFace Router...", flush=True)
         r = requests.post(url, headers=headers, json=payload, timeout=90)
-        
         if r.status_code == 200:
-            result = r.json()
-            if isinstance(result, list) and len(result) > 0:
-                text = result[0].get("generated_text", "")
-            else:
-                text = result.get("generated_text", "")
-                
-            if is_json:
-                s, e = text.find("{"), text.rfind("}")
-                if s != -1 and e > s: text = text[s:e + 1]
-                return json.loads(text)
-            return text
+            return r.json()["choices"][0]["message"]["content"]
         else:
-            print(f"   ⚠️ HuggingFace HTTP {r.status_code}: {r.text[:100]}", flush=True)
+            print(f"   ⚠️ HuggingFace HTTP {r.status_code}", flush=True)
     except Exception as e:
-        print(f"   ⚠️ خطأ في HuggingFace: {str(e)[:100]}", flush=True)
+        print(f"   ⚠️ خطأ HuggingFace: {str(e)[:80]}", flush=True)
+    return None
+
+def call_pollinations(prompt, is_json=True):
+    # محرك مجاني بدون مفتاح API ويعمل من GitHub Actions
+    url = "https://text.pollinations.ai/openai"
+    headers = {"Content-Type": "application/json"}
+    payload = {"model": "openai", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+    if is_json: payload["response_format"] = {"type": "json_object"}
+    try:
+        print(f"   🔄 محاولة الاتصال بـ Pollinations (بدون مفتاح)...", flush=True)
+        r = requests.post(url, headers=headers, json=payload, timeout=90)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"   ⚠️ خطأ Pollinations: {str(e)[:80]}", flush=True)
     return None
 
 def call_llm(prompt, is_json=True):
-    # 1. المحاولة عبر GitHub Models
+    # 1. GitHub Models
     res = call_github_models(prompt, is_json)
     if res: return res
-    # 2. إذا فشل، ننتقل فوراً إلى HuggingFace
-    return call_huggingface(prompt, is_json)
+    # 2. Hugging Face Router
+    res = call_huggingface(prompt, is_json)
+    if res: return res
+    # 3. Pollinations (الخطة البديلة المضمونة)
+    return call_pollinations(prompt, is_json)
 
 # ═══════════════════════════════════════════════════════════
 # 3. معالجة النصوص والبرومبتات
@@ -211,7 +206,6 @@ def main():
     print("📝 جاري توليد الخطة...", flush=True)
     plan_raw = call_llm(build_plan_prompt(story, ep_num, state))
     
-    # التعامل مع الخطة سواء رجعت كـ JSON أو نص
     if isinstance(plan_raw, str):
         try:
             s, e = plan_raw.find("{"), plan_raw.rfind("}")
