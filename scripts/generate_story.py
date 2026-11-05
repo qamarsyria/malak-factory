@@ -18,17 +18,30 @@ OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
 SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
-def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
+def call_llm(prompt, is_json=True, timeout=300, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
-    for model in discover_and_cache(force=False)[:5]:
+    
+    try:
+        models = discover_and_cache(force=False)[:5]
+    except Exception as e:
+        print(f"❌ خطأ في جلب النماذج: {e}", flush=True)
+        return None
+
+    if not models:
+        print("❌ لا توجد نماذج متاحة!", flush=True)
+        return None
+        
+    for model in models:
         if breaker.is_open(f"model:{model}"): continue
         for attempt in range(2):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
+                
                 r = requests.post(url, json=body, timeout=timeout)
+                
                 if r.status_code == 200:
                     parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     if not parts: break
@@ -44,14 +57,17 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
                     except json.JSONDecodeError: break
                 elif r.status_code == 429: pool.mark_failed(3600)
                 elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
-            except Exception: pass
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️ {model}: Timeout", flush=True)
+            except Exception as e: 
+                print(f"   ⚠️ {model}: {str(e)[:100]}", flush=True)
     return None
 
 def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     try:
-        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 4000}, timeout=180)
+        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=180)
         if r.status_code == 200:
             text = r.json()["choices"][0]["message"]["content"]
             if is_json:
@@ -61,24 +77,17 @@ def call_huggingface(prompt, is_json=True):
     except Exception: pass
     return None
 
-def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
+def call_llm_with_fallback(prompt, is_json=True, timeout=300, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
 def clean_narration_text(t: str) -> str:
-    """تنظيف صارم جداً للسرد من أي حروف إنجليزية أو أرقام غريبة"""
     if not t: return ""
-    # إزالة أي حروف إنجليزية
     t = re.sub(r'[a-zA-Z]+', '', t)
-    # إزالة أي أرقام منفردة (مثل 2:30) التي قد تتسرب
     t = re.sub(r'\b\d+\b', '', t)
-    # إزالة الأقواس الفارغة
     t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
-    # إزالة أي كلمات مهينة
     bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
     for bw in bad_words: t = t.replace(bw, "")
-    # تنظيف المسافات
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
+    return re.sub(r'\s+', ' ', t).strip()
 
 def split_narration(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
@@ -101,6 +110,7 @@ def parse_script_with_verses(script_text):
     for pat in patterns:
         parts = re.split(pat, text)
         if len(parts) > 1: break
+        
     if not parts or len(parts) == 1: 
         return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
 
@@ -116,11 +126,7 @@ def parse_script_with_verses(script_text):
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
             except: i += 2; continue
-            
-            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286:
-                i += 2
-                continue
-                
+            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286: i += 2; continue
             ayah_key = f"{surah}:{ayah}"
             if ayah_key not in used_ayahs:
                 segments.append({"type": "quran", "surah": surah, "surah_name": SURAH_NAMES.get(surah), "ayah_numbers": [ayah], "display": f"{SURAH_NAMES.get(surah)}: {ayah}"})
@@ -131,7 +137,6 @@ def parse_script_with_verses(script_text):
 def build_plan_prompt(story, ep_num, state):
     covered = state.get("covered_topics", [])
     covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
-    
     return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
 المواضيع التي تمت تغطيتها في الحلقات السابقة:
 {covered_str}
@@ -145,7 +150,7 @@ def build_script_prompt(story, plan, ep_num):
 القصة المطلوبة: {story['title']}
 
 قواعد صارمة جداً (أرجو الالتزام التام):
-1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 1200 إلى 1500 كلمة).
+1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 800 إلى 1000 كلمة).
 2. **التوثيق 100%**: لا تكتب أي معلومة غير واردة في القرآن الكريم، أو تفسير ابن كثير، أو التفسير الميسر، أو آراء ابن تيمية. ممنوع منعاً باتاً ذكر الإسرائيليات أو الروايات الضعيفة.
 3. **الآيات**: يجب إدراج 6 إلى 8 آيات قرآنية في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. 
    **ممنوع منعاً باتاً كتابة أي كلمة أو رقم أو مرجع أو حرف إنجليزي بعد القوس مباشرة.** اترك مسافة وضع الجملة التالية فوراً.
@@ -169,6 +174,7 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
+    print("📝 جاري توليد الخطة...", flush=True)
     plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     
     raw_title = plan.get("title", "")
@@ -176,18 +182,24 @@ def main():
     if not cleaned_title: cleaned_title = f"الحلقة {ep_num}"
     plan["title"] = cleaned_title
 
-    script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
-    if not script_text: sys.exit(1)
+    print("✍️ جاري توليد السرد...", flush=True)
+    script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=300, max_tokens=8192)
+    
+    if not script_text: 
+        print("❌ فشل توليد النص السردي من جميع النماذج!", flush=True)
+        sys.exit(1)
     
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
     segments = parse_script_with_verses(script_text)
     
+    print("📝 جاري توليد الخلاصة...", flush=True)
     summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False, timeout=60, max_tokens=300)
     summary_clean = clean_narration_text(summary_raw)
     if not summary_clean or len(summary_clean) < 20:
         summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
     segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
+    print("📢 جاري توليد التشويق...", flush=True)
     teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False, timeout=60, max_tokens=200)
     teaser_clean = clean_narration_text(teaser_raw)
     if not teaser_clean or len(teaser_clean) < 20:
@@ -214,5 +226,11 @@ def main():
     print(f"✅ تم التوليد ({len(segments)} مقطع)", flush=True)
 
 if __name__ == "__main__":
-    try: main()
-    except Exception as e: traceback.print_exc(); sys.exit(1)
+    try: 
+        main()
+    except Exception as e:
+        print("\n" + "="*50, flush=True)
+        print(f"❌ خطأ فادح: {e}", flush=True)
+        traceback.print_exc()
+        print("="*50 + "\n", flush=True)
+        sys.exit(1)
