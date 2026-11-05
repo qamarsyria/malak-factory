@@ -19,13 +19,11 @@ def _find_arabic_font():
     ]
     for c in candidates:
         if os.path.exists(c): return c
-    
     try:
         r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
         files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
         if files: return files[0]
     except Exception: pass
-        
     raise RuntimeError("❌ لم يتم العثور على أي خط عربي في النظام!")
 
 try:
@@ -58,23 +56,12 @@ def get_visual_query(seg):
     stype = seg.get("type")
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     
-    # همسات مالك (منقبات فقط)
     if stype == "malak":
-        return random.choice([
-            "niqab woman flowers", "muslim woman niqab garden", 
-            "hijab woman nature", "niqab woman butterflies", 
-            "islamic woman roses"
-        ])
+        return random.choice(["niqab woman flowers", "muslim woman niqab garden", "hijab woman nature", "niqab woman butterflies", "islamic woman roses"])
     
-    # الآيات (أماكن مقدسة بدون بشر)
     if stype == "quran":
-        return random.choice([
-            "kaaba mecca", "al aqsa mosque", "prophet mosque madinah",
-            "old damascus syria", "mosque sunset cinematic", 
-            "islamic architecture animation", "quran book glowing"
-        ])
+        return random.choice(["kaaba mecca", "al aqsa mosque", "prophet mosque madinah", "old damascus syria", "mosque sunset cinematic", "islamic architecture animation", "quran book glowing"])
     
-    # السرد (طبيعة فقط، بدون بشر)
     if "بحر" in text or "موج" in text: return random.choice(["ocean waves cinematic", "magical sea sunset", "glowing water animation"])
     if "جبل" in text or "طور" in text: return random.choice(["misty mountain fantasy", "mountain clouds cinematic"])
     if "ماء" in text or "نهر" in text or "عين" in text: return random.choice(["magical waterfall", "glowing river animation", "crystal water nature"])
@@ -85,19 +72,14 @@ def get_visual_query(seg):
     if "زهر" in text or "ورد" in text: return random.choice(["roses flowers blooming", "magical flowers animation"])
     if "شام" in text or "دمشق" in text or "قدس" in text: return random.choice(["old damascus street", "al aqsa mosque", "islamic history"])
     
-    return random.choice([
-        "enchanted forest magical", "fantasy waterfall glowing",
-        "autumn forest sun rays", "misty mountains cinematic",
-        "starry night sky", "islamic mosque sunset"
-    ])
+    return random.choice(["enchanted forest magical", "fantasy waterfall glowing", "autumn forest sun rays", "misty mountains cinematic", "starry night sky", "islamic mosque sunset"])
 
 def _find_local(query):
     slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
     for base in (Path(BG_VIDEOS_DIR), Path(BG_IMAGES_DIR)):
         if not base.exists(): continue
         for f in base.glob(f"*{slug}*"):
-            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: 
-                return str(f)
+            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: return str(f)
     return None
 
 def fetch_media(query, work_dir, used_urls):
@@ -105,27 +87,14 @@ def fetch_media(query, work_dir, used_urls):
     if local: return local
     
     if not PIXABAY_KEY:
-        print("⚠️ PIXABAY_KEY غير موجود!")
         return ""
 
     try:
-        r = requests.get(
-            "https://pixabay.com/api/videos/", 
-            params={
-                "key": PIXABAY_KEY, 
-                "q": query, 
-                "video_type": "film",
-                "safesearch": "true", 
-                "per_page": 30, 
-                "min_width": 1080
-            }, 
-            timeout=20
-        )
+        r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 30, "min_width": 1080}, timeout=20)
         if r.status_code == 200:
             hits = r.json().get("hits", [])
             random.shuffle(hits)
             for hit in hits:
-                # 🌟 فلتر إضافي: رفض أي فيديو يحتوي على بشر (إلا في همسات مالك)
                 tags = hit.get("tags", "").lower()
                 if "niqab" not in query:
                     if any(bad in tags for bad in ["man", "woman", "person", "people", "face", "child", "boy", "girl", "human"]):
@@ -142,8 +111,6 @@ def fetch_media(query, work_dir, used_urls):
                     used_urls.add(url)
                     return str(out)
                 except: pass
-        else:
-            print(f"⚠️ فشل جلب فيديو ({query}): HTTP {r.status_code}")
     except Exception as e:
         print(f"⚠️ خطأ في جلب الفيديو: {e}")
         
@@ -173,15 +140,19 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
         raise RuntimeError("لا يمكن رسم النص بدون خط عربي.")
 
     if ep_title:
-        ep_title = re.sub(r'[a-zA-Z]', '', ep_title)
+        ep_title = re.sub(r'[a-zA-Z0-9]', '', ep_title)
         try: ft = ImageFont.truetype(FONT_PATH, 38, layout_engine=ImageFont.Layout.RAQM)
         except: ft = ImageFont.truetype(FONT_PATH, 38)
         _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black")
 
+    # 🌟 فلترة النص من أي إنجليزي أو أرقام
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
-    chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
+    chunk_text = re.sub(r'[a-zA-Z0-9]', '', chunk_text).strip()
     chunk_text = chunk_text.replace("ﷺ", "صلى الله عليه وسلم ")
     chunk_text = chunk_text.replace("صلى الله عليه وسلم", "صلى الله عليه وسلم ") 
+    
+    if display_ref:
+        display_ref = re.sub(r'[a-zA-Z]', '', display_ref).strip()
     
     if not chunk_text and not is_quran: 
         overlay.save(out_path); return
