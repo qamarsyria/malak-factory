@@ -7,7 +7,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import QURAN_API
 from utilities import cleanup_dir
-from gemini_tts_pool import gemini_tts_with_pool
+
+# ═══════════════════════════════════════════════════════════
+# محرك الصوت: Gemini (افتراضي) أو edge-tts (بديل مؤقت)
+# ═══════════════════════════════════════════════════════════
+_TTS_ENGINE = os.environ.get("TTS_ENGINE", "gemini").strip().lower()
+if _TTS_ENGINE == "edge":
+    from edge_tts_engine import edge_tts_with_pool as gemini_tts_with_pool
+    print("🔊 [TTS] المحرك: edge-tts (بديل مؤقت)", flush=True)
+else:
+    from gemini_tts_pool import gemini_tts_with_pool
+    print("🔊 [TTS] المحرك: Gemini", flush=True)
 
 try:
     from tilavet_phonemizer import Phonemizer as TilavetPhonemizer
@@ -94,7 +104,6 @@ def download_human_ayah(surah, ayah, out_path):
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
-    # 🌟 إزالة الأرقام والحروف الإنجليزية لمنع نطق أي شيء غريب
     t = re.sub(r'[a-zA-Z0-9*#@_\[\]\(\)]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
@@ -256,5 +265,8 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     cleanup_dir(work)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4: sys.exit(1)
+    if len(sys.argv) < 4:
+        print(f"❌ الاستخدام: story_audio.py <json> <yt_mp3> <social_mp3>")
+        print(f"   استُلم {len(sys.argv)-1} معامل بدل 3")
+        sys.exit(1)
     build_episode_audio(sys.argv[1], sys.argv[2], sys.argv[3])
