@@ -39,37 +39,69 @@ def retrieve_context(surah_name, limit=10):
     return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
 
 # ═══════════════════════════════════════════════════════════
-# 2. الاتصال بـ GitHub Models (GPT-4o)
+# 2. محركات التوليد (GitHub Models -> Hugging Face)
 # ═══════════════════════════════════════════════════════════
 def call_github_models(prompt, is_json=True, model="gpt-4o"):
     token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        print("   ❌ GITHUB_TOKEN غير متوفر! تأكد من إضافته في الـ workflow.")
-        return None
-        
+    if not token: return None
     url = "https://models.inference.ai.azure.com/chat/completions"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": 4000
-    }
-    if is_json:
-        payload["response_format"] = {"type": "json_object"}
-
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+    if is_json: payload["response_format"] = {"type": "json_object"}
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=120)
+        r = requests.post(url, headers=headers, json=payload, timeout=30)
+        if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
+    except: pass
+    return None
+
+def call_huggingface(prompt, is_json=True):
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        print("   ❌ HF_TOKEN غير متوفر!")
+        return None
+    
+    # نستخدم Qwen 2.5 72B لأنه من أفضل النماذج في اللغة العربية
+    model = "Qwen/Qwen2.5-72B-Instruct"
+    url = f"https://api-inference.huggingface.co/models/{model}"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 3000,
+            "temperature": 0.2,
+            "return_full_text": False
+        }
+    }
+    
+    try:
+        print(f"   🔄 محاولة الاتصال بـ HuggingFace ({model})...", flush=True)
+        r = requests.post(url, headers=headers, json=payload, timeout=90)
+        
         if r.status_code == 200:
-            content = r.json()["choices"][0]["message"]["content"]
-            return json.loads(content) if is_json else content
-        print(f"   ⚠️ GitHub Models ({model}): HTTP {r.status_code} - {r.text[:100]}")
+            result = r.json()
+            if isinstance(result, list) and len(result) > 0:
+                text = result[0].get("generated_text", "")
+            else:
+                text = result.get("generated_text", "")
+                
+            if is_json:
+                s, e = text.find("{"), text.rfind("}")
+                if s != -1 and e > s: text = text[s:e + 1]
+                return json.loads(text)
+            return text
+        else:
+            print(f"   ⚠️ HuggingFace HTTP {r.status_code}: {r.text[:100]}", flush=True)
     except Exception as e:
-        print(f"   ⚠️ خطأ اتصال: {str(e)[:100]}")
+        print(f"   ⚠️ خطأ في HuggingFace: {str(e)[:100]}", flush=True)
     return None
 
 def call_llm(prompt, is_json=True):
-    return call_github_models(prompt, is_json, model="gpt-4o")
+    # 1. المحاولة عبر GitHub Models
+    res = call_github_models(prompt, is_json)
+    if res: return res
+    # 2. إذا فشل، ننتقل فوراً إلى HuggingFace
+    return call_huggingface(prompt, is_json)
 
 # ═══════════════════════════════════════════════════════════
 # 3. معالجة النصوص والبرومبتات
@@ -168,7 +200,7 @@ def build_teaser_prompt(story, ep_num):
 def main():
     library, state = load_library(), load_state()
     story = get_current_story(library, state)
-    ep_num = state.get("episode_number", 1) # تم التعديل هنا
+    ep_num = state.get("episode_num", 1)
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
@@ -177,7 +209,16 @@ def main():
     print(f"📚 تم استرجاع المراجع للسياق.", flush=True)
 
     print("📝 جاري توليد الخطة...", flush=True)
-    plan = call_llm(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    plan_raw = call_llm(build_plan_prompt(story, ep_num, state))
+    
+    # التعامل مع الخطة سواء رجعت كـ JSON أو نص
+    if isinstance(plan_raw, str):
+        try:
+            s, e = plan_raw.find("{"), plan_raw.rfind("}")
+            plan = json.loads(plan_raw[s:e+1])
+        except: plan = {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    else:
+        plan = plan_raw or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     
     raw_title = plan.get("title", "")
     cleaned_title = re.sub(r'الحلقة\s*\d+[:\s\-]*', '', raw_title).strip()
@@ -195,14 +236,14 @@ def main():
     
     print("📝 جاري توليد الخلاصة...", flush=True)
     summary_raw = call_llm(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False)
-    summary_clean = clean_narration_text(summary_raw)
+    summary_clean = clean_narration_text(summary_raw if isinstance(summary_raw, str) else "")
     if not summary_clean or len(summary_clean) < 20:
         summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
     segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
     print("📢 جاري توليد التشويق...", flush=True)
     teaser_raw = call_llm(build_teaser_prompt(story, ep_num), is_json=False)
-    teaser_clean = clean_narration_text(teaser_raw)
+    teaser_clean = clean_narration_text(teaser_raw if isinstance(teaser_raw, str) else "")
     if not teaser_clean or len(teaser_clean) < 20:
         teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
     segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
