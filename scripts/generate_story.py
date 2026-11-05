@@ -39,73 +39,46 @@ def retrieve_context(surah_name, limit=10):
     return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
 
 # ═══════════════════════════════════════════════════════════
-# 2. محركات التوليد (GitHub -> HuggingFace (مجاني) -> Pollinations)
+# 2. محركات التوليد (HuggingFace -> Pollinations)
 # ═══════════════════════════════════════════════════════════
-def call_github_models(prompt, is_json=True):
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token: return None
-    url = "https://models.inference.ai.azure.com/chat/completions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}
-    if is_json: payload["response_format"] = {"type": "json_object"}
-    try:
-        print(f"   🔄 محاولة GitHub Models...", flush=True)
-        r = requests.post(url, headers=headers, json=payload, timeout=30)
-        if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
-    except: pass
-    return None
-
 def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
     
-    # قائمة الموديلات من الأقوى للأصغر (عشان نضمن إن واحد منهم هيشتغل مجاناً)
-    models = [
-        "Qwen/Qwen2.5-72B-Instruct",
-        "meta-llama/Llama-3.3-70B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
-        "meta-llama/Llama-3.2-3B-Instruct",
-        "mistralai/Mistral-7B-Instruct-v0.3"
-    ]
+    models = ["Qwen/Qwen2.5-7B-Instruct", "meta-llama/Meta-Llama-3-8B-Instruct", "HuggingFaceH4/zephyr-7b-beta"]
     
     for model in models:
         url = "https://router.huggingface.co/v1/chat/completions"
         headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 2000}
         if is_json: payload["response_format"] = {"type": "json_object"}
         try:
             print(f"   🔄 محاولة HuggingFace ({model})...", flush=True)
             r = requests.post(url, headers=headers, json=payload, timeout=60)
-            if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"]
-            else:
-                print(f"   ⚠️ فشل {model}: HTTP {r.status_code}", flush=True)
-        except Exception as e:
-            print(f"   ⚠️ خطأ {model}: {str(e)[:60]}", flush=True)
+            if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
+            else: print(f"   ⚠️ فشل {model}: HTTP {r.status_code}", flush=True)
+        except Exception as e: print(f"   ⚠️ خطأ {model}: {str(e)[:60]}", flush=True)
     return None
 
 def call_pollinations(prompt, is_json=True):
     url = "https://text.pollinations.ai/openai"
     headers = {"Content-Type": "application/json"}
-    payload = {"model": "openai", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+    payload = {"model": "openai", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 2000}
     if is_json: payload["response_format"] = {"type": "json_object"}
     try:
         print(f"   🔄 محاولة Pollinations...", flush=True)
         r = requests.post(url, headers=headers, json=payload, timeout=60)
         if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"   ⚠️ خطأ Pollinations: {str(e)[:60]}", flush=True)
+    except Exception as e: print(f"   ⚠️ خطأ Pollinations: {str(e)[:60]}", flush=True)
     return None
 
 def call_llm(prompt, is_json=True):
-    res = call_github_models(prompt, is_json)
-    if res: return res
     res = call_huggingface(prompt, is_json)
     if res: return res
     return call_pollinations(prompt, is_json)
 
 # ═══════════════════════════════════════════════════════════
-# 3. معالجة النصوص والبرومبتات (نفس الكود السابق)
+# 3. معالجة النصوص والبرومبتات
 # ═══════════════════════════════════════════════════════════
 def clean_narration_text(t: str) -> str:
     if not t: return ""
@@ -165,13 +138,14 @@ def parse_script_with_verses(script_text):
     return segments
 
 def build_plan_prompt(story, ep_num, state):
+    total_eps = story.get("target_episodes", 15)
     covered = state.get("covered_topics", [])
     covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
-    return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة حلقات تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
+    return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
 المواضيع التي تمت تغطيتها في الحلقات السابقة:
 {covered_str}
 
-اكتب خطة للحلقة {ep_num} تركز على جزء محدد وجديد من حياته (لم يتم تغطيته سابقاً).
+اكتب خطة للحلقة {ep_num} (من أصل {total_eps}). يجب أن تركز على جزء محدد جداً وجديد من حياته (لم يتم تغطيته سابقاً).
 أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
 
 def build_script_prompt(story, plan, ep_num, context):
@@ -185,9 +159,9 @@ def build_script_prompt(story, plan, ep_num, context):
 {context}
 
 قواعد صارمة جداً:
-1. اكتب سرداً قصصياً مشوقاً واحترافياً (حوالي 800 كلمة) يربط هذه الآيات ببعضها. ابدأ بسؤال وثائقي مشوق، ثم أدرج الآية مباشرة.
+1. اكتب سرداً قصصياً مشوقاً واحترافياً (حوالي 300 كلمة فقط، تكفي لفيديو مدته 5 دقائق). ركز على حدث واحد أو فكرة واحدة بعمق. ابدأ بسؤال وثائقي مشوق.
 2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
-3. **الآيات**: يجب إدراج الآيات المذكورة أعلاه في النص، بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. **ممنوع كتابة نص الآية.** اترك مسافة بعد القوس.
+3. **الآيات**: يجب إدراج آية واحدة إلى آيتين فقط من الآيات المذكورة أعلاه، بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. **ممنوع كتابة نص الآية.**
 4. احترام مطلق للأنبياء والملائكة.
 5. اكتب النص السردي فقط، بدون عناوين فرعية، وبأسلوب راقٍ."""
 
