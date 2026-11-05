@@ -39,16 +39,17 @@ def retrieve_context(surah_name, limit=10):
     return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
 
 # ═══════════════════════════════════════════════════════════
-# 2. محركات التوليد
+# 2. محركات التوليد (GitHub -> HuggingFace (مجاني) -> Pollinations)
 # ═══════════════════════════════════════════════════════════
-def call_github_models(prompt, is_json=True, model="gpt-4o"):
+def call_github_models(prompt, is_json=True):
     token = os.environ.get("GITHUB_TOKEN")
     if not token: return None
     url = "https://models.inference.ai.azure.com/chat/completions"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+    payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}
     if is_json: payload["response_format"] = {"type": "json_object"}
     try:
+        print(f"   🔄 محاولة GitHub Models...", flush=True)
         r = requests.post(url, headers=headers, json=payload, timeout=30)
         if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
     except: pass
@@ -57,49 +58,54 @@ def call_github_models(prompt, is_json=True, model="gpt-4o"):
 def call_huggingface(prompt, is_json=True):
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token: return None
-    # استخدام الرابط الجديد Router بدلاً من القديم المحظور
-    url = "https://router.huggingface.co/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
-    payload = {"model": "Qwen/Qwen2.5-72B-Instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
-    if is_json: payload["response_format"] = {"type": "json_object"}
-    try:
-        print(f"   🔄 محاولة الاتصال بـ HuggingFace Router...", flush=True)
-        r = requests.post(url, headers=headers, json=payload, timeout=90)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-        else:
-            print(f"   ⚠️ HuggingFace HTTP {r.status_code}", flush=True)
-    except Exception as e:
-        print(f"   ⚠️ خطأ HuggingFace: {str(e)[:80]}", flush=True)
+    
+    # قائمة الموديلات من الأقوى للأصغر (عشان نضمن إن واحد منهم هيشتغل مجاناً)
+    models = [
+        "Qwen/Qwen2.5-72B-Instruct",
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "Qwen/Qwen2.5-7B-Instruct",
+        "meta-llama/Llama-3.2-3B-Instruct",
+        "mistralai/Mistral-7B-Instruct-v0.3"
+    ]
+    
+    for model in models:
+        url = "https://router.huggingface.co/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
+        if is_json: payload["response_format"] = {"type": "json_object"}
+        try:
+            print(f"   🔄 محاولة HuggingFace ({model})...", flush=True)
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"]
+            else:
+                print(f"   ⚠️ فشل {model}: HTTP {r.status_code}", flush=True)
+        except Exception as e:
+            print(f"   ⚠️ خطأ {model}: {str(e)[:60]}", flush=True)
     return None
 
 def call_pollinations(prompt, is_json=True):
-    # محرك مجاني بدون مفتاح API ويعمل من GitHub Actions
     url = "https://text.pollinations.ai/openai"
     headers = {"Content-Type": "application/json"}
     payload = {"model": "openai", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 3000}
     if is_json: payload["response_format"] = {"type": "json_object"}
     try:
-        print(f"   🔄 محاولة الاتصال بـ Pollinations (بدون مفتاح)...", flush=True)
-        r = requests.post(url, headers=headers, json=payload, timeout=90)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
+        print(f"   🔄 محاولة Pollinations...", flush=True)
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        print(f"   ⚠️ خطأ Pollinations: {str(e)[:80]}", flush=True)
+        print(f"   ⚠️ خطأ Pollinations: {str(e)[:60]}", flush=True)
     return None
 
 def call_llm(prompt, is_json=True):
-    # 1. GitHub Models
     res = call_github_models(prompt, is_json)
     if res: return res
-    # 2. Hugging Face Router
     res = call_huggingface(prompt, is_json)
     if res: return res
-    # 3. Pollinations (الخطة البديلة المضمونة)
     return call_pollinations(prompt, is_json)
 
 # ═══════════════════════════════════════════════════════════
-# 3. معالجة النصوص والبرومبتات
+# 3. معالجة النصوص والبرومبتات (نفس الكود السابق)
 # ═══════════════════════════════════════════════════════════
 def clean_narration_text(t: str) -> str:
     if not t: return ""
