@@ -37,6 +37,10 @@ class GeminiKeyPool:
         for _ in range(10): 
             key = self._available_key()
             if key: return key
+            
+            if not self.cooldowns:
+                raise RuntimeError("🚫 جميع المفاتيح مستنفدة أو محظورة (قائمة الانتظار فارغة).")
+                
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             if wait > 3600: raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
@@ -58,12 +62,7 @@ def get_pool() -> GeminiKeyPool:
     return _pool
 
 def discover_tts_models(prefer_lite: bool = False) -> list[str]:
-    known_tts_models = [
-        "gemini-2.5-flash-preview-tts",
-        "gemini-3.8-flash-tts",
-        "gemini-3.1-flash-tts-preview"
-    ]
-    return known_tts_models
+    return ["gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"]
 
 def _split_text(text: str, max_chars: int = 150) -> list[str]:
     text = text.strip()
@@ -150,7 +149,9 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
         
         for attempt in range(len(pool.keys) * 3): 
             try: key = pool.get_current()
-            except: time.sleep(10); continue
+            except Exception as e: 
+                print(f"   ⚠️ {str(e)}", flush=True)
+                time.sleep(10); continue
             try: result = _tts_single(chunk, wav_path, voice, key)
             except: pool.mark_failed(65); continue
 
