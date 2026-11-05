@@ -1,5 +1,5 @@
 {
-  "run_count": 2,
+  "run_count": 3,
   "used_ids": {
     "hadith": [
       "muslim-06072"
@@ -7,7 +7,9 @@
     "fiqh": [
       "fiqh-40224"
     ],
-    "quran": [],
+    "quran": [
+      "ayah-006-108"
+    ],
     "adhkar": []
   }
 }
