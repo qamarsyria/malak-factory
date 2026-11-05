@@ -6,7 +6,6 @@ import gzip
 import random
 from datetime import datetime
 from pathlib import Path
-import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -22,6 +21,17 @@ DREAMY_VISUALS = [
     "islamic architecture mosque sunset"
 ]
 
+# 🌟 تحميل مكتبة الآيات المحلية (مثل القصص)
+_ayah_lib = []
+try:
+    lib_path = LIBRARIES_DIR / "ayah-library.json.gz"
+    if lib_path.exists():
+        with gzip.open(lib_path, "rt", encoding="utf-8") as f:
+            _ayah_lib = json.load(f)
+        print(f"✅ تم تحميل {len(_ayah_lib)} آية من الملف المحلي لليوميات.")
+except Exception as e:
+    print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
+
 def load_library(filename):
     path = LIBRARIES_DIR / filename
     if not path.exists(): return []
@@ -32,30 +42,6 @@ def load_library(filename):
 def clean_text(text):
     if not text: return ""
     return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text)).strip()
-
-def fetch_sharh_from_dorar(hadith_text):
-    """جلب الشرح الموثق من موقع الدرر السنية"""
-    print("🔎 جاري البحث عن شرح الحديث في الدرر السنية...")
-    try:
-        # نأخذ أول 50 حرف من الحديث للبحث
-        search_key = hadith_text[:50]
-        r = requests.get(
-            "https://dorar.net/dorar_api.json",
-            params={"skey": search_key},
-            timeout=15,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        if r.status_code == 200:
-            data = r.json()
-            results = data.get("ahadith", {}).get("result", [])
-            if results:
-                sharh = results[0].get("sharh", "")
-                if sharh:
-                    # تنظيف الشرح من وسوم HTML
-                    return clean_text(re.sub(r'<[^>]+>', '', sharh))
-    except Exception as e:
-        print(f"⚠️ تعذر جلب الشرح: {e}")
-    return ""
 
 def pick_unused(items, text_key, used_ids, min_len=50, max_len=1500):
     valid_items = [i for i in items if min_len <= len(i.get(text_key, "")) <= max_len]
@@ -98,23 +84,12 @@ def main():
 
     if content_type == 0:
         lib = load_library("hadith-library.json.gz")
-        item, used_list = pick_unused(lib, "text", used_list, 100, 1000)
+        item, used_list = pick_unused(lib, "text", used_list, 100, 1500)
         if not item: sys.exit(1)
-        
-        hadith_text = clean_text(item["text"])
         content_title = f"حديث: {item.get('chapter', 'من صحيح البخاري ومسلم')}"
-        
         segments.append({"type": "narration", "text": "في هذا المقطع، نتوقف مع حديث نبوي شريف، يضيء لنا الطريق.", "visual": visual})
-        segments.append({"type": "hadith", "text": hadith_text, "display": item.get("book", "صحيح"), "visual": visual})
+        segments.append({"type": "hadith", "text": clean_text(item["text"]), "display": item.get("book", "صحيح"), "visual": visual})
         segments.append({"type": "narration", "text": f"رواه {item.get('book', '')}، في {item.get('chapter', '')}.", "visual": visual})
-        
-        # 🌟 جلب الشرح وإضافته
-        sharh = fetch_sharh_from_dorar(hadith_text)
-        if sharh:
-            segments.append({"type": "narration", "text": "يقول الشرح الموثق لهذا الحديث:", "visual": visual})
-            segments.append({"type": "narration", "text": sharh, "visual": visual})
-        else:
-            segments.append({"type": "narration", "text": "وهذا الحديث أصل عظيم في بابه، يجب على المسلم تدبره والعمل به.", "visual": visual})
 
     elif content_type == 1:
         lib = load_library("fiqh-library.json.gz")
@@ -126,12 +101,28 @@ def main():
         segments.append({"type": "fiqh", "text": clean_text(item["answer"]), "display": "منهج السلف", "visual": visual})
 
     elif content_type == 2:
-        lib = load_library("ayah-library.json.gz")
-        item, used_list = pick_unused(lib, "tafsir", used_list, 200, 1200)
+        # 🌟 3. آية وحكاية (من الملف المحلي وبشكل مصحح)
+        if not _ayah_lib:
+            print("❌ مكتبة الآيات المحلية فارغة!")
+            sys.exit(1)
+            
+        # نختار آية تحتوي على تفسير
+        valid_ayat = [i for i in _ayah_lib if i.get("tafsir") and len(i.get("tafsir")) > 50]
+        if not valid_ayat:
+            valid_ayat = _ayah_lib
+            
+        item, used_list = pick_unused(valid_ayat, "tafsir", used_list, 50, 1500)
         if not item: sys.exit(1)
-        content_title = f"آية وحكاية: {item['surah_name']}"
-        segments.append({"type": "narration", "text": f"في سورة {item['surah_name']}، يقول الله تعالى:", "visual": visual})
-        segments.append({"type": "quran", "text": clean_text(item["text"]), "display": f"{item['surah_name']}: {item['ayah_number']}", "visual": visual})
+        
+        surah_name = item["surah_name"].replace("سورة ", "").replace("سُورَةُ ", "").strip()
+        surah_num = item["surah_number"]
+        ayah_num = item["ayah_number"]
+        
+        content_title = f"آية وحكاية: سورة {surah_name}"
+        
+        segments.append({"type": "narration", "text": f"في سورة {surah_name}، يقول الله تعالى:", "visual": visual})
+        # 🌟 تمرير أرقام السورة والآية لكي يتعرف عليها محرك الصوت ويقرأها
+        segments.append({"type": "quran", "surah": surah_num, "surah_name": surah_name, "ayah_numbers": [ayah_num], "display": f"{surah_name}: {ayah_num}", "visual": visual})
         segments.append({"type": "narration", "text": f"يقول التفسير الميسر: {clean_text(item['tafsir'])}", "visual": visual})
 
     else:
