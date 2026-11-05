@@ -37,15 +37,7 @@ def get_local_ayah_text(surah, ayah):
     return _ayah_lib.get(key, "")
 
 def trim_and_fade(input_wav, output_wav):
-    """قص أي صوت في النهاية وتطبيق تلاشي ناعم لمنع صوت 'السين' أو الصدى المزعج"""
     try:
-        # 1. إزالة الصمت في النهاية (أقل من -40dB)
-        # 2. تطبيق fade out ناعم في آخر 0.2 ثانية
-        filters = (
-            "silenceremove=stop_periods=-1:stop_duration=0.1:stop_threshold=-40dB,"
-            "afade=t=out:st=0:d=0.1" # احتياطي إذا لم يجد صمتاً
-        )
-        # ملاحظة: سنستخدم فلتر ffmpeg لعمل fade out ديناميكي
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_wav], capture_output=True, text=True)
         dur = float(probe.stdout.strip() or 0)
         
@@ -61,7 +53,6 @@ def trim_and_fade(input_wav, output_wav):
             shutil.copy(input_wav, output_wav)
             return True
     except Exception as e:
-        print(f"⚠️ فشل التلاشي: {e}")
         shutil.copy(input_wav, output_wav)
         return False
 
@@ -103,7 +94,8 @@ def download_human_ayah(surah, ayah, out_path):
 
 def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
-    t = re.sub(r'[a-zA-Z*#@_\[\]\(\)]', '', t)
+    # 🌟 إزالة الأرقام والحروف الإنجليزية لمنع نطق أي شيء غريب
+    t = re.sub(r'[a-zA-Z0-9*#@_\[\]\(\)]', '', t)
     return re.sub(r"\s+", " ", re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))).strip()
 
 def get_dur(p):
@@ -151,7 +143,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
 
         if not text and stype != "quran": continue
 
-        # 🌟 1. السرد
         if stype != "quran":
             chunks = split_text(text)
             print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
@@ -182,12 +173,10 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 yt_meta.append(meta_entry)
                 social_meta.append(meta_entry)
 
-        # 🌟 2. الآيات
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             if not ayahs: continue
             
-            # --- أ) يوتيوب (جيميني) ---
             print(f"🎙️ المقطع {idx+1} [quran] - Gemini...")
             yt_chunk_timings = []
             for a in ayahs:
@@ -203,7 +192,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                     subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     time.sleep(6)
                 
-                # 🌟 قص الصوت وتلاشيه قبل تطبيق الصدى
                 trimmed_a = ep_cache / f"trimmed_{s}_{a}_{text_hash}.wav"
                 trim_and_fade(str(cache_a), str(trimmed_a))
                 
@@ -218,7 +206,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             if yt_chunk_timings:
                 yt_meta.append({"index": idx, "type": stype, "display": display, "chunks": yt_chunk_timings})
 
-            # --- ب) سوشيال (بشري) ---
             print(f"🎙️ المقطع {idx+1} [quran] - بشري...")
             soc_chunk_timings = []
             for a in ayahs:
@@ -228,7 +215,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 cache_a = ep_cache / f"human_{s}_{a}.mp3"
                 if not download_human_ayah(s, a, str(cache_a)): continue
                 
-                # 🌟 قص الصوت البشري وتلاشيه قبل الصدى
                 trimmed_h = ep_cache / f"trimmed_human_{s}_{a}.wav"
                 trim_and_fade(str(cache_a), str(trimmed_h))
 
