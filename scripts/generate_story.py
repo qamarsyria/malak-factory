@@ -20,7 +20,6 @@ SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
 def call_llm(prompt, is_json=True, timeout=300, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
-    
     try:
         models = discover_and_cache(force=False)[:5]
     except Exception as e:
@@ -58,7 +57,7 @@ def call_llm(prompt, is_json=True, timeout=300, max_tokens=8192):
                 elif r.status_code == 429: pool.mark_failed(3600)
                 elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
             except requests.exceptions.Timeout:
-                print(f"   ⚠️ {model}: Timeout", flush=True)
+                pass
             except Exception as e: 
                 print(f"   ⚠️ {model}: {str(e)[:100]}", flush=True)
     return None
@@ -82,11 +81,18 @@ def call_llm_with_fallback(prompt, is_json=True, timeout=300, max_tokens=8192):
 
 def clean_narration_text(t: str) -> str:
     if not t: return ""
+    # إزالة الحروف الإنجليزية والأرقام
     t = re.sub(r'[a-zA-Z]+', '', t)
     t = re.sub(r'\b\d+\b', '', t)
     t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
+    
+    # إزالة علامات الآيات من السرد إذا تسربت
+    t = re.sub(r'[﴿﴾\(\)]', '', t)
+    
+    # إزالة الكلمات المهينة
     bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
     for bw in bad_words: t = t.replace(bw, "")
+    
     return re.sub(r'\s+', ' ', t).strip()
 
 def split_narration(text, max_chars=150):
@@ -105,6 +111,7 @@ def parse_script_with_verses(script_text):
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
     
+    # البحث عن [آية: سورة:آية] أو أي صيغة مشابهة
     patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
     parts = None
     for pat in patterns:
@@ -117,7 +124,13 @@ def parse_script_with_verses(script_text):
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
-            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
+            chunk = parts[i].strip()
+            
+            # 🌟 سحر إضافي: حذف أي نص للآية قد يكون جيميني كتبه قبل القوس
+            # (مثلاً: (وإذ قال ربك...) [آية: 2:30]) -> سيحذف ما بين الأقواس
+            chunk = re.sub(r'[\(\[﴿].*?[\)\]﴾]', '', chunk) 
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", chunk).strip()
+            
             chunk = clean_narration_text(chunk)
             if len(chunk) > 5:
                 for piece in split_narration(chunk): 
@@ -150,11 +163,15 @@ def build_script_prompt(story, plan, ep_num):
 القصة المطلوبة: {story['title']}
 
 قواعد صارمة جداً (أرجو الالتزام التام):
-1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 800 إلى 1000 كلمة).
-2. **التوثيق 100%**: لا تكتب أي معلومة غير واردة في القرآن الكريم، أو تفسير ابن كثير، أو التفسير الميسر، أو آراء ابن تيمية. ممنوع منعاً باتاً ذكر الإسرائيليات أو الروايات الضعيفة.
-3. **الآيات**: يجب إدراج 6 إلى 8 آيات قرآنية في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. 
-   **ممنوع منعاً باتاً كتابة أي كلمة أو رقم أو مرجع أو حرف إنجليزي بعد القوس مباشرة.** اترك مسافة وضع الجملة التالية فوراً.
-4. **احترام مطلق**: لا تصف الملائكة أو الأنبياء بأي وصف مهين. استخدم ألفاظ التوقير.
+1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 800 إلى 1000 كلمة) يشرح التفسير ويسرد القصة بالتفصيل الممل.
+2. **التوثيق 100%**: اعتمد على القرآن الكريم، تفسير ابن كثير، التفسير الميسر، وآراء ابن تيمية. ممنوع منعاً باتاً ذكر الإسرائيليات.
+3. **الآيات**: 
+   - يجب إدراج 6 إلى 8 آيات قرآنية.
+   - **ممنوع منعاً باتاً كتابة نص الآية نفسها** (لا تكتب الآية بين أقواس أو بدونها).
+   - ضع علامة الاستشهاد بهذه الصيغة فقط: [آية: رقم_السورة:رقم_الآية].
+   - **ممنوع منعاً باتاً كتابة أي كلمة أو حرف أو رقم بعد القوس مباشرة.**
+   - اكتب القوس ثم اترك مسافة ثم أكمل السرد أو التفسير فوراً.
+4. **احترام مطلق**: لا تصف الملائكة أو الأنبياء بأي وصف مهين.
 5. **الأسلوب**: روائي متدفق، بدون عناوين فرعية.
 اكتب النص السردي فقط."""
 
