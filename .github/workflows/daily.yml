@@ -1,4 +1,4 @@
-name: Daily
+name: Story Builder & Daily Short
 
 on:
   schedule:
@@ -28,7 +28,6 @@ jobs:
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
-      # 🌟 استعادة الكاش
       - name: Restore Audio Cache
         uses: actions/cache@v4
         with:
@@ -50,13 +49,13 @@ jobs:
             exit 1
           fi
 
-      # 🌟 الخطوة السحرية: بناء الصوتين معاً (سرد مشترك + آيات مختلفة)
       - name: Build Audio (Both)
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TEST_MODE: "0"
+          TTS_ENGINE: "edge"
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -97,7 +96,6 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           
-          # 1. فيديو اليوتيوب
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
@@ -112,7 +110,6 @@ jobs:
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
-          # 2. فيديو السوشيال ميديا
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
