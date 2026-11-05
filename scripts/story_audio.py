@@ -143,14 +143,16 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         text, display = "", ""
-        if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): text = sanitize_for_tts(seg["text"])
+        if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): 
+            text = sanitize_for_tts(seg.get("text", ""))
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
         elif stype in ("hadith", "fiqh", "adhkar"):
             text = sanitize_for_tts(seg.get("text", "")); display = seg.get("display", "")
 
-        if not text and stype != "quran": continue
+        if not text and stype != "quran": 
+            continue
 
         if stype != "quran":
             chunks = split_text(text)
@@ -158,7 +160,14 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             chunk_timings = []
 
             for c_idx, chunk in enumerate(chunks):
-                if not chunk.strip(): continue
+                if not chunk.strip(): 
+                    continue
+                
+                # 🌟 فحص إضافي: تخطي إذا لم يكن هناك حروف عربية
+                if not re.search(r'[\u0600-\u06FF]', chunk):
+                    print(f"   ⏭️ تخطي مقطع لا يحتوي على حروف عربية: {chunk[:20]}")
+                    continue
+
                 text_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()[:8]
                 cached_wav = ep_cache / f"seg_{idx}_{c_idx}_{text_hash}.wav"
                 
@@ -167,7 +176,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                     gemini_tts_with_pool(chunk, str(temp_mp3))
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
-                    time.sleep(6) 
+                    time.sleep(2) # قللنا وقت الانتظار قليلاً لأن Edge أسرع
 
                 if cached_wav.exists():
                     faded = work / f"faded_{idx}_{c_idx}.wav"
@@ -199,7 +208,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                     tmp_mp3 = work / "tmp.mp3"
                     gemini_tts_with_pool(text_a, str(tmp_mp3))
                     subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
-                    time.sleep(6)
+                    time.sleep(2)
                 
                 trimmed_a = ep_cache / f"trimmed_{s}_{a}_{text_hash}.wav"
                 trim_and_fade(str(cache_a), str(trimmed_a))
