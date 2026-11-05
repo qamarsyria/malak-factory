@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     
-    # 🌟 صلاحية ضرورية لاستخدام GitHub Models وكتابة الحالة
     permissions:
       models: read
       contents: write
@@ -25,23 +24,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests edge-tts silma-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install requests pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
-      # 🌟 تحميل نموذج SILMA TTS (يتم مرة واحدة، ويستغرق دقائق في أول مرة)
-      - name: Download SILMA TTS Model
-        run: |
-          python -c "from silma_tts.api import SilmaTTS; SilmaTTS()" || echo "⚠️ قد يفشل التحميل المسبق، سيعيد المحاولة عند التوليد."
-
-      - name: Generate Story (GitHub Models)
+      - name: Generate Story (HuggingFace/Pollinations)
         id: gen
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 🌟 ضروري لـ GPT-4o
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/generate_story.py
@@ -54,12 +49,12 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Both) - SILMA TTS
+      # 🌟 التعديل الأهم: تمرير مفاتيح Gemini لخطوة الصوت
+      - name: Build Audio (Both) - Gemini TTS
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          TTS_ENGINE: "silma" # 🌟 تفعيل SILMA TTS
-          # SILMA_REF_AUDIO: "assets/audio/reference/sudais_ref.wav" # اختياري: ضعه هنا إذا أردت استنساخ صوت السديس
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -100,7 +95,6 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           
-          # 1. فيديو اليوتيوب
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
@@ -110,12 +104,11 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - GPT-4o & SILMA]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
-          # 2. فيديو السوشيال ميديا
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
