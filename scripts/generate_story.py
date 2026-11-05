@@ -64,32 +64,19 @@ def call_huggingface(prompt, is_json=True):
 def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
-def clean_llm_text(text: str) -> str:
-    if not text: return ""
-    t = text.strip()
-    
-    # 🌟 1. إزالة أي حروف إنجليزية
-    t = re.sub(r'[a-zA-Z]', '', t)
-    
-    # 🌟 2. إصلاح رمز الصلاة ودمج الكلمات
-    t = t.replace("ﷺ", "صلى الله عليه وسلم ")
-    t = t.replace("صلى الله عليه وسلم", "صلى الله عليه وسلم ")
-    t = t.replace("عليه السلام", "عليه السلام ")
-    
-    # 🌟 3. إزالة أي كلمات مهينة أو تقلل من شأن الأنبياء والملائكة
+def clean_narration_text(t: str) -> str:
+    """تنظيف صارم جداً للسرد من أي حروف إنجليزية أو أرقام غريبة"""
+    if not t: return ""
+    # إزالة أي حروف إنجليزية
+    t = re.sub(r'[a-zA-Z]+', '', t)
+    # إزالة أي أرقام منفردة (مثل 2:30) التي قد تتسرب
+    t = re.sub(r'\b\d+\b', '', t)
+    # إزالة الأقواس الفارغة
+    t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
+    # إزالة أي كلمات مهينة
     bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
-    for bw in bad_words:
-        t = t.replace(bw, "")
-        
-    # 🌟 4. إزالة المقدمات
-    bad_patterns = [
-        r'^\s*إليك\s+', r'^\s*هذا\s+', r'^\s*هذه\s+', r'^\s*النص\s+', r'^\s*نص\s+',
-        r'^\s*الحلقة\s+القادمة\s*[:：\-]', r'^\s*في\s+الحلقة\s+القادمة\s*[,،:]',
-        r'^\s*ترقبوا\s*[:：]?', r'^\s*بالتأكيد\s*[,،]', r'^\s*طبعاً\s*[,،]', r'^\s*الخلاصة\s*[:：]',
-    ]
-    for pat in bad_patterns: t = re.sub(pat, '', t, count=1, flags=re.IGNORECASE).strip()
-    t = t.strip('«»"\'[]')
-    
+    for bw in bad_words: t = t.replace(bw, "")
+    # تنظيف المسافات
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
@@ -114,18 +101,26 @@ def parse_script_with_verses(script_text):
     for pat in patterns:
         parts = re.split(pat, text)
         if len(parts) > 1: break
-    if not parts or len(parts) == 1: return [{"type": "narration", "text": c.strip()} for c in split_narration(text) if c.strip()]
+    if not parts or len(parts) == 1: 
+        return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
 
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
             chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
+            chunk = clean_narration_text(chunk)
             if len(chunk) > 5:
-                for piece in split_narration(chunk): segments.append({"type": "narration", "text": piece.strip()})
+                for piece in split_narration(chunk): 
+                    segments.append({"type": "narration", "text": piece.strip()})
             i += 1
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
             except: i += 2; continue
+            
+            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286:
+                i += 2
+                continue
+                
             ayah_key = f"{surah}:{ayah}"
             if ayah_key not in used_ayahs:
                 segments.append({"type": "quran", "surah": surah, "surah_name": SURAH_NAMES.get(surah), "ayah_numbers": [ayah], "display": f"{SURAH_NAMES.get(surah)}: {ayah}"})
@@ -145,20 +140,17 @@ def build_plan_prompt(story, ep_num, state):
 أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
 
 def build_script_prompt(story, plan, ep_num):
-    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي موثوق.
+    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي متخصص في التفسير (تفسير ابن كثير، التفسير الميسر، وفتاوى ابن تيمية).
 الخطة: {plan['title']} - {plan['summary']}
 القصة المطلوبة: {story['title']}
 
-قواعد صارمة جداً:
-1. **اكتب بأسلوب روائي متصل ومتدفق**. ممنوع تماماً كتابة عناوين فرعية.
-2. **يجب إدراج 4 إلى 6 آيات قرآنية** في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. لا تكتب نص الآية.
-3. المصدر: القرآن، السنة، تفسير ابن كثير.
-4. ممنوع أي لغة سينمائية.
-5. **اكتب فقط ما ورد في المصادر الموثقة عن {story['title']}. ممنوع منعاً باتاً اختراع أحداث.**
-6. **احترام مطلق**: لا تصف الملائكة أو الأنبياء أو الصحابة بأي وصف مهين، ولا تقل أنهم وبخوا أو عوتبوا أو أخطأوا. ممنوع اختراع أي موقف يقلل من شأنهم. استخدم دائماً ألفاظ التوقير والاحترام.
-7. اكتب من 500 إلى 600 كلمة فقط.
-8. ابدأ السرد مباشرة بالحدث.
-
+قواعد صارمة جداً (أرجو الالتزام التام):
+1. **الطول**: اكتب سرداً مفصلاً ومطولاً (من 1200 إلى 1500 كلمة).
+2. **التوثيق 100%**: لا تكتب أي معلومة غير واردة في القرآن الكريم، أو تفسير ابن كثير، أو التفسير الميسر، أو آراء ابن تيمية. ممنوع منعاً باتاً ذكر الإسرائيليات أو الروايات الضعيفة.
+3. **الآيات**: يجب إدراج 6 إلى 8 آيات قرآنية في النص، وتكتبها بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. 
+   **ممنوع منعاً باتاً كتابة أي كلمة أو رقم أو مرجع أو حرف إنجليزي بعد القوس مباشرة.** اترك مسافة وضع الجملة التالية فوراً.
+4. **احترام مطلق**: لا تصف الملائكة أو الأنبياء بأي وصف مهين. استخدم ألفاظ التوقير.
+5. **الأسلوب**: روائي متدفق، بدون عناوين فرعية.
 اكتب النص السردي فقط."""
 
 def build_teaser_prompt(story, ep_num):
@@ -178,21 +170,26 @@ def main():
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
     plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    
+    raw_title = plan.get("title", "")
+    cleaned_title = re.sub(r'الحلقة\s*\d+[:\s\-]*', '', raw_title).strip()
+    if not cleaned_title: cleaned_title = f"الحلقة {ep_num}"
+    plan["title"] = cleaned_title
+
     script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num), is_json=False, timeout=180, max_tokens=8192)
     if not script_text: sys.exit(1)
     
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
-    script_text = clean_llm_text(script_text)
     segments = parse_script_with_verses(script_text)
     
     summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False, timeout=60, max_tokens=300)
-    summary_clean = clean_llm_text(summary_raw)
+    summary_clean = clean_narration_text(summary_raw)
     if not summary_clean or len(summary_clean) < 20:
         summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
     segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
     teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False, timeout=60, max_tokens=200)
-    teaser_clean = clean_llm_text(teaser_raw)
+    teaser_clean = clean_narration_text(teaser_raw)
     if not teaser_clean or len(teaser_clean) < 20:
         teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
     segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
