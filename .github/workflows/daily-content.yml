@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
+    permissions:
+      models: read
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,20 +24,20 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          # 🌟 تثبيت المكتبات المطلوبة للنظام الهجين
+          pip install requests edge-tts arabic-diacritizer pyarabic pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
-
-      # 🌟 تم حذف خطوة Discover Models التي كانت تفحص Gemini
 
       - name: Generate Daily Content
         id: gen
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/generate_daily.py
@@ -42,17 +46,17 @@ jobs:
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
-            echo "❌ فشل توليد المقطع اليومي"
+            echo "❌ فشل توليد ملف الحلقة"
             exit 1
           fi
 
-      - name: Build Audio (Both) - Edge TTS
+      - name: Build Audio (Both) - Hybrid Engine
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TTS_ENGINE: "edge" # 🌟 تفعيل البديل
         run: |
+          # 🌟 السكربت الآن يقرر بنفسه أي محرك سيستخدم لكل مقطع
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
@@ -92,6 +96,7 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','مقطع يومي'))")
           
+          # 1. فيديو اليوتيوب
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
@@ -101,11 +106,12 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - Edge]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - نظام هجين]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
+          # 2. فيديو السوشيال ميديا
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
@@ -128,3 +134,10 @@ jobs:
           git add state/ || true
           git commit -m "📝 مقطع يومي جديد" || echo "لا تغييرات"
           git push || true
+
+      - name: Cleanup
+        if: steps.tg.outcome == 'success'
+        run: |
+          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
+          rm -rf data/daily/generated/*.json
+          rm -f out/latest_episode.txt
