@@ -7,21 +7,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import QURAN_API
 from utilities import cleanup_dir
+from gemini_tts_pool import gemini_tts_with_pool
 
-# ═══════════════════════════════════════════════════════════
-# محرك الصوت: Gemini (افتراضي) أو edge-tts (بديل مؤقت)
-# ═══════════════════════════════════════════════════════════
-_TTS_ENGINE = os.environ.get("TTS_ENGINE", "gemini").strip().lower()
-if _TTS_ENGINE == "edge":
-    from edge_tts_engine import edge_tts_with_pool as gemini_tts_with_pool
-    print("🔊 [TTS] المحرك: edge-tts (بديل مؤقت)", flush=True)
-else:
-    from gemini_tts_pool import gemini_tts_with_pool
-    print("🔊 [TTS] المحرك: Gemini", flush=True)
-
+# 🌟 استيراد مكتبات التشكيل والتطبيع
 try:
-    from tilavet_phonemizer import Phonemizer as TilavetPhonemizer
-except: TilavetPhonemizer = None
+    import pyarabic.araby as araby
+    from diacritize import Diacritizer
+    _diacritizer = Diacritizer.from_pretrained()
+    HAS_DIACRITIZER = True
+except Exception as e:
+    print(f"⚠️ فشل تحميل مكتبة التشكيل: {e}")
+    HAS_DIACRITIZER = False
+
+# 🌟 استيراد Edge TTS
+try:
+    import edge_tts
+    HAS_EDGE = True
+except ImportError:
+    HAS_EDGE = False
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.4
@@ -29,6 +32,46 @@ CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
 
+# ═══════════════════════════════════════════════════════════
+# دوال تجهيز النص لـ Edge TTS
+# ═══════════════════════════════════════════════════════════
+def prepare_text_for_edge(raw_text: str) -> str:
+    """تطبيع الحروف، استبدال الرمز، ثم إضافة التشكيل."""
+    if not raw_text: return ""
+    # 1. استبدال رمز النبي
+    text = raw_text.replace("ﷺ", "صلى الله عليه وسلم")
+    
+    if HAS_DIACRITIZER:
+        text = araby.strip_tashkeel(text) # إزالة أي تشكيل قديم
+        text = araby.normalize_hamza(text)
+        text = araby.normalize_teh(text)
+        # 2. التشكيل التلقائي
+        try:
+            text = _diacritizer.diacritize(text)
+        except Exception as e:
+            print(f"⚠️ خطأ في التشكيل: {e}")
+            
+    return text.strip()
+
+async def _edge_synth_async(text, out_mp3, voice):
+    comm = edge_tts.Communicate(text, voice, rate="-5%")
+    await comm.save(out_mp3)
+
+def generate_edge_audio(text: str, out_mp3: str, voice="ar-SY-LaithNeural"):
+    if not HAS_EDGE: raise RuntimeError("Edge TTS غير مثبت")
+    prepared_text = prepare_text_for_edge(text)
+    if not prepared_text: return False
+    try:
+        import asyncio
+        asyncio.run(_edge_synth_async(prepared_text, out_mp3, voice))
+        return Path(out_mp3).exists() and Path(out_mp3).stat().st_size > 1000
+    except Exception as e:
+        print(f"⚠️ Edge TTS فشل: {e}")
+        return False
+
+# ═══════════════════════════════════════════════════════════
+# دوال معالجة الصوت
+# ═══════════════════════════════════════════════════════════
 _ayah_lib = {}
 try:
     lib_path = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
@@ -38,62 +81,47 @@ try:
             for item in data:
                 key = f"{item['surah_number']}:{item['ayah_number']}"
                 _ayah_lib[key] = item['text']
-        print(f"✅ تم تحميل {len(_ayah_lib)} آية من الملف المحلي.")
+        print(f"✅ تم تحميل {len(_ayah_lib)} آية.")
 except Exception as e:
-    print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
+    print(f"⚠️ فشل تحميل الآيات: {e}")
 
-def get_local_ayah_text(surah, ayah):
-    key = f"{surah}:{ayah}"
-    return _ayah_lib.get(key, "")
+def get_local_ayah_text(surah, ayah): return _ayah_lib.get(f"{surah}:{ayah}", "")
 
 def trim_and_fade(input_wav, output_wav):
     try:
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_wav], capture_output=True, text=True)
         dur = float(probe.stdout.strip() or 0)
-        
         if dur > 0.5:
             fade_start = dur - 0.2
-            subprocess.run([
-                "ffmpeg", "-y", "-i", input_wav, 
-                "-af", f"afade=t=out:st={fade_start}:d=0.2", 
-                "-ar", TARGET_SR, "-ac", "1", output_wav
-            ], check=True, capture_output=True, timeout=60)
+            subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", f"afade=t=out:st={fade_start}:d=0.2", "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
             return True
         else:
             shutil.copy(input_wav, output_wav)
             return True
-    except Exception as e:
+    except: 
         shutil.copy(input_wav, output_wav)
         return False
 
-def apply_mosque_reverb(input_wav: str, output_wav: str) -> bool:
+def apply_mosque_reverb(input_wav, output_wav):
     try:
-        filters = (
-            "atempo=0.92,equalizer=f=120:t=q:w=1.0:g=4,equalizer=f=4000:t=q:w=1.0:g=-4,"
-            "aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,acompressor=threshold=0.1:ratio=3:attack=20:release=200" 
-        )
+        filters = ("atempo=0.92,equalizer=f=120:t=q:w=1.0:g=4,equalizer=f=4000:t=q:w=1.0:g=-4,aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,acompressor=threshold=0.1:ratio=3:attack=20:release=200")
         subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
-        return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
+        return True
     except: 
-        try: shutil.copy(input_wav, output_wav)
-        except: pass
+        shutil.copy(input_wav, output_wav)
         return False
 
-def apply_stealth_filter(input_wav: str, output_wav: str) -> bool:
+def apply_stealth_filter(input_wav, output_wav):
     try:
-        filters = (
-            "atempo=1.05,equalizer=f=200:t=q:w=1.0:g=2,"
-            "aecho=0.8:0.9:20:0.1,highpass=f=100,lowpass=f=12000"
-        )
+        filters = ("atempo=1.05,equalizer=f=200:t=q:w=1.0:g=2,aecho=0.8:0.9:20:0.1,highpass=f=100,lowpass=f=12000")
         subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
-        return Path(output_wav).exists() and Path(output_wav).stat().st_size > 2000
+        return True
     except: 
         shutil.copy(input_wav, output_wav)
         return False
 
 def download_human_ayah(surah, ayah, out_path):
-    filename = f"{surah:03d}{ayah:03d}.mp3"
-    url = f"{QURAN_BASE_URL}/{RECITER}/{filename}"
+    url = f"{QURAN_BASE_URL}/{RECITER}/{surah:03d}{ayah:03d}.mp3"
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
@@ -123,10 +151,12 @@ def split_text(text, max_chars=150):
     if current: chunks.append(current.strip())
     return chunks
 
+# ═══════════════════════════════════════════════════════════
+# محرك البناء الرئيسي (هجين: Edge للسرد + Gemini للآيات والجلالة)
+# ═══════════════════════════════════════════════════════════
 def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
-    
     ep_name = Path(json_path).stem
     ep_cache = CACHE_DIR / ep_name
     ep_cache.mkdir(parents=True, exist_ok=True)
@@ -143,40 +173,40 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         text, display = "", ""
-        if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): 
-            text = sanitize_for_tts(seg.get("text", ""))
+        if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"): text = sanitize_for_tts(seg["text"])
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
         elif stype in ("hadith", "fiqh", "adhkar"):
             text = sanitize_for_tts(seg.get("text", "")); display = seg.get("display", "")
 
-        if not text and stype != "quran": 
-            continue
+        if not text and stype != "quran": continue
+
+        # 🌟 التوجيه الذكي: إذا كان يحتوي على "الله" أو "صلى الله عليه وسلم" أو كان آية، استخدم Gemini
+        use_gemini = stype == "quran" or "الله" in text or "صلى الله عليه وسلم" in text or "ﷺ" in text
 
         if stype != "quran":
             chunks = split_text(text)
-            print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة...")
+            print(f"🎙️ المقطع {idx+1} [{stype}] - {len(chunks)} فقرة ({'Gemini' if use_gemini else 'Edge'})...")
             chunk_timings = []
 
             for c_idx, chunk in enumerate(chunks):
-                if not chunk.strip(): 
-                    continue
-                
-                # 🌟 فحص إضافي: تخطي إذا لم يكن هناك حروف عربية
-                if not re.search(r'[\u0600-\u06FF]', chunk):
-                    print(f"   ⏭️ تخطي مقطع لا يحتوي على حروف عربية: {chunk[:20]}")
-                    continue
+                if not chunk.strip(): continue
+                if not re.search(r'[\u0600-\u06FF]', chunk): continue
 
                 text_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()[:8]
                 cached_wav = ep_cache / f"seg_{idx}_{c_idx}_{text_hash}.wav"
                 
                 if not cached_wav.exists() or cached_wav.stat().st_size < 1000:
                     temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-                    gemini_tts_with_pool(chunk, str(temp_mp3))
+                    if use_gemini:
+                        gemini_tts_with_pool(chunk, str(temp_mp3))
+                    else:
+                        generate_edge_audio(chunk, str(temp_mp3))
+                        
                     if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
-                    time.sleep(2) # قللنا وقت الانتظار قليلاً لأن Edge أسرع
+                    time.sleep(3) 
 
                 if cached_wav.exists():
                     faded = work / f"faded_{idx}_{c_idx}.wav"
@@ -208,7 +238,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                     tmp_mp3 = work / "tmp.mp3"
                     gemini_tts_with_pool(text_a, str(tmp_mp3))
                     subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
-                    time.sleep(2)
+                    time.sleep(6)
                 
                 trimmed_a = ep_cache / f"trimmed_{s}_{a}_{text_hash}.wav"
                 trim_and_fade(str(cache_a), str(trimmed_a))
@@ -276,6 +306,5 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
 if __name__ == "__main__":
     if len(sys.argv) < 4:
         print(f"❌ الاستخدام: story_audio.py <json> <yt_mp3> <social_mp3>")
-        print(f"   استُلم {len(sys.argv)-1} معامل بدل 3")
         sys.exit(1)
     build_episode_audio(sys.argv[1], sys.argv[2], sys.argv[3])
