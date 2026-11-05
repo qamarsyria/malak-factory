@@ -18,7 +18,7 @@ OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
 SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
-def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
+def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     pool = get_pool(); breaker = get_breaker()
     try:
         models = discover_and_cache(force=False)[:5]
@@ -58,7 +58,7 @@ def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
                     print(f"   ⚠️ {model}: 429 Rate Limit", flush=True)
                     pool.mark_failed(3600)
                 elif r.status_code == 400:
-                    print(f"   ⚠️ {model}: 400 Bad Request (Prompt rejected)", flush=True)
+                    print(f"   ⚠️ {model}: 400 Bad Request", flush=True)
                     break
                 elif r.status_code in (404, 503): 
                     print(f"   ⚠️ {model}: {r.status_code} Error", flush=True)
@@ -67,7 +67,7 @@ def call_llm(prompt, is_json=True, timeout=120, max_tokens=8192):
                     print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
                     break
             except requests.exceptions.Timeout:
-                print(f"   ⚠️ {model}: Timeout (120s)", flush=True)
+                print(f"   ⚠️ {model}: Timeout ({timeout}s)", flush=True)
             except Exception as e: 
                 print(f"   ⚠️ {model}: {str(e)[:100]}", flush=True)
     return None
@@ -77,9 +77,12 @@ def call_huggingface(prompt, is_json=True):
     if not hf_token: return None
     try:
         print("   🔄 محاولة HuggingFace...", flush=True)
-        r = requests.post("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions", headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}, json={"model": "mistralai/Mistral-7B-Instruct-v0.3", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}, timeout=180)
+        # استخدام API الصحيح
+        url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+        payload = {"inputs": prompt, "parameters": {"max_new_tokens": 4000, "temperature": 0.3}}
+        r = requests.post(url, headers={"Authorization": f"Bearer {hf_token}"}, json=payload, timeout=180)
         if r.status_code == 200:
-            text = r.json()["choices"][0]["message"]["content"]
+            text = r.json()[0]["generated_text"]
             if is_json:
                 s, e = text.find("{"), text.rfind("}")
                 if s != -1 and e > s: text = text[s:e + 1]
@@ -88,7 +91,7 @@ def call_huggingface(prompt, is_json=True):
         print(f"   ⚠️ HuggingFace: {str(e)[:100]}", flush=True)
     return None
 
-def call_llm_with_fallback(prompt, is_json=True, timeout=120, max_tokens=8192):
+def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
     return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
 
 def clean_narration_text(t: str) -> str:
@@ -212,20 +215,18 @@ def main():
     plan["title"] = cleaned_title
 
     print("✍️ جاري توليد السرد (الجزء الأول)...", flush=True)
-    part1 = call_llm_with_fallback(build_script_prompt_part1(story, plan, ep_num), is_json=False, timeout=120, max_tokens=4000)
+    part1 = call_llm_with_fallback(build_script_prompt_part1(story, plan, ep_num), is_json=False, timeout=180, max_tokens=4000)
     if not part1:
         print("❌ فشل الجزء الأول!", flush=True)
         sys.exit(1)
 
     print("✍️ جاري توليد السرد (الجزء الثاني)...", flush=True)
-    part2 = call_llm_with_fallback(build_script_prompt_part2(story, plan, ep_num, part1), is_json=False, timeout=120, max_tokens=4000)
+    part2 = call_llm_with_fallback(build_script_prompt_part2(story, plan, ep_num, part1), is_json=False, timeout=180, max_tokens=4000)
     if not part2:
         print("❌ فشل الجزء الثاني!", flush=True)
-        # إذا فشل الجزء الثاني، نكتفي بالجزء الأول لكي لا نفقد كل شيء
         part2 = ""
 
     script_text = part1 + "\n" + part2
-    
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
     segments = parse_script_with_verses(script_text)
     
