@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     
-    # 🌟 صلاحية ضرورية لاستخدام GitHub Models
+    # 🌟 صلاحية ضرورية لاستخدام GitHub Models وكتابة الحالة
     permissions:
       models: read
       contents: write
@@ -30,13 +30,18 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install requests edge-tts silma-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
-      - name: Generate Story
+      # 🌟 تحميل نموذج SILMA TTS (يتم مرة واحدة، ويستغرق دقائق في أول مرة)
+      - name: Download SILMA TTS Model
+        run: |
+          python -c "from silma_tts.api import SilmaTTS; SilmaTTS()" || echo "⚠️ قد يفشل التحميل المسبق، سيعيد المحاولة عند التوليد."
+
+      - name: Generate Story (GitHub Models)
         id: gen
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 🌟 ضروري جداً لـ GitHub Models
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 🌟 ضروري لـ GPT-4o
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/generate_story.py
@@ -49,12 +54,12 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Both) - Edge TTS
+      - name: Build Audio (Both) - SILMA TTS
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }} # مبقاة احتياطاً إذا أردت العودة لاحقاً
-          TTS_ENGINE: "edge" # 🌟 تفعيل Edge TTS
+          TTS_ENGINE: "silma" # 🌟 تفعيل SILMA TTS
+          # SILMA_REF_AUDIO: "assets/audio/reference/sudais_ref.wav" # اختياري: ضعه هنا إذا أردت استنساخ صوت السديس
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -105,7 +110,7 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - GPT-4o]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - GPT-4o & SILMA]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
