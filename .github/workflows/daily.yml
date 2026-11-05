@@ -9,6 +9,11 @@ jobs:
   produce:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    
+    # 🌟 صلاحية ضرورية لاستخدام GitHub Models
+    permissions:
+      models: read
+      contents: write
 
     steps:
       - name: Checkout
@@ -31,7 +36,7 @@ jobs:
       - name: Generate Story
         id: gen
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 🌟 ضروري جداً لـ GitHub Models
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/generate_story.py
@@ -48,8 +53,8 @@ jobs:
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TTS_ENGINE: "edge" # 🌟 تفعيل البديل
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }} # مبقاة احتياطاً إذا أردت العودة لاحقاً
+          TTS_ENGINE: "edge" # 🌟 تفعيل Edge TTS
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -90,6 +95,7 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           
+          # 1. فيديو اليوتيوب
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
@@ -99,11 +105,12 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - Edge]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - GPT-4o]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
+          # 2. فيديو السوشيال ميديا
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
@@ -127,3 +134,10 @@ jobs:
           git add state/ || true
           git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push || true
+
+      - name: Cleanup
+        if: steps.tg.outcome == 'success'
+        run: |
+          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
+          rm -rf data/stories/generated/*.json
+          rm -f out/latest_episode.txt
