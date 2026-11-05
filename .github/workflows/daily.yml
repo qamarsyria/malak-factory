@@ -1,4 +1,4 @@
-name: Story Builder & Daily Short
+name: 🎬 مسار القصص (Stories)
 
 on:
   schedule:
@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/audio_cache
-          key: audio-cache-${{ hashFiles('scripts/*.py') }}
+          key: audio-cache-story-${{ hashFiles('scripts/*.py') }}
 
       - name: Generate Story
         id: gen
@@ -46,16 +46,16 @@ jobs:
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
+            echo "❌ فشل توليد ملف الحلقة"
             exit 1
           fi
 
-      - name: Build Audio (Both)
+      - name: Build Audio (Both) - Edge TTS
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TEST_MODE: "0"
-          TTS_ENGINE: "edge"
+          TTS_ENGINE: "edge" # 🌟 تفعيل edge-tts
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -96,6 +96,7 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
           
+          # 1. فيديو اليوتيوب
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
@@ -110,6 +111,7 @@ jobs:
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
+          # 2. فيديو السوشيال ميديا
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
@@ -139,10 +141,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          echo "✅ نجح الرفع! جاري مسح الكاش..."
-          gh cache delete "audio-cache-${{ hashFiles('scripts/*.py') }}" || true
+          gh cache delete "audio-cache-story-${{ hashFiles('scripts/*.py') }}" || true
 
-      - name: Cleanup Local Files
+      - name: Cleanup
         if: steps.tg.outcome == 'success'
         run: |
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
