@@ -1,109 +1,87 @@
-import os, re, sys, json, random, traceback
+import os, re, sys, json, random, traceback, gzip
 from pathlib import Path
 import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from gemini_tts_pool import get_pool
-from model_discovery import discover_and_cache
 from story_library import load_library, load_state, save_state, get_current_story, record_topic
 from outro_templates import OUTRO_TEMPLATES
-from utilities import notify_telegram, get_breaker
+from utilities import notify_telegram
 
 OUTPUT_DIR = _REPO_ROOT / "data" / "stories" / "generated"
-PENDING_DIR = _REPO_ROOT / "state" / "pending"
 OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
+LIBRARIES_DIR = _REPO_ROOT / "data" / "libraries"
 
 SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
 SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
 
-def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
-    pool = get_pool(); breaker = get_breaker()
-    try:
-        models = discover_and_cache(force=False)[:5]
-    except Exception as e:
-        print(f"❌ خطأ في جلب النماذج: {e}", flush=True)
-        return None
+# ═══════════════════════════════════════════════════════════
+# 1. استرجاع النصوص من المكتبة المحلية (RAG)
+# ═══════════════════════════════════════════════════════════
+_ayah_lib = []
+try:
+    lib_path = LIBRARIES_DIR / "ayah-library.json.gz"
+    if lib_path.exists():
+        with gzip.open(lib_path, "rt", encoding="utf-8") as f:
+            _ayah_lib = json.load(f)
+except Exception as e:
+    print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
 
-    if not models:
-        print("❌ لا توجد نماذج متاحة!", flush=True)
+def retrieve_context(surah_name, limit=10):
+    if not _ayah_lib: return "لا توجد نصوص متاحة."
+    context = []
+    for item in _ayah_lib:
+        if surah_name in item.get("surah_name", ""):
+            context.append(f"- {item['text']} | التفسير: {item.get('tafsir', '')[:150]}")
+            if len(context) >= limit:
+                break
+    return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
+
+# ═══════════════════════════════════════════════════════════
+# 2. الاتصال بـ GitHub Models (GPT-4o)
+# ═══════════════════════════════════════════════════════════
+def call_github_models(prompt, is_json=True, model="gpt-4o"):
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("   ❌ GITHUB_TOKEN غير متوفر! تأكد من إضافته في الـ workflow.")
         return None
         
-    for model in models:
-        if breaker.is_open(f"model:{model}"): continue
-        for attempt in range(2):
-            try:
-                key = pool.get_current()
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
-                if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
-                
-                r = requests.post(url, json=body, timeout=timeout)
-                
-                if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    if not parts: break
-                    text = parts[0].get("text", "")
-                    if is_json:
-                        s, e = text.find("{"), text.rfind("}")
-                        if s == -1 or e <= s: break
-                        text = text[s:e + 1]
-                    try:
-                        parsed = json.loads(text) if is_json else text
-                        pool._advance(); breaker.record_success(f"model:{model}")
-                        return parsed
-                    except json.JSONDecodeError: break
-                elif r.status_code == 429: 
-                    print(f"   ⚠️ {model}: 429 Rate Limit", flush=True)
-                    pool.mark_failed(3600)
-                elif r.status_code == 400:
-                    print(f"   ⚠️ {model}: 400 Bad Request", flush=True)
-                    break
-                elif r.status_code in (404, 503): 
-                    print(f"   ⚠️ {model}: {r.status_code} Error", flush=True)
-                    breaker.record_failure(f"model:{model}"); break
-                else:
-                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
-                    break
-            except requests.exceptions.Timeout:
-                print(f"   ⚠️ {model}: Timeout ({timeout}s)", flush=True)
-            except Exception as e: 
-                print(f"   ⚠️ {model}: {str(e)[:100]}", flush=True)
-    return None
+    url = "https://models.inference.ai.azure.com/chat/completions"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 4000
+    }
+    if is_json:
+        payload["response_format"] = {"type": "json_object"}
 
-def call_huggingface(prompt, is_json=True):
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token: return None
     try:
-        print("   🔄 محاولة HuggingFace...", flush=True)
-        # استخدام API الصحيح
-        url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-        payload = {"inputs": prompt, "parameters": {"max_new_tokens": 4000, "temperature": 0.3}}
-        r = requests.post(url, headers={"Authorization": f"Bearer {hf_token}"}, json=payload, timeout=180)
+        r = requests.post(url, headers=headers, json=payload, timeout=120)
         if r.status_code == 200:
-            text = r.json()[0]["generated_text"]
-            if is_json:
-                s, e = text.find("{"), text.rfind("}")
-                if s != -1 and e > s: text = text[s:e + 1]
-            return json.loads(text) if is_json else text
-    except Exception as e: 
-        print(f"   ⚠️ HuggingFace: {str(e)[:100]}", flush=True)
+            content = r.json()["choices"][0]["message"]["content"]
+            return json.loads(content) if is_json else content
+        print(f"   ⚠️ GitHub Models ({model}): HTTP {r.status_code} - {r.text[:100]}")
+    except Exception as e:
+        print(f"   ⚠️ خطأ اتصال: {str(e)[:100]}")
     return None
 
-def call_llm_with_fallback(prompt, is_json=True, timeout=180, max_tokens=8192):
-    return call_llm(prompt, is_json, timeout, max_tokens) or call_huggingface(prompt, is_json)
+def call_llm(prompt, is_json=True):
+    return call_github_models(prompt, is_json, model="gpt-4o")
 
+# ═══════════════════════════════════════════════════════════
+# 3. معالجة النصوص والبرومبتات
+# ═══════════════════════════════════════════════════════════
 def clean_narration_text(t: str) -> str:
     if not t: return ""
     t = re.sub(r'[a-zA-Z]+', '', t)
     t = re.sub(r'\b\d+\b', '', t)
     t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
     t = re.sub(r'[﴿﴾\(\)]', '', t)
-    
     bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
     for bw in bad_words: t = t.replace(bw, "")
-    
     return re.sub(r'\s+', ' ', t).strip()
 
 def split_narration(text, max_chars=150):
@@ -163,82 +141,67 @@ def build_plan_prompt(story, ep_num, state):
 اكتب خطة للحلقة {ep_num} تركز على جزء محدد وجديد من حياته (لم يتم تغطيته سابقاً).
 أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
 
-def build_script_prompt_part1(story, plan, ep_num):
-    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي متخصص في التفسير (تفسير ابن كثير، التفسير الميسر، وفتاوى ابن تيمية).
-الخطة: {plan['title']} - {plan['summary']}
-القصة المطلوبة: {story['title']}
-
-قواعد صارمة جداً:
-1. اكتب **الجزء الأول** من السرد (حوالي 500 كلمة) يشرح بداية القصة وتفاصيلها الدقيقة.
-2. **التوثيق 100%**: اعتمد على المصادر المذكورة. ممنوع الإسرائيليات.
-3. **الآيات**: يجب إدراج 3 إلى 4 آيات في هذا الجزء، بالصيغة التالية فقط: [آية: رقم_السورة:رقم_الآية]. **ممنوع منعاً باتاً كتابة نص الآية.** اترك مسافة بعد القوس.
-4. احترام مطلق للأنبياء والملائكة.
-5. اكتب النص السردي فقط، بدون عناوين."""
-
-def build_script_prompt_part2(story, plan, ep_num, part1_text):
+def build_script_prompt(story, plan, ep_num, context):
     return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي.
-هذا هو الجزء الأول من القصة الذي كتبته للتو:
-{part1_text[-500:]}
-
 الخطة: {plan['title']} - {plan['summary']}
 القصة المطلوبة: {story['title']}
 
+لقد قمنا باستخراج النصوص التالية من مصادرنا الموثوقة. **أنت مجبر على استخدام هذه النصوص فقط، ويُمنع منعاً باتاً تأليف أي حدث أو معلومة من خارجها:**
+
+المراجع:
+{context}
+
 قواعد صارمة جداً:
-1. اكتب **الجزء الثاني والتكملة والخاتمة** للسرد (حوالي 500 كلمة)، لكي تكتمل القصة.
-2. **التوثيق 100%**: اعتمد على المصادر المذكورة. ممنوع الإسرائيليات.
-3. **الآيات**: يجب إدراج 3 إلى 4 آيات في هذا الجزء، بالصيغة التالية فقط: [آية: رقم_السورة:رقم_الآية]. **ممنوع منعاً باتاً كتابة نص الآية.** اترك مسافة بعد القوس.
+1. اكتب سرداً قصصياً مشوقاً واحترافياً (حوالي 800 كلمة) يربط هذه الآيات ببعضها. ابدأ بسؤال وثائقي مشوق، ثم أدرج الآية مباشرة.
+2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
+3. **الآيات**: يجب إدراج الآيات المذكورة أعلاه في النص، بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. **ممنوع كتابة نص الآية.** اترك مسافة بعد القوس.
 4. احترام مطلق للأنبياء والملائكة.
-5. اكتب النص السردي فقط، بدون عناوين. لا تكرر ما كتبته في الجزء الأول."""
+5. اكتب النص السردي فقط، بدون عناوين فرعية، وبأسلوب راقٍ."""
 
 def build_teaser_prompt(story, ep_num):
     return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
 قواعد صارمة:
-1. ابدأ **مباشرة** بسؤال درامي (مثل: "فكيف...؟" / "وماذا...؟" / "هل...؟").
-2. **ممنوع تمامًا** أن تبدأ بـ: "إليك"، "هذا"، "النص"، "الحلقة القادمة"، "في الحلقة القادمة"، "ترقبوا"، "بالتأكيد".
-3. أعد الجملة فقط، بدون علامات اقتباس.
-مثال صحيح: "فكيف ستواجه مريم قومها؟ وما السر الذي كتمته؟"
-أعد الجملة فقط."""
+1. ابدأ **مباشرة** بسؤال درامي.
+2. ممنوع أن تبدأ بـ: "إليك"، "هذا"، "النص"، "ترقبوا".
+3. أعد الجملة فقط، بدون علامات اقتباس."""
 
 def main():
     library, state = load_library(), load_state()
     story = get_current_story(library, state)
-    ep_num = state.get("episode_num", 1)
+    ep_num = state.get("episode_number", 1) # تم التعديل هنا
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
+    surah_name = story.get("sources", ["القرآن"])[0]
+    context = retrieve_context(surah_name, limit=12)
+    print(f"📚 تم استرجاع المراجع للسياق.", flush=True)
+
     print("📝 جاري توليد الخطة...", flush=True)
-    plan = call_llm_with_fallback(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    plan = call_llm(build_plan_prompt(story, ep_num, state)) or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
     
     raw_title = plan.get("title", "")
     cleaned_title = re.sub(r'الحلقة\s*\d+[:\s\-]*', '', raw_title).strip()
-    if not cleaned_title: cleaned_title = f"الحلقة {ep_num}"
-    plan["title"] = cleaned_title
+    plan["title"] = cleaned_title or f"الحلقة {ep_num}"
 
-    print("✍️ جاري توليد السرد (الجزء الأول)...", flush=True)
-    part1 = call_llm_with_fallback(build_script_prompt_part1(story, plan, ep_num), is_json=False, timeout=180, max_tokens=4000)
-    if not part1:
-        print("❌ فشل الجزء الأول!", flush=True)
+    print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
+    script_text = call_llm(build_script_prompt(story, plan, ep_num, context), is_json=False)
+    
+    if not script_text:
+        print("❌ فشل توليد النص السردي!", flush=True)
         sys.exit(1)
-
-    print("✍️ جاري توليد السرد (الجزء الثاني)...", flush=True)
-    part2 = call_llm_with_fallback(build_script_prompt_part2(story, plan, ep_num, part1), is_json=False, timeout=180, max_tokens=4000)
-    if not part2:
-        print("❌ فشل الجزء الثاني!", flush=True)
-        part2 = ""
-
-    script_text = part1 + "\n" + part2
+    
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
     segments = parse_script_with_verses(script_text)
     
     print("📝 جاري توليد الخلاصة...", flush=True)
-    summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False, timeout=60, max_tokens=300)
+    summary_raw = call_llm(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False)
     summary_clean = clean_narration_text(summary_raw)
     if not summary_clean or len(summary_clean) < 20:
         summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
     segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
     print("📢 جاري توليد التشويق...", flush=True)
-    teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False, timeout=60, max_tokens=200)
+    teaser_raw = call_llm(build_teaser_prompt(story, ep_num), is_json=False)
     teaser_clean = clean_narration_text(teaser_raw)
     if not teaser_clean or len(teaser_clean) < 20:
         teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
@@ -267,8 +230,6 @@ if __name__ == "__main__":
     try: 
         main()
     except Exception as e:
-        print("\n" + "="*50, flush=True)
         print(f"❌ خطأ فادح: {e}", flush=True)
         traceback.print_exc()
-        print("="*50 + "\n", flush=True)
         sys.exit(1)
