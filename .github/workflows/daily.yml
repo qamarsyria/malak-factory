@@ -59,7 +59,7 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
             "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3"
 
-      # 🌟 هنا كانت المشكلة - تأكد أن هذا الجزء موجود بالكامل
+      # 🌟 هنا كان النقص - تأكد أن هذا الجزء كامل
       - name: Build Video (YouTube)
         id: vid_yt
         if: steps.aud.outcome == 'success'
