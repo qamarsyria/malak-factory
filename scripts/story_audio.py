@@ -15,6 +15,18 @@ CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
 
+# 🌟 قاموس تصحيح النطق
+PRONUNCIATION_FIXES = {
+    "يسجد": "يَسْجُدُ",
+    "يسجدون": "يَسْجُدُونَ",
+    "سجود": "سُجُود",
+    "العقيدة": "الْعَقِيدَة",
+    "عقيدة": "عَقِيدَة",
+    "القلب": "الْقَلْب",
+    "قال": "قَالَ",
+    "قلنا": "قُلْنَا",
+}
+
 _ayah_lib = {}
 try:
     lib_path = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
@@ -37,7 +49,6 @@ def trim_and_fade(input_wav, output_wav, speed_up=False, is_last=False):
         if dur > 0.5:
             fade_filter = f",afade=t=out:st={max(0, dur - 0.2)}:d=0.2" if is_last else ""
             tempo_filter = "atempo=1.15," if speed_up else ""
-            
             subprocess.run([
                 "ffmpeg", "-y", "-i", input_wav, 
                 "-af", f"{tempo_filter}aresample=async=1:first_pts=0{fade_filter}", 
@@ -85,6 +96,11 @@ def sanitize_for_tts(t):
     t = t.replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z0-9*#@_\[\]\(\)]', '', t)
+    
+    # 🌟 تطبيق تصحيحات النطق
+    for wrong, correct in PRONUNCIATION_FIXES.items():
+        t = re.sub(rf'\b{wrong}\b', correct, t)
+        
     t = re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))
     return re.sub(r"\s+", " ", t).strip()
 
@@ -117,8 +133,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     segments_list = ep.get("segments", [])
     yt_wavs, social_wavs = [], []
     yt_meta, social_meta = [], []
-    
-    print(f"⚙️ بناء الصوت (سرد جيميني + تلاوات يوتيوب جيميني وسوشيال بشري)...")
 
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
@@ -159,7 +173,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
-            # --- يوتيوب (جيميني) ---
+            # يوتيوب (جيميني)
             yt_chunk_timings = []
             for a in ayahs:
                 text_a = get_local_ayah_text(s, a)
@@ -188,7 +202,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             if yt_chunk_timings:
                 yt_meta.append({"index": idx, "type": stype, "display": display, "chunks": yt_chunk_timings})
 
-            # --- سوشيال (بشري) ---
+            # سوشيال (بشري)
             soc_chunk_timings = []
             for a in ayahs:
                 text_a = get_local_ayah_text(s, a)
