@@ -1,109 +1,210 @@
-import os, sys, json, subprocess, tempfile, shutil, re, time, gzip, hashlib
+import os, re, sys, json, random, traceback, gzip, time
 from pathlib import Path
 import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import QURAN_API
-from utilities import cleanup_dir
-from gemini_tts_pool import gemini_tts_with_pool
+from gemini_tts_pool import get_pool
+from model_discovery import discover_and_cache
+from story_library import load_library, load_state, save_state, get_current_story, record_topic
+from outro_templates import OUTRO_TEMPLATES
+from utilities import get_breaker
 
-TARGET_SR = "24000"
-SILENCE_DUR = 0.4
-CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
-RECITER = "Alafasy_128kbps" # 🌟 القارئ البشري للسوشيال
-QURAN_BASE_URL = "https://everyayah.com/data"
+OUTPUT_DIR = _REPO_ROOT / "data" / "stories" / "generated"
+OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
+LIBRARIES_DIR = _REPO_ROOT / "data" / "libraries"
 
-_ayah_lib = {}
+SURAH_NAMES = {1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة", 6: "الأنعام", 7: "الأعراف", 8: "الأنفال", 9: "التوبة", 10: "يونس", 11: "هود", 12: "يوسف", 13: "الرعد", 14: "إبراهيم", 15: "الحجر", 16: "النحل", 17: "الإسراء", 18: "الكهف", 19: "مريم", 20: "طه", 21: "الأنبياء", 22: "الحج", 23: "المؤمنون", 24: "النور", 25: "الفرقان", 26: "الشعراء", 27: "النمل", 28: "القصص", 29: "العنكبوت", 30: "الروم", 31: "لقمان", 32: "السجدة", 33: "الأحزاب", 34: "سبأ", 35: "فاطر", 36: "يس", 37: "الصافات", 38: "ص", 39: "الزمر", 40: "غافر", 41: "فصلت", 42: "الشورى", 43: "الزخرف", 44: "الدخان", 45: "الجاثية", 46: "الأحقاف", 47: "محمد", 48: "الفتح", 49: "الحجرات", 50: "ق", 51: "الذاريات", 52: "الطور", 53: "النجم", 54: "القمر", 55: "الرحمن", 56: "الواقعة", 57: "الحديد", 58: "المجادلة", 59: "الحشر", 60: "الممتحنة", 61: "الصف", 62: "الجمعة", 63: "المنافقون", 64: "التغابن", 65: "الطلاق", 66: "التحريم", 67: "الملك", 68: "القلم", 69: "الحاقة", 70: "المعارج", 71: "نوح", 72: "الجن", 73: "المزمل", 74: "المدثر", 75: "القيامة", 76: "الإنسان", 77: "المرسلات", 78: "النبأ", 79: "النازعات", 80: "عبس", 81: "التكوير", 82: "الانفطار", 83: "المطففين", 84: "الانشقاق", 85: "البروج", 86: "الطارق", 87: "الأعلى", 88: "الغاشية", 89: "الفجر", 90: "البلد", 91: "الشمس", 92: "الليل", 93: "الضحى", 94: "الشرح", 95: "التين", 96: "العلق", 97: "القدر", 98: "البينة", 99: "الزلزلة", 100: "العاديات", 101: "القارعة", 102: "التكاثر", 103: "العصر", 104: "الهمزة", 105: "الفيل", 106: "قريش", 107: "الماعون", 108: "الكوثر", 109: "الكافرون", 110: "النصر", 111: "المسد", 112: "الإخلاص", 113: "الفلق", 114: "الناس"}
+SURAH_NAME_TO_NUM = {v: k for k, v in SURAH_NAMES.items()}
+
+_ayah_lib = []
 try:
-    lib_path = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
+    lib_path = LIBRARIES_DIR / "ayah-library.json.gz"
     if lib_path.exists():
         with gzip.open(lib_path, "rt", encoding="utf-8") as f:
-            data = json.load(f)
-            for item in data:
-                key = f"{item['surah_number']}:{item['ayah_number']}"
-                _ayah_lib[key] = item['text']
-        print(f"✅ تم تحميل {len(_ayah_lib)} آية.")
+            _ayah_lib = json.load(f)
 except Exception as e:
-    print(f"⚠️ فشل تحميل الآيات: {e}")
+    print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
 
-def get_local_ayah_text(surah, ayah): return _ayah_lib.get(f"{surah}:{ayah}", "")
+def retrieve_context(surah_name, limit=10):
+    if not _ayah_lib: return "لا توجد نصوص متاحة."
+    context = []
+    for item in _ayah_lib:
+        if surah_name in item.get("surah_name", ""):
+            context.append(f"- {item['text']} | التفسير: {item.get('tafsir', '')[:150]}")
+            if len(context) >= limit:
+                break
+    return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
 
-def trim_and_fade(input_wav, output_wav, speed_up=False):
-    """يقص الصمت ويضيف تلاشي. يسرع التلاوة فقط إذا كان speed_up=True."""
+# ═══════════════════════════════════════════════════════════
+# 1. محرك Gemini (الأساسي)
+# ═══════════════════════════════════════════════════════════
+def call_gemini(prompt, is_json=True, timeout=180, max_tokens=8192):
+    pool = get_pool()
+    breaker = get_breaker()
     try:
-        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_wav], capture_output=True, text=True)
-        dur = float(probe.stdout.strip() or 0)
-        if dur > 0.5:
-            if speed_up:
-                # 🌟 تسريع التلاوة 15% فقط
-                fade_start = (dur / 1.15) - 0.2 
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", input_wav, 
-                    "-af", f"atempo=1.15,afade=t=out:st={fade_start}:d=0.2", 
-                    "-ar", TARGET_SR, "-ac", "1", output_wav
-                ], check=True, capture_output=True, timeout=60)
-            else:
-                # السرد طبيعي
-                fade_start = dur - 0.2
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", input_wav, 
-                    "-af", f"afade=t=out:st={fade_start}:d=0.2", 
-                    "-ar", TARGET_SR, "-ac", "1", output_wav
-                ], check=True, capture_output=True, timeout=60)
-            return True
-        else:
-            shutil.copy(input_wav, output_wav)
-            return True
-    except: 
-        shutil.copy(input_wav, output_wav)
-        return False
+        models = discover_and_cache(force=False)[:5]
+    except Exception as e:
+        print(f"   ⚠️ Gemini: فشل جلب النماذج: {e}")
+        return None
 
-def apply_mosque_reverb(input_wav, output_wav):
-    try:
-        filters = ("atempo=0.92,equalizer=f=120:t=q:w=1.0:g=4,equalizer=f=4000:t=q:w=1.0:g=-4,aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,acompressor=threshold=0.1:ratio=3:attack=20:release=200")
-        subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
-        return True
-    except: 
-        shutil.copy(input_wav, output_wav)
-        return False
+    if not models:
+        print("   ⚠️ Gemini: لا توجد نماذج متاحة!")
+        return None
+        
+    for model in models:
+        if breaker.is_open(f"model:{model}"): continue
+        for attempt in range(2):
+            try:
+                key = pool.get_current()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
+                if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
+                
+                r = requests.post(url, json=body, timeout=timeout)
+                
+                if r.status_code == 200:
+                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    if not parts: break
+                    text = parts[0].get("text", "")
+                    if is_json:
+                        s, e = text.find("{"), text.rfind("}")
+                        if s == -1 or e <= s: break
+                        text = text[s:e + 1]
+                    try:
+                        parsed = json.loads(text) if is_json else text
+                        pool._advance(); breaker.record_success(f"model:{model}")
+                        return parsed
+                    except json.JSONDecodeError: break
+                elif r.status_code == 429: 
+                    print(f"   ⚠️ Gemini ({model}): 429 Rate Limit", flush=True)
+                    pool.mark_failed(3600)
+                elif r.status_code in (404, 503): 
+                    print(f"   ⚠️ Gemini ({model}): {r.status_code} Error", flush=True)
+                    breaker.record_failure(f"model:{model}"); break
+            except requests.exceptions.Timeout:
+                print(f"   ⚠️ Gemini ({model}): Timeout", flush=True)
+            except Exception as e: 
+                print(f"   ⚠️ Gemini ({model}): {str(e)[:100]}", flush=True)
+    return None
 
-def apply_stealth_filter(input_wav, output_wav):
+# ═══════════════════════════════════════════════════════════
+# 2. محرك Qwen 2.5 72B (عبر HuggingFace)
+# ═══════════════════════════════════════════════════════════
+def call_qwen(prompt, is_json=True):
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token: return None
+    
+    model = "Qwen/Qwen2.5-72B-Instruct"
+    url = "https://router.huggingface.co/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}
+    if is_json: payload["response_format"] = {"type": "json_object"}
+    
     try:
-        filters = ("atempo=1.05,equalizer=f=200:t=q:w=1.0:g=2,aecho=0.8:0.9:20:0.1,highpass=f=100,lowpass=f=12000")
-        subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
-        return True
-    except: 
-        shutil.copy(input_wav, output_wav)
-        return False
-
-def download_human_ayah(surah, ayah, out_path):
-    filename = f"{surah:03d}{ayah:03d}.mp3"
-    url = f"{QURAN_BASE_URL}/{RECITER}/{filename}"
-    try:
-        r = requests.get(url, timeout=15)
+        print(f"   🔄 محاولة Qwen 2.5 72B (HuggingFace)...", flush=True)
+        r = requests.post(url, headers=headers, json=payload, timeout=120)
         if r.status_code == 200:
-            with open(out_path, "wb") as f: f.write(r.content)
-            return True
-    except: pass
-    return False
+            content = r.json()["choices"][0]["message"]["content"]
+            return json.loads(content) if is_json else content
+        else:
+            print(f"   ⚠️ Qwen: HTTP {r.status_code} - {r.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ Qwen: {str(e)[:100]}", flush=True)
+    return None
 
-def sanitize_for_tts(t):
-    """تنظيف صارم جداً: إزالة أي حروف إنجليزية أو أرقام لمنع هلوسة جيميني."""
-    t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
-    # 🌟 إزالة أي حرف إنجليزي أو رقم (بما فيها علامات الترقيم الإنجليزية)
-    t = re.sub(r'[a-zA-Z0-9*#@_\[\]\(\)]', '', t)
-    # إزالة رموز الوقف والزخرفة
-    t = re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))
-    return re.sub(r"\s+", " ", t).strip()
+# ═══════════════════════════════════════════════════════════
+# 3. محرك Fanar (من قطر)
+# ═══════════════════════════════════════════════════════════
+def call_fanar(prompt, is_json=True):
+    # ملاحظة: Fanar API قد يتطلب مفتاحاً، لكنه مجاني.
+    # يمكن استخدامه عبر HuggingFace Inference API أيضاً.
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token: return None
+    
+    model = "QCRI/Fanar-2-27B-Instruct"
+    url = "https://router.huggingface.co/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}
+    if is_json: payload["response_format"] = {"type": "json_object"}
+    
+    try:
+        print(f"   🔄 محاولة Fanar (HuggingFace)...", flush=True)
+        r = requests.post(url, headers=headers, json=payload, timeout=120)
+        if r.status_code == 200:
+            content = r.json()["choices"][0]["message"]["content"]
+            return json.loads(content) if is_json else content
+        else:
+            print(f"   ⚠️ Fanar: HTTP {r.status_code} - {r.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ Fanar: {str(e)[:100]}", flush=True)
+    return None
 
-def get_dur(p):
-    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
-    try: return round(float(r.stdout.strip()), 3)
-    except: return 0.0
+# ═══════════════════════════════════════════════════════════
+# 4. محرك OpenRouter (احتياطي أخير)
+# ═══════════════════════════════════════════════════════════
+def call_openrouter(prompt, is_json=True):
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key: return None
+    
+    # نموذج DeepSeek مجاني
+    model = "deepseek/deepseek-prover-v2:free"
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 4000}
+    if is_json: payload["response_format"] = {"type": "json_object"}
+    
+    try:
+        print(f"   🔄 محاولة OpenRouter (DeepSeek)...", flush=True)
+        r = requests.post(url, headers=headers, json=payload, timeout=120)
+        if r.status_code == 200:
+            content = r.json()["choices"][0]["message"]["content"]
+            return json.loads(content) if is_json else content
+        else:
+            print(f"   ⚠️ OpenRouter: HTTP {r.status_code} - {r.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ OpenRouter: {str(e)[:100]}", flush=True)
+    return None
 
-def split_text(text, max_chars=300): 
+# ═══════════════════════════════════════════════════════════
+# نظام التبديل التلقائي (Fallback Chain)
+# ═══════════════════════════════════════════════════════════
+def call_llm_with_fallback(prompt, is_json=True):
+    # 1. Gemini
+    print("   🔄 محاولة Gemini...", flush=True)
+    res = call_gemini(prompt, is_json)
+    if res: return res
+    
+    # 2. Qwen 2.5 72B
+    res = call_qwen(prompt, is_json)
+    if res: return res
+    
+    # 3. Fanar
+    res = call_fanar(prompt, is_json)
+    if res: return res
+    
+    # 4. OpenRouter
+    res = call_openrouter(prompt, is_json)
+    if res: return res
+    
+    print("   ❌ فشل جميع المزودين!", flush=True)
+    return None
+
+# ═══════════════════════════════════════════════════════════
+# باقي الدوال (كما هي)
+# ═══════════════════════════════════════════════════════════
+def clean_narration_text(t: str) -> str:
+    if not t: return ""
+    t = re.sub(r'[a-zA-Z]+', '', t)
+    t = re.sub(r'\b\d+\b', '', t)
+    t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
+    t = re.sub(r'[﴿﴾\(\)]', '', t)
+    bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
+    for bw in bad_words: t = t.replace(bw, "")
+    return re.sub(r'\s+', ' ', t).strip()
+
+def split_narration(text, max_chars=150):
     sentences = re.split(r'(?<=[.!؟])\s+', text)
     chunks, current = [], ""
     for s in sentences:
@@ -114,140 +215,157 @@ def split_text(text, max_chars=300):
     if current: chunks.append(current.strip())
     return chunks
 
-def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
-    ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
-    work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
-    ep_name = Path(json_path).stem
-    ep_cache = CACHE_DIR / ep_name
-    ep_cache.mkdir(parents=True, exist_ok=True)
+def parse_script_with_verses(script_text):
+    text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    for name, num in SURAH_NAME_TO_NUM.items(): 
+        text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
+    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
+    parts = None
+    for pat in patterns:
+        parts = re.split(pat, text)
+        if len(parts) > 1: break
+    if not parts or len(parts) == 1: 
+        return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
+    segments, i, used_ayahs = [], 0, set()
+    while i < len(parts):
+        if i % 3 == 0:
+            chunk = parts[i].strip()
+            chunk = re.sub(r'[\(\[﴿].*?[\)\]﴾]', '', chunk) 
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", chunk).strip()
+            chunk = clean_narration_text(chunk)
+            if len(chunk) > 5:
+                for piece in split_narration(chunk): 
+                    segments.append({"type": "narration", "text": piece.strip()})
+            i += 1
+        else:
+            try: surah, ayah = int(parts[i]), int(parts[i + 1])
+            except: i += 2; continue
+            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286: i += 2; continue
+            ayah_key = f"{surah}:{ayah}"
+            if ayah_key not in used_ayahs:
+                segments.append({"type": "quran", "surah": surah, "surah_name": SURAH_NAMES.get(surah), "ayah_numbers": [ayah], "display": f"{SURAH_NAMES.get(surah)}: {ayah}"})
+                used_ayahs.add(ayah_key)
+            i += 2
+    return segments
 
-    silence_path = work / "silence.wav"
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
+def build_plan_prompt(story, ep_num, state):
+    total_eps = story.get("target_episodes", 15)
+    covered = state.get("covered_topics", [])
+    covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
+    return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
+المواضيع التي تمت تغطيتها في الحلقات السابقة:
+{covered_str}
 
-    segments_list = ep.get("segments", [])
-    yt_wavs, social_wavs = [], []
-    yt_meta, social_meta = [], []
+اكتب خطة للحلقة {ep_num} (من أصل {total_eps}). يجب أن تركز على جزء محدد جداً وجديد من حياته (لم يتم تغطيته سابقاً).
+أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
+
+def build_script_prompt(story, plan, ep_num, context):
+    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي.
+الخطة: {plan['title']} - {plan['summary']}
+القصة المطلوبة: {story['title']}
+
+لقد قمنا باستخراج النصوص التالية من مصادرنا الموثوقة. **أنت مجبر على استخدام هذه النصوص فقط، ويُمنع منعاً باتاً تأليف أي حدث أو معلومة من خارجها:**
+
+المراجع:
+{context}
+
+قواعد صارمة جداً:
+1. اكتب سرداً قصصياً مشوقاً واحترافياً (حوالي 600 كلمة، تكفي لفيديو مدته 5 دقائق). ركز على حدث واحد بعمق. ابدأ بسؤال وثائقي مشوق.
+2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
+3. **الآيات**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه في النص، بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. مثال: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
+4. احترام مطلق للأنبياء والملائكة.
+5. **اللغة**: اللغة العربية الفصحى فقط. يُمنع منعاً باتاً كتابة أي حرف إنجليزي أو رقم في النص (باستثناء مراجع الآيات).
+6. اكتب النص السردي فقط، بدون عناوين فرعية، وبأسلوب راقٍ."""
+
+def build_teaser_prompt(story, ep_num):
+    return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
+قواعد صارمة:
+1. ابدأ **مباشرة** بسؤال درامي.
+2. ممنوع أن تبدأ بـ: "إليك"، "هذا"، "النص"، "ترقبوا".
+3. أعد الجملة فقط، بدون علامات اقتباس."""
+
+def main():
+    library, state = load_library(), load_state()
+    story = get_current_story(library, state)
+    ep_num = state.get("episode_num", 1)
+    save_state(state)
+    print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
+
+    surah_name = story.get("sources", ["القرآن"])[0]
+    context = retrieve_context(surah_name, limit=12)
+    print(f"📚 تم استرجاع المراجع للسياق.", flush=True)
+
+    print("📝 جاري توليد الخطة...", flush=True)
+    plan_raw = call_llm_with_fallback(build_plan_prompt(story, ep_num, state))
     
-    print(f"⚙️ بناء الصوت (سرد جيميني + تلاوات يوتيوب جيميني وسوشيال بشري)...")
+    if isinstance(plan_raw, str):
+        try:
+            s, e = plan_raw.find("{"), plan_raw.rfind("}")
+            plan = json.loads(plan_raw[s:e+1])
+        except: plan = {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    else:
+        plan = plan_raw or {"title": f"الحلقة {ep_num}", "summary": "...", "topic": ""}
+    
+    raw_title = plan.get("title", "")
+    cleaned_title = re.sub(r'الحلقة\s*\d+[:\s\-]*', '', raw_title).strip()
+    plan["title"] = cleaned_title or f"الحلقة {ep_num}"
 
-    for idx, seg in enumerate(segments_list):
-        stype = seg.get("type")
-        
-        # ═══ 1. السرد (مشترك جيميني للنسختين) ═══
-        if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
-            text = sanitize_for_tts(seg.get("text", ""))
-            if not text: continue
-            chunks = split_text(text)
-            chunk_timings = []
-            
-            for c_idx, chunk in enumerate(chunks):
-                if not chunk.strip() or not re.search(r'[\u0600-\u06FF]', chunk): continue
-                text_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()[:8]
-                cached_wav = ep_cache / f"seg_{idx}_{c_idx}_{text_hash}.wav"
-                
-                if not cached_wav.exists() or cached_wav.stat().st_size < 1000:
-                    temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-                    gemini_tts_with_pool(chunk, str(temp_mp3))
-                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
-                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
-                    time.sleep(2) 
-                    
-                if cached_wav.exists():
-                    faded = work / f"faded_{idx}_{c_idx}.wav"
-                    trim_and_fade(str(cached_wav), str(faded), speed_up=False)
-                    yt_wavs.extend([faded, silence_path])
-                    social_wavs.extend([faded, silence_path])
-                    chunk_timings.append({"text": chunk, "duration": get_dur(faded) + SILENCE_DUR})
-            
-            if chunk_timings:
-                meta_entry = {"index": idx, "type": stype, "display": "", "chunks": chunk_timings}
-                yt_meta.append(meta_entry)
-                social_meta.append(meta_entry)
+    print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
+    
+    # إعادة المحاولة حتى يجد آيات
+    max_retries = 3
+    script_text = None
+    for attempt in range(max_retries):
+        script_text = call_llm_with_fallback(build_script_prompt(story, plan, ep_num, context), is_json=False)
+        if script_text and "[آية" in script_text:
+            break
+        print(f"⚠️ المحاولة {attempt+1} فشلت: لم يتم إدراج آيات. إعادة المحاولة...", flush=True)
+        time.sleep(5)
+    
+    if not script_text or "[آية" not in script_text:
+        print("❌ فشل توليد النص مع الآيات بعد 3 محاولات. إيقاف العملية لعدم نشر فيديو ناقص.", flush=True)
+        sys.exit(1)
 
-        # ═══ 2. الآيات (يوتيوب: جيميني - سوشيال: بشري) ═══
-        elif stype == "quran":
-            s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
-            if not ayahs: continue
-            display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
-            
-            # --- يوتيوب (جيميني) ---
-            yt_chunk_timings = []
-            for a in ayahs:
-                text_a = get_local_ayah_text(s, a)
-                if not text_a: continue
-                
-                text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
-                cache_a = ep_cache / f"gemini_{s}_{a}_{text_hash}.wav"
-                    
-                if not cache_a.exists():
-                    tmp_mp3 = work / "tmp_yt.mp3"
-                    gemini_tts_with_pool(text_a, str(tmp_mp3))
-                    subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
-                    time.sleep(2)
-                
-                trimmed_a = ep_cache / f"trimmed_yt_{s}_{a}_{text_hash}.wav"
-                trim_and_fade(str(cache_a), str(trimmed_a), speed_up=True) # 🌟 تسريع 15%
-                
-                final_a = ep_cache / f"final_yt_{s}_{a}_{text_hash}.wav"
-                if not final_a.exists():
-                    apply_mosque_reverb(str(trimmed_a), str(final_a))
-                
-                if final_a.exists():
-                    yt_wavs.extend([final_a, silence_path])
-                    yt_chunk_timings.append({"text": text_a, "duration": get_dur(final_a) + SILENCE_DUR})
-            
-            if yt_chunk_timings:
-                yt_meta.append({"index": idx, "type": stype, "display": display, "chunks": yt_chunk_timings})
+    script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
+    segments = parse_script_with_verses(script_text)
+    
+    print("📝 جاري توليد الخلاصة...", flush=True)
+    summary_raw = call_llm_with_fallback(f"بناءً على: {plan['summary']}\nاستخرج 'خلاصة وعبرة' بليغة من 3 أسطر. ابدأ مباشرة دون مقدمات.", is_json=False)
+    summary_clean = clean_narration_text(summary_raw if isinstance(summary_raw, str) else "")
+    if not summary_clean or len(summary_clean) < 20:
+        summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
+    segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
 
-            # --- سوشيال (بشري) ---
-            soc_chunk_timings = []
-            for a in ayahs:
-                text_a = get_local_ayah_text(s, a)
-                if not text_a: continue
-                
-                cache_a = ep_cache / f"human_{s}_{a}.mp3"
-                if not download_human_ayah(s, a, str(cache_a)): continue
-                
-                trimmed_h = ep_cache / f"trimmed_human_{s}_{a}.wav"
-                trim_and_fade(str(cache_a), str(trimmed_h), speed_up=True) # 🌟 تسريع 15%
+    print("📢 جاري توليد التشويق...", flush=True)
+    teaser_raw = call_llm_with_fallback(build_teaser_prompt(story, ep_num), is_json=False)
+    teaser_clean = clean_narration_text(teaser_raw if isinstance(teaser_raw, str) else "")
+    if not teaser_clean or len(teaser_clean) < 20:
+        teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
+    segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
 
-                stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
-                reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
-                if not reverb_a.exists():
-                    apply_stealth_filter(str(trimmed_h), str(stealth_a))
-                    apply_mosque_reverb(str(stealth_a), str(reverb_a))
-                
-                if reverb_a.exists():
-                    social_wavs.extend([reverb_a, silence_path])
-                    soc_chunk_timings.append({"text": text_a, "duration": get_dur(reverb_a) + SILENCE_DUR})
-            
-            if soc_chunk_timings:
-                social_meta.append({"index": idx, "type": stype, "display": display, "chunks": soc_chunk_timings})
+    outro = random.choice(OUTRO_TEMPLATES)
+    segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
 
-    if yt_wavs:
-        yt_concat = work / "yt_concat.txt"
-        yt_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in yt_wavs), encoding="utf-8")
-        yt_merged = work / "yt_merged.wav"
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(yt_concat), "-c", "copy", str(yt_merged)], check=True, capture_output=True)
-        Path(out_yt_mp3).parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["ffmpeg", "-y", "-i", str(yt_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_yt_mp3)], check=True, capture_output=True)
-        Path(str(out_yt_mp3).replace(".mp3", "_meta.json")).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_yt_mp3), "segments": yt_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ (يوتيوب) {out_yt_mp3} | {get_dur(out_yt_mp3)/60:.1f} دقيقة")
+    ep_data = {
+        "episode_number": ep_num, "story_id": story["id"], "story_title": story["title"],
+        "title": f"{story['title']} — الحلقة {ep_num} — {plan['title']}", 
+        "segments": segments
+    }
+    
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUT_DIR / f"{story['id']}-{ep_num:02d}.json"
+    output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUT_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_FILE_PATH.write_text(str(output_path), encoding="utf-8")
 
-    if social_wavs:
-        soc_concat = work / "soc_concat.txt"
-        soc_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in social_wavs), encoding="utf-8")
-        soc_merged = work / "soc_merged.wav"
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(soc_concat), "-c", "copy", str(soc_merged)], check=True, capture_output=True)
-        Path(out_social_mp3).parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["ffmpeg", "-y", "-i", str(soc_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_social_mp3)], check=True, capture_output=True)
-        Path(str(out_social_mp3).replace(".mp3", "_meta.json")).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_social_mp3), "segments": social_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ (سوشيال) {out_social_mp3} | {get_dur(out_social_mp3)/60:.1f} دقيقة")
-
-    cleanup_dir(work)
+    if plan.get("topic"): record_topic(state, plan["topic"])
+    save_state(state)
+    print(f"✅ تم التوليد ({len(segments)} مقطع)", flush=True)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        print(f"❌ الاستخدام: story_audio.py <json> <yt_mp3> <social_mp3>")
+    try: 
+        main()
+    except Exception as e:
+        print(f"❌ خطأ فادح: {e}", flush=True)
+        traceback.print_exc()
         sys.exit(1)
-    build_episode_audio(sys.argv[1], sys.argv[2], sys.argv[3])
