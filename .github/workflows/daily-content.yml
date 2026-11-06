@@ -9,7 +9,6 @@ jobs:
   produce:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-
     permissions:
       models: read
       contents: write
@@ -30,15 +29,11 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          # 🌟 تثبيت المكتبات المطلوبة للنظام الهجين
-          pip install requests edge-tts arabic-diacritizer pyarabic pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install requests pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Daily Content
         id: gen
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/generate_daily.py
           if [ -f out/latest_episode.txt ]; then
@@ -46,17 +41,16 @@ jobs:
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
-            echo "❌ فشل توليد ملف الحلقة"
+            echo "❌ فشل توليد المقطع اليومي"
             exit 1
           fi
 
-      - name: Build Audio (Both) - Hybrid Engine
+      - name: Build Audio (Both) - Gemini TTS
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
-          # 🌟 السكربت الآن يقرر بنفسه أي محرك سيستخدم لكل مقطع
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
@@ -96,7 +90,6 @@ jobs:
           META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
           TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','مقطع يومي'))")
           
-          # 1. فيديو اليوتيوب
           YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
           YT_UPLOAD="$YT_VIDEO"
           SIZE=$(stat -c%s "$YT_VIDEO")
@@ -106,12 +99,11 @@ jobs:
             YT_UPLOAD="$YT_COMPRESSED"
           fi
           
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - نظام هجين]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#إسلاميات #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" \
             -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
             
-          # 2. فيديو السوشيال ميديا
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
           SOC_UPLOAD="$SOC_VIDEO"
           SIZE=$(stat -c%s "$SOC_VIDEO")
