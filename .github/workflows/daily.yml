@@ -53,7 +53,7 @@ jobs:
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TTS_ENGINE: "2" # 🌟 1 = Gemini | 2 = Edge TTS (اختر 1 لما الحصة تتجدد)
+          TTS_ENGINE: "1" # 🌟 1 = Gemini | 2 = Edge TTS (اختر 1 لما الحصة تتجدد)
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
