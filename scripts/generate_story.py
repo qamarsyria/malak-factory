@@ -27,12 +27,14 @@ try:
 except Exception as e:
     print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
 
+# 🌟 التعديل 1: إضافة أرقام السورة والآية إلى المراجع
 def retrieve_context(surah_name, limit=10):
     if not _ayah_lib: return "لا توجد نصوص متاحة."
     context = []
     for item in _ayah_lib:
         if surah_name in item.get("surah_name", ""):
-            context.append(f"- {item['text']} | التفسير: {item.get('tafsir', '')[:150]}")
+            # هنا نعطي جيميني الأرقام بوضوح
+            context.append(f"- {item['surah_name']} (سورة رقم {item['surah_number']}، آية رقم {item['ayah_number']}): {item['text']} | التفسير: {item.get('tafsir', '')[:150]}")
             if len(context) >= limit:
                 break
     return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
@@ -105,34 +107,25 @@ def split_narration(text, max_chars=150):
     if current: chunks.append(current.strip())
     return chunks
 
+# 🌟 التعديل 2: استخدام الكود الأصلي الخاص بك لاستخراج الآيات (لأنه كان ممتازاً)
 def parse_script_with_verses(script_text):
     text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
     
-    # أنماط أكثر مرونة
-    patterns = [
-        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",
-        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",
-        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",
-    ]
-    
+    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
     parts = None
     for pat in patterns:
-        test_parts = re.split(pat, text)
-        if len(test_parts) > 1:
-            parts = test_parts
-            break
-            
+        parts = re.split(pat, text)
+        if len(parts) > 1: break
+        
     if not parts or len(parts) == 1: 
         return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
 
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
-            chunk = parts[i].strip()
-            chunk = re.sub(r'[\(\[﴿].*?[\)\]﴾]', '', chunk) 
-            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", chunk).strip()
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
             chunk = clean_narration_text(chunk)
             if len(chunk) > 5:
                 for piece in split_narration(chunk): 
@@ -141,7 +134,11 @@ def parse_script_with_verses(script_text):
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
             except: i += 2; continue
-            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286: i += 2; continue
+            
+            if surah not in SURAH_NAMES or ayah < 1 or ayah > 286:
+                i += 2
+                continue
+                
             ayah_key = f"{surah}:{ayah}"
             if ayah_key not in used_ayahs:
                 segments.append({"type": "quran", "surah": surah, "surah_name": SURAH_NAMES.get(surah), "ayah_numbers": [ayah], "display": f"{SURAH_NAMES.get(surah)}: {ayah}"})
@@ -173,7 +170,7 @@ def build_script_prompt(story, plan, ep_num, context):
 قواعد صارمة جداً:
 1. اكتب سرداً قصصياً مشوقاً واحترافياً (حوالي 600 كلمة، تكفي لفيديو مدته 5 دقائق). ركز على حدث واحد بعمق. ابدأ بسؤال وثائقي مشوق.
 2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
-3. **الآيات**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه في النص، بهذه الصيغة بالضبط: [آية: رقم_السورة:رقم_الآية]. مثال: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
+3. **الآيات**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه في النص. الأرقام موجودة في المراجع بين الأقواس (مثال: سورة رقم 2، آية رقم 30). اكتبها بهذه الصيغة بالضبط: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
 4. احترام مطلق للأنبياء والملائكة.
 5. **اللغة**: اللغة العربية الفصحى فقط. يُمنع منعاً باتاً كتابة أي حرف إنجليزي أو رقم في النص (باستثناء مراجع الآيات).
 6. اكتب النص السردي فقط، بدون عناوين فرعية، وبأسلوب راقٍ."""
@@ -213,7 +210,6 @@ def main():
 
     print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
     
-    # 🌟 إعادة المحاولة حتى يجد آيتين على الأقل
     max_retries = 3
     script_text = None
     for attempt in range(max_retries):
