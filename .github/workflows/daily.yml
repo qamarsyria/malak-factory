@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Story (Gemini)
@@ -48,31 +48,41 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Both) - Gemini TTS
+      - name: Build Audio (Both)
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TTS_ENGINE: "2" # 🌟 1 = Gemini | 2 = Edge TTS
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
             "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3"
 
-      # 🌟 التعديل الجذري: استخدام && لضمان تنفيذ السكربت في سطر واحد
       - name: Build Video (YouTube)
         id: vid_yt
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: mkdir -p videos && python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
 
       - name: Build Video (Social)
         id: vid_soc
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: mkdir -p videos && python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
 
       - name: Upload to Telegram
         id: tg
@@ -90,7 +100,7 @@ jobs:
             ffmpeg -y -i "$YT_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
             YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
           fi
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب - جيميني]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_VIDEO}" -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
 
           SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
@@ -99,7 +109,7 @@ jobs:
             ffmpeg -y -i "$SOC_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "videos/${{ steps.gen.outputs.EP_NAME }}_social_tg.mp4"
             SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social_tg.mp4"
           fi
-          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك - بشري]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
+          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${SOC_VIDEO}" -F "caption=${CAPTION_SOC}" -F "supports_streaming=true"
 
       - name: Commit State
