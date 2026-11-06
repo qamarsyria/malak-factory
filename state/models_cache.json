@@ -11,6 +11,7 @@
     "gemini-3.5-flash-lite",
     "gemini-omni-flash-preview",
     "gemini-omni-1.1-flash",
+    "gemini-omni-1.2-flash",
     "gemini-3.6-flash",
     "gemini-3.7-flash",
     "gemini-3.8-flash",
@@ -36,5 +37,5 @@
     "deep-research-max-preview-04-2026",
     "deep-research-preview-04-2026"
   ],
-  "timestamp": 1793888950.076235
+  "timestamp": 1793996956.8056417
 }
