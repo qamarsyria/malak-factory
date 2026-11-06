@@ -109,13 +109,24 @@ def parse_script_with_verses(script_text):
     text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
-    patterns = [r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]", r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]", r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]"]
+    
+    # أنماط أكثر مرونة
+    patterns = [
+        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",
+        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",
+        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",
+    ]
+    
     parts = None
     for pat in patterns:
-        parts = re.split(pat, text)
-        if len(parts) > 1: break
+        test_parts = re.split(pat, text)
+        if len(test_parts) > 1:
+            parts = test_parts
+            break
+            
     if not parts or len(parts) == 1: 
         return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
+
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
@@ -139,7 +150,7 @@ def parse_script_with_verses(script_text):
     return segments
 
 def build_plan_prompt(story, ep_num, state):
-    total_eps = story.get("target_episodes", 15)
+    total_eps = story.get("target_episodes", 20)
     covered = state.get("covered_topics", [])
     covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
     return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
@@ -202,18 +213,25 @@ def main():
 
     print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
     
-    # 🌟 إعادة المحاولة حتى يجد آيات
+    # 🌟 إعادة المحاولة حتى يجد آيتين على الأقل
     max_retries = 3
     script_text = None
     for attempt in range(max_retries):
         script_text = call_llm(build_script_prompt(story, plan, ep_num, context), is_json=False)
-        if script_text and "[آية" in script_text:
-            break
-        print(f"⚠️ المحاولة {attempt+1} فشلت: لم يتم إدراج آيات. إعادة المحاولة...", flush=True)
+        if script_text:
+            temp_segments = parse_script_with_verses(script_text)
+            ayah_count = sum(1 for s in temp_segments if s["type"] == "quran")
+            if ayah_count >= 2:
+                print(f"✅ وجدنا {ayah_count} آيات في المحاولة {attempt+1}.", flush=True)
+                break
+            else:
+                print(f"⚠️ المحاولة {attempt+1}: وجدنا {ayah_count} آية فقط. نطلب المزيد...", flush=True)
+        else:
+            print(f"⚠️ المحاولة {attempt+1}: فشل الاتصال.", flush=True)
         time.sleep(5)
     
-    if not script_text or "[آية" not in script_text:
-        print("❌ فشل توليد النص مع الآيات بعد 3 محاولات. إيقاف العملية لعدم نشر فيديو ناقص.", flush=True)
+    if not script_text:
+        print("❌ فشل توليد النص بعد 3 محاولات.", flush=True)
         sys.exit(1)
 
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
