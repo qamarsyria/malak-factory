@@ -1,4 +1,4 @@
-import os, sys, json, subprocess, tempfile, shutil, re, time, gzip, hashlib
+import os, sys, json, subprocess, tempfile, shutil, re, time, gzip, hashlib, asyncio
 from pathlib import Path
 import requests
 
@@ -7,7 +7,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import QURAN_API
 from utilities import cleanup_dir
-from gemini_tts_pool import gemini_tts_with_pool
+
+# ═══════════════════════════════════════════════════════════
+# 🌟 مفتاح التبديل: 1 = Gemini | 2 = Edge TTS
+# ═══════════════════════════════════════════════════════════
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
+
+if TTS_ENGINE == "1":
+    print("🔊 [TTS] المحرك: Gemini (الجودة العالية)", flush=True)
+    from gemini_tts_pool import gemini_tts_with_pool as _engine_generate
+    def generate_audio(text, out_path):
+        try:
+            _engine_generate(text, out_path)
+            return True
+        except Exception as e:
+            print(f"   ⚠️ Gemini فشل: {str(e)[:100]}", flush=True)
+            return False
+else:
+    print("🔊 [TTS] المحرك: Edge TTS (البديل السريع)", flush=True)
+    import edge_tts
+    def generate_audio(text, out_path):
+        try:
+            async def _run():
+                # صوت سوري هادئ
+                comm = edge_tts.Communicate(text, "ar-SY-LaithNeural", rate="-5%")
+                await comm.save(out_path)
+            asyncio.run(_run())
+            return Path(out_path).exists() and Path(out_path).stat().st_size > 1000
+        except Exception as e:
+            print(f"   ⚠️ Edge فشل: {str(e)[:100]}", flush=True)
+            return False
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.15 
@@ -15,7 +44,7 @@ CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
 
-# 🌟 قاموس تصحيح النطق
+# قاموس تصحيح النطق
 PRONUNCIATION_FIXES = {
     "يسجد": "يَسْجُدُ",
     "يسجدون": "يَسْجُدُونَ",
@@ -97,7 +126,6 @@ def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
     t = re.sub(r'[a-zA-Z0-9*#@_\[\]\(\)]', '', t)
     
-    # 🌟 تطبيق تصحيحات النطق
     for wrong, correct in PRONUNCIATION_FIXES.items():
         t = re.sub(rf'\b{wrong}\b', correct, t)
         
@@ -151,10 +179,9 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 
                 if not cached_wav.exists() or cached_wav.stat().st_size < 1000:
                     temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-                    gemini_tts_with_pool(chunk, str(temp_mp3))
-                    if temp_mp3.exists() and temp_mp3.stat().st_size > 3000:
+                    if generate_audio(chunk, str(temp_mp3)):
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
-                    time.sleep(2) 
+                    time.sleep(1) 
                     
                 if cached_wav.exists():
                     faded = work / f"faded_{idx}_{c_idx}.wav"
@@ -173,20 +200,20 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
-            # يوتيوب (جيميني)
+            # يوتيوب
             yt_chunk_timings = []
             for a in ayahs:
                 text_a = get_local_ayah_text(s, a)
                 if not text_a: continue
                 
                 text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
-                cache_a = ep_cache / f"gemini_{s}_{a}_{text_hash}.wav"
+                cache_a = ep_cache / f"engine_{s}_{a}_{text_hash}.wav"
                     
                 if not cache_a.exists():
                     tmp_mp3 = work / "tmp_yt.mp3"
-                    gemini_tts_with_pool(text_a, str(tmp_mp3))
-                    subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
-                    time.sleep(2)
+                    if generate_audio(text_a, str(tmp_mp3)):
+                        subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
+                    time.sleep(1)
                 
                 trimmed_a = ep_cache / f"trimmed_yt_{s}_{a}_{text_hash}.wav"
                 trim_and_fade(str(cache_a), str(trimmed_a), speed_up=True, is_last=True) 
