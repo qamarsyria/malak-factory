@@ -5,10 +5,7 @@ import subprocess
 import tempfile
 import shutil
 import re
-import time
-import gzip
-import hashlib
-import asyncio
+import random
 from pathlib import Path
 import requests
 
@@ -17,57 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import PIXABAY_KEY
 from gemini_tts_pool import gemini_tts_with_pool
-from utilities import cleanup_dir
-
-TARGET_SR = "24000"
-CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
-SFX_CACHE = _REPO_ROOT / "assets" / "audio" / "cache"
-SFX_CACHE.mkdir(parents=True, exist_ok=True)
-
-# ═══════════════════════════════════════════════════════════
-# 🌟 تحميل الموسيقى/المؤثرات من الويب (Pixabay)
-# ═══════════════════════════════════════════════════════════
-def download_audio_from_web(query, out_path):
-    """يبحث ويحمل ملف صوتي من Pixabay بناءً على كلمة البحث."""
-    if not PIXABAY_KEY:
-        print("⚠️ PIXABAY_API_KEY غير موجود، سيتم استخدام الصوت بدون خلفية.")
-        return False
-        
-    # البحث في Pixabay (قسم الموسيقى/الصوت)
-    url = "https://pixabay.com/api/audio/"
-    params = {
-        "key": PIXABAY_KEY,
-        "q": query,
-        "per_page": 5,
-    }
-    
-    try:
-        print(f"🔍 البحث عن خلفية صوتية: {query}...")
-        r = requests.get(url, params=params, timeout=20)
-        if r.status_code != 200:
-            print(f"   ⚠️ فشل البحث: HTTP {r.status_code}")
-            return False
-            
-        hits = r.json().get("hits", [])
-        if not hits:
-            print(f"   ⚠️ لا توجد نتائج لـ: {query}")
-            return False
-            
-        # اختيار أول ملف
-        audio_url = hits[0].get("audio") or hits[0].get("previewURL")
-        if not audio_url:
-            return False
-            
-        # تحميل الملف
-        print(f"⬇️ تحميل: {os.path.basename(audio_url)}...")
-        audio_data = requests.get(audio_url, timeout=60).content
-        with open(out_path, "wb") as f:
-            f.write(audio_data)
-            
-        return True
-    except Exception as e:
-        print(f"   ⚠️ خطأ في تحميل الخلفية: {str(e)[:100]}")
-        return False
+from utilities import cleanup_dir # 🌟 تم إضافة الاستيراد لحل الخطأ
 
 # ═══════════════════════════════════════════════════════════
 # 🌟 التشكيل التلقائي
@@ -104,36 +51,39 @@ def smart_diacritize(text):
         print(f"   ⚠️ التشكيل الذكي فشل: {str(e)[:100]}", flush=True)
     return text
 
-def sanitize_for_tts(t):
-    if not t: return ""
-    t = t.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    t = t.replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    t = re.sub(r'\[.*?\]', '', t, flags=re.DOTALL)
-    t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
-    t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
-    t = re.sub(r'[^\u0600-\u06FF\s،؟۔!.]', '', t)
-    t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
-
-def generate_audio(text, out_path):
+# ═══════════════════════════════════════════════════════════
+# 🌟 تحميل الأصوات من النت (Pixabay)
+# ═══════════════════════════════════════════════════════════
+def download_web_audio(query, out_path):
+    if not PIXABAY_KEY: return False
     try:
-        gemini_tts_with_pool(text, out_path)
-        return True
-    except Exception as e:
-        print(f"   ⚠️ Gemini فشل: {str(e)[:100]}", flush=True)
-        return False
+        r = requests.get("https://pixabay.com/api/audio/", params={"key": PIXABAY_KEY, "q": query, "per_page": 3}, timeout=20)
+        if r.status_code == 200:
+            hits = r.json().get("hits", [])
+            if hits:
+                url = hits[0].get("audio") or hits[0].get("previewURL")
+                if url:
+                    with open(out_path, "wb") as f:
+                        f.write(requests.get(url, timeout=60).content)
+                    return True
+    except: pass
+    return False
 
-def mix_background(voice_mp3, bg_mp3, out_mp3, volume=0.15):
+def select_bg_query(category):
+    if category == "dua":
+        return "islamic nasheed", "دعاء"
+    return "romantic music", "موسيقى رومانسية"
+
+def mix_background(voice, bg, out, volume=0.15):
     try:
         subprocess.run([
-            "ffmpeg", "-y", "-i", voice_mp3, "-i", bg_mp3,
-            "-filter_complex", f"[1:a]volume={volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0",
-            "-c:a", "libmp3lame", "-b:a", "192k", out_mp3
-        ], check=True, capture_output=True, timeout=120)
+            "ffmpeg", "-y", "-i", voice, "-i", bg,
+            "-filter_complex", f"[1:a]volume={volume}[bg];[0:a][bg]amix=inputs=2:duration=first",
+            "-c:a", "libmp3lame", "-b:a", "192k", out
+        ], check=True, capture_output=True)
         return True
-    except Exception as e:
-        print(f"   ⚠️ فشل مزج الخلفية: {e}")
-        shutil.copy(voice_mp3, out_mp3)
+    except:
+        shutil.copy(voice, out)
         return False
 
 def build_whisper_audio(json_path, out_mp3):
@@ -149,33 +99,28 @@ def build_whisper_audio(json_path, out_mp3):
     
     print(f"📝 تطبيق التشكيل التلقائي...")
     diacritized_text = smart_diacritize(full_text)
-    diacritized_text = sanitize_for_tts(diacritized_text)
     
-    category = ep.get("category", "religious")
-    
-    # 🌟 تحميل الخلفية من الويب
-    bg_mp3 = work / "background.mp3"
-    if category == "romantic":
-        query = "romantic ambient music"
-    else:
-        query = "nature sounds birds"
-        
-    has_bg = download_audio_from_web(query, str(bg_mp3))
+    category = ep.get("category", "romantic")
+    query, bg_name = select_bg_query(category)
     
     voice_mp3 = work / "voice.mp3"
     print(f"🎙️ توليد الصوت لـ: {diacritized_text[:50]}...")
-    if not generate_audio(diacritized_text, str(voice_mp3)):
+    try:
+        gemini_tts_with_pool(diacritized_text, str(voice_mp3))
+    except Exception as e:
+        print(f"❌ فشل Gemini: {e}")
         return False
     
-    if has_bg:
-        print(f"🎵 مزج الخلفية بنسبة 15%...")
-        mix_background(str(voice_mp3), str(bg_mp3), str(out_mp3), volume=0.15)
+    bg_mp3 = work / "bg.mp3"
+    if download_web_audio(query, str(bg_mp3)):
+        print(f"🎵 تحميل خلفية ({bg_name}) من Pixabay...")
+        mix_background(str(voice_mp3), str(bg_mp3), str(out_mp3))
     else:
-        print(f"⚠️ سيتم استخدام الصوت فقط.")
+        print(f"⚠️ لم يتم تحميل خلفية ({bg_name})، استخدام الصوت فقط.")
         shutil.copy(voice_mp3, out_mp3)
     
     print(f"✅ تم إنشاء الصوت: {out_mp3}")
-    cleanup_dir(work)
+    cleanup_dir(work) # 🌟 الآن تعمل بدون خطأ
     return True
 
 if __name__ == "__main__":
