@@ -1,11 +1,4 @@
-import os
-import sys
-import json
-import subprocess
-import tempfile
-import shutil
-import re
-import random
+import os, sys, json, subprocess, tempfile, shutil, re, random
 from pathlib import Path
 import requests
 
@@ -30,53 +23,51 @@ def smart_diacritize(text):
     except: pass
     return text
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 تحميل الموسيقى من Freesound (لأن Pixabay API الصوت مقفول)
-# ═══════════════════════════════════════════════════════════
-def download_freesound_audio(query, out_path):
-    if not FREESOUND_API_KEY: 
-        print("⚠️ FREESOUND_API_KEY غير موجود.")
-        return False
+def download_freesound(query, out_path):
+    """يحمّل أول نتيجة من Freesound."""
+    if not FREESOUND_API_KEY: return False
     try:
-        # البحث في Freesound
-        search_url = "https://freesound.org/apiv2/search/text/"
-        params = {
-            "query": query,
-            "token": FREESOUND_API_KEY,
-            "fields": "id,name,previews",
-            "page_size": 5,
-        }
-        r = requests.get(search_url, params=params, timeout=20)
-        if r.status_code != 200:
-            print(f"   ⚠️ Freesound بحث فشل: HTTP {r.status_code}")
-            return False
-        
+        r = requests.get("https://freesound.org/apiv2/search/text/", 
+                        params={"query": query, "token": FREESOUND_API_KEY, "fields": "id,name,previews", "page_size": 10}, 
+                        timeout=20)
+        if r.status_code != 200: return False
         results = r.json().get("results", [])
-        if not results:
-            print(f"   ⚠️ لا توجد نتائج في Freesound لـ: {query}")
-            return False
+        if not results: return False
         
-        # اختيار أول نتيجة فيها preview
-        for sound in results:
+        # نختار عشوائياً من أول 5 نتائج
+        random.shuffle(results[:5])
+        for sound in results[:5]:
             previews = sound.get("previews", {})
-            # نفضل MP3 لو موجود
-            preview_url = previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3")
-            if preview_url:
-                print(f"⬇️ تحميل من Freesound: {sound.get('name')}...")
-                audio_data = requests.get(preview_url, timeout=60).content
+            url = previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3")
+            if url:
+                print(f"⬇️ تحميل ({query}): {sound.get('name')[:40]}...")
                 with open(out_path, "wb") as f:
-                    f.write(audio_data)
+                    f.write(requests.get(url, timeout=60).content)
                 return True
-        return False
-    except Exception as e:
-        print(f"   ⚠️ خطأ Freesound: {str(e)[:100]}")
-        return False
+    except: pass
+    return False
 
-def select_bg_query(category):
-    if category == "dua":
-        return "islamic nasheed", "دعاء"
-    # كلمات بحث للموسيقى الرومانسية
-    return "romantic ambient music", "موسيقى رومانسية"
+def get_romantic_music(out_path):
+    """يحاول عدة كلمات بحث لحد ما يلاقي موسيقى رومانسية."""
+    queries = [
+        "romantic piano emotional", 
+        "romantic guitar love",
+        "love theme instrumental",
+        "emotional cinematic piano",
+        "romantic ambient music"
+    ]
+    for q in queries:
+        if download_freesound(q, out_path):
+            return True
+    return False
+
+def get_dua_music(out_path):
+    """للدعاء: موسيقى إسلامية هادئة."""
+    queries = ["islamic ambient", "quran recitation soft", "oud peaceful", "islamic nasheed instrumental"]
+    for q in queries:
+        if download_freesound(q, out_path):
+            return True
+    return False
 
 def mix_background(voice, bg, out, volume=0.15):
     try:
@@ -94,36 +85,36 @@ def build_whisper_audio(json_path, out_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="whisper_audio_"))
     
-    segments = ep.get("segments", [])
-    full_text = " ".join([s["text"] for s in segments if s.get("type") == "narration"])
+    text = " ".join([s["text"] for s in ep.get("segments", []) if s.get("type") == "narration"])
+    if not text: return False
     
-    if not full_text:
-        print("❌ لا يوجد نص.")
-        return False
-    
-    print(f"📝 تطبيق التشكيل التلقائي...")
-    diacritized_text = smart_diacritize(full_text)
-    
-    category = ep.get("category", "romantic")
-    query, bg_name = select_bg_query(category)
+    print(f"📝 التشكيل...")
+    text = smart_diacritize(text)
     
     voice_mp3 = work / "voice.mp3"
-    print(f"🎙️ توليد الصوت لـ: {diacritized_text[:50]}...")
+    print(f"🎙️ توليد الصوت...")
     try:
-        gemini_tts_with_pool(diacritized_text, str(voice_mp3))
+        gemini_tts_with_pool(text, str(voice_mp3))
     except Exception as e:
-        print(f"❌ فشل Gemini: {e}")
+        print(f"❌ فشل: {e}")
         return False
     
     bg_mp3 = work / "bg.mp3"
-    if download_freesound_audio(query, str(bg_mp3)):
-        print(f"🎵 تحميل خلفية ({bg_name}) من Freesound...")
+    category = ep.get("category", "romantic")
+    
+    if category == "dua":
+        has_bg = get_dua_music(str(bg_mp3))
+    else:
+        has_bg = get_romantic_music(str(bg_mp3))
+    
+    if has_bg:
+        print(f"🎵 مزج الموسيقى بنسبة 15%...")
         mix_background(str(voice_mp3), str(bg_mp3), str(out_mp3))
     else:
-        print(f"⚠️ لم يتم تحميل خلفية ({bg_name})، استخدام الصوت فقط.")
+        print(f"⚠️ لم نجد موسيقى، استخدام الصوت فقط.")
         shutil.copy(voice_mp3, out_mp3)
     
-    print(f"✅ تم إنشاء الصوت: {out_mp3}")
+    print(f"✅ تم: {out_mp3}")
     cleanup_dir(work)
     return True
 
