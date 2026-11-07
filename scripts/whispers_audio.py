@@ -15,16 +15,62 @@ import requests
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from config import PIXABAY_KEY
 from gemini_tts_pool import gemini_tts_with_pool
+from utilities import cleanup_dir
 
 TARGET_SR = "24000"
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
-
-ROMANTIC_MUSIC = _REPO_ROOT / "assets" / "audio" / "romantic_music.mp3"
-NATURE_SFX = _REPO_ROOT / "assets" / "audio" / "nature_sounds.mp3"
+SFX_CACHE = _REPO_ROOT / "assets" / "audio" / "cache"
+SFX_CACHE.mkdir(parents=True, exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 التشكيل التلقائي (Smart Diacritizer) - كما في الملفات القديمة
+# 🌟 تحميل الموسيقى/المؤثرات من الويب (Pixabay)
+# ═══════════════════════════════════════════════════════════
+def download_audio_from_web(query, out_path):
+    """يبحث ويحمل ملف صوتي من Pixabay بناءً على كلمة البحث."""
+    if not PIXABAY_KEY:
+        print("⚠️ PIXABAY_API_KEY غير موجود، سيتم استخدام الصوت بدون خلفية.")
+        return False
+        
+    # البحث في Pixabay (قسم الموسيقى/الصوت)
+    url = "https://pixabay.com/api/audio/"
+    params = {
+        "key": PIXABAY_KEY,
+        "q": query,
+        "per_page": 5,
+    }
+    
+    try:
+        print(f"🔍 البحث عن خلفية صوتية: {query}...")
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            print(f"   ⚠️ فشل البحث: HTTP {r.status_code}")
+            return False
+            
+        hits = r.json().get("hits", [])
+        if not hits:
+            print(f"   ⚠️ لا توجد نتائج لـ: {query}")
+            return False
+            
+        # اختيار أول ملف
+        audio_url = hits[0].get("audio") or hits[0].get("previewURL")
+        if not audio_url:
+            return False
+            
+        # تحميل الملف
+        print(f"⬇️ تحميل: {os.path.basename(audio_url)}...")
+        audio_data = requests.get(audio_url, timeout=60).content
+        with open(out_path, "wb") as f:
+            f.write(audio_data)
+            
+        return True
+    except Exception as e:
+        print(f"   ⚠️ خطأ في تحميل الخلفية: {str(e)[:100]}")
+        return False
+
+# ═══════════════════════════════════════════════════════════
+# 🌟 التشكيل التلقائي
 # ═══════════════════════════════════════════════════════════
 def smart_diacritize(text):
     if not text or not text.strip(): return text
@@ -101,28 +147,31 @@ def build_whisper_audio(json_path, out_mp3):
         print("❌ لا يوجد نص.")
         return False
     
-    # 🌟 تطبيق التشكيل التلقائي قبل التوليد
     print(f"📝 تطبيق التشكيل التلقائي...")
     diacritized_text = smart_diacritize(full_text)
-    
-    # تنظيف النص
     diacritized_text = sanitize_for_tts(diacritized_text)
     
-    # تحديد نوع الخلفية
-    bg_path = ROMANTIC_MUSIC if ep.get("category") == "romantic" else NATURE_SFX
+    category = ep.get("category", "religious")
     
-    # توليد الصوت
+    # 🌟 تحميل الخلفية من الويب
+    bg_mp3 = work / "background.mp3"
+    if category == "romantic":
+        query = "romantic ambient music"
+    else:
+        query = "nature sounds birds"
+        
+    has_bg = download_audio_from_web(query, str(bg_mp3))
+    
     voice_mp3 = work / "voice.mp3"
     print(f"🎙️ توليد الصوت لـ: {diacritized_text[:50]}...")
     if not generate_audio(diacritized_text, str(voice_mp3)):
         return False
     
-    # المزج
-    if bg_path.exists():
-        print(f"🎵 مزج الخلفية: {bg_path.name} بنسبة 15%...")
-        mix_background(str(voice_mp3), str(bg_path), str(out_mp3))
+    if has_bg:
+        print(f"🎵 مزج الخلفية بنسبة 15%...")
+        mix_background(str(voice_mp3), str(bg_mp3), str(out_mp3), volume=0.15)
     else:
-        print(f"⚠️ ملف الخلفية غير موجود: {bg_path}، سيتم استخدام الصوت فقط.")
+        print(f"⚠️ سيتم استخدام الصوت فقط.")
         shutil.copy(voice_mp3, out_mp3)
     
     print(f"✅ تم إنشاء الصوت: {out_mp3}")
