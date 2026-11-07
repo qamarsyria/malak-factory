@@ -59,11 +59,39 @@ def build_whisper_video(audio_path, json_path, out_mp4):
     dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path], capture_output=True, text=True).stdout.strip()
     duration = float(dur or 10.0)
     
-    cmd = ["ffmpeg", "-y"] + (["-loop", "1"] if is_img else ["-stream_loop", "-1"]) + ["-i", video_path, "-t", str(duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", str(bg_video)]
+    # 🌟 تعديل: ضغط أقوى (crf 30 بدل 26، ومعدل بتات أقل)
+    cmd = [
+        "ffmpeg", "-y", 
+        *(["-loop", "1"] if is_img else ["-stream_loop", "-1"]), 
+        "-i", video_path, 
+        "-t", str(duration), 
+        "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p",
+        "-c:v", "libx264", 
+        "-preset", "faster", # 🌟 أسرع شوية
+        "-crf", "30",        # 🌟 ضغط أقوى (26 -> 30)
+        "-b:v", "800k",      # 🌟 تحديد أقصى معدل بتات
+        "-maxrate", "1M", 
+        "-bufsize", "2M",
+        str(bg_video)
+    ]
     subprocess.run(cmd, check=True, capture_output=True)
     
-    subprocess.run(["ffmpeg", "-y", "-i", str(bg_video), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "aac", "-t", str(duration), str(out_mp4)], check=True, capture_output=True)
+    # 🌟 الدمج النهائي (مع ضغط الصوت كمان)
+    subprocess.run([
+        "ffmpeg", "-y", "-i", str(bg_video), "-i", audio_path, 
+        "-map", "0:v", "-map", "1:a", 
+        "-c:v", "libx264", "-preset", "faster", "-crf", "30", 
+        "-c:a", "aac", "-b:a", "96k", # 🌟 صوت أقل
+        "-t", str(duration), 
+        str(out_mp4)
+    ], check=True, capture_output=True)
+    
     print(f"✅ فيديو: {out_mp4} | الخلفية: {query}")
+    
+    # 🌟 طباعة حجم الملف النهائي
+    size_mb = os.path.getsize(out_mp4) / (1024 * 1024)
+    print(f"📦 حجم الفيديو: {size_mb:.2f} ميجابايت")
+    
     cleanup_dir(work_dir)
     return True
 
