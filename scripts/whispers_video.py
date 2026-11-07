@@ -6,63 +6,99 @@ from config import VIDEO_W, VIDEO_H, PIXABAY_KEY
 from utilities import cleanup_dir
 
 NUM_SCENES = 4
-CROSSFADE = 1.2  # ثواني الانتقال
+CROSSFADE = 1.2  # ثواني الانتقال بين المشاهد
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 بنك البحث (رسوم متحركة + مشاهد حقيقية)
+# 🌟 بنك البحث (آمن 100% - رومانسي وإسلامي)
 # ═══════════════════════════════════════════════════════════
 def get_queries(category):
     if category == "romantic":
         return [
-            # --- رسوم متحركة (Animation) ---
-            ("fairy lights bokeh animation", "animation"),
-            ("glowing butterflies fantasy", "animation"),
-            ("anime romance scene", "animation"),
-            ("cartoon couple love", "animation"),
-            ("3d render magical forest", "animation"),
-            ("watercolor flowers animation", "animation"),
-            ("fairy tale castle dreamy", "animation"),
-            ("animated hearts floating", "animation"),
-            # --- مشاهد حقيقية (Film) ---
-            ("niqab woman flowers garden", "film"),
-            ("muslim woman garden", "film"),
-            ("roses flowers cinematic", "film"),
-            ("pink flowers sunset", "film"),
-            ("kitten cute playing", "film"),
-            ("cat flowers garden", "film"),
-            ("rose petals falling", "film"),
-            ("silk fabric flowing", "film"),
+            # رسوم متحركة آمنة
+            ("rose flower animation", "animation"),
+            ("heart love animation", "animation"),
+            ("butterfly flowers animation", "animation"),
+            ("pink roses blooming", "animation"),
+            # مشاهد حقيقية رومانسية
+            ("niqab woman roses", "film"),
+            ("muslim woman flowers garden", "film"),
+            ("red roses bouquet cinematic", "film"),
+            ("pink roses soft light", "film"),
+            ("butterflies garden flowers", "film"),
+            ("rose petals falling slow", "film"),
+            ("silk fabric soft", "film"),
             ("candles bokeh warm", "film"),
+            ("kitten flowers cute", "film"),
         ]
     else:  # dua
         return [
-            # --- رسوم متحركة ---
-            ("islamic cartoon animation", "animation"),
-            ("animated lantern light", "animation"),
-            ("cartoon stars night sky", "animation"),
-            ("3d mosque animation", "animation"),
-            # --- مشاهد حقيقية ---
-            ("golden clouds sunset", "film"),
+            ("islamic mosque golden", "film"),
+            ("kaaba cinematic sunset", "film"),
+            ("quran book soft light", "film"),
+            ("praying hands candles", "film"),
             ("starry night milky way", "film"),
-            ("islamic mosque cinematic", "film"),
-            ("praying hands soft", "film"),
-            ("clouds golden hour", "film"),
+            ("golden clouds sunset", "film"),
+            ("islamic lantern glowing", "film"),
             ("moonlight serene", "film"),
+            ("rose flower animation", "animation"),
+            ("golden bokeh lights", "animation"),
         ]
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 جلب فيديو من Pixabay (نوع محدد: film أو animation)
+# 🌟 فلترة صارمة (Blacklist + Whitelist)
 # ═══════════════════════════════════════════════════════════
-def fetch_video(query, work_dir, used_urls, video_type="film"):
+def is_video_safe(tags, category):
+    tags_lower = tags.lower()
+    
+    # قائمة سوداء (ممنوعة تماماً)
+    blacklist = [
+        "skeleton", "skull", "bone", "robot", "cyborg", "alien", 
+        "zombie", "horror", "scary", "creepy", "monster", "demon", 
+        "ghost", "devil", "satan", "occult", "gore", "blood", 
+        "war", "military", "weapon", "gun", "bomb", "fight",
+        "death", "dead", "graveyard", "cemetery", "haunted", "witch",
+        "vampire", "werewolf", "clown", "snake", "spider", "dark"
+    ]
+    if any(bad in tags_lower for bad in blacklist):
+        return False
+    
+    # قائمة بيضاء (لازم كلمة واحدة على الأقل)
+    if category == "romantic":
+        whitelist = [
+            "rose", "flower", "butterfly", "love", "romantic", "heart", 
+            "garden", "petal", "cute", "beautiful", "soft", "pink", 
+            "red", "niqab", "hijab", "bouquet", "bloom", "romance",
+            "silk", "candle", "bokeh", "sweet", "kitten", "cat"
+        ]
+        return any(good in tags_lower for good in whitelist)
+    else:  # dua
+        whitelist = [
+            "mosque", "islamic", "prayer", "quran", "kaaba", "moon",
+            "star", "cloud", "sky", "golden", "lantern", "candle",
+            "peaceful", "serene", "light", "spiritual"
+        ]
+        return any(good in tags_lower for good in whitelist)
+
+# ═══════════════════════════════════════════════════════════
+# 🌟 جلب فيديو من Pixabay (مع الفلترة)
+# ═══════════════════════════════════════════════════════════
+def fetch_video(query, work_dir, used_urls, video_type="film", category="romantic"):
     if not PIXABAY_KEY: return None
     try:
         r = requests.get("https://pixabay.com/api/videos/", 
-                        params={"key": PIXABAY_KEY, "q": query, "video_type": video_type, "per_page": 20}, 
+                        params={"key": PIXABAY_KEY, "q": query, "video_type": video_type, 
+                                "per_page": 50, "safesearch": "true"}, 
                         timeout=20)
         if r.status_code == 200:
             hits = r.json().get("hits", [])
             random.shuffle(hits)
             for hit in hits:
+                tags = hit.get("tags", "")
+                
+                # فلترة أمنية
+                if not is_video_safe(tags, category):
+                    continue
+                
                 url = hit.get("videos", {}).get("medium", {}).get("url")
                 if url and url not in used_urls:
                     out = work_dir / f"vid_{hit['id']}.mp4"
@@ -70,6 +106,7 @@ def fetch_video(query, work_dir, used_urls, video_type="film"):
                         for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192):
                             f.write(chunk)
                     used_urls.add(url)
+                    print(f"   ✅ [{video_type}] {query} | tags: {tags[:40]}")
                     return str(out)
     except: pass
     return None
@@ -90,7 +127,7 @@ def make_golden_fallback(path):
     return str(path)
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 طبقات الأنيميشن (بوكيه، سباركلز، لايت ليك، اسم)
+# 🌟 طبقات الأنيميشن
 # ═══════════════════════════════════════════════════════════
 def create_bokeh_layer():
     W, H = VIDEO_W + 400, VIDEO_H + 400
@@ -123,37 +160,37 @@ def create_light_leak():
     draw.ellipse([x-r, y-r, x+r, y+r], fill=(255, 220, 150, 80))
     return img.filter(ImageFilter.GaussianBlur(radius=80))
 
+# ═══════════════════════════════════════════════════════════
+# 🌟 الاسم (بدون أسطر - خط ذهبي فخم)
+# ═══════════════════════════════════════════════════════════
 def create_name_overlay(name):
     if not name: return None
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
+    
     font_path = None
     for p in ["/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf",
               "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
               "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf"]:
         if os.path.exists(p): font_path = p; break
     if not font_path: return None
+    
     shaped = arabic_reshaper.reshape(name)
-    font = ImageFont.truetype(font_path, 200, layout_engine=ImageFont.Layout.RAQM)
+    font = ImageFont.truetype(font_path, 220, layout_engine=ImageFont.Layout.RAQM)
+    
     bbox = draw.textbbox((0, 0), shaped, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x, y = (VIDEO_W - tw) // 2, (VIDEO_H - th) // 2
-    # ظل
-    draw.text((x+5, y+5), shaped, font=font, fill="black", stroke_width=10, stroke_fill="black")
-    # الذهبي
-    draw.text((x, y), shaped, font=font, fill="#FFD700", stroke_width=5, stroke_fill="#8B6914")
-    # إطار ذهبي
-    pad_x, pad_y = 60, 40
-    fx1, fy1 = x - pad_x, y - pad_y
-    fx2, fy2 = x + tw + pad_x, y + th + pad_y
-    draw.line([(fx1, fy1), (fx2, fy1)], fill="#FFD700", width=4)
-    draw.line([(fx1, fy2), (fx2, fy2)], fill="#FFD700", width=4)
-    for px, py in [(fx1, fy1), (fx2, fy1), (fx1, fy2), (fx2, fy2)]:
-        draw.ellipse([px-8, py-8, px+8, py+8], fill="#FFD700")
+    
+    # ظل قوي جداً عشان يبان على أي خلفية
+    draw.text((x+6, y+6), shaped, font=font, fill="black", stroke_width=12, stroke_fill="black")
+    # الاسم الذهبي الفخم
+    draw.text((x, y), shaped, font=font, fill="#FFD700", stroke_width=6, stroke_fill="#8B6914")
+    
     return overlay
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 بناء الفيديو النهائي (مشاهد + أنيميشن + ضغط ذكي)
+# 🌟 بناء الفيديو
 # ═══════════════════════════════════════════════════════════
 def build_whisper_video(audio_path, json_path, out_mp4):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
@@ -167,21 +204,22 @@ def build_whisper_video(audio_path, json_path, out_mp4):
     duration = float(dur_out or 10.0)
     print(f"⏱️  مدة الصوت: {duration:.1f} ثانية")
     
-    # 2. جلب المشاهد (2 رسوم + 2 حقيقي)
+    # 2. جلب المشاهد
     queries = get_queries(category)
     random.shuffle(queries)
     used_urls, scene_paths = set(), []
-    wanted_types = ["animation", "film", "animation", "film"]  # توزيع ثابت
+    
+    # التوزيع: نص رسوم متحركة ونص حقيقي
+    wanted_types = ["animation", "film", "animation", "film"]
     
     for v_type in wanted_types:
         filtered_queries = [q for q, t in queries if t == v_type]
         random.shuffle(filtered_queries)
         found = False
         for q in filtered_queries:
-            v = fetch_video(q, work_dir, used_urls, video_type=v_type)
+            v = fetch_video(q, work_dir, used_urls, video_type=v_type, category=category)
             if v:
                 scene_paths.append((v, v_type))
-                print(f"   ✅ [{v_type}] {q}")
                 found = True
                 break
         if not found:
@@ -193,22 +231,19 @@ def build_whisper_video(audio_path, json_path, out_mp4):
     scene_dur = (duration + (NUM_SCENES - 1) * CROSSFADE) / NUM_SCENES
     print(f"🎬 {NUM_SCENES} مشاهد × {scene_dur:.1f}ث + Ken Burns")
     
-    # 3. معالجة كل مشهد (زوم + تدرج لوني + فينييت)
+    # 3. معالجة المشاهد (زوم متوازن + تدرج لوني)
     processed = []
     for i, (sp, v_type) in enumerate(scene_paths):
         out = work_dir / f"scene_{i}.mp4"
         is_img = sp.endswith(('.jpg', '.jpeg', '.png'))
         input_flags = ["-loop", "1"] if is_img else ["-stream_loop", "-1"]
         
-        # Ken Burns: زوم أقل للرسوم المتحركة عشان ماتتكسرش
-        zoom_max = 1.15 if v_type == "film" else 1.08
-        frames = int(scene_dur * 30)
-        zoom_expr = f"'min(1+{(zoom_max-1)/frames}*on,{zoom_max})'"
-        
+        # زوم خفيف جداً (مش هنستخدم zoompan عشان ما يكسرش الجودة)
+        # هنستخدم scale ثابت مع crop، والزوم هيبقى بسيط
         vf = (
             f"scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
-            f"zoompan=z={zoom_expr}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={VIDEO_W}x{VIDEO_H}:fps=30,"
-            f"colorbalance=rs=0.12:gs=0.04:bs=-0.08,"
+            f"zoompan=z='min(zoom+0.0008,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={VIDEO_W}x{VIDEO_H}:fps=30,"
+            f"colorbalance=rs=0.08:gs=0.02:bs=-0.05,"
             f"eq=brightness=0.02:contrast=1.1:saturation=1.15,"
             f"vignette=PI/5,"
             f"format=yuv420p"
@@ -222,7 +257,7 @@ def build_whisper_video(audio_path, json_path, out_mp4):
         subprocess.run(cmd, check=True, capture_output=True)
         processed.append(str(out))
     
-    # 4. دمج المشاهد بـ crossfade
+    # 4. دمج المشاهد
     bg_video = work_dir / "bg.mp4"
     inputs = []
     for p in processed: inputs.extend(["-i", p])
@@ -255,7 +290,7 @@ def build_whisper_video(audio_path, json_path, out_mp4):
         name_path = work_dir / "name.png"
         name_img.save(name_path)
     
-    # 6. دمج الطبقات والاسم
+    # 6. دمج الطبقات
     inputs = ["-i", str(bg_video)]
     idx = 1
     
@@ -268,14 +303,14 @@ def build_whisper_video(audio_path, json_path, out_mp4):
         inputs.extend(["-loop", "1", "-i", str(name_path)]); idx_name = idx; idx += 1
     
     filters = []
-    filters.append(f"[{idx_bokeh}:v]format=rgba,colorchannelmixer=aa=0.35[bk]")
-    filters.append(f"[{idx_sparkle}:v]format=rgba,colorchannelmixer=aa=0.6[sp]")
+    filters.append(f"[{idx_bokeh}:v]format=rgba,colorchannelmixer=aa=0.3[bk]")
+    filters.append(f"[{idx_sparkle}:v]format=rgba,colorchannelmixer=aa=0.5[sp]")
     filters.append(f"[{idx_leak}:v]format=rgba,colorchannelmixer=aa=0.4,fade=in:st=0:d=1:alpha=1[leak]")
     if name_path:
         filters.append(f"[{idx_name}:v]format=rgba,fade=in:st=0.5:d=1.5:alpha=1[name]")
     
-    filters.append(f"[0:v][bk]overlay=x='-200+100*sin(t/8)':y='-200+100*cos(t/10)':shortest=1[v1]")
-    filters.append(f"[v1][sp]overlay=x='-150+80*cos(t/6)':y='-150+80*sin(t/9)':shortest=1[v2]")
+    filters.append(f"[0:v][bk]overlay=x='-100+50*sin(t/8)':y='-100+50*cos(t/10)':shortest=1[v1]")
+    filters.append(f"[v1][sp]overlay=x='-50+30*cos(t/6)':y='-50+30*sin(t/9)':shortest=1[v2]")
     filters.append(f"[v2][leak]overlay=0:0:shortest=1[v3]")
     
     if name_path:
@@ -291,7 +326,7 @@ def build_whisper_video(audio_path, json_path, out_mp4):
         str(final_vid)
     ], check=True, capture_output=True)
     
-    # 7. دمج الصوت + الضغط الذكي النهائي
+    # 7. دمج الصوت + الضغط الذكي
     print("💾 ضغط الفيديو (Smart Compression)...")
     subprocess.run([
         "ffmpeg", "-y", "-i", str(final_vid), "-i", audio_path,
