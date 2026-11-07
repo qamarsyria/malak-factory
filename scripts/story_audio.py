@@ -29,7 +29,6 @@ else:
     def generate_audio(text, out_path):
         try:
             async def _run():
-                # صوت سوري هادئ
                 comm = edge_tts.Communicate(text, "ar-SY-LaithNeural", rate="-5%")
                 await comm.save(out_path)
             asyncio.run(_run())
@@ -43,18 +42,6 @@ SILENCE_DUR = 0.15
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
-
-# قاموس تصحيح النطق
-PRONUNCIATION_FIXES = {
-    "يسجد": "يَسْجُدُ",
-    "يسجدون": "يَسْجُدُونَ",
-    "سجود": "سُجُود",
-    "العقيدة": "الْعَقِيدَة",
-    "عقيدة": "عَقِيدَة",
-    "القلب": "الْقَلْب",
-    "قال": "قَالَ",
-    "قلنا": "قُلْنَا",
-}
 
 _ayah_lib = {}
 try:
@@ -120,16 +107,27 @@ def download_human_ayah(surah, ayah, out_path):
     except: pass
     return False
 
+# ═══════════════════════════════════════════════════════════
+# 🌟 دالة التنظيف الجذرية: تمسح أي حرف غير عربي (إنجليزي، أرقام، رموز)
+# ═══════════════════════════════════════════════════════════
 def sanitize_for_tts(t):
+    if not t: return ""
+    # 1. استبدال رمز النبي بالجملة المشكولة
     t = t.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
     t = t.replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    t = re.sub(r'\[.*?\]|\(.*?\)|﴿.*?﴾', '', t)
-    t = re.sub(r'[a-zA-Z0-9*#@_\[\]\(\)]', '', t)
     
-    for wrong, correct in PRONUNCIATION_FIXES.items():
-        t = re.sub(rf'\b{wrong}\b', correct, t)
-        
-    t = re.sub(r"[ۖۗۘۙۚۛ۞]", "", t.replace("۝", " "))
+    # 2. إزالة الأقواس ومحتوياتها (مثل مراجع الآيات أو التلميحات)
+    t = re.sub(r'\[.*?\]', '', t, flags=re.DOTALL)
+    t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
+    t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
+    
+    # 3. مسح أي حرف غير عربي (حروف إنجليزية، أرقام، رموز إنجليزية)
+    # النمط ده بيسمح بس بالحروف العربية والمسافات وعلامات الترقيم العربية
+    t = re.sub(r'[^\u0600-\u06FF\s،؟۔!.]', '', t)
+    
+    # 4. تنظيف رموز الوقف القرآني (عشان ميتنطقش غلط)
+    t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " ", t)
+    
     return re.sub(r"\s+", " ", t).strip()
 
 def get_dur(p):
@@ -200,10 +198,10 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
-            # يوتيوب
+            # يوتيوب (المحرك المختار: جيميني أو إيدج)
             yt_chunk_timings = []
             for a in ayahs:
-                text_a = get_local_ayah_text(s, a)
+                text_a = sanitize_for_tts(get_local_ayah_text(s, a))
                 if not text_a: continue
                 
                 text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
@@ -232,7 +230,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             # سوشيال (بشري)
             soc_chunk_timings = []
             for a in ayahs:
-                text_a = get_local_ayah_text(s, a)
+                text_a = sanitize_for_tts(get_local_ayah_text(s, a))
                 if not text_a: continue
                 
                 cache_a = ep_cache / f"human_{s}_{a}.mp3"
