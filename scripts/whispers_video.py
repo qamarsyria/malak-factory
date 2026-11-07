@@ -7,7 +7,16 @@ from utilities import cleanup_dir
 
 def get_visual_query(category):
     if category == "romantic":
-        return random.choice(["rose garden butterflies", "romantic sunset love", "flowers blooming romantic"])
+        # 🌟 كلمات بحث للفيديوهات الرومانسية (بنات منقبات، فراشات، قلوب، زهور)
+        return random.choice([
+            "niqab woman flowers",       # بنت منقبة مع زهور
+            "muslim woman niqab garden", # بنت منقبة في حديقة
+            "butterflies flowers romantic", # فراشات وزهور
+            "rose petals falling",       # بتلات ورد متساقطة
+            "heart shape flowers",       # قلوب من الزهور
+            "romantic sunset love",      # غروب رومانسي
+            "flowers blooming romantic"  # زهور متفتحة
+        ])
     elif category == "dua":
         return random.choice(["islamic mosque sunset", "praying hands islamic", "quran book glowing"])
     else:
