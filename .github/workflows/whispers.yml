@@ -27,10 +27,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri
           pip install --upgrade pip
           pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
-          pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Whisper
         id: gen
@@ -41,7 +40,7 @@ jobs:
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
-            echo "❌ فشل توليد الهمسة"
+            echo "❌ فشل التوليد"
             exit 1
           fi
 
@@ -50,18 +49,23 @@ jobs:
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           python scripts/whispers_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
+      # 🌟 هنا السطر اللي كان ناقص - الفيديو
       - name: Build Video
         id: vid
         if: steps.aud.outcome == 'success'
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
           python scripts/whispers_video.py \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            "${{ steps.gen.outputs.EP_FILE }}" \
             "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
 
       - name: Upload to Telegram
