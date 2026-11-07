@@ -194,6 +194,9 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
         # ═══ 1. السرد (نستخدم المشكّل الذكي) ═══
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg.get("text", ""))
+# 🌟 إضافة التشكيل الذكي للسرد (يوميات وقصص)
+if text:
+    text = smart_diacritize(text)
             if not text: continue
             
             # 🌟 التعديل: تطبيق التشكيل الذكي على النص قبل القراءة
