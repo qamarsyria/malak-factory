@@ -1,0 +1,108 @@
+name: 🌙 همسات ملك
+
+on:
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+jobs:
+  whispers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      models: read
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
+          pip install --upgrade pip
+          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install --force-reinstall phonemizer==3.2.1
+
+      - name: Generate Whisper
+        id: gen
+        run: |
+          python -u scripts/generate_whispers.py
+          if [ -f out/latest_whisper.txt ]; then
+            EP_FILE=$(cat out/latest_whisper.txt)
+            echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
+            echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
+          else
+            echo "❌ فشل توليد الهمسة"
+            exit 1
+          fi
+
+      - name: Build Audio (Both)
+        id: aud
+        if: steps.gen.outputs.EP_FILE != ''
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TTS_ENGINE: "1"
+        run: |
+          python scripts/story_audio.py \
+            "${{ steps.gen.outputs.EP_FILE }}" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3"
+
+      - name: Build Video (YouTube)
+        id: vid_yt
+        if: steps.aud.outcome == 'success'
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+
+      - name: Build Video (Social)
+        id: vid_soc
+        if: steps.aud.outcome == 'success'
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+
+      - name: Upload to Telegram
+        id: tg
+        if: steps.vid_yt.outcome == 'success' && steps.vid_soc.outcome == 'success'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
+          TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','همسة جديدة'))")
+          
+          YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+          SIZE=$(stat -c%s "$YT_VIDEO")
+          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
+            ffmpeg -y -i "$YT_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
+            YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
+          fi
+          CAPTION_YT=$(printf "🌙 [همسات ملك]\n%s\n\n#همسات_ملك" "$TITLE")
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_VIDEO}" -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
+
+      - name: Cleanup
+        if: steps.tg.outcome == 'success'
+        run: |
+          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
+          rm -rf data/whispers/generated/*.json
+          rm -f out/latest_whisper.txt
