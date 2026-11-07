@@ -108,24 +108,52 @@ def download_human_ayah(surah, ayah, out_path):
     return False
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 دالة التنظيف الجذرية: تمسح أي حرف غير عربي (إنجليزي، أرقام، رموز)
+# 🌟 المشكّل الذكي: يستخدم LLM لإضافة التشكيل بناءً على المعنى
 # ═══════════════════════════════════════════════════════════
+def smart_diacritize(text):
+    if not text or not text.strip(): return text
+    if not re.search(r'[\u0600-\u06FF]', text): return text
+    
+    prompt = f"""أنت خبير في اللغة العربية والنحو والصرف.
+المهمة: أضف التشكيل الكامل (الحركات) للنص التالي بناءً على موقعه في الجملة (الإعراب).
+لا تغير أي كلمة، فقط أضف التشكيل الصحيح.
+رجع النص المشكول فقط، بدون أي شرح.
+
+النص:
+{text}
+"""
+    try:
+        from gemini_tts_pool import get_pool
+        pool = get_pool()
+        key = pool.get_current()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000}
+        }
+        r = requests.post(url, json=body, timeout=60)
+        if r.status_code == 200:
+            parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            if parts:
+                diacritized = parts[0].get("text", "").strip()
+                if diacritized and len(diacritized) > 5:
+                    return diacritized
+    except Exception as e:
+        print(f"   ⚠️ التشكيل الذكي فشل: {str(e)[:100]}", flush=True)
+    
+    return text
+
 def sanitize_for_tts(t):
     if not t: return ""
-    # 1. استبدال رمز النبي بالجملة المشكولة
     t = t.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
     t = t.replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
     
-    # 2. إزالة الأقواس ومحتوياتها (مثل مراجع الآيات أو التلميحات)
     t = re.sub(r'\[.*?\]', '', t, flags=re.DOTALL)
     t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
     t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
     
-    # 3. مسح أي حرف غير عربي (حروف إنجليزية، أرقام، رموز إنجليزية)
-    # النمط ده بيسمح بس بالحروف العربية والمسافات وعلامات الترقيم العربية
+    # إزالة أي حرف غير عربي (إنجليزي، أرقام، رموز)
     t = re.sub(r'[^\u0600-\u06FF\s،؟۔!.]', '', t)
-    
-    # 4. تنظيف رموز الوقف القرآني (عشان ميتنطقش غلط)
     t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " ", t)
     
     return re.sub(r"\s+", " ", t).strip()
@@ -163,9 +191,14 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         
+        # ═══ 1. السرد (نستخدم المشكّل الذكي) ═══
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg.get("text", ""))
             if not text: continue
+            
+            # 🌟 التعديل: تطبيق التشكيل الذكي على النص قبل القراءة
+            text = smart_diacritize(text)
+            
             chunks = split_text(text)
             chunk_timings = []
             
@@ -193,12 +226,13 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 yt_meta.append(meta_entry)
                 social_meta.append(meta_entry)
 
+        # ═══ 2. الآيات (من المكتبة المحلية، مشكولة أصلاً) ═══
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
-            # يوتيوب (المحرك المختار: جيميني أو إيدج)
+            # يوتيوب (المحرك المختار)
             yt_chunk_timings = []
             for a in ayahs:
                 text_a = sanitize_for_tts(get_local_ayah_text(s, a))
