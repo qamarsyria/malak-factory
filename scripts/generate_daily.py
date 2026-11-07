@@ -21,7 +21,7 @@ DREAMY_VISUALS = [
     "islamic architecture mosque sunset"
 ]
 
-# 🌟 تحميل مكتبة الآيات المحلية (مثل القصص)
+# 🌟 تحميل مكتبة الآيات المحلية
 _ayah_lib = []
 try:
     lib_path = LIBRARIES_DIR / "ayah-library.json.gz"
@@ -34,10 +34,15 @@ except Exception as e:
 
 def load_library(filename):
     path = LIBRARIES_DIR / filename
-    if not path.exists(): return []
+    if not path.exists(): 
+        print(f"⚠️ المكتبة غير موجودة: {path}")
+        return []
     try:
-        with gzip.open(path, "rt", encoding="utf-8") as f: return json.load(f)
-    except Exception: return []
+        with gzip.open(path, "rt", encoding="utf-8") as f: 
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ فشل تحميل {filename}: {e}")
+        return []
 
 def clean_text(text):
     if not text: return ""
@@ -82,37 +87,59 @@ def main():
     content_title = ""
     visual = random.choice(DREAMY_VISUALS)
 
+    # ═══════════════════════════════════════════════════════════
+    # 1. الحديث
+    # ═══════════════════════════════════════════════════════════
     if content_type == 0:
         lib = load_library("hadith-library.json.gz")
         item, used_list = pick_unused(lib, "text", used_list, 100, 1500)
-        if not item: sys.exit(1)
+        if not item: 
+            print("❌ لا يوجد حديث صالح.")
+            sys.exit(1)
         content_title = f"حديث: {item.get('chapter', 'من صحيح البخاري ومسلم')}"
         segments.append({"type": "narration", "text": "في هذا المقطع، نتوقف مع حديث نبوي شريف، يضيء لنا الطريق.", "visual": visual})
         segments.append({"type": "hadith", "text": clean_text(item["text"]), "display": item.get("book", "صحيح"), "visual": visual})
         segments.append({"type": "narration", "text": f"رواه {item.get('book', '')}، في {item.get('chapter', '')}.", "visual": visual})
 
+    # ═══════════════════════════════════════════════════════════
+    # 2. الفقه (سؤال وجواب - من IslamQA)
+    # ═══════════════════════════════════════════════════════════
     elif content_type == 1:
         lib = load_library("fiqh-library.json.gz")
         item, used_list = pick_unused(lib, "answer", used_list, 200, 1500)
-        if not item: sys.exit(1)
-        content_title = "فائدة فقهية"
-        segments.append({"type": "narration", "text": "كثيراً ما يبحث المسلم عن إجابة شافية، في مسألة فقهية.", "visual": visual})
-        segments.append({"type": "narration", "text": clean_text(item["question"]), "visual": visual})
-        segments.append({"type": "fiqh", "text": clean_text(item["answer"]), "display": "منهج السلف", "visual": visual})
+        if not item: 
+            print("❌ لا يوجد سؤال وجواب صالح.")
+            sys.exit(1)
+            
+        # عنوان يعرض جزء من السؤال
+        q_text = clean_text(item.get("question", ""))
+        content_title = f"سؤال وجواب: {q_text[:50]}..."
+        
+        # مقدمة
+        segments.append({"type": "narration", "text": "في هذا المقطع، نجيب على سؤال يتردد على ألسنة الكثيرين.", "visual": visual})
+        
+        # السؤال
+        segments.append({"type": "narration", "text": f"السؤال: {q_text}", "visual": visual})
+        
+        # الجواب
+        segments.append({"type": "fiqh", "text": f"الجواب: {clean_text(item['answer'])}", "display": "منهج السلف", "visual": visual})
 
+    # ═══════════════════════════════════════════════════════════
+    # 3. القرآن (آية وحكاية)
+    # ═══════════════════════════════════════════════════════════
     elif content_type == 2:
-        # 🌟 3. آية وحكاية (من الملف المحلي وبشكل مصحح)
         if not _ayah_lib:
             print("❌ مكتبة الآيات المحلية فارغة!")
             sys.exit(1)
             
-        # نختار آية تحتوي على تفسير
         valid_ayat = [i for i in _ayah_lib if i.get("tafsir") and len(i.get("tafsir")) > 50]
         if not valid_ayat:
             valid_ayat = _ayah_lib
             
         item, used_list = pick_unused(valid_ayat, "tafsir", used_list, 50, 1500)
-        if not item: sys.exit(1)
+        if not item: 
+            print("❌ لا توجد آية صالحة.")
+            sys.exit(1)
         
         surah_name = item["surah_name"].replace("سورة ", "").replace("سُورَةُ ", "").strip()
         surah_num = item["surah_number"]
@@ -121,18 +148,25 @@ def main():
         content_title = f"آية وحكاية: سورة {surah_name}"
         
         segments.append({"type": "narration", "text": f"في سورة {surah_name}، يقول الله تعالى:", "visual": visual})
-        # 🌟 تمرير أرقام السورة والآية لكي يتعرف عليها محرك الصوت ويقرأها
         segments.append({"type": "quran", "surah": surah_num, "surah_name": surah_name, "ayah_numbers": [ayah_num], "display": f"{surah_name}: {ayah_num}", "visual": visual})
         segments.append({"type": "narration", "text": f"يقول التفسير الميسر: {clean_text(item['tafsir'])}", "visual": visual})
 
+    # ═══════════════════════════════════════════════════════════
+    # 4. الأذكار
+    # ═══════════════════════════════════════════════════════════
     else:
         lib = load_library("adhkar-library.json.gz")
         item, used_list = pick_unused(lib, "text", used_list, 20, 800)
-        if not item: sys.exit(1)
+        if not item: 
+            print("❌ لا يوجد ذكر صالح.")
+            sys.exit(1)
         content_title = f"ذكر: {item.get('category', 'من حصن المسلم')}"
         segments.append({"type": "narration", "text": "من أذكار حصن المسلم، التي تطمئن بها القلوب.", "visual": visual})
         segments.append({"type": "adhkar", "text": clean_text(item["text"]), "display": item.get("reference", ""), "visual": visual})
 
+    # ═══════════════════════════════════════════════════════════
+    # الخاتمة
+    # ═══════════════════════════════════════════════════════════
     segments.append({"type": "cta", "text": "قال رسول الله ﷺ: «مَن دَلَّ على خيرٍ فله مثلُ أجرِ فاعِلِه». شارك المقطع لتعم الفائدة. ملاك المعرفة.", "visual": "mosque architecture sunset"})
 
     ep_data = {"episode_number": 1, "story_id": "daily", "title": content_title, "segments": segments}
