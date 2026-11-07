@@ -108,7 +108,7 @@ def download_human_ayah(surah, ayah, out_path):
     return False
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 المشكّل الذكي: يستخدم LLM لإضافة التشكيل بناءً على المعنى
+# 🌟 المشكّل الذكي
 # ═══════════════════════════════════════════════════════════
 def smart_diacritize(text):
     if not text or not text.strip(): return text
@@ -140,7 +140,6 @@ def smart_diacritize(text):
                     return diacritized
     except Exception as e:
         print(f"   ⚠️ التشكيل الذكي فشل: {str(e)[:100]}", flush=True)
-    
     return text
 
 def sanitize_for_tts(t):
@@ -152,7 +151,6 @@ def sanitize_for_tts(t):
     t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
     t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
     
-    # إزالة أي حرف غير عربي (إنجليزي، أرقام، رموز)
     t = re.sub(r'[^\u0600-\u06FF\s،؟۔!.]', '', t)
     t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " ", t)
     
@@ -191,15 +189,13 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         
-        # ═══ 1. السرد (نستخدم المشكّل الذكي) ═══
+        # ═══ 1. السرد ═══
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg.get("text", ""))
-# 🌟 إضافة التشكيل الذكي للسرد (يوميات وقصص)
-if text:
-    text = smart_diacritize(text)
-            if not text: continue
+            if not text: 
+                continue
             
-            # 🌟 التعديل: تطبيق التشكيل الذكي على النص قبل القراءة
+            # 🌟 التشكيل الذكي (مرة واحدة فقط)
             text = smart_diacritize(text)
             
             chunks = split_text(text)
@@ -229,13 +225,12 @@ if text:
                 yt_meta.append(meta_entry)
                 social_meta.append(meta_entry)
 
-        # ═══ 2. الآيات (من المكتبة المحلية، مشكولة أصلاً) ═══
+        # ═══ 2. الآيات ═══
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
-            # يوتيوب (المحرك المختار)
             yt_chunk_timings = []
             for a in ayahs:
                 text_a = sanitize_for_tts(get_local_ayah_text(s, a))
@@ -264,7 +259,6 @@ if text:
             if yt_chunk_timings:
                 yt_meta.append({"index": idx, "type": stype, "display": display, "chunks": yt_chunk_timings})
 
-            # سوشيال (بشري)
             soc_chunk_timings = []
             for a in ayahs:
                 text_a = sanitize_for_tts(get_local_ayah_text(s, a))
