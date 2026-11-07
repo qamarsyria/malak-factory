@@ -1,12 +1,13 @@
 {
-  "run_count": 5,
+  "run_count": 6,
   "used_ids": {
     "hadith": [
       "muslim-06072",
       "muslim-06405"
     ],
     "fiqh": [
-      "fiqh-40224"
+      "fiqh-40224",
+      "fiqh-33263"
     ],
     "quran": [
       "ayah-006-108"
