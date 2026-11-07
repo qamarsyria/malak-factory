@@ -91,8 +91,14 @@ def fetch_media(query, work_dir, used_urls):
             random.shuffle(hits)
             for hit in hits:
                 tags = hit.get("tags", "").lower()
+                # 🌟 التعديل 1: منع أي ظهور للنساء أو الأطفال أو الوجوه (إلا لو البحث عن niqab)
                 if "niqab" not in query:
-                    if any(bad in tags for bad in ["man", "woman", "person", "people", "face", "child", "boy", "girl", "human"]):
+                    forbidden = [
+                        "man", "men", "woman", "women", "girl", "girls", "female", 
+                        "lady", "ladies", "person", "people", "human", "child", 
+                        "children", "boy", "boys", "kid", "baby", "face", "crowd"
+                    ]
+                    if any(bad in tags for bad in forbidden):
                         continue
                         
                 url = hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url")
@@ -144,8 +150,9 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
     chunk_text = re.sub(r'[a-zA-Z0-9]', '', chunk_text).strip()
     chunk_text = chunk_text.replace("ﷺ", "صلى الله عليه وسلم ")
     
+    # 🌟 التعديل 2: مسح أي حرف إنجليزي أو رقم من مرجع الآية
     if display_ref:
-        display_ref = re.sub(r'[a-zA-Z]', '', display_ref).strip()
+        display_ref = re.sub(r'[a-zA-Z0-9]', '', display_ref).strip()
     
     if not chunk_text and not is_quran: 
         overlay.save(out_path); return
@@ -243,11 +250,6 @@ def build_video(audio_path, meta_path, output_mp4):
     finally:
         cleanup_dir(work_dir)
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 السطور دي هي اللي بتشغل السكربت (اتأكد إنها موجودة في آخر الملف)
-# ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    if len(sys.argv) < 4: 
-        print("❌ الاستخدام: story_video.py <audio> <meta> <out>")
-        sys.exit(1)
+    if len(sys.argv) < 4: sys.exit(1)
     build_video(sys.argv[1], sys.argv[2], sys.argv[3])
