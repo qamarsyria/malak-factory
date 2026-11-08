@@ -8,31 +8,53 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir
 
-TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
+# ═══════════════════════════════════════════════════════════
+# 🌟 محرك جيميني فقط (بدون بدائل)
+# ═══════════════════════════════════════════════════════════
+from gemini_tts_pool import gemini_tts_with_pool
 
-if TTS_ENGINE == "1":
-    print("🔊 [TTS] المحرك: Gemini (الجودة العالية)", flush=True)
-    from gemini_tts_pool import gemini_tts_with_pool as _engine_generate
-    def generate_audio(text, out_path):
-        try:
-            _engine_generate(text, out_path)
-            return True
-        except Exception as e:
-            print(f"   ⚠️ Gemini فشل: {str(e)[:100]}", flush=True)
-            return False
-else:
-    print("🔊 [TTS] المحرك: Edge TTS (البديل السريع)", flush=True)
-    import edge_tts
-    def generate_audio(text, out_path):
-        try:
-            async def _run():
-                comm = edge_tts.Communicate(text, "ar-SY-LaithNeural", rate="-5%")
-                await comm.save(out_path)
-            asyncio.run(_run())
-            return Path(out_path).exists() and Path(out_path).stat().st_size > 1000
-        except Exception as e:
-            print(f"   ⚠️ Edge فشل: {str(e)[:100]}", flush=True)
-            return False
+def generate_audio(text, out_path):
+    try:
+        gemini_tts_with_pool(text, out_path)
+        return Path(out_path).exists() and Path(out_path).stat().st_size > 1000
+    except Exception as e:
+        print(f"   ⚠️ Gemini فشل: {str(e)[:100]}", flush=True)
+        return False
+
+# ═══════════════════════════════════════════════════════════
+# 🌟 التشكيل التلقائي (لضمان نطق السرد صح)
+# ═══════════════════════════════════════════════════════════
+def smart_diacritize(text):
+    if not text or not text.strip(): return text
+    if not re.search(r'[\u0600-\u06FF]', text): return text
+    
+    prompt = f"""أنت خبير في اللغة العربية والنحو والصرف.
+المهمة: أضف التشكيل الكامل (الحركات) للنص التالي بناءً على موقعه في الجملة (الإعراب).
+لا تغير أي كلمة، فقط أضف التشكيل الصحيح.
+رجع النص المشكول فقط، بدون أي شرح.
+
+النص:
+{text}
+"""
+    try:
+        from gemini_tts_pool import get_pool
+        pool = get_pool()
+        key = pool.get_current()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000}
+        }
+        r = requests.post(url, json=body, timeout=60)
+        if r.status_code == 200:
+            parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            if parts:
+                diacritized = parts[0].get("text", "").strip()
+                if diacritized and len(diacritized) > 5:
+                    return diacritized
+    except Exception as e:
+        print(f"   ⚠️ التشكيل الذكي فشل: {str(e)[:100]}", flush=True)
+    return text
 
 TARGET_SR = "24000"
 SILENCE_DUR = 0.15 
@@ -56,6 +78,9 @@ except Exception as e:
 def get_local_ayah_text(surah, ayah): return _ayah_lib.get(f"{surah}:{ayah}", "")
 
 def trim_and_fade(input_wav, output_wav, speed_up=False, is_last=False):
+    # 🌟 حماية: لو الملف مش موجود، نرجع False بدل ما نعمل كراش
+    if not Path(input_wav).exists():
+        return False
     try:
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_wav], capture_output=True, text=True)
         dur = float(probe.stdout.strip() or 0)
@@ -72,7 +97,8 @@ def trim_and_fade(input_wav, output_wav, speed_up=False, is_last=False):
             shutil.copy(input_wav, output_wav)
             return True
     except: 
-        shutil.copy(input_wav, output_wav)
+        try: shutil.copy(input_wav, output_wav)
+        except: pass
         return False
 
 def apply_mosque_reverb(input_wav, output_wav):
@@ -147,9 +173,13 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         
+        # ═══ 1. السرد ═══
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg.get("text", ""))
             if not text: continue
+            
+            print(f"📝 تشكيل السرد {idx+1}...")
+            text = smart_diacritize(text)
             
             chunks = split_text(text)
             chunk_timings = []
@@ -168,16 +198,17 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                     
                 if cached_wav.exists():
                     faded = work / f"faded_{idx}_{c_idx}.wav"
-                    trim_and_fade(str(cached_wav), str(faded), speed_up=False, is_last=is_last_chunk)
-                    yt_wavs.extend([faded, silence_path])
-                    social_wavs.extend([faded, silence_path])
-                    chunk_timings.append({"text": chunk, "duration": get_dur(faded) + SILENCE_DUR})
+                    if trim_and_fade(str(cached_wav), str(faded), speed_up=False, is_last=is_last_chunk):
+                        yt_wavs.extend([faded, silence_path])
+                        social_wavs.extend([faded, silence_path])
+                        chunk_timings.append({"text": chunk, "duration": get_dur(faded) + SILENCE_DUR})
             
             if chunk_timings:
                 meta_entry = {"index": idx, "type": stype, "display": "", "chunks": chunk_timings}
                 yt_meta.append(meta_entry)
                 social_meta.append(meta_entry)
 
+        # ═══ 2. الآيات ═══
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             if not ayahs: continue
@@ -192,16 +223,22 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
                 cache_a = ep_cache / f"engine_{s}_{a}_{text_hash}.wav"
                     
-                if not cache_a.exists():
+                if not cache_a.exists() or cache_a.stat().st_size < 1000:
                     tmp_mp3 = work / "tmp_yt.mp3"
-                    # 🌟 التعديل السحري لمنع اللغة الإنجليزية
-                    prompt = f"بصوت عربي فصيح: {text_a}"
-                    if generate_audio(prompt, str(tmp_mp3)):
+                    # 🌟 نص الآية الصافي فقط بدون أي إضافات
+                    if generate_audio(text_a, str(tmp_mp3)):
                         subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
+                    else:
+                        print(f"   ⏭️ تخطي الآية {s}:{a} (فشل التوليد)")
+                        continue # 🌟 تخطي بدل الكراش
                     time.sleep(1)
                 
+                if not cache_a.exists():
+                    continue
+                
                 trimmed_a = ep_cache / f"trimmed_yt_{s}_{a}_{text_hash}.wav"
-                trim_and_fade(str(cache_a), str(trimmed_a), speed_up=True, is_last=True) 
+                if not trim_and_fade(str(cache_a), str(trimmed_a), speed_up=True, is_last=True):
+                    continue
                 
                 final_a = ep_cache / f"final_yt_{s}_{a}_{text_hash}.wav"
                 if not final_a.exists():
@@ -224,7 +261,8 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 if not download_human_ayah(s, a, str(cache_a)): continue
                 
                 trimmed_h = ep_cache / f"trimmed_human_{s}_{a}.wav"
-                trim_and_fade(str(cache_a), str(trimmed_h), speed_up=True, is_last=True)
+                if not trim_and_fade(str(cache_a), str(trimmed_h), speed_up=True, is_last=True):
+                    continue
 
                 stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
                 reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
