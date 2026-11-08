@@ -8,9 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import QURAN_API
 from utilities import cleanup_dir
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 مفتاح التبديل: 1 = Gemini | 2 = Edge TTS
-# ═══════════════════════════════════════════════════════════
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
 
 if TTS_ENGINE == "1":
@@ -107,53 +104,14 @@ def download_human_ayah(surah, ayah, out_path):
     except: pass
     return False
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 المشكّل الذكي
-# ═══════════════════════════════════════════════════════════
-def smart_diacritize(text):
-    if not text or not text.strip(): return text
-    if not re.search(r'[\u0600-\u06FF]', text): return text
-    
-    prompt = f"""أنت خبير في اللغة العربية والنحو والصرف.
-المهمة: أضف التشكيل الكامل (الحركات) للنص التالي بناءً على موقعه في الجملة (الإعراب).
-لا تغير أي كلمة، فقط أضف التشكيل الصحيح.
-رجع النص المشكول فقط، بدون أي شرح.
-
-النص:
-{text}
-"""
-    try:
-        from gemini_tts_pool import get_pool
-        pool = get_pool()
-        key = pool.get_current()
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
-        body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000}
-        }
-        r = requests.post(url, json=body, timeout=60)
-        if r.status_code == 200:
-            parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-            if parts:
-                diacritized = parts[0].get("text", "").strip()
-                if diacritized and len(diacritized) > 5:
-                    return diacritized
-    except Exception as e:
-        print(f"   ⚠️ التشكيل الذكي فشل: {str(e)[:100]}", flush=True)
-    return text
-
 def sanitize_for_tts(t):
     if not t: return ""
     t = t.replace("ﷺ", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    t = t.replace("صلى الله عليه وسلم", "صَلَّى اللَّهُ عَلَيْهِ وَسَلَّمَ")
-    
     t = re.sub(r'\[.*?\]', '', t, flags=re.DOTALL)
     t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
     t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
-    
     t = re.sub(r'[^\u0600-\u06FF\s،؟۔!.]', '', t)
     t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " ", t)
-    
     return re.sub(r"\s+", " ", t).strip()
 
 def get_dur(p):
@@ -189,20 +147,15 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         
-        # ═══ 1. السرد ═══
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg.get("text", ""))
-            if not text: 
-                continue
-            
-            # 🌟 التشكيل الذكي (مرة واحدة فقط)
-            text = smart_diacritize(text)
+            if not text: continue
             
             chunks = split_text(text)
             chunk_timings = []
             
             for c_idx, chunk in enumerate(chunks):
-                if not chunk.strip() or not re.search(r'[\u0600-\u06FF]', chunk): continue
+                if not chunk.strip(): continue
                 text_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()[:8]
                 is_last_chunk = (c_idx == len(chunks) - 1)
                 cached_wav = ep_cache / f"seg_{idx}_{c_idx}_{text_hash}.wav"
@@ -225,12 +178,12 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 yt_meta.append(meta_entry)
                 social_meta.append(meta_entry)
 
-        # ═══ 2. الآيات ═══
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
+            # يوتيوب (جيميني)
             yt_chunk_timings = []
             for a in ayahs:
                 text_a = sanitize_for_tts(get_local_ayah_text(s, a))
@@ -241,7 +194,9 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                     
                 if not cache_a.exists():
                     tmp_mp3 = work / "tmp_yt.mp3"
-                    if generate_audio(text_a, str(tmp_mp3)):
+                    # 🌟 التعديل السحري لمنع اللغة الإنجليزية
+                    prompt = f"بصوت عربي فصيح: {text_a}"
+                    if generate_audio(prompt, str(tmp_mp3)):
                         subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
                     time.sleep(1)
                 
@@ -259,9 +214,10 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
             if yt_chunk_timings:
                 yt_meta.append({"index": idx, "type": stype, "display": display, "chunks": yt_chunk_timings})
 
+            # سوشيال (بشري)
             soc_chunk_timings = []
             for a in ayahs:
-                text_a = sanitize_for_tts(get_local_ayah_text(s, a))
+                text_a = get_local_ayah_text(s, a)
                 if not text_a: continue
                 
                 cache_a = ep_cache / f"human_{s}_{a}.mp3"
