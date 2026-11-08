@@ -52,6 +52,13 @@ def get_duration(path):
     try: return float(r.stdout.strip())
     except: return 0.0
 
+# 🌟 فلترة صارمة للمشاهد
+def is_video_safe(tags):
+    tags_lower = tags.lower()
+    blacklist = ["skeleton", "skull", "bone", "robot", "cyborg", "alien", "zombie", "horror", "scary", "creepy", "monster", "demon", "ghost", "devil", "satan", "occult", "gore", "blood", "war", "military", "weapon", "gun", "bomb", "fight", "death", "dead", "graveyard", "cemetery", "haunted", "witch", "vampire", "werewolf", "clown", "snake", "spider", "dark"]
+    if any(bad in tags_lower for bad in blacklist): return False
+    return True
+
 def get_visual_query(seg):
     stype = seg.get("type")
     text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
@@ -90,16 +97,12 @@ def fetch_media(query, work_dir, used_urls):
             hits = r.json().get("hits", [])
             random.shuffle(hits)
             for hit in hits:
-                tags = hit.get("tags", "").lower()
-                # 🌟 التعديل 1: منع أي ظهور للنساء أو الأطفال أو الوجوه (إلا لو البحث عن niqab)
+                tags = hit.get("tags", "")
+                
+                if not is_video_safe(tags): continue
+                
                 if "niqab" not in query:
-                    forbidden = [
-                        "man", "men", "woman", "women", "girl", "girls", "female", 
-                        "lady", "ladies", "person", "people", "human", "child", 
-                        "children", "boy", "boys", "kid", "baby", "face", "crowd"
-                    ]
-                    if any(bad in tags for bad in forbidden):
-                        continue
+                    if any(bad in tags.lower() for bad in ["man", "woman", "person", "people", "face", "child", "boy", "girl", "human"]): continue
                         
                 url = hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url")
                 if not url or url in used_urls: continue
@@ -137,22 +140,21 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    if not FONT_PATH:
-        raise RuntimeError("لا يمكن رسم النص بدون خط عربي.")
+    if not FONT_PATH: raise RuntimeError("لا يمكن رسم النص بدون خط عربي.")
 
+    # 🌟 تم إصلاح السطر ده عشان الأرقام تظهر
     if ep_title:
-        ep_title = re.sub(r'[a-zA-Z0-9]', '', ep_title)
-        try: ft = ImageFont.truetype(FONT_PATH, 38, layout_engine=ImageFont.Layout.RAQM)
-        except: ft = ImageFont.truetype(FONT_PATH, 38)
+        ep_title = re.sub(r'[a-zA-Z]', '', ep_title) 
+        try: ft = ImageFont.truetype(FONT_PATH, 45, layout_engine=ImageFont.Layout.RAQM)
+        except: ft = ImageFont.truetype(FONT_PATH, 45)
         _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black")
 
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
-    chunk_text = re.sub(r'[a-zA-Z0-9]', '', chunk_text).strip()
+    chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
     chunk_text = chunk_text.replace("ﷺ", "صلى الله عليه وسلم ")
     
-    # 🌟 التعديل 2: مسح أي حرف إنجليزي أو رقم من مرجع الآية
     if display_ref:
-        display_ref = re.sub(r'[a-zA-Z0-9]', '', display_ref).strip()
+        display_ref = re.sub(r'[a-zA-Z]', '', display_ref).strip()
     
     if not chunk_text and not is_quran: 
         overlay.save(out_path); return
@@ -206,7 +208,7 @@ def build_video(audio_path, meta_path, output_mp4):
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.endswith(('.jpg', '.jpeg', '.png'))
-                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(temp_bg)]
+                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=30,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
                 
@@ -245,7 +247,7 @@ def build_video(audio_path, meta_path, output_mp4):
 
         audio_dur = get_duration(audio_path)
         (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "faster", "-crf", "28", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
         print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
         cleanup_dir(work_dir)
