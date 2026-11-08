@@ -7,7 +7,7 @@ on:
 
 jobs:
   produce:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # 🌟 تم التعديل من latest إلى 22.04
     timeout-minutes: 180
     
     permissions:
@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install requests pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Story (Gemini)
@@ -48,32 +48,40 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Both)
+      - name: Build Audio (Both) - Gemini TTS
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TTS_ENGINE: "1" # 🌟 1 = Gemini | 2 = Edge TTS (اختر 1 لما الحصة تتجدد)
         run: |
           python scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
             "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3"
 
-      # 🌟 هنا الحل: استخدمنا && لضمان تنفيذ السطرين في أمر واحد
       - name: Build Video (YouTube)
         id: vid_yt
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: mkdir -p videos && python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
 
       - name: Build Video (Social)
         id: vid_soc
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: mkdir -p videos && python scripts/story_video.py "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
+            "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
+            "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
 
       - name: Upload to Telegram
         id: tg
