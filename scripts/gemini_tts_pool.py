@@ -6,9 +6,6 @@ import requests
 MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 24 * 3600
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 اللغة العربية الفصحى (إجبار)
-# ═══════════════════════════════════════════════════════════
 LANGUAGE_CODE = "ar-XA"
 
 _last_request_time = 0
@@ -42,19 +39,15 @@ class GeminiKeyPool:
         for _ in range(10): 
             key = self._available_key()
             if key: return key
-            
             if not self.cooldowns:
-                raise RuntimeError("🚫 جميع المفاتيح مستنفدة أو محظورة (قائمة الانتظار فارغة).")
-                
+                raise RuntimeError("🚫 جميع المفاتيح مستنفدة أو محظورة.")
             soonest = min(self.cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             if wait > 3600: raise RuntimeError("🚫 كل مفاتيح Gemini مستنفدة لليوم!")
-            print(f"   ⏳ انتظار {wait} ثانية لتجنب Rate Limit...", flush=True)
             time.sleep(wait + 2)
-        raise RuntimeError("❌ فشل الحصول على مفتاح Gemini متاح")
+        raise RuntimeError("❌ فشل الحصول على مفتاح")
 
     def _advance(self) -> None: self.current_index = (self.current_index + 1) % len(self.keys)
-    
     def mark_failed(self, cooldown_seconds: int = 65) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
@@ -66,64 +59,35 @@ def get_pool() -> GeminiKeyPool:
     if _pool is None: _pool = GeminiKeyPool()
     return _pool
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 الاكتشاف التلقائي لنماذج TTS (كل 24 ساعة)
-# ═══════════════════════════════════════════════════════════
 def discover_tts_models(prefer_lite: bool = False) -> list[str]:
     cache_path = Path(MODEL_CACHE_FILE)
-    
-    # 1. تحقق من الكاش أولاً
     if cache_path.exists():
         try:
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
             age = time.time() - cache.get("timestamp", 0)
             if age < MODEL_CACHE_TTL and cache.get("models"):
-                _log(f"📋 نماذج TTS من الكاش: {cache['models']}")
                 return cache["models"]
         except: pass
     
-    # 2. اسأل Gemini عن النماذج المتاحة
     try:
         key = get_pool().get_current()
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         r = requests.get(url, timeout=20)
-        
         if r.status_code == 200:
             all_models = r.json().get("models", [])
             tts_models = []
-            
             for m in all_models:
                 name = m.get("name", "").replace("models/", "")
                 methods = m.get("supportedGenerationMethods", [])
-                
-                # شرطين: يدعم generateContent + يحتوي على "tts" في الاسم
                 if "generateContent" in methods and "tts" in name.lower():
                     tts_models.append(name)
-            
             if tts_models:
-                # احفظ في الكاش
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(json.dumps({
-                    "models": tts_models,
-                    "timestamp": time.time()
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-                
-                _log(f"✅ اكتُشفت {len(tts_models)} نماذج TTS: {tts_models}")
+                cache_path.write_text(json.dumps({"models": tts_models, "timestamp": time.time()}), encoding="utf-8")
                 return tts_models
-            else:
-                _log("⚠️ لم يتم العثور على نماذج TTS في API")
-        else:
-            _log(f"⚠️ فشل سؤال API: HTTP {r.status_code}")
-    except Exception as e:
-        _log(f"⚠️ خطأ في الاكتشاف: {e}")
-    
-    # 3. Fallback: النموذج المعروف
-    _log("⚠️ استخدام النموذج الاحتياطي")
+    except: pass
     return ["gemini-2.5-flash-preview-tts"]
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 تقسيم النص (150 حرف - زي ما كان)
-# ═══════════════════════════════════════════════════════════
 def _split_text(text: str, max_chars: int = 150) -> list[str]:
     text = text.strip()
     if not text: return []
@@ -156,15 +120,28 @@ def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
     except: return False
 
 def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
+    # 🌟 فلترة صارمة: مسح كل رموز التجويد والحروف غير العربية
+    clean_text = re.sub(r'[\u06D6-\u06ED]', ' ', text)
+    clean_text = re.sub(r'[^\u0621-\u064A\u064B-\u0652\u0670\s]', '', clean_text)
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+    
+    if not clean_text: return False
+
     models = discover_tts_models()
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         body = {
-            "contents": [{"parts": [{"text": text}]}],
+            # 🌟 أمر صارم لجيميني: اقرأ فقط ولا تتحدث بأي لغة أخرى
+            "systemInstruction": {
+                "parts": [{
+                    "text": "أنت قارئ قرآن. اقرأ النص العربي فقط بصوت ترتيل هادئ. لا تضف أي شرح أو ترجمة أو تعليق. لا تتحدث بأي لغة أخرى غير العربية. انطق النص فقط كما هو."
+                }]
+            },
+            "contents": [{"parts": [{"text": clean_text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {
-                    "languageCode": LANGUAGE_CODE,  # 🌟 إجبار العربية
+                    "languageCode": LANGUAGE_CODE,
                     "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}},
                 },
             },
@@ -190,21 +167,16 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
                 wf.writeframes(raw)
             
-            # 🌟 تحقق من طول الصوت (0.3 ثانية على الأقل)
             try:
                 probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(out_wav)], capture_output=True, text=True, timeout=10)
                 audio_dur = float(probe.stdout.strip() or 0)
                 if audio_dur < 0.3:
-                    _log(f"⚠️ صوت قصير جداً ({audio_dur:.2f}s): {text[:40]}")
                     out_wav.unlink(missing_ok=True)
                     continue
             except: pass
             
             return True
-        except requests.exceptions.Timeout:
-            continue
-        except Exception: 
-            continue
+        except: continue
     return False
 
 def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
@@ -224,19 +196,14 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
         for attempt in range(len(pool.keys) * 3): 
             try: key = pool.get_current()
             except Exception as e: 
-                print(f"   ⚠️ {str(e)}", flush=True)
                 time.sleep(10); continue
             try: result = _tts_single(chunk, wav_path, voice, key)
             except: pool.mark_failed(65); continue
 
             if result == "RATE_LIMIT": 
-                pool.mark_failed(65)
-                continue
-                
+                pool.mark_failed(65); continue
             if result is True: 
-                success = True
-                break
-                
+                success = True; break
             pool.mark_failed(65)
 
         if not success: 
