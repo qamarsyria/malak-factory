@@ -7,9 +7,8 @@ on:
 
 jobs:
   produce:
-    runs-on: ubuntu-22.04 # 🌟 تم التعديل من latest إلى 22.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
-    
     permissions:
       models: read
       contents: write
@@ -33,7 +32,7 @@ jobs:
           pip install requests pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
-      - name: Generate Story (Gemini)
+      - name: Generate Story
         id: gen
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -44,90 +43,82 @@ jobs:
             echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
             echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
           else
-            echo "❌ فشل توليد ملف الحلقة"
             exit 1
           fi
 
-      - name: Build Audio (Both) - Gemini TTS
-        id: aud
+      # 🌟 1. بناء السوشيال (سرد + بشري)
+      - name: Build Social Audio (Narration + Human)
+        id: soc_aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
           python scripts/story_audio.py \
-            "${{ steps.gen.outputs.EP_FILE }}" \
-            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
-            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3"
+            --mode human \
+            --json "${{ steps.gen.outputs.EP_FILE }}" \
+            --out_audio "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            --out_meta "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json"
 
-      - name: Build Video (YouTube)
-        id: vid_yt
-        if: steps.aud.outcome == 'success'
+      - name: Build Social Video
+        if: steps.soc_aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
           python scripts/story_video.py \
-            "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
-            "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
-            "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
+            "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
+            "videos/social_${{ steps.gen.outputs.EP_NAME }}.mp4"
 
-      - name: Build Video (Social)
-        id: vid_soc
-        if: steps.aud.outcome == 'success'
+      # 🌟 2. بناء اليوتيوب (سرد + جيميني)
+      - name: Build YouTube Audio (Narration + Gemini)
+        id: yt_aud
+        if: steps.gen.outputs.EP_FILE != ''
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+        run: |
+          python scripts/story_audio.py \
+            --mode gemini \
+            --json "${{ steps.gen.outputs.EP_FILE }}" \
+            --out_audio "out/yt_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            --out_meta "out/yt_${{ steps.gen.outputs.EP_NAME }}_meta.json"
+
+      - name: Build YouTube Video
+        if: steps.yt_aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
           python scripts/story_video.py \
-            "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
-            "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json" \
-            "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
+            "out/yt_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            "out/yt_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
+            "videos/yt_${{ steps.gen.outputs.EP_NAME }}.mp4"
 
       - name: Upload to Telegram
-        id: tg
-        if: steps.vid_yt.outcome == 'success' && steps.vid_soc.outcome == 'success'
+        if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          META="out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
-          TITLE=$(python -c "import json; print(json.load(open('$META')).get('title','حلقة جديدة'))")
-          
-          YT_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4"
-          YT_UPLOAD="$YT_VIDEO"
-          SIZE=$(stat -c%s "$YT_VIDEO")
-          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
-            YT_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_yt_tg.mp4"
-            ffmpeg -y -i "$YT_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$YT_COMPRESSED"
-            YT_UPLOAD="$YT_COMPRESSED"
-          fi
-          CAPTION_YT=$(printf "🎬 [نسخة اليوتيوب]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${YT_UPLOAD}" -F "caption=${CAPTION_YT}" -F "supports_streaming=true"
-
-          SOC_VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4"
-          SOC_UPLOAD="$SOC_VIDEO"
-          SIZE=$(stat -c%s "$SOC_VIDEO")
-          if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
-            SOC_COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_social_tg.mp4"
-            ffmpeg -y -i "$SOC_VIDEO" -vf "scale=-2:720" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$SOC_COMPRESSED"
-            SOC_UPLOAD="$SOC_COMPRESSED"
-          fi
-          CAPTION_SOC=$(printf "🎬 [نسخة فيسبوك/تيك توك]\n%s\n\n#قصص_الأنبياء #ملاك_المعرفة" "$TITLE")
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${SOC_UPLOAD}" -F "caption=${CAPTION_SOC}" -F "supports_streaming=true"
+          # نرفع كل الملفات لوحدها عشان تسمع الفرق
+          for f in out/social_*.mp3 out/yt_*.mp3 videos/*.mp4; do
+            if [ -f "$f" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${TELEGRAM_CHAT_ID}" -F "document=@${f}" -F "caption=📁 $(basename $f)"
+            fi
+          done
 
       - name: Commit State
-        if: steps.tg.outcome == 'success'
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          python scripts/finalize_episode.py "${{ steps.gen.outputs.EP_FILE }}"
+          python scripts/finalize_episode.py "${{ steps.gen.outputs.EP_FILE }}" || true
           git add state/ || true
           git commit -m "🎬 ${{ steps.gen.outputs.EP_NAME }}" || echo "لا تغييرات"
           git push || true
 
       - name: Cleanup
-        if: steps.tg.outcome == 'success'
+        if: always()
         run: |
-          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json
-          rm -rf data/stories/generated/*.json
-          rm -f out/latest_episode.txt
+          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json data/stories/generated/*.json out/latest_episode.txt
