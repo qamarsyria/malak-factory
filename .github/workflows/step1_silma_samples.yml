@@ -6,7 +6,7 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360   # رُفع من 90 إلى 360 دقيقة
+    timeout-minutes: 360
 
     steps:
       - name: Checkout
@@ -24,23 +24,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install PyTorch (CPU)
+      # 1) تثبيت PyTorch CPU أولاً (النسخة المرجعية)
+      - name: Install PyTorch CPU (First Pass)
         run: |
           python -m pip install --upgrade pip
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install --upgrade torch torchvision torchaudio \
+            --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install Python Dependencies
+      # 2) تثبيت silma-tts وتبعياتها
+      - name: Install silma-tts
         run: |
           pip install requests
           pip install silma-tts
 
+      # 3) فرض إعادة تثبيت PyTorch CPU بدون لمس تبعيات silma-tts
+      #    --no-deps = لا نعيد حل شجرة التبعيات، فقط نستبدل الحزم الثلاثة
+      - name: Force PyTorch CPU Re-install (Final Guard)
+        run: |
+          pip install --force-reinstall --no-deps \
+            torch torchvision torchaudio \
+            --index-url https://download.pytorch.org/whl/cpu
+          echo "===== التحقق من النسخ النهائية ====="
+          python -c "import torch, torchvision, torchaudio; print('torch      =', torch.__version__); print('torchvision=', torchvision.__version__); print('torchaudio =', torchaudio.__version__)"
+          echo "===== pip check (تحذيري فقط) ====="
+          pip check || echo "⚠️ pip check أبلغ عن تعارضات، لكننا نكمل."
+
+      # 4) تشغيل السكربت
       - name: Generate SILMA Samples
         run: |
           python scripts/step1_silma_samples.py
 
+      # 5) رفع العينات
       - name: Upload Samples as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: silma-voice-samples
           path: rvc_training/silma_samples/*.wav
           retention-days: 30
+          if-no-files-found: warn
