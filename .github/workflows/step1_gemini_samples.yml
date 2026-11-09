@@ -1,0 +1,39 @@
+name: 🎙️ خطوة 1: عينات صوت جيميني لتدريب RVC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install --upgrade pip
+          pip install requests
+
+      - name: Generate Gemini Samples
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+        run: |
+          python scripts/step1_generate_gemini_samples.py
+
+      - name: Upload Samples as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-voice-samples
+          path: rvc_training/gemini_samples/*.wav
+          retention-days: 30
