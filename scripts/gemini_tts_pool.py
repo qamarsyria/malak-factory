@@ -6,6 +6,16 @@ import requests
 MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 24 * 3600
 
+# ═══════════════════════════════════════════════════════════
+# 🌟 النماذج الفعلية فقط (بدون أسماء وهمية)
+# ═══════════════════════════════════════════════════════════
+TTS_MODELS = [
+    "gemini-2.5-flash-preview-tts",  # النموذج الرسمي الوحيد لـ TTS
+]
+
+# 🌟 اللغة العربية الفصحى (إجبار)
+LANGUAGE_CODE = "ar-XA"
+
 _last_request_time = 0
 def _wait_for_rate_limit():
     global _last_request_time
@@ -62,9 +72,12 @@ def get_pool() -> GeminiKeyPool:
     return _pool
 
 def discover_tts_models(prefer_lite: bool = False) -> list[str]:
-    return ["gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"]
+    return TTS_MODELS
 
-def _split_text(text: str, max_chars: int = 150) -> list[str]:
+# ═══════════════════════════════════════════════════════════
+# 🌟 تقسيم النص (100 حرف بدل 150 لتقليل الهلوسة)
+# ═══════════════════════════════════════════════════════════
+def _split_text(text: str, max_chars: int = 100) -> list[str]:
     text = text.strip()
     if not text: return []
     parts = re.split(r'(?<=[.!؟])\s+', text)
@@ -103,7 +116,10 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
-                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+                "speechConfig": {
+                    "languageCode": LANGUAGE_CODE,  # 🌟 إجبار العربية
+                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}},
+                },
             },
         }
         try:
@@ -126,6 +142,17 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
             with wave.open(str(out_wav), "wb") as wf:
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
                 wf.writeframes(raw)
+            
+            # 🌟 تحقق من طول الصوت (0.3 ثانية على الأقل)
+            try:
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(out_wav)], capture_output=True, text=True, timeout=10)
+                audio_dur = float(probe.stdout.strip() or 0)
+                if audio_dur < 0.3:
+                    _log(f"⚠️ صوت قصير جداً ({audio_dur:.2f}s): {text[:40]}")
+                    out_wav.unlink(missing_ok=True)
+                    continue
+            except: pass
+            
             return True
         except requests.exceptions.Timeout:
             continue
