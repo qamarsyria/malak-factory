@@ -7,13 +7,8 @@ MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 24 * 3600
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 النماذج الفعلية فقط (بدون أسماء وهمية)
-# ═══════════════════════════════════════════════════════════
-TTS_MODELS = [
-    "gemini-2.5-flash-preview-tts",  # النموذج الرسمي الوحيد لـ TTS
-]
-
 # 🌟 اللغة العربية الفصحى (إجبار)
+# ═══════════════════════════════════════════════════════════
 LANGUAGE_CODE = "ar-XA"
 
 _last_request_time = 0
@@ -71,13 +66,65 @@ def get_pool() -> GeminiKeyPool:
     if _pool is None: _pool = GeminiKeyPool()
     return _pool
 
+# ═══════════════════════════════════════════════════════════
+# 🌟 الاكتشاف التلقائي لنماذج TTS (كل 24 ساعة)
+# ═══════════════════════════════════════════════════════════
 def discover_tts_models(prefer_lite: bool = False) -> list[str]:
-    return TTS_MODELS
+    cache_path = Path(MODEL_CACHE_FILE)
+    
+    # 1. تحقق من الكاش أولاً
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            age = time.time() - cache.get("timestamp", 0)
+            if age < MODEL_CACHE_TTL and cache.get("models"):
+                _log(f"📋 نماذج TTS من الكاش: {cache['models']}")
+                return cache["models"]
+        except: pass
+    
+    # 2. اسأل Gemini عن النماذج المتاحة
+    try:
+        key = get_pool().get_current()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        r = requests.get(url, timeout=20)
+        
+        if r.status_code == 200:
+            all_models = r.json().get("models", [])
+            tts_models = []
+            
+            for m in all_models:
+                name = m.get("name", "").replace("models/", "")
+                methods = m.get("supportedGenerationMethods", [])
+                
+                # شرطين: يدعم generateContent + يحتوي على "tts" في الاسم
+                if "generateContent" in methods and "tts" in name.lower():
+                    tts_models.append(name)
+            
+            if tts_models:
+                # احفظ في الكاش
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps({
+                    "models": tts_models,
+                    "timestamp": time.time()
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                
+                _log(f"✅ اكتُشفت {len(tts_models)} نماذج TTS: {tts_models}")
+                return tts_models
+            else:
+                _log("⚠️ لم يتم العثور على نماذج TTS في API")
+        else:
+            _log(f"⚠️ فشل سؤال API: HTTP {r.status_code}")
+    except Exception as e:
+        _log(f"⚠️ خطأ في الاكتشاف: {e}")
+    
+    # 3. Fallback: النموذج المعروف
+    _log("⚠️ استخدام النموذج الاحتياطي")
+    return ["gemini-2.5-flash-preview-tts"]
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 تقسيم النص (100 حرف بدل 150 لتقليل الهلوسة)
+# 🌟 تقسيم النص (150 حرف - زي ما كان)
 # ═══════════════════════════════════════════════════════════
-def _split_text(text: str, max_chars: int = 100) -> list[str]:
+def _split_text(text: str, max_chars: int = 150) -> list[str]:
     text = text.strip()
     if not text: return []
     parts = re.split(r'(?<=[.!؟])\s+', text)
