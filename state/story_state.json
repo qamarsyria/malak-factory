@@ -1,9 +1,11 @@
 {
   "current_story_id": "adam",
   "current_story_index": 0,
-  "episode_num": 3,
-  "covered_topics": [],
+  "episode_num": 4,
+  "covered_topics": [
+    "خلق حواء عليها السلام وسكن آدم إليها"
+  ],
   "completed_stories": [],
   "cycle": 0,
-  "last_updated": "2026-11-09T03:46:23.441340+00:00"
+  "last_updated": "2026-11-09T09:19:07.056625+00:00"
 }
