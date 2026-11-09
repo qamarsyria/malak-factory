@@ -6,8 +6,6 @@ import requests
 MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 24 * 3600
 
-LANGUAGE_CODE = "ar-XA"
-
 _last_request_time = 0
 def _wait_for_rate_limit():
     global _last_request_time
@@ -48,6 +46,7 @@ class GeminiKeyPool:
         raise RuntimeError("❌ فشل الحصول على مفتاح")
 
     def _advance(self) -> None: self.current_index = (self.current_index + 1) % len(self.keys)
+    
     def mark_failed(self, cooldown_seconds: int = 65) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
@@ -120,9 +119,8 @@ def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
     except: return False
 
 def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
-    # 🌟 فلترة صارمة: مسح كل رموز التجويد والحروف غير العربية
-    clean_text = re.sub(r'[\u06D6-\u06ED]', ' ', text)
-    clean_text = re.sub(r'[^\u0621-\u064A\u064B-\u0652\u0670\s]', '', clean_text)
+    # 🌟 فلترة صارمة جداً: نحتفظ فقط بالحروف العربية والمسافات (بدون أي رموز أو ترقيم)
+    clean_text = re.sub(r'[^\u0621-\u064A\u064B-\u0652\u0670\s]', '', text)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     
     if not clean_text: return False
@@ -131,17 +129,10 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         body = {
-            # 🌟 أمر صارم لجيميني: اقرأ فقط ولا تتحدث بأي لغة أخرى
-            "systemInstruction": {
-                "parts": [{
-                    "text": "أنت قارئ قرآن. اقرأ النص العربي فقط بصوت ترتيل هادئ. لا تضف أي شرح أو ترجمة أو تعليق. لا تتحدث بأي لغة أخرى غير العربية. انطق النص فقط كما هو."
-                }]
-            },
             "contents": [{"parts": [{"text": clean_text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {
-                    "languageCode": LANGUAGE_CODE,
                     "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}},
                 },
             },
@@ -150,8 +141,12 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
             _wait_for_rate_limit()
             r = requests.post(url, json=body, timeout=45) 
             if r.status_code == 429: return "RATE_LIMIT"
-            if r.status_code in (400, 404): continue
-            if r.status_code != 200: continue
+            if r.status_code in (400, 404): 
+                print(f"   ⚠️ خطأ API {r.status_code} من {model}: {r.text[:150]}", flush=True)
+                continue
+            if r.status_code != 200: 
+                print(f"   ⚠️ HTTP {r.status_code} من {model}", flush=True)
+                continue
 
             data = r.json()
             cands = data.get("candidates") or []
