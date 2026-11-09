@@ -1,4 +1,4 @@
-name: 🎙️ خطوة 1: عينات صوت جيميني لتدريب RVC
+name: Step1 Gemini Samples
 
 on:
   workflow_dispatch:
