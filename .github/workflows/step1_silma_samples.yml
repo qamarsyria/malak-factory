@@ -24,30 +24,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      # 1) تثبيت PyTorch CPU أولاً (النسخة المرجعية)
+      # 1) PyTorch CPU أولاً (النسخة المرجعية)
       - name: Install PyTorch CPU (First Pass)
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade torch torchvision torchaudio \
+          pip install --upgrade torch torchvision torchaudio torchcodec \
             --index-url https://download.pytorch.org/whl/cpu
 
-      # 2) تثبيت silma-tts وتبعياتها
+      # 2) silma-tts وتبعياتها
       - name: Install silma-tts
         run: |
           pip install requests
           pip install silma-tts
 
-      # 3) فرض إعادة تثبيت PyTorch CPU بدون لمس تبعيات silma-tts
-      #    --no-deps = لا نعيد حل شجرة التبعيات، فقط نستبدل الحزم الثلاثة
+      # 3) فرض إعادة تثبيت حزم PyTorch من فهرس CPU (بدون لمس تبعيات silma-tts)
+      #    --no-deps = ما نعيد حل الشجرة، بس نستبدل الحزم
       - name: Force PyTorch CPU Re-install (Final Guard)
         run: |
           pip install --force-reinstall --no-deps \
-            torch torchvision torchaudio \
+            torch torchvision torchaudio torchcodec \
             --index-url https://download.pytorch.org/whl/cpu
           echo "===== التحقق من النسخ النهائية ====="
-          python -c "import torch, torchvision, torchaudio; print('torch      =', torch.__version__); print('torchvision=', torchvision.__version__); print('torchaudio =', torchaudio.__version__)"
-          echo "===== pip check (تحذيري فقط) ====="
-          pip check || echo "⚠️ pip check أبلغ عن تعارضات، لكننا نكمل."
+          python -c "
+          import torch, torchvision, torchaudio
+          print('torch      =', torch.__version__)
+          print('torchvision=', torchvision.__version__)
+          print('torchaudio =', torchaudio.__version__)
+          "
+          echo "===== التحقق من torchcodec ====="
+          python -c "import torchcodec; print('torchcodec OK')" || echo "⚠️ torchcodec لسه فيه مشكلة، بس منكمل (السكربت ممكن يشتغل بدونه)."
 
       # 4) تشغيل السكربت
       - name: Generate SILMA Samples
