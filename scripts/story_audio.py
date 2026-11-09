@@ -49,7 +49,6 @@ def trim_and_fade(input_wav, output_wav, speed_up=False, is_last=False):
 
 def apply_mosque_reverb(input_wav, output_wav):
     try:
-        # رفع الصوت 20% لتوازن التلاوة مع السرد
         filters = ("volume=1.20,atempo=0.92,equalizer=f=120:t=q:w=1.0:g=4,equalizer=f=4000:t=q:w=1.0:g=-4,aecho=0.8:0.7:60|180|320:0.15|0.10|0.05,acompressor=threshold=0.1:ratio=3:attack=20:release=200")
         subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return True
@@ -58,7 +57,6 @@ def apply_mosque_reverb(input_wav, output_wav):
 
 def apply_stealth_filter(input_wav, output_wav):
     try:
-        # 🌟 رفع صوت التلاوة البشرية 35%
         filters = ("volume=1.35,atempo=1.05,equalizer=f=200:t=q:w=1.0:g=2,aecho=0.8:0.9:20:0.1,highpass=f=100,lowpass=f=12000")
         subprocess.run(["ffmpeg", "-y", "-i", input_wav, "-af", filters, "-ar", TARGET_SR, "-ac", "1", output_wav], check=True, capture_output=True, timeout=60)
         return True
@@ -82,8 +80,8 @@ def sanitize_for_tts(t):
     t = re.sub(r'\[.*?\]', '', t, flags=re.DOTALL)
     t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
     t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
-    t = re.sub(r'[\u06D6-\u06ED]', ' ', t) # مسح رموز التجويد
-    t = re.sub(r'[^\u0621-\u064A\u064B-\u0652\u0670\s،؟۔!.]', '', t)
+    t = re.sub(r'[\u06D6-\u06ED]', ' ', t)
+    t = re.sub(r'[^\u0621-\u064A\u064B-\u0652\u0670\s]', '', t)
     return re.sub(r"\s+", " ", t).strip()
 
 def get_dur(p):
@@ -133,8 +131,12 @@ def build_mode(mode, json_path, out_mp3, out_meta):
                 
                 if not cached_wav.exists() or cached_wav.stat().st_size < 1000:
                     temp_mp3 = work / f"t_{idx}_{c_idx}.mp3"
-                    if gemini_tts_with_pool(chunk, str(temp_mp3)):
-                        subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
+                    try:
+                        if gemini_tts_with_pool(chunk, str(temp_mp3)):
+                            subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
+                    except Exception as e:
+                        print(f"⚠️ فشل السرد {idx+1}: {e}")
+                        continue
                     time.sleep(1)
                     
                 if cached_wav.exists():
@@ -159,12 +161,15 @@ def build_mode(mode, json_path, out_mp3, out_meta):
                 text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
                 
                 if mode == "gemini":
-                    # 🌟 مسار جيميني
                     cache_a = ep_cache / f"qgem_{s}_{a}_{text_hash}.wav"
                     if not cache_a.exists():
                         tmp = work / "tmp.mp3"
-                        if gemini_tts_with_pool(text_a, str(tmp)):
-                            subprocess.run(["ffmpeg", "-y", "-i", str(tmp), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
+                        try:
+                            if gemini_tts_with_pool(text_a, str(tmp)):
+                                subprocess.run(["ffmpeg", "-y", "-i", str(tmp), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
+                        except Exception as e:
+                            print(f"⚠️ فشل آية جيميني {s}:{a}: {e}")
+                            continue
                         time.sleep(1)
                     
                     if cache_a.exists():
@@ -177,7 +182,6 @@ def build_mode(mode, json_path, out_mp3, out_meta):
                                 chunk_timings.append({"text": text_a, "duration": get_dur(final) + SILENCE_DUR})
                                 
                 else:
-                    # 🌟 مسار بشري
                     cache_a = ep_cache / f"human_{s}_{a}.mp3"
                     if download_human_ayah(s, a, str(cache_a)):
                         trimmed = ep_cache / f"trim_hum_{s}_{a}.wav"
