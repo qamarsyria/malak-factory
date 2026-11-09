@@ -27,14 +27,27 @@ try:
 except Exception as e:
     print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
 
-def retrieve_context(surah_name, limit=10):
+# ═══════════════════════════════════════════════════════════
+# 🌟 البحث الشامل: من كل السور المذكورة في القصة
+# ═══════════════════════════════════════════════════════════
+def retrieve_context(story, limit=12):
     if not _ayah_lib: return "لا توجد نصوص متاحة."
+    
+    sources = story.get("sources", [])
+    if not sources: sources = ["القرآن"]
+    
     context = []
-    for item in _ayah_lib:
-        if surah_name in item.get("surah_name", ""):
-            context.append(f"- {item['surah_name']} (سورة رقم {item['surah_number']}، آية رقم {item['ayah_number']}): {item['text']} | التفسير: {item.get('tafsir', '')[:150]}")
-            if len(context) >= limit:
-                break
+    for surah_name in sources:
+        # تنظيف اسم السورة
+        clean_name = surah_name.replace("سورة ", "").replace("سُورَةُ ", "").strip()
+        for item in _ayah_lib:
+            if clean_name in item.get("surah_name", ""):
+                context.append(f"- {item['surah_name']} (سورة رقم {item['surah_number']}، آية رقم {item['ayah_number']}): {item['text']} | التفسير: {item.get('tafsir', '')[:100]}")
+                if len(context) >= limit:
+                    break
+        if len(context) >= limit:
+            break
+    
     return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
 
 def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
@@ -105,31 +118,40 @@ def split_narration(text, max_chars=150):
     if current: chunks.append(current.strip())
     return chunks
 
+# ═══════════════════════════════════════════════════════════
+# 🌟 المحلل الذكي (يقبل أي صيغة يكتبها جيميني)
+# ═══════════════════════════════════════════════════════════
 def parse_script_with_verses(script_text):
     text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     
-    # البحث عن أي نمط يحتوي على كلمة سورة أو آية أو رقمين متتاليين بين أقواس
+    # تحويل أسماء السور لأرقام
+    for name, num in SURAH_NAME_TO_NUM.items(): 
+        text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
+        text = text.replace(f"[{name}:", f"[{num}:").replace(f"({name}:", f"({num}:")
+    
+    # أنماط متعددة (مع أو بدون كلمة "آية"، مع أو بدون أقواس)
     patterns = [
-        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",
-        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",
-        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",
-        r"\[?\s*(\d+)\s*[:\-]\s*(\d+)\s*\]?" # يلتقط [2:30] أو 2:30
+        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",  # [آية: 2:30]
+        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",  # [آية 2:30]
+        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",  # (آية 2:30)
+        r"\[(\d+)\s*[:\-]\s*(\d+)\]",               # [2:30] أو [2-30]
+        r"\[سورة\s+(\d+)[:\s]+آية\s+(\d+)\]",        # [سورة 2: آية 30]
     ]
     
     parts = None
     for pat in patterns:
-        test_parts = re.split(pat, text)
-        if len(test_parts) > 1:
-            parts = test_parts
-            break
-            
+        parts = re.split(pat, text)
+        if len(parts) > 1: break
+        
     if not parts or len(parts) == 1: 
         return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
 
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
-            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
+            chunk = parts[i].strip()
+            chunk = re.sub(r'[\(\[﴿].*?[\)\]﴾]', '', chunk) 
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", chunk).strip()
             chunk = clean_narration_text(chunk)
             if len(chunk) > 5:
                 for piece in split_narration(chunk): 
@@ -147,7 +169,7 @@ def parse_script_with_verses(script_text):
     return segments
 
 def build_plan_prompt(story, ep_num, state):
-    total_eps = story.get("target_episodes", 20)
+    total_eps = story.get("target_episodes", 15)
     covered = state.get("covered_topics", [])
     covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
     return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
@@ -162,18 +184,17 @@ def build_script_prompt(story, plan, ep_num, context):
 الخطة: {plan['title']} - {plan['summary']}
 القصة المطلوبة: {story['title']}
 
-لقد قمنا باستخراج النصوص التالية من مصادرنا الموثوقة. **أنت مجبر على استخدام هذه النصوص فقط، ويُمنع منعاً باتاً تأليف أي حدث أو معلومة من خارجها:**
+لقد قمنا باستخراج النصوص التالية من مصادرنا الموثوقة. **أنت مجبر على استخدام هذه النصوص فقط:**
 
 المراجع:
 {context}
 
 قواعد صارمة جداً:
-1. اكتب سرداً قصصياً مشوقاً واحترافياً (حوالي 600 كلمة، تكفي لفيديو مدته 5 دقائق). ركز على حدث واحد بعمق. ابدأ بسؤال وثائقي مشوق.
-2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
-3. **الآيات**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه في النص. الأرقام موجودة في المراجع. اكتبها بهذه الصيغة بالضبط: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
-4. احترام مطلق للأنبياء والملائكة.
-5. **اللغة**: اللغة العربية الفصحى فقط. يُمنع منعاً باتاً كتابة أي حرف إنجليزي أو رقم في النص (باستثناء مراجع الآيات).
-6. اكتب النص السردي فقط، بدون عناوين فرعية، وبأسلوب راقٍ."""
+1. اكتب سرداً قصصياً مشوقاً (حوالي 600 كلمة، 5 دقائق فيديو). ابدأ بسؤال وثائقي مشوق.
+2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع. ممنوع الإسرائيليات.
+3. **الآيات (إجباري)**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه. الصيغة الإجبارية: [آية: رقم_السورة:رقم_الآية]. مثال: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
+4. **اللغة**: اللغة العربية الفصحى فقط. يُمنع منعاً باتاً كتابة أي حرف إنجليزي.
+5. اكتب النص السردي فقط، بدون عناوين فرعية."""
 
 def build_teaser_prompt(story, ep_num):
     return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
@@ -189,9 +210,9 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    surah_name = story.get("sources", ["القرآن"])[0]
-    context = retrieve_context(surah_name, limit=12)
-    print(f"📚 تم استرجاع المراجع للسياق.", flush=True)
+    # 🌟 البحث الشامل في كل سور القصة
+    context = retrieve_context(story, limit=15)
+    print(f"📚 تم استرجاع المراجع من {len(story.get('sources', []))} سورة.", flush=True)
 
     print("📝 جاري توليد الخطة...", flush=True)
     plan_raw = call_llm(build_plan_prompt(story, ep_num, state))
@@ -210,7 +231,8 @@ def main():
 
     print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
     
-    max_retries = 3
+    # 🌟 5 محاولات (بدل 3) عشان نضمن الآيات
+    max_retries = 5
     script_text = None
     for attempt in range(max_retries):
         script_text = call_llm(build_script_prompt(story, plan, ep_num, context), is_json=False)
@@ -224,10 +246,10 @@ def main():
                 print(f"⚠️ المحاولة {attempt+1}: وجدنا {ayah_count} آية فقط. نطلب المزيد...", flush=True)
         else:
             print(f"⚠️ المحاولة {attempt+1}: فشل الاتصال.", flush=True)
-        time.sleep(5)
+        time.sleep(3)
     
     if not script_text:
-        print("❌ فشل توليد النص بعد 3 محاولات.", flush=True)
+        print("❌ فشل توليد النص بعد 5 محاولات.", flush=True)
         sys.exit(1)
 
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
