@@ -1,4 +1,4 @@
-name: 🎬 مسار القصص (Storiesطمزووالggvn hhvyb ytfhjbgunbbhg
+name: 🎬 مسار القصص 
 
 on:
   schedule:
@@ -26,10 +26,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
-          pip install --upgrade pip
-          pip install requests pillow arabic-reshaper huggingface_hub quranic-phonemizer
+        run: |pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Story
