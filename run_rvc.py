@@ -8,22 +8,8 @@ import json
 from collections import OrderedDict
 from huggingface_hub import hf_hub_download, snapshot_download
 
-# ==========================================
-# 0. إعدادات البيئة الحرجة (حل مشكلة error -1)
-# ==========================================
-# تعيين عدد خيوط OpenMP إلى 1 يمنع انهيار الذاكرة على المعالج
-os.environ["OMP_NUM_THREADS"] = "1"
-
-print("⏳ [0/4] تثبيت التبعيات الحرجة...")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
-                "numpy==1.23.5", 
-                "faiss-cpu==1.7.3", 
-                "torchcrepe"], check=True)
-
-# ==========================================
-# 1. تحميل النموذج الخاص بك والنماذج الأساسية
-# ==========================================
-print("⏳ [1/4] تحميل النموذج الخاص بك من HuggingFace...")
+# 1. تحميل الموديل
+print("⏳ تحميل النموذج...")
 model_path = hf_hub_download(
     repo_id="Emad12088/gemini-voice-model",
     filename="G_2333333.pth",
@@ -33,22 +19,32 @@ model_path = hf_hub_download(
 current_dir = os.getcwd()
 rvc_dir = os.path.join(current_dir, "Retrieval-based-Voice-Conversion-WebUI")
 
-print("⏳ تحميل النماذج الأساسية لـ RVC (HuBERT)...")
+# 2. تحميل HuBERT
+print("⏳ تحميل HuBERT...")
 os.makedirs(os.path.join(rvc_dir, "assets", "hubert_base"), exist_ok=True)
 HF_REPO = "lj1995/VoiceConversionWebUI"
 snapshot_download(HF_REPO, allow_patterns=["hubert_base/*"], local_dir=os.path.join(rvc_dir, "assets"))
 
-print("⏳ تحميل مقطع تلاوة السديس...")
+# 3. تحميل الصوت وتحويله إلى WAV
+print("⏳ تحميل الصوت وتحويله إلى WAV...")
 audio_url = "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/112001.mp3"
-urllib.request.urlretrieve(audio_url, os.path.join(current_dir, "sadis.mp3"))
+mp3_path = os.path.join(current_dir, "sadis.mp3")
+wav_path = os.path.join(current_dir, "sadis.wav")
+urllib.request.urlretrieve(audio_url, mp3_path)
 
-# ==========================================
-# 2. استخراج النموذج الصغير (Small Model)
-# ==========================================
-print("⏳ [2/4] جاري استخراج النموذج الصغير...")
+result = subprocess.run(
+    ["ffmpeg", "-y", "-i", mp3_path, "-ar", "48000", "-ac", "1", wav_path],
+    capture_output=True, text=True
+)
+if result.returncode != 0:
+    print("❌ فشل تحويل الصوت:", result.stderr)
+    raise Exception("FFmpeg conversion failed")
+print("✅ تم تحويل الصوت إلى WAV!")
+
+# 4. استخراج النموذج الصغير
+print("⏳ استخراج النموذج الصغير...")
 cpt = torch.load(model_path, map_location="cpu")
 model_state_dict = cpt["model"] if "model" in cpt else cpt
-
 extract_model = OrderedDict()
 for k, v in model_state_dict.items():
     extract_model[k[7:] if k.startswith("module.") else k] = v
@@ -65,29 +61,21 @@ new_cpt = {
     "f0": 1,
     "version": "v2"
 }
-
 small_model_path = os.path.join(current_dir, "my_voice_model.pth")
 torch.save(new_cpt, small_model_path)
-print("✅ تم إنشاء النموذج الصغير بنجاح!")
 
-# ==========================================
-# 3. تشغيل التحويل باستخدام CLI (مع OMP_NUM_THREADS=1)
-# ==========================================
-print("🚀 [3/4] جاري التحويل...")
-
-input_audio = os.path.join(current_dir, "sadis.mp3")
+# 5. تشغيل التحويل
+print("🚀 جاري التحويل...")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
-
 env = os.environ.copy()
 env["PYTHONPATH"] = rvc_dir
-env["OMP_NUM_THREADS"] = "1" # 🔧 تأكيد إضافي
 
 cmd = [
     "python", "-m", "infer.cli",
     "--model", small_model_path,
-    "--input", input_audio,
+    "--input", wav_path,
     "--output", output_audio,
-    "--f0-method", "pm",
+    "--f0-method", "harvest",  # 🔧 استخدام harvest بدل pm
     "--index-rate", "0.0"
 ]
 
@@ -100,18 +88,15 @@ except subprocess.CalledProcessError as e:
     print("STDERR:", e.stderr)
     raise
 
-# ==========================================
-# 4. إرسال الصوت إلى التلغرام
-# ==========================================
-print("🎉 [4/4] اكتمل التحويل! جاري الإرسال للتلغرام...")
+# 6. إرسال الصوت
+print("🎉 جاري الإرسال للتلغرام...")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
 if os.path.exists(output_audio):
     with open(output_audio, 'rb') as f:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendAudio",
-            data={"chat_id": CHAT_ID, "caption": "🎧 مبروك! التحويل اشتغل على GitHub Actions بنجاح!"},
+            data={"chat_id": CHAT_ID, "caption": "🎧 مبروك! التحويل اشتغل!"},
             files={'audio': f}
         )
     print("🏁 انتهت العملية بالكامل!")
