@@ -17,16 +17,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
       - name: Install Python Dependencies
         run: |
+          pip install --upgrade pip
           pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install -q numpy<2 scipy librosa soundfile ffmpeg-python transformers onnxruntime av tqdm tensorboard einops hydra-core omegaconf faiss-cpu pyworld torchcrepe praat-parselmouth torchmetrics huggingface_hub requests
-          
+          pip install -q "numpy<2" scipy librosa soundfile ffmpeg-python transformers onnxruntime av tqdm tensorboard einops hydra-core omegaconf faiss-cpu pyworld torchcrepe praat-parselmouth torchmetrics huggingface_hub requests
+
       - name: Clone RVC Repo
         run: |
           git clone -q https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git
