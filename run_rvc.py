@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import requests
 import urllib.request
@@ -7,8 +8,19 @@ import json
 from collections import OrderedDict
 from huggingface_hub import hf_hub_download, snapshot_download
 
-# 1. تحميل النموذج الخاص بك
-print("⏳ تحميل النموذج الخاص بك من HuggingFace...")
+# ==========================================
+# 0. تثبيت التبعيات الحرجة داخل السكربت لضمان التوافق
+# ==========================================
+print("⏳ [0/4] تثبيت التبعيات الحرجة (faiss, numpy, torchcrepe)...")
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
+                "numpy==1.23.5", 
+                "faiss-cpu==1.7.3", 
+                "torchcrepe"], check=True)
+
+# ==========================================
+# 1. تحميل النموذج الخاص بك والنماذج الأساسية
+# ==========================================
+print("⏳ [1/4] تحميل النموذج الخاص بك من HuggingFace...")
 model_path = hf_hub_download(
     repo_id="Emad12088/gemini-voice-model",
     filename="G_2333333.pth",
@@ -18,8 +30,7 @@ model_path = hf_hub_download(
 current_dir = os.getcwd()
 rvc_dir = os.path.join(current_dir, "Retrieval-based-Voice-Conversion-WebUI")
 
-# 2. تحميل النماذج الأساسية لـ RVC (HuBERT) - نستخدم pm فما بنحتاج rmvpe
-print("⏳ تحميل النماذج الأساسية لـ RVC...")
+print("⏳ تحميل النماذج الأساسية لـ RVC (HuBERT)...")
 os.makedirs(os.path.join(rvc_dir, "assets", "hubert_base"), exist_ok=True)
 HF_REPO = "lj1995/VoiceConversionWebUI"
 snapshot_download(HF_REPO, allow_patterns=["hubert_base/*"], local_dir=os.path.join(rvc_dir, "assets"))
@@ -28,8 +39,10 @@ print("⏳ تحميل مقطع تلاوة السديس...")
 audio_url = "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/112001.mp3"
 urllib.request.urlretrieve(audio_url, os.path.join(current_dir, "sadis.mp3"))
 
-# 3. استخراج النموذج الصغير
-print("⏳ جاري استخراج النموذج الصغير...")
+# ==========================================
+# 2. استخراج النموذج الصغير (Small Model)
+# ==========================================
+print("⏳ [2/4] جاري استخراج النموذج الصغير...")
 cpt = torch.load(model_path, map_location="cpu")
 model_state_dict = cpt["model"] if "model" in cpt else cpt
 
@@ -54,8 +67,10 @@ small_model_path = os.path.join(current_dir, "my_voice_model.pth")
 torch.save(new_cpt, small_model_path)
 print("✅ تم إنشاء النموذج الصغير بنجاح!")
 
-# 4. تشغيل التحويل باستخدام CLI وطريقة pm
-print("🚀 جاري التحويل باستخدام طريقة pm (خفيفة على المعالج)...")
+# ==========================================
+# 3. تشغيل التحويل باستخدام CLI وطريقة pm
+# ==========================================
+print("🚀 [3/4] جاري التحويل...")
 
 input_audio = os.path.join(current_dir, "sadis.mp3")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
@@ -63,13 +78,13 @@ output_audio = os.path.join(current_dir, "gemini_voice.wav")
 env = os.environ.copy()
 env["PYTHONPATH"] = rvc_dir
 
-# استخدام المسارات المطلقة لضمان عدم ضياعها
+# استخدام pm خفيفة على المعالج مع التأكد من المسارات المطلقة
 cmd = [
     "python", "-m", "infer.cli",
     "--model", small_model_path,
     "--input", input_audio,
     "--output", output_audio,
-    "--f0-method", "pm",  # 🔧 استخدام pm بدل rmvpe لتجنب الانهيار
+    "--f0-method", "pm",
     "--index-rate", "0.0"
 ]
 
@@ -82,8 +97,10 @@ except subprocess.CalledProcessError as e:
     print("STDERR:", e.stderr)
     raise
 
-# 5. إرسال الصوت
-print("🎉 اكتمل التحويل! جاري الإرسال للتلغرام...")
+# ==========================================
+# 4. إرسال الصوت إلى التلغرام
+# ==========================================
+print("🎉 [4/4] اكتمل التحويل! جاري الإرسال للتلغرام...")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
