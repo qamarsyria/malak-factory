@@ -60,7 +60,7 @@ small_model_path = os.path.join(current_dir, "my_voice_model.pth")
 torch.save(new_cpt, small_model_path)
 print(f"✅ تم إنشاء النموذج الصغير بنجاح!")
 
-# 4. تشغيل التحويل
+# 4. تشغيل التحويل (بدون أمر --device)
 input_audio = os.path.join(current_dir, "sadis.mp3")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
 
@@ -74,8 +74,7 @@ cmd = [
     "--input", input_audio,
     "--output", output_audio,
     "--f0-method", "rmvpe",
-    "--index-rate", "0.0",
-    "--device", "cpu" # إجباره على استخدام المعالج
+    "--index-rate", "0.0"
 ]
 
 try:
