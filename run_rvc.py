@@ -3,6 +3,7 @@ import subprocess
 import requests
 import urllib.request
 import torch
+import json
 from collections import OrderedDict
 from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -14,10 +15,11 @@ model_path = hf_hub_download(
     token=os.environ.get("HF_TOKEN")
 )
 
-# 2. تحميل النماذج الأساسية لـ RVC (HuBERT, RMVPE)
-print("⏳ تحميل النماذج الأساسية لـ RVC (HuBERT, RMVPE)...")
 current_dir = os.getcwd()
 rvc_dir = os.path.join(current_dir, "Retrieval-based-Voice-Conversion-WebUI")
+
+# 2. تحميل النماذج الأساسية لـ RVC (HuBERT, RMVPE)
+print("⏳ تحميل النماذج الأساسية لـ RVC (HuBERT, RMVPE)...")
 os.makedirs(os.path.join(rvc_dir, "assets", "hubert_base"), exist_ok=True)
 os.makedirs(os.path.join(rvc_dir, "assets", "rmvpe"), exist_ok=True)
 
@@ -35,10 +37,8 @@ cpt = torch.load(model_path, map_location="cpu")
 
 if "model" in cpt:
     model_state_dict = cpt["model"]
-    config = cpt.get("config", {})
 else:
     model_state_dict = cpt
-    config = {}
 
 extract_model = OrderedDict()
 for k, v in model_state_dict.items():
@@ -46,6 +46,11 @@ for k, v in model_state_dict.items():
         extract_model[k[7:]] = v
     else:
         extract_model[k] = v
+
+# 🔧 قراءة ملف الإعدادات الافتراضي من كود RVC
+config_path = os.path.join(rvc_dir, "configs", "v2", "48k.json")
+with open(config_path, "r") as f:
+    config = json.load(f)
 
 new_cpt = {
     "weight": extract_model,
@@ -60,7 +65,7 @@ small_model_path = os.path.join(current_dir, "my_voice_model.pth")
 torch.save(new_cpt, small_model_path)
 print(f"✅ تم إنشاء النموذج الصغير بنجاح!")
 
-# 4. تشغيل التحويل (بدون أمر --device)
+# 4. تشغيل التحويل
 input_audio = os.path.join(current_dir, "sadis.mp3")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
 
@@ -78,9 +83,13 @@ cmd = [
 ]
 
 try:
-    subprocess.run(cmd, env=env, cwd=rvc_dir, check=True)
+    # إضافة capture_output لطباعة الأخطاء بالتفصيل لو صارت
+    result = subprocess.run(cmd, env=env, cwd=rvc_dir, check=True, capture_output=True, text=True)
+    print(result.stdout)
 except subprocess.CalledProcessError as e:
     print(f"❌ فشل التحويل. رمز الخطأ: {e.returncode}")
+    print("STDOUT:", e.stdout)
+    print("STDERR:", e.stderr)
     raise
 
 # 5. إرسال الصوت
