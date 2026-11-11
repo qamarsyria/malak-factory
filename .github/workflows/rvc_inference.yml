@@ -1,7 +1,7 @@
 name: RVC Voice Conversion
 
 on:
-  workflow_dispatch: # بيشتغل لما تدوس زر
+  workflow_dispatch:
 
 jobs:
   convert:
@@ -20,8 +20,9 @@ jobs:
       - name: Install Python Dependencies
         run: |
           pip install --upgrade pip
-          pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install -q "numpy<2" scipy librosa soundfile ffmpeg-python transformers onnxruntime av tqdm tensorboard einops hydra-core omegaconf faiss-cpu pyworld torchcrepe praat-parselmouth torchmetrics huggingface_hub requests
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          # تثبيت التبعيات الأساسية لوضع CPU بما فيها torchcrepe و faiss
+          pip install "numpy==1.23.5" scipy librosa soundfile ffmpeg-python transformers onnxruntime av tqdm tensorboard einops hydra-core omegaconf faiss-cpu==1.7.3 pyworld torchcrepe praat-parselmouth torchmetrics huggingface_hub requests
 
       - name: Clone RVC Repo
         run: |
