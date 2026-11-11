@@ -26,7 +26,8 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        run: |pillow arabic-reshaper huggingface_hub quranic-phonemizer
+        run: |
+          pip install pillow arabic-reshaper huggingface_hub quranic-phonemizer
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Story
