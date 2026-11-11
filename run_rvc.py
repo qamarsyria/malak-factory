@@ -7,9 +7,13 @@ import torch
 import json
 from collections import OrderedDict
 from huggingface_hub import hf_hub_download, snapshot_download
+import librosa
+import soundfile as sf
 
-# 1. تحميل الموديل
-print("⏳ تحميل النموذج...")
+# ==========================================
+# 1. تحميل النموذج والنماذج الأساسية
+# ==========================================
+print("⏳ [1/4] تحميل النموذج الخاص بك من HuggingFace...")
 model_path = hf_hub_download(
     repo_id="Emad12088/gemini-voice-model",
     filename="G_2333333.pth",
@@ -19,32 +23,37 @@ model_path = hf_hub_download(
 current_dir = os.getcwd()
 rvc_dir = os.path.join(current_dir, "Retrieval-based-Voice-Conversion-WebUI")
 
-# 2. تحميل HuBERT
-print("⏳ تحميل HuBERT...")
+print("⏳ تحميل النماذج الأساسية لـ RVC (HuBERT)...")
 os.makedirs(os.path.join(rvc_dir, "assets", "hubert_base"), exist_ok=True)
 HF_REPO = "lj1995/VoiceConversionWebUI"
 snapshot_download(HF_REPO, allow_patterns=["hubert_base/*"], local_dir=os.path.join(rvc_dir, "assets"))
 
-# 3. تحميل الصوت وتحويله إلى WAV
-print("⏳ تحميل الصوت وتحويله إلى WAV...")
+# ==========================================
+# 2. تحميل الصوت وتحويله إلى WAV باستخدام librosa (بدون ffmpeg)
+# ==========================================
+print("⏳ [2/4] تحميل الصوت وتحويله إلى WAV...")
 audio_url = "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/112001.mp3"
 mp3_path = os.path.join(current_dir, "sadis.mp3")
 wav_path = os.path.join(current_dir, "sadis.wav")
+
 urllib.request.urlretrieve(audio_url, mp3_path)
 
-result = subprocess.run(
-    ["ffmpeg", "-y", "-i", mp3_path, "-ar", "48000", "-ac", "1", wav_path],
-    capture_output=True, text=True
-)
-if result.returncode != 0:
-    print("❌ فشل تحويل الصوت:", result.stderr)
-    raise Exception("FFmpeg conversion failed")
-print("✅ تم تحويل الصوت إلى WAV!")
+# 🔧 استخدام librosa بدلاً من ffmpeg
+try:
+    y, sr = librosa.load(mp3_path, sr=48000, mono=True)
+    sf.write(wav_path, y, sr)
+    print("✅ تم تحويل الصوت إلى WAV بنجاح (بدون ffmpeg)!")
+except Exception as e:
+    print("❌ فشل تحويل الصوت:", e)
+    raise
 
-# 4. استخراج النموذج الصغير
-print("⏳ استخراج النموذج الصغير...")
+# ==========================================
+# 3. استخراج النموذج الصغير
+# ==========================================
+print("⏳ [3/4] جاري استخراج النموذج الصغير...")
 cpt = torch.load(model_path, map_location="cpu")
 model_state_dict = cpt["model"] if "model" in cpt else cpt
+
 extract_model = OrderedDict()
 for k, v in model_state_dict.items():
     extract_model[k[7:] if k.startswith("module.") else k] = v
@@ -61,12 +70,17 @@ new_cpt = {
     "f0": 1,
     "version": "v2"
 }
+
 small_model_path = os.path.join(current_dir, "my_voice_model.pth")
 torch.save(new_cpt, small_model_path)
+print("✅ تم إنشاء النموذج الصغير بنجاح!")
 
-# 5. تشغيل التحويل
-print("🚀 جاري التحويل...")
+# ==========================================
+# 4. تشغيل التحويل
+# ==========================================
+print("🚀 [4/4] جاري التحويل...")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
+
 env = os.environ.copy()
 env["PYTHONPATH"] = rvc_dir
 
@@ -75,7 +89,7 @@ cmd = [
     "--model", small_model_path,
     "--input", wav_path,
     "--output", output_audio,
-    "--f0-method", "harvest",  # 🔧 استخدام harvest بدل pm
+    "--f0-method", "pm",
     "--index-rate", "0.0"
 ]
 
@@ -88,15 +102,18 @@ except subprocess.CalledProcessError as e:
     print("STDERR:", e.stderr)
     raise
 
-# 6. إرسال الصوت
-print("🎉 جاري الإرسال للتلغرام...")
+# ==========================================
+# 5. إرسال الصوت للتلغرام
+# ==========================================
+print("🎉 اكتمل التحويل! جاري الإرسال للتلغرام...")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
 if os.path.exists(output_audio):
     with open(output_audio, 'rb') as f:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendAudio",
-            data={"chat_id": CHAT_ID, "caption": "🎧 مبروك! التحويل اشتغل!"},
+            data={"chat_id": CHAT_ID, "caption": "🎧 مبروك! التحويل اشتغل على GitHub Actions بنجاح!"},
             files={'audio': f}
         )
     print("🏁 انتهت العملية بالكامل!")
