@@ -4,29 +4,35 @@ import requests
 import urllib.request
 import torch
 from collections import OrderedDict
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
-# ==========================================
-# 1. تحميل النموذج ومقطع الصوت
-# ==========================================
-print("⏳ تحميل النموذج من HuggingFace...")
+# 1. تحميل الموديل الصوتي الخاص بالمستخدم
+print("⏳ تحميل النموذج الخاص بك من HuggingFace...")
 model_path = hf_hub_download(
     repo_id="Emad12088/gemini-voice-model",
     filename="G_2333333.pth",
     token=os.environ.get("HF_TOKEN")
 )
 
+# 2. تحميل النماذج الأساسية لـ RVC (HuBERT, RMVPE)
+print("⏳ تحميل النماذج الأساسية لـ RVC (HuBERT, RMVPE)...")
+current_dir = os.getcwd()
+rvc_dir = os.path.join(current_dir, "Retrieval-based-Voice-Conversion-WebUI")
+os.makedirs(os.path.join(rvc_dir, "assets", "hubert_base"), exist_ok=True)
+os.makedirs(os.path.join(rvc_dir, "assets", "rmvpe"), exist_ok=True)
+
+HF_REPO = "lj1995/VoiceConversionWebUI"
+snapshot_download(HF_REPO, allow_patterns=["hubert_base/*"], local_dir=os.path.join(rvc_dir, "assets"))
+hf_hub_download(HF_REPO, "rmvpe.pt", local_dir=os.path.join(rvc_dir, "assets/rmvpe"))
+
 print("⏳ تحميل مقطع تلاوة السديس...")
 audio_url = "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/112001.mp3"
-urllib.request.urlretrieve(audio_url, "sadis.mp3")
+urllib.request.urlretrieve(audio_url, os.path.join(current_dir, "sadis.mp3"))
 
-# ==========================================
-# 2. استخراج النموذج الصغير (Small Model) أوتوماتيكياً
-# ==========================================
+# 3. استخراج النموذج الصغير (Small Model)
 print("⏳ جاري استخراج النموذج الصغير...")
 cpt = torch.load(model_path, map_location="cpu")
 
-# سحب الأوزان من الملف الخام
 if "model" in cpt:
     model_state_dict = cpt["model"]
     config = cpt.get("config", {})
@@ -34,7 +40,6 @@ else:
     model_state_dict = cpt
     config = {}
 
-# إزالة كلمة module. من بداية الأسماء إذا كانت موجودة
 extract_model = OrderedDict()
 for k, v in model_state_dict.items():
     if k.startswith("module."):
@@ -42,7 +47,6 @@ for k, v in model_state_dict.items():
     else:
         extract_model[k] = v
 
-# تجهيز الملف بالشكل اللي بيفهمه RVC
 new_cpt = {
     "weight": extract_model,
     "config": config,
@@ -52,39 +56,35 @@ new_cpt = {
     "version": "v2"
 }
 
-small_model_path = "my_voice_model.pth"
+small_model_path = os.path.join(current_dir, "my_voice_model.pth")
 torch.save(new_cpt, small_model_path)
 print(f"✅ تم إنشاء النموذج الصغير بنجاح!")
 
-# ==========================================
-# 3. تجهيز المتغيرات للتحويل
-# ==========================================
-current_dir = os.getcwd()
-rvc_dir = os.path.join(current_dir, "Retrieval-based-Voice-Conversion-WebUI")
+# 4. تشغيل التحويل
 input_audio = os.path.join(current_dir, "sadis.mp3")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
-model_full_path = os.path.join(current_dir, small_model_path)
 
 env = os.environ.copy()
 env["PYTHONPATH"] = rvc_dir
 
 print("🚀 جاري التحويل (قد يستغرق دقيقة)...")
-# أمر التحويل
 cmd = [
     "python", "-m", "infer.cli",
-    "--model", model_full_path,
+    "--model", small_model_path,
     "--input", input_audio,
     "--output", output_audio,
     "--f0-method", "rmvpe",
-    "--index-rate", "0.0"
+    "--index-rate", "0.0",
+    "--device", "cpu" # إجباره على استخدام المعالج
 ]
 
-# تشغيل الأمر داخل مجلد RVC
-subprocess.run(cmd, env=env, cwd=rvc_dir, check=True)
+try:
+    subprocess.run(cmd, env=env, cwd=rvc_dir, check=True)
+except subprocess.CalledProcessError as e:
+    print(f"❌ فشل التحويل. رمز الخطأ: {e.returncode}")
+    raise
 
-# ==========================================
-# 4. إرسال الصوت إلى التلغرام
-# ==========================================
+# 5. إرسال الصوت
 print("🎉 اكتمل التحويل! جاري الإرسال للتلغرام...")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
