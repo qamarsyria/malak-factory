@@ -9,21 +9,20 @@ from collections import OrderedDict
 from huggingface_hub import hf_hub_download, snapshot_download
 
 # ==========================================
-# 0. إعدادات البيئة الحرجة (حل مشكلة error -1)
+# 0. إعدادات البيئة الحرجة
 # ==========================================
-# تعيين عدد خيوط OpenMP إلى 1 يمنع انهيار الذاكرة على المعالج
 os.environ["OMP_NUM_THREADS"] = "1"
 
-print("⏳ [0/4] تثبيت التبعيات الحرجة...")
+print("⏳ [0/5] تثبيت التبعيات الحرجة...")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
                 "numpy==1.23.5", 
                 "faiss-cpu==1.7.3", 
                 "torchcrepe"], check=True)
 
 # ==========================================
-# 1. تحميل النموذج الخاص بك والنماذج الأساسية
+# 1. تحميل النموذج والنماذج الأساسية
 # ==========================================
-print("⏳ [1/4] تحميل النموذج الخاص بك من HuggingFace...")
+print("⏳ [1/5] تحميل النموذج الخاص بك من HuggingFace...")
 model_path = hf_hub_download(
     repo_id="Emad12088/gemini-voice-model",
     filename="G_2333333.pth",
@@ -38,14 +37,30 @@ os.makedirs(os.path.join(rvc_dir, "assets", "hubert_base"), exist_ok=True)
 HF_REPO = "lj1995/VoiceConversionWebUI"
 snapshot_download(HF_REPO, allow_patterns=["hubert_base/*"], local_dir=os.path.join(rvc_dir, "assets"))
 
-print("⏳ تحميل مقطع تلاوة السديس...")
+# ==========================================
+# 2. تحميل الصوت وتحويله إلى WAV (الحل الجذري)
+# ==========================================
+print("⏳ [2/5] تحميل الصوت وتحويله إلى WAV...")
 audio_url = "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/112001.mp3"
-urllib.request.urlretrieve(audio_url, os.path.join(current_dir, "sadis.mp3"))
+mp3_path = os.path.join(current_dir, "sadis.mp3")
+wav_path = os.path.join(current_dir, "sadis.wav")
+
+urllib.request.urlretrieve(audio_url, mp3_path)
+
+# تحويل MP3 إلى WAV باستخدام ffmpeg (مثبت مسبقاً في GitHub Actions)
+result = subprocess.run(
+    ["ffmpeg", "-y", "-i", mp3_path, "-ar", "48000", "-ac", "1", wav_path],
+    capture_output=True, text=True
+)
+if result.returncode != 0:
+    print("❌ فشل تحويل الصوت:", result.stderr)
+    raise Exception("FFmpeg conversion failed")
+print("✅ تم تحويل الصوت إلى WAV بنجاح!")
 
 # ==========================================
-# 2. استخراج النموذج الصغير (Small Model)
+# 3. استخراج النموذج الصغير
 # ==========================================
-print("⏳ [2/4] جاري استخراج النموذج الصغير...")
+print("⏳ [3/5] جاري استخراج النموذج الصغير...")
 cpt = torch.load(model_path, map_location="cpu")
 model_state_dict = cpt["model"] if "model" in cpt else cpt
 
@@ -71,21 +86,20 @@ torch.save(new_cpt, small_model_path)
 print("✅ تم إنشاء النموذج الصغير بنجاح!")
 
 # ==========================================
-# 3. تشغيل التحويل باستخدام CLI (مع OMP_NUM_THREADS=1)
+# 4. تشغيل التحويل باستخدام ملف WAV
 # ==========================================
-print("🚀 [3/4] جاري التحويل...")
+print("🚀 [4/5] جاري التحويل...")
 
-input_audio = os.path.join(current_dir, "sadis.mp3")
 output_audio = os.path.join(current_dir, "gemini_voice.wav")
 
 env = os.environ.copy()
 env["PYTHONPATH"] = rvc_dir
-env["OMP_NUM_THREADS"] = "1" # 🔧 تأكيد إضافي
+env["OMP_NUM_THREADS"] = "1"
 
 cmd = [
     "python", "-m", "infer.cli",
     "--model", small_model_path,
-    "--input", input_audio,
+    "--input", wav_path,  # 🔧 استخدام WAV بدل MP3
     "--output", output_audio,
     "--f0-method", "pm",
     "--index-rate", "0.0"
@@ -101,9 +115,9 @@ except subprocess.CalledProcessError as e:
     raise
 
 # ==========================================
-# 4. إرسال الصوت إلى التلغرام
+# 5. إرسال الصوت إلى التلغرام
 # ==========================================
-print("🎉 [4/4] اكتمل التحويل! جاري الإرسال للتلغرام...")
+print("🎉 [5/5] اكتمل التحويل! جاري الإرسال للتلغرام...")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
