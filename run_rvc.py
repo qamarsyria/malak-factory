@@ -31,7 +31,7 @@ print("⏳ تحميل مقطع تلاوة السديس...")
 audio_url = "https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/112001.mp3"
 urllib.request.urlretrieve(audio_url, os.path.join(current_dir, "sadis.mp3"))
 
-# 3. استخراج النموذج الصغير (Small Model)
+# 3. استخراج النموذج الصغير (Small Model) وضبط الإعدادات
 print("⏳ جاري استخراج النموذج الصغير...")
 cpt = torch.load(model_path, map_location="cpu")
 
@@ -47,11 +47,12 @@ for k, v in model_state_dict.items():
     else:
         extract_model[k] = v
 
-# 🔧 قراءة ملف الإعدادات الافتراضي من كود RVC
+# 🔧 قراءة ملف الإعدادات الافتراضي من كود RVC لضمان التوافق
 config_path = os.path.join(rvc_dir, "configs", "v2", "48k.json")
 with open(config_path, "r") as f:
     config = json.load(f)
 
+# 🔧 إنشاء ملف النموذج الصغير بالبنية الصحيحة
 new_cpt = {
     "weight": extract_model,
     "config": config,
