@@ -9,9 +9,12 @@ from collections import OrderedDict
 from huggingface_hub import hf_hub_download, snapshot_download
 
 # ==========================================
-# 0. تثبيت التبعيات الحرجة داخل السكربت لضمان التوافق
+# 0. إعدادات البيئة الحرجة (حل مشكلة error -1)
 # ==========================================
-print("⏳ [0/4] تثبيت التبعيات الحرجة (faiss, numpy, torchcrepe)...")
+# تعيين عدد خيوط OpenMP إلى 1 يمنع انهيار الذاكرة على المعالج
+os.environ["OMP_NUM_THREADS"] = "1"
+
+print("⏳ [0/4] تثبيت التبعيات الحرجة...")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
                 "numpy==1.23.5", 
                 "faiss-cpu==1.7.3", 
@@ -68,7 +71,7 @@ torch.save(new_cpt, small_model_path)
 print("✅ تم إنشاء النموذج الصغير بنجاح!")
 
 # ==========================================
-# 3. تشغيل التحويل باستخدام CLI وطريقة pm
+# 3. تشغيل التحويل باستخدام CLI (مع OMP_NUM_THREADS=1)
 # ==========================================
 print("🚀 [3/4] جاري التحويل...")
 
@@ -77,8 +80,8 @@ output_audio = os.path.join(current_dir, "gemini_voice.wav")
 
 env = os.environ.copy()
 env["PYTHONPATH"] = rvc_dir
+env["OMP_NUM_THREADS"] = "1" # 🔧 تأكيد إضافي
 
-# استخدام pm خفيفة على المعالج مع التأكد من المسارات المطلقة
 cmd = [
     "python", "-m", "infer.cli",
     "--model", small_model_path,
