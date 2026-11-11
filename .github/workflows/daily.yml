@@ -27,7 +27,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pillow arabic-reshaper huggingface_hub quranic-phonemizer
+          pip install -r requirements.txt
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Generate Story
