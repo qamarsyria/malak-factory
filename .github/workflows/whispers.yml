@@ -39,7 +39,6 @@ jobs:
       - name: Install RVC Dependencies
         run: |
           pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          # 🔥 إضافة كل المكاتب الناقصة
           pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3 av onnxruntime pyworld torchcrepe matplotlib
 
       - name: Download RVC Engine & Prepare Models
@@ -50,11 +49,9 @@ jobs:
           
           cd Retrieval-based-Voice-Conversion-WebUI
           
-          # إنشاء ملفات __init__.py (حرجة جداً لمنع مشاكل الاستيراد)
           mkdir -p infer infer/modules infer/modules/vc
           touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
           
-          # تحميل نماذج HuBERT و RMVPE الأساسية
           mkdir -p assets/hubert_base assets/rmvpe
           wget -q -O assets/hubert_base/pytorch_model.bin https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin
           wget -q -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
@@ -78,16 +75,23 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Gemini TTS)
+      - name: Build Audio (Edge TTS)
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
+          # 🔥 تفعيل المحرك البديل
+          TTS_ENGINE: "2" 
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           python scripts/whispers_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
+          
+          if [ ! -f "out/${{ steps.gen.outputs.EP_NAME }}.mp3" ]; then
+            echo "❌ فشل توليد الصوت."
+            exit 1
+          fi
 
       - name: Convert to Malak Voice
         id: convert
