@@ -1,7 +1,6 @@
 import os, sys, json, subprocess, tempfile, shutil, re, time, gzip, hashlib, asyncio
 from pathlib import Path
 import requests
-import argparse
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -30,7 +29,8 @@ else:
     def generate_audio(text, out_path):
         try:
             async def _run():
-                comm = edge_tts.Communicate(text, "ar-SY-LaithNeural", rate="-5%")
+                # 🔥 التعديل الوحيد: صوت بنت سورية (AmalNeural) بدل (LaithNeural)
+                comm = edge_tts.Communicate(text, "ar-SY-AmalNeural", rate="-5%")
                 await comm.save(out_path)
             asyncio.run(_run())
             return Path(out_path).exists() and Path(out_path).stat().st_size > 1000
@@ -58,14 +58,6 @@ except Exception as e:
     print(f"⚠️ فشل تحميل الآيات: {e}")
 
 def get_local_ayah_text(surah, ayah): return _ayah_lib.get(f"{surah}:{ayah}", "")
-
-def prepare_gemini_text(text):
-    """إضافة نقطة في النهاية لمنع Gemini من هلوسة الإنجليزية"""
-    if not text: return ""
-    text = text.strip()
-    if not text.endswith(('.', '!', '؟')):
-        text += " ."
-    return text
 
 def trim_and_fade(input_wav, output_wav, speed_up=False, is_last=False):
     try:
@@ -116,6 +108,9 @@ def download_human_ayah(surah, ayah, out_path):
     except: pass
     return False
 
+# ═══════════════════════════════════════════════════════════
+# 🌟 المشكّل الذكي
+# ═══════════════════════════════════════════════════════════
 def smart_diacritize(text):
     if not text or not text.strip(): return text
     if not re.search(r'[\u0600-\u06FF]', text): return text
@@ -157,15 +152,10 @@ def sanitize_for_tts(t):
     t = re.sub(r'\(.*?\)', '', t, flags=re.DOTALL)
     t = re.sub(r'﴿.*?﴾', '', t, flags=re.DOTALL)
     
-    # إبقاء النقاط والفواصل
     t = re.sub(r'[^\u0600-\u06FF\s،؟۔!.]', '', t)
-    # 🌟 التعديل الجذري: استبدال علامات الوقف بنقطة بدلاً من مسافة (لمنع الهلوسة)
-    t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " . ", t)
+    t = re.sub(r"[ۖۗۘۙۚۛ۞۝]", " ", t)
     
-    t = re.sub(r"\s+", " ", t).strip()
-    # تجميع النقاط المتكررة
-    t = re.sub(r'(\s*\.\s*)+', ' . ', t).strip()
-    return t
+    return re.sub(r"\s+", " ", t).strip()
 
 def get_dur(p):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(p)], capture_output=True, text=True)
@@ -183,7 +173,7 @@ def split_text(text, max_chars=500):
     if current: chunks.append(current.strip())
     return chunks
 
-def build_episode_audio(json_path, out_audio, out_meta, mode):
+def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     ep_name = Path(json_path).stem
@@ -194,7 +184,8 @@ def build_episode_audio(json_path, out_audio, out_meta, mode):
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono", "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_path)], check=True, capture_output=True)
 
     segments_list = ep.get("segments", [])
-    wavs, meta_entries = [], []
+    yt_wavs, social_wavs = [], []
+    yt_meta, social_meta = [], []
 
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
@@ -206,6 +197,7 @@ def build_episode_audio(json_path, out_audio, out_meta, mode):
                 continue
             
             text = smart_diacritize(text)
+            
             chunks = split_text(text)
             chunk_timings = []
             
@@ -217,20 +209,21 @@ def build_episode_audio(json_path, out_audio, out_meta, mode):
                 
                 if not cached_wav.exists() or cached_wav.stat().st_size < 1000:
                     temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-                    # إضافة نقطة في النهاية للسرد أيضاً
-                    safe_chunk = prepare_gemini_text(chunk)
-                    if generate_audio(safe_chunk, str(temp_mp3)):
+                    if generate_audio(chunk, str(temp_mp3)):
                         subprocess.run(["ffmpeg", "-y", "-i", str(temp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cached_wav)], check=True, capture_output=True)
                     time.sleep(1) 
                     
                 if cached_wav.exists():
                     faded = work / f"faded_{idx}_{c_idx}.wav"
                     trim_and_fade(str(cached_wav), str(faded), speed_up=False, is_last=is_last_chunk)
-                    wavs.extend([faded, silence_path])
+                    yt_wavs.extend([faded, silence_path])
+                    social_wavs.extend([faded, silence_path])
                     chunk_timings.append({"text": chunk, "duration": get_dur(faded) + SILENCE_DUR})
             
             if chunk_timings:
-                meta_entries.append({"index": idx, "type": stype, "display": "", "chunks": chunk_timings})
+                meta_entry = {"index": idx, "type": stype, "display": "", "chunks": chunk_timings}
+                yt_meta.append(meta_entry)
+                social_meta.append(meta_entry)
 
         # ═══ 2. الآيات ═══
         elif stype == "quran":
@@ -238,76 +231,82 @@ def build_episode_audio(json_path, out_audio, out_meta, mode):
             if not ayahs: continue
             display = f"{seg.get('surah_name', '')}: {ayahs[0] if ayahs else ''}"
             
-            chunk_timings = []
+            yt_chunk_timings = []
             for a in ayahs:
                 text_a = sanitize_for_tts(get_local_ayah_text(s, a))
                 if not text_a: continue
                 
-                if mode == "human":
-                    # مسار السوشيال: تلاوة بشرية
-                    cache_a = ep_cache / f"human_{s}_{a}.mp3"
-                    if not download_human_ayah(s, a, str(cache_a)): continue
+                text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
+                cache_a = ep_cache / f"engine_{s}_{a}_{text_hash}.wav"
                     
-                    trimmed = ep_cache / f"trimmed_human_{s}_{a}.wav"
-                    trim_and_fade(str(cache_a), str(trimmed), speed_up=True, is_last=True)
-
-                    stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
-                    reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
-                    if not reverb_a.exists():
-                        apply_stealth_filter(str(trimmed), str(stealth_a))
-                        apply_mosque_reverb(str(stealth_a), str(reverb_a))
-                    
-                    if reverb_a.exists():
-                        wavs.extend([reverb_a, silence_path])
-                        chunk_timings.append({"text": text_a, "duration": get_dur(reverb_a) + SILENCE_DUR})
-
-                elif mode == "gemini":
-                    # مسار اليوتيوب: تلاوة Gemini (مع الحماية من الهلوسة)
-                    text_hash = hashlib.md5(text_a.encode('utf-8')).hexdigest()[:8]
-                    cache_a = ep_cache / f"engine_{s}_{a}_{text_hash}.wav"
-                        
-                    if not cache_a.exists():
-                        tmp_mp3 = work / "tmp_yt.mp3"
-                        # إجبار النقطة في نهاية الآية لمنع الإنجليزية
-                        safe_ayah = prepare_gemini_text(text_a)
-                        if generate_audio(safe_ayah, str(tmp_mp3)):
-                            subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
-                        time.sleep(1)
-                    
-                    trimmed_a = ep_cache / f"trimmed_yt_{s}_{a}_{text_hash}.wav"
-                    trim_and_fade(str(cache_a), str(trimmed_a), speed_up=True, is_last=True) 
-                    
-                    final_a = ep_cache / f"final_yt_{s}_{a}_{text_hash}.wav"
-                    if not final_a.exists():
-                        apply_mosque_reverb(str(trimmed_a), str(final_a))
-                    
-                    if final_a.exists():
-                        wavs.extend([final_a, silence_path])
-                        chunk_timings.append({"text": text_a, "duration": get_dur(final_a) + SILENCE_DUR})
+                if not cache_a.exists():
+                    tmp_mp3 = work / "tmp_yt.mp3"
+                    if generate_audio(text_a, str(tmp_mp3)):
+                        subprocess.run(["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", TARGET_SR, "-ac", "1", str(cache_a)], check=True, capture_output=True)
+                    time.sleep(1)
+                
+                trimmed_a = ep_cache / f"trimmed_yt_{s}_{a}_{text_hash}.wav"
+                trim_and_fade(str(cache_a), str(trimmed_a), speed_up=True, is_last=True) 
+                
+                final_a = ep_cache / f"final_yt_{s}_{a}_{text_hash}.wav"
+                if not final_a.exists():
+                    apply_mosque_reverb(str(trimmed_a), str(final_a))
+                
+                if final_a.exists():
+                    yt_wavs.extend([final_a, silence_path])
+                    yt_chunk_timings.append({"text": text_a, "duration": get_dur(final_a) + SILENCE_DUR})
             
-            if chunk_timings:
-                meta_entries.append({"index": idx, "type": stype, "display": display, "chunks": chunk_timings})
+            if yt_chunk_timings:
+                yt_meta.append({"index": idx, "type": stype, "display": display, "chunks": yt_chunk_timings})
 
-    if wavs:
-        concat_file = work / "concat.txt"
-        concat_file.write_text("\n".join(f"file '{p.resolve()}'" for p in wavs), encoding="utf-8")
-        merged = work / "merged.wav"
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)], check=True, capture_output=True)
-        Path(out_audio).parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["ffmpeg", "-y", "-i", str(merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_audio)], check=True, capture_output=True)
-        
-        meta_data = {"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_audio), "segments": meta_entries}
-        Path(out_meta).write_text(json.dumps(meta_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ [{mode}] {out_audio} | {get_dur(out_audio)/60:.1f} دقيقة")
+            soc_chunk_timings = []
+            for a in ayahs:
+                text_a = sanitize_for_tts(get_local_ayah_text(s, a))
+                if not text_a: continue
+                
+                cache_a = ep_cache / f"human_{s}_{a}.mp3"
+                if not download_human_ayah(s, a, str(cache_a)): continue
+                
+                trimmed_h = ep_cache / f"trimmed_human_{s}_{a}.wav"
+                trim_and_fade(str(cache_a), str(trimmed_h), speed_up=True, is_last=True)
+
+                stealth_a = ep_cache / f"stealth_{s}_{a}.wav"
+                reverb_a = ep_cache / f"reverb_{s}_{a}.wav"
+                if not reverb_a.exists():
+                    apply_stealth_filter(str(trimmed_h), str(stealth_a))
+                    apply_mosque_reverb(str(stealth_a), str(reverb_a))
+                
+                if reverb_a.exists():
+                    social_wavs.extend([reverb_a, silence_path])
+                    soc_chunk_timings.append({"text": text_a, "duration": get_dur(reverb_a) + SILENCE_DUR})
+            
+            if soc_chunk_timings:
+                social_meta.append({"index": idx, "type": stype, "display": display, "chunks": soc_chunk_timings})
+
+    if yt_wavs:
+        yt_concat = work / "yt_concat.txt"
+        yt_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in yt_wavs), encoding="utf-8")
+        yt_merged = work / "yt_merged.wav"
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(yt_concat), "-c", "copy", str(yt_merged)], check=True, capture_output=True)
+        Path(out_yt_mp3).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-i", str(yt_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_yt_mp3)], check=True, capture_output=True)
+        Path(str(out_yt_mp3).replace(".mp3", "_meta.json")).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_yt_mp3), "segments": yt_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"✅ (يوتيوب) {out_yt_mp3} | {get_dur(out_yt_mp3)/60:.1f} دقيقة")
+
+    if social_wavs:
+        soc_concat = work / "soc_concat.txt"
+        soc_concat.write_text("\n".join(f"file '{p.resolve()}'" for p in social_wavs), encoding="utf-8")
+        soc_merged = work / "soc_merged.wav"
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(soc_concat), "-c", "copy", str(soc_merged)], check=True, capture_output=True)
+        Path(out_social_mp3).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-i", str(soc_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_social_mp3)], check=True, capture_output=True)
+        Path(str(out_social_mp3).replace(".mp3", "_meta.json")).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_social_mp3), "segments": social_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"✅ (سوشيال) {out_social_mp3} | {get_dur(out_social_mp3)/60:.1f} دقيقة")
 
     cleanup_dir(work)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["human", "gemini"], required=True)
-    parser.add_argument("--json", required=True)
-    parser.add_argument("--out_audio", required=True)
-    parser.add_argument("--out_meta", required=True)
-    args = parser.parse_args()
-    
-    build_episode_audio(args.json, args.out_audio, args.out_meta, args.mode)
+    if len(sys.argv) < 4:
+        print(f"❌ الاستخدام: story_audio.py <json> <yt_mp3> <social_mp3>")
+        sys.exit(1)
+    build_episode_audio(sys.argv[1], sys.argv[2], sys.argv[3])
