@@ -25,16 +25,17 @@ env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-# 🔥 إعدادات كاجل الأصلية
+# إعدادات RVC (اللمسات الأخيرة)
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
     "--input", fixed_input,
     "--output", OUTPUT_AUDIO,
     "--f0-method", "rmvpe",
-    "--pitch", "12",         # 12 عشان نحول من صوت رجل (السديس) لصوت بنت (ملك)
-    "--protect", "0.33",
-    "--index-rate", "0",     # صفر زي كاجل
+    "--pitch", "10",
+    "--protect", "0.5",
+    "--index-rate", "0.5",
+    "--rms-mix-rate", "0.25",
     "--index", INDEX_PATH,
     "--overwrite"
 ]
@@ -44,5 +45,28 @@ result = subprocess.run(cmd, cwd=RVC_DIR, env=env)
 if result.returncode != 0:
     print("❌ Conversion failed!")
     sys.exit(1)
+
+print("✅ RVC Conversion Done. Adding Mosque Effect...")
+
+# ═══════════════════════════════════════════════════════════
+# 🕌 إضافة تأثير القاعة/المسجد (بسيط جداً)
+# ═══════════════════════════════════════════════════════════
+reverbed_output = os.path.abspath("reverbed_temp.wav")
+
+# aecho=in_gain:out_gain:delays:decays
+# هنا بنعمل صدى خفيف جداً (60ms) عشان يعطي إحساس بالمساحة
+ffmpeg_effect_cmd = [
+    "ffmpeg", "-y", "-i", OUTPUT_AUDIO,
+    "-af", "aecho=0.8:0.88:60:0.4",
+    reverbed_output
+]
+
+res_effect = subprocess.run(ffmpeg_effect_cmd, capture_output=True)
+
+if res_effect.returncode == 0:
+    os.replace(reverbed_output, OUTPUT_AUDIO) # استبدال الملف الأصلي بالملف اللي فيه صدى
+    print("✅ Mosque Effect Applied Successfully!")
+else:
+    print("⚠️ Failed to apply effect, keeping original audio.")
 
 print("✅ Done:", OUTPUT_AUDIO)
