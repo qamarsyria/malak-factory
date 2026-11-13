@@ -25,17 +25,16 @@ env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-# 🔥 شلنا --filter-radius
+# 🔥 إعدادات كاجل الأصلية
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
     "--input", fixed_input,
     "--output", OUTPUT_AUDIO,
     "--f0-method", "rmvpe",
-    "--pitch", "2",
+    "--pitch", "12",         # 12 عشان نحول من صوت رجل (السديس) لصوت بنت (ملك)
     "--protect", "0.33",
-    "--index-rate", "0.6",
-    "--rms-mix-rate", "0.25",
+    "--index-rate", "0",     # صفر زي كاجل
     "--index", INDEX_PATH,
     "--overwrite"
 ]
