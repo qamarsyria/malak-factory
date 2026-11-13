@@ -4,7 +4,6 @@ import sys
 import math
 import warnings
 
-# تجاهل تحذيرات librosa المزعجة
 warnings.filterwarnings("ignore")
 
 if len(sys.argv) < 3:
@@ -23,31 +22,25 @@ if not os.path.exists(INPUT_AUDIO):
 
 print(f"⏳ Step 1: Analyzing input voice pitch...")
 
-# تجهيز الصوت
 fixed_input = os.path.abspath("fixed_input.wav")
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
 
 # ═══════════════════════════════════════════════════════════
-# 🧠 العقل المدبر: حساب الـ Pitch أوتوماتيكياً
+# 🧠 العقل المدبر (نسخة محسنة - هدف 190 هرتز)
 # ═══════════════════════════════════════════════════════════
-TARGET_PITCH_HZ = 210.0 # حدة صوت "ملك" المستهدفة تقريباً (أنثوي طبيعي)
-auto_pitch = 4 # القيمة الافتراضية (احتياط)
+TARGET_PITCH_HZ = 190.0 # 🔥 نزلنا الهدف من 210 لـ 190 عشان نقلل الحدة
+auto_pitch = 4
 
 try:
     import librosa
     import numpy as np
     
-    # تحميل الصوت وتحليل النغمات
     y, sr = librosa.load(fixed_input, sr=None)
     f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-    
-    # استخراج النغمات الصوتية فقط (بدون الصمت)
     f0_voiced = f0[voiced_flag]
     
     if len(f0_voiced) > 0:
         input_pitch_hz = np.median(f0_voiced)
-        # حساب الفرق بالأنصاف (Semitones)
-        # المعادلة: 12 * log2(الهدف / الحالي)
         auto_pitch = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
         print(f"🎯 Input Pitch: {input_pitch_hz:.1f} Hz | Target: {TARGET_PITCH_HZ} Hz")
         print(f"🔥 Auto-Calculated Pitch Shift: {auto_pitch} semitones")
@@ -57,7 +50,7 @@ except Exception as e:
     print(f"⚠️ Pitch analysis failed ({e}), using default pitch 4.")
 
 # ═══════════════════════════════════════════════════════════
-# ⚙️ Step 2: RVC Conversion
+# ⚙️ Step 2: RVC Conversion (إعدادات مضادة للبلغم)
 # ═══════════════════════════════════════════════════════════
 print(f"⏳ Step 2: Converting to Malak Voice via RVC...")
 
@@ -72,9 +65,10 @@ cmd = [
     "--input", fixed_input,
     "--output", rvc_output,
     "--f0-method", "rmvpe",
-    "--pitch", str(auto_pitch), # 🔥 هنا السحر: بنمرر الرقم اللي حسبه
-    "--protect", "0.33",
-    "--index-rate", "0",      
+    "--pitch", str(auto_pitch),
+    "--protect", "0.5",          # 🔥 رفعنا الحماية عشان نقلل خلط الصوت
+    "--index-rate", "0.8",       # 🔥 استخدام البصمة عشان نمسح التخنيقة
+    "--rms-mix-rate", "0.25",    # 🔥 منع التلاعب بمستوى الصوت (يمسح البلغم)
     "--index", INDEX_PATH,
     "--overwrite"
 ]
@@ -88,17 +82,17 @@ if result.returncode != 0:
 print("✅ Step 2: RVC Conversion Done.")
 
 # ═══════════════════════════════════════════════════════════
-# 🧼 Step 3: Cleaning Audio
+# 🧼 Step 3: Cleaning Audio (فلاتر موسعة)
 # ═══════════════════════════════════════════════════════════
-print("⏳ Step 3: Cleaning audio (preserving consonants)...")
+print("⏳ Step 3: Cleaning audio...")
 
 audio_filters = (
-    "highpass=f=80,"
-    "lowpass=f=15000,"
-    "afftdn=nf=-35,"                          
-    "equalizer=f=2500:t=q:w=2:g=2,"           
-    "equalizer=f=3500:t=q:w=2:g=-3,"          
-    "equalizer=f=200:t=q:w=1:g=1.5,"          
+    "highpass=f=90,"                          # قطع الترددات المنخفضة جداً (سبب البلغم)
+    "lowpass=f=14000,"                        # قطع الترددات العالية جداً (سبب الحدة)
+    "afftdn=nf=-30,"                          # إزالة ضوضاء متوسطة
+    "equalizer=f=350:t=q:w=2:g=-3,"           # 🔥 قطع "البلغم" (ترددات 350Hz)
+    "equalizer=f=2500:t=q:w=2:g=2,"           # إبراز وضوح الحروف
+    "equalizer=f=4500:t=q:w=2:g=-2,"          # تخفيف الحدة الإضافية
     "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.9"
 )
