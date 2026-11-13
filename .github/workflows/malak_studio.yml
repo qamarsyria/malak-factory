@@ -7,10 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -37,14 +37,13 @@ jobs:
       - name: Download Input Audio (Test)
         run: |
           # هنا بننزل صوت تجريبي للتأكد إن المعمل شغال (بصوت جيميني)
-          # لاحقاً رح نربط هالمعمل بمصنع القصص تبعك
           wget -O input.mp3 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/raw/main/docs/assets/sample.mp3
 
       - name: Run Conversion
         run: python malak_converter.py
 
       - name: Upload Result
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: converted-audio
           path: malak_output.wav
