@@ -39,7 +39,8 @@ jobs:
       - name: Install RVC Dependencies
         run: |
           pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth
+          # 🔥 هنا التعديل: ضفنا transformers==4.39.3
+          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3
 
       - name: Download RVC Engine
         run: |
@@ -76,7 +77,6 @@ jobs:
             "${{ steps.gen.outputs.EP_FILE }}" \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
 
-      # 🔥 الخطوة السحرية اللي كانت ناقصة
       - name: Convert to Malak Voice
         id: convert
         if: steps.aud.outcome == 'success'
@@ -85,7 +85,6 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
             "out/${{ steps.gen.outputs.EP_NAME }}_malak.mp3"
 
-      # بناء الفيديو بالصوت الجديد
       - name: Build Video
         id: vid
         if: steps.convert.outcome == 'success'
