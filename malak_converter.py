@@ -1,11 +1,6 @@
 import os
 import subprocess
 import sys
-import math
-import warnings
-import numpy as np
-
-warnings.filterwarnings("ignore")
 
 if len(sys.argv) < 3:
     sys.exit(1)
@@ -23,12 +18,11 @@ pre_cleaned_input = os.path.abspath("pre_cleaned.wav")
 
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
 
-# فلاتر "قبل" (إزالة الصدى والوشة من القارئ)
+# فلاتر قبل التحويل (خفيفة عشان ما نمسح تفاصيل الصوت)
 pre_filters = (
-    "highpass=f=90,"
+    "highpass=f=80,"
     "lowpass=f=12000,"
-    "afftdn=nr=10:nf=-30,"
-    "agate=threshold=0.05:ratio=2:attack=10:release=50"
+    "afftdn=nf=-30"
 )
 
 subprocess.run([
@@ -38,35 +32,9 @@ subprocess.run([
 ], capture_output=True)
 
 # ═══════════════════════════════════════════════════════════
-# 🧠 Step 2: فحص الصوت (مع سقف للأنوثة 10-12)
+# ⚙️ Step 2: RVC Conversion (الرقم الثابت 7)
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 2: Analyzing pitch (Target 215Hz for Femininity)...")
-TARGET_PITCH_HZ = 215.0
-auto_pitch = 10
-
-try:
-    import librosa
-    y, sr = librosa.load(pre_cleaned_input, sr=None)
-    f0 = librosa.yin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-    f0 = f0[(f0 > 60) & (f0 < 500)]
-    
-    if len(f0) > 0:
-        input_pitch_hz = float(np.median(f0))
-        raw_shift = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
-        
-        # 🔥 السقف: منع الرفع لأكثر من 12 (أوكتاف كامل) وعدم النزول عن 8 (عشان الأنوثة)
-        auto_pitch = max(8, min(12, raw_shift))
-        
-        print(f"🎯 Input: {input_pitch_hz:.1f} Hz | Raw: {raw_shift} | Final: {auto_pitch}")
-    else:
-        print("⚠️ Pitch not detected, using default 10.")
-except Exception as e:
-    print(f"⚠️ Pitch analysis failed: {e}")
-
-# ═══════════════════════════════════════════════════════════
-# ⚙️ Step 3: RVC Conversion (التوازن الذهبي)
-# ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 3: Converting (Pitch: {auto_pitch} | Index: 0.95 | Protect: 0.33)...")
+print(f"⏳ Step 2: Converting to Malak Voice (Fixed Pitch: 7, Index: 0.6)...")
 
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
@@ -79,10 +47,10 @@ cmd = [
     "--input", pre_cleaned_input,
     "--output", rvc_output,
     "--f0-method", "rmvpe",
-    "--pitch", str(auto_pitch),
-    "--protect", "0.33",       # 🔥 الإصلاح: 0.33 عشان الحروف ترجع طبيعية
-    "--index-rate", "0.95",    # 🔥 الإصلاح: 0.95 عشان نمسح جرس القارئ
-    "--rms-mix-rate", "0.15",  # 🔥 الإصلاح: 0.15 عشان نقلل ترددات القارئ
+    "--pitch", "7",            # 🔥 الحدة الثابتة (حل وسط بين الأنوثة والحدة)
+    "--protect", "0.4",        # 🔥 حماية الحروف
+    "--index-rate", "0.6",     # 🔥 ننزل الـ Index عشان نمسح الخشة
+    "--rms-mix-rate", "0.3",   # 🔥 مستوى طبيعي
     "--index", INDEX_PATH,
     "--overwrite"
 ]
@@ -92,17 +60,15 @@ if result.returncode != 0:
     sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════
-# 🧼 Step 4: Post-Filters (فلتر الأنوثة + وضوح الحروف)
+# 🧼 Step 3: Post-Filters (بسيطة جداً)
 # ═══════════════════════════════════════════════════════════
-print("⏳ Step 4: Applying Final Polish...")
+print("⏳ Step 3: Applying Final Polish...")
 
+# شلنا كل الـ equalizers القوية اللي كانت بتعمل خشة
 post_filters = (
     "highpass=f=80,"
     "lowpass=f=14000,"
-    "equalizer=f=250:t=q:w=1:g=-3,"           # قطع ترددات الرجولة (200-300Hz)
-    "equalizer=f=900:t=q:w=1:g=3,"            # 🔥 تكبير ترددات الأنوثة (800-1000Hz)
-    "equalizer=f=2500:t=q:w=2:g=2,"           # إبراز وضوح الحروف (النون والميم)
-    "equalizer=f=4500:t=q:w=2:g=-2,"          # تقليل الحدة الزائدة
+    "equalizer=f=2500:t=q:w=2:g=1.5,"         # إبراز وضوح الحروف شوي بس
     "acompressor=threshold=0.1:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.95"
 )
