@@ -6,7 +6,6 @@ if len(sys.argv) < 3:
     print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
     sys.exit(1)
 
-# 1. تحديد المسارات المطلقة قبل الدخول لمجلد RVC
 INPUT_AUDIO = os.path.abspath(sys.argv[1])
 OUTPUT_AUDIO = os.path.abspath(sys.argv[2])
 MODEL_PATH = os.path.abspath("malak_voice.pth")
@@ -21,14 +20,14 @@ subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", f
 
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
-env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1" # حل مشكلة weights_only
 
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
     "--input", fixed_input,
     "--output", OUTPUT_AUDIO,
-    "--f0-method", "pm",
+    "--f0-method", "rmvpe",
     "--pitch", "0", 
     "--protect", "0.33",
     "--index-rate", "0.75",
@@ -36,7 +35,8 @@ cmd = [
     "--overwrite"
 ]
 
-result = subprocess.run(cmd, cwd=RVC_DIR)
+# تشغيل التحويل داخل مجلد RVC
+result = subprocess.run(cmd, cwd=RVC_DIR, env=env)
 
 if result.returncode != 0:
     print("❌ فشل التحويل")
