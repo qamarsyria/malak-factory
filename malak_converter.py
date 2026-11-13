@@ -22,18 +22,18 @@ pre_cleaned = os.path.abspath("pre_cleaned.wav")
 
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
 
-# 🔥 فلاتر "قبل" RVC: إزالة الصدى والوشة من القارئ
+# 🔥 الفلاتر القبلية (اللي بنختبرها هلأ)
 pre_filters = (
     "highpass=f=90,"                          
     "lowpass=f=12000,"                        
-    "afftdn=nr=20:nf=-25,"                    # إزالة الصدى والضوضاء بقوة
+    "afftdn=nr=20:nf=-25,"                    # إزالة الصدى والضوضاء
     "agate=threshold=0.05:ratio=2:attack=10:release=50" # قطع أطراف الصدى
 )
 
 subprocess.run(["ffmpeg", "-y", "-i", raw_input, "-af", pre_filters, pre_cleaned], capture_output=True)
 
 # ═══════════════════════════════════════════════════════════
-# 🧠 العقل المدبر (الكود الممتاز)
+# 🧠 العقل المدبر (الكود الذهبي)
 # ═══════════════════════════════════════════════════════════
 print(f"⏳ Step 2: Analyzing Pitch...")
 TARGET_PITCH_HZ = 190.0
@@ -68,14 +68,14 @@ cmd = [
 subprocess.run(cmd, cwd=RVC_DIR, env=env)
 
 print(f"⏳ Step 4: Post-Filters (Final Polish)...")
-# 🔥 فلاتر "بعد" RVC: اللي عجبتك في الكود الممتاز
+# فلاتر البوست (نفس الكود الذهبي)
 post_filters = (
     "highpass=f=90,"
     "lowpass=f=14000,"
     "afftdn=nf=-30,"
-    "equalizer=f=350:t=q:w=2:g=-3,"           # قطع البلغم
-    "equalizer=f=2500:t=q:w=2:g=2,"           # وضوح الحروف
-    "equalizer=f=4500:t=q:w=2:g=-2,"          # تخفيف الحدة
+    "equalizer=f=350:t=q:w=2:g=-3,"           
+    "equalizer=f=2500:t=q:w=2:g=2,"           
+    "equalizer=f=4500:t=q:w=2:g=-2,"          
     "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.9"
 )
