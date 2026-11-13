@@ -1,0 +1,67 @@
+name: 🧪 Test RVC with Human Voice
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test_rvc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install RVC Dependencies
+        run: |
+          python -m pip install --upgrade pip==24.0
+          pip install omegaconf==2.0.5
+          pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3 av onnxruntime pyworld torchcrepe matplotlib
+
+      - name: Download RVC Engine & Prepare Models
+        run: |
+          wget -q https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/archive/refs/heads/main.zip
+          unzip -q main.zip
+          mv Retrieval-based-Voice-Conversion-WebUI-main Retrieval-based-Voice-Conversion-WebUI
+          
+          cd Retrieval-based-Voice-Conversion-WebUI
+          
+          mkdir -p infer infer/modules infer/modules/vc
+          touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
+          
+          mkdir -p assets/hubert_base assets/rmvpe
+          wget -q -O assets/hubert_base/pytorch_model.bin https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin
+          wget -q -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
+          wget -q -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
+
+      - name: Download Malak Models
+        run: |
+          wget -q -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
+          wget -q -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
+
+      - name: Download Human Audio (Alafasy)
+        run: |
+          # تحميل صوت بشري طبيعي (الفاتحة - الفاتحة بصوت العفاسي)
+          wget -q -O human_input.mp3 https://everyayah.com/data/Alafasy_128kbps/001001.mp3
+
+      - name: Run Conversion (RVC)
+        run: |
+          # هنا بنشغل سكربت التحويل تبعنا
+          python malak_converter.py human_input.mp3 output_malak.wav
+
+      - name: Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: RVC-Human-Test
+          path: output_malak.wav
