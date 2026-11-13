@@ -25,6 +25,7 @@ env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
+# 🔥 شلنا --filter-radius
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
@@ -34,7 +35,6 @@ cmd = [
     "--pitch", "2",
     "--protect", "0.33",
     "--index-rate", "0.6",
-    "--filter-radius", "3",
     "--rms-mix-rate", "0.25",
     "--index", INDEX_PATH,
     "--overwrite"
