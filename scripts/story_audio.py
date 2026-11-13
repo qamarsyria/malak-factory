@@ -9,19 +9,17 @@ from config import QURAN_API
 from utilities import cleanup_dir
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 مفتاح التبديل (مثبت على 2 عشان نجبره يستخدم Edge TTS)
+# 🌟 إجبار المحرك على Edge TTS بالقوة (لا يعتمد على متغيرات البيئة)
 # ═══════════════════════════════════════════════════════════
-TTS_ENGINE = "2" # 🔥 مثبتة يدوياً
+TTS_ENGINE = "2" # 🔥 مثبتة يدوياً هنا
 
 if TTS_ENGINE == "1":
-    print("🔊 [TTS] المحرك: Gemini (الجودة العالية)", flush=True)
     from gemini_tts_pool import gemini_tts_with_pool as _engine_generate
     def generate_audio(text, out_path):
         try:
             _engine_generate(text, out_path)
             return True
         except Exception as e:
-            print(f"   ⚠️ Gemini فشل: {str(e)[:100]}", flush=True)
             return False
 else:
     print("🔊 [TTS] المحرك: Edge TTS (البديل السريع)", flush=True)
@@ -53,9 +51,8 @@ try:
             for item in data:
                 key = f"{item['surah_number']}:{item['ayah_number']}"
                 _ayah_lib[key] = item['text']
-        print(f"✅ تم تحميل {len(_ayah_lib)} آية.")
 except Exception as e:
-    print(f"⚠️ فشل تحميل الآيات: {e}")
+    pass
 
 def get_local_ayah_text(surah, ayah): return _ayah_lib.get(f"{surah}:{ayah}", "")
 
@@ -285,7 +282,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
         Path(out_yt_mp3).parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["ffmpeg", "-y", "-i", str(yt_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_yt_mp3)], check=True, capture_output=True)
         Path(str(out_yt_mp3).replace(".mp3", "_meta.json")).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_yt_mp3), "segments": yt_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ (يوتيوب) {out_yt_mp3} | {get_dur(out_yt_mp3)/60:.1f} دقيقة")
 
     if social_wavs:
         soc_concat = work / "soc_concat.txt"
@@ -295,12 +291,10 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
         Path(out_social_mp3).parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["ffmpeg", "-y", "-i", str(soc_merged), "-c:a", "libmp3lame", "-b:a", "192k", str(out_social_mp3)], check=True, capture_output=True)
         Path(str(out_social_mp3).replace(".mp3", "_meta.json")).write_text(json.dumps({"episode": ep.get("episode_number", 1), "title": ep.get("title", ""), "total_duration": get_dur(out_social_mp3), "segments": social_meta}, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"✅ (سوشيال) {out_social_mp3} | {get_dur(out_social_mp3)/60:.1f} دقيقة")
 
     cleanup_dir(work)
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
-        print(f"❌ الاستخدام: story_audio.py <json> <yt_mp3> <social_mp3>")
         sys.exit(1)
     build_episode_audio(sys.argv[1], sys.argv[2], sys.argv[3])
