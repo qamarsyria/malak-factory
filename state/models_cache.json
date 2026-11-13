@@ -30,6 +30,7 @@
     "gemini-3.5-transcribe",
     "gemini-4-argon",
     "gemini-4-carbon",
+    "gemini-4-hydrogen",
     "lyria-3-clip-preview",
     "lyria-3.5",
     "gemini-robotics-er-2-preview",
@@ -38,5 +39,5 @@
     "deep-research-max-preview-04-2026",
     "deep-research-preview-04-2026"
   ],
-  "timestamp": 1794385484.8481927
+  "timestamp": 1794545125.1916864
 }
