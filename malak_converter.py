@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 
-# استقبال الملفات من الـ Workflow
 if len(sys.argv) < 3:
     print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
     sys.exit(1)
@@ -16,7 +15,7 @@ INDEX_PATH = "added_malak_voice.index"
 
 print(f"⏳ جاري تحويل {INPUT_AUDIO} إلى صوت ملك...")
 
-# RVC يحتاج الصوت 48kHz، في جيميني بيطلع 24kHz. لازم نصلحه.
+# RVC يحتاج الصوت 48kHz
 fixed_input = "fixed_input.wav"
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
 
@@ -24,7 +23,6 @@ env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-# أمر التحويل (pitch 0 لأن جيميني أصلاً بيطلع صوت بنت/رجل قريب)
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
