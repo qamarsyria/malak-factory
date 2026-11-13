@@ -49,7 +49,7 @@ jobs:
             exit 1
           fi
 
-      - name: Build Social Audio (Narration + Human)
+      - name: Build Audio (Narration + Human)
         id: soc_aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
@@ -61,7 +61,7 @@ jobs:
             --out_audio "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
             --out_meta "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json"
 
-      - name: Build Social Video
+      - name: Build Video
         if: steps.soc_aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -71,29 +71,8 @@ jobs:
             "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
             "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
             "videos/social_${{ steps.gen.outputs.EP_NAME }}.mp4"
-
-      - name: Build YouTube Audio (Narration + Gemini)
-        id: yt_aud
-        if: steps.gen.outputs.EP_FILE != ''
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-        run: |
-          python scripts/story_audio.py \
-            --mode gemini \
-            --json "${{ steps.gen.outputs.EP_FILE }}" \
-            --out_audio "out/yt_${{ steps.gen.outputs.EP_NAME }}.mp3" \
-            --out_meta "out/yt_${{ steps.gen.outputs.EP_NAME }}_meta.json"
-
-      - name: Build YouTube Video
-        if: steps.yt_aud.outcome == 'success'
-        env:
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: |
-          mkdir -p videos
-          python scripts/story_video.py \
-            "out/yt_${{ steps.gen.outputs.EP_NAME }}.mp3" \
-            "out/yt_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
-            "videos/yt_${{ steps.gen.outputs.EP_NAME }}.mp4"
+          echo "--- محتويات مجلد الفيديو ---"
+          ls -lh videos/
 
       - name: Upload to Telegram
         if: always()
@@ -101,10 +80,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          for f in out/social_*.mp3 out/yt_*.mp3 videos/*.mp4; do
+          for f in out/social_*.mp3 videos/*.mp4; do
             if [ -f "$f" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+              echo "جاري رفع: $f (الحجم: $(du -h "$f" | cut -f1))"
+              curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TELEGRAM_CHAT_ID}" -F "document=@${f}" -F "caption=📁 $(basename $f)"
+              echo ""
             fi
           done
 
