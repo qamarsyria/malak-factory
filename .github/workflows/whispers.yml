@@ -79,7 +79,7 @@ jobs:
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          # 🔥 تفعيل المحرك البديل
+          # 🔥 هذا السطر هو اللي بيجبر السكربت يستخدم Edge TTS
           TTS_ENGINE: "2" 
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -123,7 +123,7 @@ jobs:
           VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${VIDEO}" \
-            -F "caption=🌙 همسات ملك (بصوت ملك)" -F "supports_streaming=true"
+            -F "caption=🌙 همسات ملك (بصوت ملك - Edge TTS)" -F "supports_streaming=true"
 
       - name: Cleanup
         if: steps.tg.outcome == 'success'
