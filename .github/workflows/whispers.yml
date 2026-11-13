@@ -75,11 +75,12 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Forced Edge TTS)
+      - name: Build Audio (Edge TTS + Gemini Diacritize)
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          # 🔥 شلنا GEMINI_API_KEYS عشان ما يقدر يستخدم جيميني
+          # 🔥 رجعنا المفاتيح عشان التشكيل يشتغل
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           python scripts/whispers_audio.py \
@@ -121,7 +122,7 @@ jobs:
           VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${VIDEO}" \
-            -F "caption=🌙 همسات ملك (بصوت ملك)" -F "supports_streaming=true"
+            -F "caption=🌙 همسات ملك (بصوت ملك - Edge TTS)" -F "supports_streaming=true"
 
       - name: Cleanup
         if: steps.tg.outcome == 'success'
