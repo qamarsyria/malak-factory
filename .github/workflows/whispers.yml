@@ -1,117 +1,44 @@
-name: 🌙 همسات ملك
+import os
+import subprocess
+import sys
 
-on:
-  schedule:
-    - cron: '0 20 * * *'
-  workflow_dispatch:
+if len(sys.argv) < 3:
+    print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
+    sys.exit(1)
 
-jobs:
-  whispers:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      models: read
-      contents: write
+INPUT_AUDIO = os.path.abspath(sys.argv[1])
+OUTPUT_AUDIO = os.path.abspath(sys.argv[2])
+MODEL_PATH = os.path.abspath("malak_voice.pth")
+INDEX_PATH = os.path.abspath("added_malak_voice.index")
+RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT }}
+print(f"⏳ جاري تحويل {INPUT_AUDIO} إلى صوت ملك...")
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
+# RVC يحتاج الصوت 48kHz
+fixed_input = os.path.abspath("fixed_input.wav")
+subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
 
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri
+env = os.environ.copy()
+env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
+env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-      - name: Install Project Requirements
-        run: |
-          python -m pip install --upgrade pip==24.0
-          pip install requests edge-tts pillow arabic-reshaper huggingface_hub quranic-phonemizer
-          pip install omegaconf==2.0.5
-          
-      - name: Install RVC Dependencies
-        run: |
-          pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          # 🔥 هنا التعديل: ضفنا transformers==4.39.3
-          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3
+cmd = [
+    sys.executable, "-m", "infer.cli",
+    "--model", MODEL_PATH,
+    "--input", fixed_input,
+    "--output", OUTPUT_AUDIO,
+    "--f0-method", "rmvpe",  # 👈 استخدمنا rmvpe لأنه أدق
+    "--pitch", "0", 
+    "--protect", "0.33",
+    "--index-rate", "0.75",
+    "--index", INDEX_PATH,
+    "--overwrite"
+]
 
-      - name: Download RVC Engine
-        run: |
-          wget https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/archive/refs/heads/main.zip
-          unzip main.zip
-          mv Retrieval-based-Voice-Conversion-WebUI-main Retrieval-based-Voice-Conversion-WebUI
+result = subprocess.run(cmd, cwd=RVC_DIR)
 
-      - name: Download Malak Models
-        run: |
-          wget -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
-          wget -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
+if result.returncode != 0:
+    print("❌ فشل التحويل")
+    sys.exit(1)
 
-      - name: Generate Whisper
-        id: gen
-        run: |
-          python -u scripts/generate_whispers.py
-          if [ -f out/latest_whisper.txt ]; then
-            EP_FILE=$(cat out/latest_whisper.txt)
-            echo "EP_FILE=$EP_FILE" >> $GITHUB_OUTPUT
-            echo "EP_NAME=$(basename "$EP_FILE" .json)" >> $GITHUB_OUTPUT
-          else
-            echo "❌ فشل التوليد"
-            exit 1
-          fi
-
-      - name: Build Audio (Gemini TTS)
-        id: aud
-        if: steps.gen.outputs.EP_FILE != ''
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: |
-          python scripts/whispers_audio.py \
-            "${{ steps.gen.outputs.EP_FILE }}" \
-            "out/${{ steps.gen.outputs.EP_NAME }}.mp3"
-
-      - name: Convert to Malak Voice
-        id: convert
-        if: steps.aud.outcome == 'success'
-        run: |
-          python malak_converter.py \
-            "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
-            "out/${{ steps.gen.outputs.EP_NAME }}_malak.mp3"
-
-      - name: Build Video
-        id: vid
-        if: steps.convert.outcome == 'success'
-        env:
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: |
-          mkdir -p videos
-          python scripts/whispers_video.py \
-            "out/${{ steps.gen.outputs.EP_NAME }}_malak.mp3" \
-            "${{ steps.gen.outputs.EP_FILE }}" \
-            "videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
-
-      - name: Upload to Telegram
-        id: tg
-        if: steps.vid.outcome == 'success'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-            -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${VIDEO}" \
-            -F "caption=🌙 همسات ملك (بصوت ملك)" -F "supports_streaming=true"
-
-      - name: Cleanup
-        if: steps.tg.outcome == 'success'
-        run: |
-          rm -rf videos/*.mp4 out/*.mp3
-          rm -rf data/whispers/generated/*.json
-          rm -f out/latest_whisper.txt
+print("✅ تم التحويل بنجاح! الملف الجاهز هو:", OUTPUT_AUDIO)
