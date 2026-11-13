@@ -63,11 +63,12 @@ jobs:
           wget -q -O abdulbasit.mp3 https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/002255.mp3
           python malak_converter.py abdulbasit.mp3 out_abdulbasit.wav
 
-      - name: Upload Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: Auto-Pitch-Test-Results
-          path: |
-            out_minshawy.wav
-            out_alafasy.wav
-            out_abdulbasit.wav
+      # 🔥 هنا السحر: إرسال الملفات على التلغرام مباشرة
+      - name: Send to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@out_minshawy.wav" -F "caption=🎧 المنشاوي (تحقيق) بصوت ملك"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@out_alafasy.wav" -F "caption=🎧 العفاسي (حاد) بصوت ملك"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@out_abdulbasit.wav" -F "caption=🎧 عبد الباسط (عميق) بصوت ملك"
