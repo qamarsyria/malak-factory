@@ -1,12 +1,12 @@
-name: 🧪 Test Auto-Pitch with 3 Reciters
+name: 🧪 Test 4 Reciters with Pre-Filters
 
 on:
   workflow_dispatch:
 
 jobs:
-  test_auto_pitch:
+  test_4_voices:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Code
@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip==24.0
           pip install omegaconf==2.0.5
           pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3 av onnxruntime pyworld torchcrepe matplotlib
+          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3 av onnxruntime pyworld torchcrepe matplotlib yt-dlp
 
       - name: Download RVC Engine & Prepare Models
         run: |
@@ -48,27 +48,39 @@ jobs:
           wget -q -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
           wget -q -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
 
-      - name: Test Minshawy (Tahqiq)
+      # ═══ 1. المنشاوي ═══
+      - name: Test Minshawy
         run: |
           wget -q -O minshawy.mp3 https://everyayah.com/data/Minshawy_Murattal_128kbps/002255.mp3
           python malak_converter.py minshawy.mp3 out_minshawy.wav
 
-      - name: Test Alafasy (High Pitch)
+      # ═══ 2. العفاسي ═══
+      - name: Test Alafasy
         run: |
           wget -q -O alafasy.mp3 https://everyayah.com/data/Alafasy_128kbps/002255.mp3
           python malak_converter.py alafasy.mp3 out_alafasy.wav
 
-      - name: Test Abdul Basit (Deep Pitch)
+      # ═══ 3. عبد الباسط ═══
+      - name: Test Abdul Basit
         run: |
           wget -q -O abdulbasit.mp3 https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/002255.mp3
           python malak_converter.py abdulbasit.mp3 out_abdulbasit.wav
 
-      # 🔥 هنا السحر: إرسال الملفات على التلغرام مباشرة
+      # ═══ 4. معاذ صيام (من يوتيوب) ═══
+      - name: Test Moaz Siam (YouTube)
+        run: |
+          # نزل أول دقيقة من سورة غافر لمعاذ صيام
+          yt-dlp -x --audio-format wav -o "moaz_full.wav" "https://www.youtube.com/watch?v=YnKRQO9Y-VA"
+          ffmpeg -y -ss 00:00:30 -i moaz_full.wav -t 00:01:00 -ar 48000 -ac 1 moaz_siam.wav
+          python malak_converter.py moaz_siam.wav out_moaz.wav
+
+      # ═══ الإرسال للتلغرام ═══
       - name: Send to Telegram
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@out_minshawy.wav" -F "caption=🎧 المنشاوي (تحقيق) بصوت ملك"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@out_alafasy.wav" -F "caption=🎧 العفاسي (حاد) بصوت ملك"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@out_abdulbasit.wav" -F "caption=🎧 عبد الباسط (عميق) بصوت ملك"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_minshawy.wav" -F "caption=🎧 1. المنشاوي (مع فلاتر قبلية)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy.wav" -F "caption=🎧 2. العفاسي (مع فلاتر قبلية)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdulbasit.wav" -F "caption=🎧 3. عبد الباسط (مع فلاتر قبلية)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_moaz.wav" -F "caption=🎧 4. معاذ صيام (مع فلاتر قبلية)"
