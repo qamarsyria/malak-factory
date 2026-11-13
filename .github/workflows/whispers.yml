@@ -79,8 +79,7 @@ jobs:
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          # 🔥 هذا السطر هو اللي بيجبر السكربت يستخدم Edge TTS
-          TTS_ENGINE: "2" 
+          TTS_ENGINE: "2" # يستخدم Edge TTS
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
