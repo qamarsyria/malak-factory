@@ -25,18 +25,17 @@ env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-# 🔥 فلاتر التنعيم ومنع البرج
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
     "--input", fixed_input,
     "--output", OUTPUT_AUDIO,
-    "--f0-method", "rmvpe",       # الأدق للكلام
-    "--pitch", "2",               # رفع بسيط عشان ما يطلع عجوز
-    "--protect", "0.33",          # حماية الحروف
-    "--index-rate", "0.6",        # مرونة
-    "--filter-radius", "3",       # سر التنعيم (يمسح الرجفة)
-    "--rms-mix-rate", "0.25",     # سر منع الطابع المعدني
+    "--f0-method", "rmvpe",
+    "--pitch", "2",
+    "--protect", "0.33",
+    "--index-rate", "0.6",
+    "--filter-radius", "3",
+    "--rms-mix-rate", "0.25",
     "--index", INDEX_PATH,
     "--overwrite"
 ]
