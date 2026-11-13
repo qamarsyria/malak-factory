@@ -16,20 +16,19 @@ MODEL_PATH = os.path.abspath("malak_voice.pth")
 INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
-print(f"⏳ Step 1: Pre-cleaning input audio (De-reverb & Noise Reduction)...")
+print(f"⏳ Step 1: Pre-cleaning input audio...")
 
 raw_input = os.path.abspath("fixed_input.wav")
 pre_cleaned_input = os.path.abspath("pre_cleaned.wav")
 
-# 1. استخراج الصوت
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
 
-# 2. فلاتر "قبل" (إزالة الصدى والوشة من القارئ)
+# فلاتر "قبل" (إزالة الصدى والوشة من القارئ)
 pre_filters = (
-    "highpass=f=90,"                          # قطع الزمجره
-    "lowpass=f=12000,"                        # قطع الهسيس
-    "afftdn=nr=15:nf=-25,"                    # إزالة الضوضاء والصدى (De-reverb)
-    "agate=threshold=0.05:ratio=2:attack=10:release=50" # قطع أطراف الصدى
+    "highpass=f=90,"
+    "lowpass=f=12000,"
+    "afftdn=nr=10:nf=-30,"
+    "agate=threshold=0.05:ratio=2:attack=10:release=50"
 )
 
 subprocess.run([
@@ -39,11 +38,11 @@ subprocess.run([
 ], capture_output=True)
 
 # ═══════════════════════════════════════════════════════════
-# 🧠 Step 2: فحص الصوت (مع سقف للحدة)
+# 🧠 Step 2: فحص الصوت (مع سقف للأنوثة 10-12)
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 2: Analyzing pitch (Pitch Cap 5)...")
-TARGET_PITCH_HZ = 200.0
-auto_pitch = 4
+print(f"⏳ Step 2: Analyzing pitch (Target 215Hz for Femininity)...")
+TARGET_PITCH_HZ = 215.0
+auto_pitch = 10
 
 try:
     import librosa
@@ -55,19 +54,19 @@ try:
         input_pitch_hz = float(np.median(f0))
         raw_shift = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
         
-        # 🔥 السقف: منع الرفع لأكثر من 5 درجات عشان ما يطلع حاد
-        auto_pitch = min(5, max(-4, raw_shift))
+        # 🔥 السقف: منع الرفع لأكثر من 12 (أوكتاف كامل) وعدم النزول عن 8 (عشان الأنوثة)
+        auto_pitch = max(8, min(12, raw_shift))
         
-        print(f"🎯 Input Pitch: {input_pitch_hz:.1f} Hz | Raw Shift: {raw_shift} | Capped Shift: {auto_pitch}")
+        print(f"🎯 Input: {input_pitch_hz:.1f} Hz | Raw: {raw_shift} | Final: {auto_pitch}")
     else:
-        print("⚠️ Pitch not detected, using default 4.")
+        print("⚠️ Pitch not detected, using default 10.")
 except Exception as e:
     print(f"⚠️ Pitch analysis failed: {e}")
 
 # ═══════════════════════════════════════════════════════════
-# ⚙️ Step 3: RVC Conversion
+# ⚙️ Step 3: RVC Conversion (التوازن الذهبي)
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 3: Converting to Malak Voice (Pitch: {auto_pitch})...")
+print(f"⏳ Step 3: Converting (Pitch: {auto_pitch} | Index: 0.95 | Protect: 0.33)...")
 
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
@@ -81,9 +80,9 @@ cmd = [
     "--output", rvc_output,
     "--f0-method", "rmvpe",
     "--pitch", str(auto_pitch),
-    "--protect", "0.15",       # حماية منخفضة لمسح صوت القارئ
-    "--index-rate", "0.85",    # استخدام بصمة ملك بقوة
-    "--rms-mix-rate", "0.25",
+    "--protect", "0.33",       # 🔥 الإصلاح: 0.33 عشان الحروف ترجع طبيعية
+    "--index-rate", "0.95",    # 🔥 الإصلاح: 0.95 عشان نمسح جرس القارئ
+    "--rms-mix-rate", "0.15",  # 🔥 الإصلاح: 0.15 عشان نقلل ترددات القارئ
     "--index", INDEX_PATH,
     "--overwrite"
 ]
@@ -93,14 +92,17 @@ if result.returncode != 0:
     sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════
-# 🧼 Step 4: Post-Filters (تنظيف نهائي لوضوح الحروف)
+# 🧼 Step 4: Post-Filters (فلتر الأنوثة + وضوح الحروف)
 # ═══════════════════════════════════════════════════════════
-print("⏳ Step 4: Applying final polish (Post-Filters)...")
+print("⏳ Step 4: Applying Final Polish...")
 
 post_filters = (
     "highpass=f=80,"
-    "equalizer=f=2500:t=q:w=2:g=2.5,"         # إبراز النون والراء
-    "equalizer=f=400:t=q:w=2:g=-2,"           # تقليل البلغم
+    "lowpass=f=14000,"
+    "equalizer=f=250:t=q:w=1:g=-3,"           # قطع ترددات الرجولة (200-300Hz)
+    "equalizer=f=900:t=q:w=1:g=3,"            # 🔥 تكبير ترددات الأنوثة (800-1000Hz)
+    "equalizer=f=2500:t=q:w=2:g=2,"           # إبراز وضوح الحروف (النون والميم)
+    "equalizer=f=4500:t=q:w=2:g=-2,"          # تقليل الحدة الزائدة
     "acompressor=threshold=0.1:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.95"
 )
@@ -112,7 +114,6 @@ subprocess.run([
     OUTPUT_AUDIO
 ], capture_output=True)
 
-# تنظيف الملفات المؤقتة
 for f in [rvc_output, raw_input, pre_cleaned_input]:
     if os.path.exists(f): os.remove(f)
 
