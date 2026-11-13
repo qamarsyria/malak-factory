@@ -1,10 +1,10 @@
-name: 🧪 Test RVC with Human Voice
+name: 🧪 Test Auto-Pitch with 3 Reciters
 
 on:
   workflow_dispatch:
 
 jobs:
-  test_rvc:
+  test_auto_pitch:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -22,7 +22,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
 
-      - name: Install RVC Dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip==24.0
           pip install omegaconf==2.0.5
@@ -36,11 +36,9 @@ jobs:
           mv Retrieval-based-Voice-Conversion-WebUI-main Retrieval-based-Voice-Conversion-WebUI
           
           cd Retrieval-based-Voice-Conversion-WebUI
-          
-          mkdir -p infer infer/modules infer/modules/vc
+          mkdir -p infer infer/modules infer/modules/vc assets/hubert_base assets/rmvpe
           touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
           
-          mkdir -p assets/hubert_base assets/rmvpe
           wget -q -O assets/hubert_base/pytorch_model.bin https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin
           wget -q -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
           wget -q -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
@@ -50,17 +48,26 @@ jobs:
           wget -q -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
           wget -q -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
 
-      - name: Download Human Audio (Ayat Al-Kursi - Minshawy - Tahqiq Style)
+      - name: Test Minshawy (Tahqiq)
         run: |
-          # 🔥 أسلوب التحقيق: المنشاوي (مرتل)
-          wget -q -O human_input.mp3 https://everyayah.com/data/Minshawy_Murattal_128kbps/002255.mp3
+          wget -q -O minshawy.mp3 https://everyayah.com/data/Minshawy_Murattal_128kbps/002255.mp3
+          python malak_converter.py minshawy.mp3 out_minshawy.wav
 
-      - name: Run Conversion (RVC)
+      - name: Test Alafasy (High Pitch)
         run: |
-          python malak_converter.py human_input.mp3 output_malak.wav
+          wget -q -O alafasy.mp3 https://everyayah.com/data/Alafasy_128kbps/002255.mp3
+          python malak_converter.py alafasy.mp3 out_alafasy.wav
 
-      - name: Upload Result
+      - name: Test Abdul Basit (Deep Pitch)
+        run: |
+          wget -q -O abdulbasit.mp3 https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/002255.mp3
+          python malak_converter.py abdulbasit.mp3 out_abdulbasit.wav
+
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: RVC-Human-Test-Tahqiq
-          path: output_malak.wav
+          name: Auto-Pitch-Test-Results
+          path: |
+            out_minshawy.wav
+            out_alafasy.wav
+            out_abdulbasit.wav
