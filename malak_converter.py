@@ -25,7 +25,6 @@ env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-# الخطوة 1: تحويل RVC
 rvc_output = os.path.abspath("rvc_raw_output.wav")
 cmd = [
     sys.executable, "-m", "infer.cli",
@@ -33,7 +32,7 @@ cmd = [
     "--input", fixed_input,
     "--output", rvc_output,
     "--f0-method", "rmvpe",
-    "--pitch", "2",           # الحدة اللي اخترتها
+    "--pitch", "4",           # 🔥 الحدة صارت 4 زي ما طلبت
     "--protect", "0.33",
     "--index-rate", "0",      
     "--index", INDEX_PATH,
@@ -49,19 +48,20 @@ if result.returncode != 0:
 print("✅ Step 1: RVC Conversion Done.")
 
 # ═══════════════════════════════════════════════════════════
-# 🧼 الخطوة 2: تنظيف الصوت (إزالة الوشة والهسيس)
+# 🧼 الخطوة 2: تنظيف الصوت (نسخة محسنة لوضوح الحروف)
 # ═══════════════════════════════════════════════════════════
-print("⏳ Step 2: Cleaning audio (removing noise/fuzz)...")
+print("⏳ Step 2: Cleaning audio (preserving consonants)...")
 
-# سلسلة الفلاتر الاحترافية
+# 🔥 سلسلة الفلاتر المعدلة
 audio_filters = (
-    "highpass=f=80,"                          # قطع الترددات المنخفضة جداً
-    "lowpass=f=15000,"                        # قطع الترددات العالية جداً (فوق السمع)
-    "afftdn=nf=-25,"                          # 🔥 إزالة الضوضاء (Denoiser)
-    "equalizer=f=3500:t=q:w=2:g=-4,"          # تخفيف حدة السكات
-    "equalizer=f=200:t=q:w=1:g=2,"            # إضافة دفء للصوت
-    "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"  # توحيد الصوت
-    "alimiter=level_in=1:level_out=0.9"       # منع التشوه
+    "highpass=f=80,"
+    "lowpass=f=15000,"
+    "afftdn=nf=-35,"                          # 🔥 خففنا الضوضاء شوي عشان ما تمسح الحروف
+    "equalizer=f=2500:t=q:w=2:g=2,"           # 🔥 رفعنا ترددات وضوح الحروف (النون والراء)
+    "equalizer=f=3500:t=q:w=2:g=-3,"          # تخفيف حدة السكات
+    "equalizer=f=200:t=q:w=1:g=1.5,"          # دفء خفيف
+    "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
+    "alimiter=level_in=1:level_out=0.9"
 )
 
 cleaned_output = OUTPUT_AUDIO
@@ -76,12 +76,10 @@ res_clean = subprocess.run(ffmpeg_clean_cmd, capture_output=True, text=True)
 
 if res_clean.returncode != 0:
     print("⚠️ Cleaning failed, keeping raw RVC output.")
-    print(res_clean.stderr[-500:])
     os.replace(rvc_output, OUTPUT_AUDIO)
 else:
     print("✅ Step 2: Audio cleaned successfully.")
 
-# تنظيف الملفات المؤقتة
 if os.path.exists(rvc_output) and rvc_output != OUTPUT_AUDIO:
     os.remove(rvc_output)
 if os.path.exists(fixed_input):
