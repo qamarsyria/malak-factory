@@ -9,9 +9,9 @@ from config import QURAN_API
 from utilities import cleanup_dir
 
 # ═══════════════════════════════════════════════════════════
-# 🌟 مفتاح التبديل: 1 = Gemini | 2 = Edge TTS
+# 🌟 مفتاح التبديل (مثبت على 2 عشان نجبره يستخدم Edge TTS)
 # ═══════════════════════════════════════════════════════════
-TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
+TTS_ENGINE = "2" # 🔥 مثبتة يدوياً
 
 if TTS_ENGINE == "1":
     print("🔊 [TTS] المحرك: Gemini (الجودة العالية)", flush=True)
@@ -29,7 +29,7 @@ else:
     def generate_audio(text, out_path):
         try:
             async def _run():
-                # 🔥 التعديل الوحيد: صوت بنت سورية (AmalNeural) بدل (LaithNeural)
+                # صوت بنت سورية (أمل)
                 comm = edge_tts.Communicate(text, "ar-SY-AmalNeural", rate="-5%")
                 await comm.save(out_path)
             asyncio.run(_run())
@@ -108,9 +108,6 @@ def download_human_ayah(surah, ayah, out_path):
     except: pass
     return False
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 المشكّل الذكي
-# ═══════════════════════════════════════════════════════════
 def smart_diacritize(text):
     if not text or not text.strip(): return text
     if not re.search(r'[\u0600-\u06FF]', text): return text
@@ -190,14 +187,12 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
     for idx, seg in enumerate(segments_list):
         stype = seg.get("type")
         
-        # ═══ 1. السرد ═══
         if stype in ("narration", "teaser", "cta", "outro", "intro", "summary"):
             text = sanitize_for_tts(seg.get("text", ""))
             if not text: 
                 continue
             
             text = smart_diacritize(text)
-            
             chunks = split_text(text)
             chunk_timings = []
             
@@ -225,7 +220,6 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
                 yt_meta.append(meta_entry)
                 social_meta.append(meta_entry)
 
-        # ═══ 2. الآيات ═══
         elif stype == "quran":
             s, ayahs = seg.get("surah", 0), seg.get("ayah_numbers", [])
             if not ayahs: continue
