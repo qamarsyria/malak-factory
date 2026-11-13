@@ -1,6 +1,11 @@
 import os
 import subprocess
 import sys
+import math
+import warnings
+
+# تجاهل تحذيرات librosa المزعجة
+warnings.filterwarnings("ignore")
 
 if len(sys.argv) < 3:
     print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
@@ -16,10 +21,45 @@ if not os.path.exists(INPUT_AUDIO):
     print(f"❌ File {INPUT_AUDIO} not found!")
     sys.exit(1)
 
-print(f"⏳ Step 1: Converting {INPUT_AUDIO} to Malak Voice via RVC...")
+print(f"⏳ Step 1: Analyzing input voice pitch...")
 
+# تجهيز الصوت
 fixed_input = os.path.abspath("fixed_input.wav")
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
+
+# ═══════════════════════════════════════════════════════════
+# 🧠 العقل المدبر: حساب الـ Pitch أوتوماتيكياً
+# ═══════════════════════════════════════════════════════════
+TARGET_PITCH_HZ = 210.0 # حدة صوت "ملك" المستهدفة تقريباً (أنثوي طبيعي)
+auto_pitch = 4 # القيمة الافتراضية (احتياط)
+
+try:
+    import librosa
+    import numpy as np
+    
+    # تحميل الصوت وتحليل النغمات
+    y, sr = librosa.load(fixed_input, sr=None)
+    f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+    
+    # استخراج النغمات الصوتية فقط (بدون الصمت)
+    f0_voiced = f0[voiced_flag]
+    
+    if len(f0_voiced) > 0:
+        input_pitch_hz = np.median(f0_voiced)
+        # حساب الفرق بالأنصاف (Semitones)
+        # المعادلة: 12 * log2(الهدف / الحالي)
+        auto_pitch = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
+        print(f"🎯 Input Pitch: {input_pitch_hz:.1f} Hz | Target: {TARGET_PITCH_HZ} Hz")
+        print(f"🔥 Auto-Calculated Pitch Shift: {auto_pitch} semitones")
+    else:
+        print("⚠️ Could not detect pitch, using default pitch 4.")
+except Exception as e:
+    print(f"⚠️ Pitch analysis failed ({e}), using default pitch 4.")
+
+# ═══════════════════════════════════════════════════════════
+# ⚙️ Step 2: RVC Conversion
+# ═══════════════════════════════════════════════════════════
+print(f"⏳ Step 2: Converting to Malak Voice via RVC...")
 
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
@@ -32,7 +72,7 @@ cmd = [
     "--input", fixed_input,
     "--output", rvc_output,
     "--f0-method", "rmvpe",
-    "--pitch", "4",           # 🔥 الحدة صارت 4 زي ما طلبت
+    "--pitch", str(auto_pitch), # 🔥 هنا السحر: بنمرر الرقم اللي حسبه
     "--protect", "0.33",
     "--index-rate", "0",      
     "--index", INDEX_PATH,
@@ -45,21 +85,20 @@ if result.returncode != 0:
     print("❌ RVC Conversion failed!")
     sys.exit(1)
 
-print("✅ Step 1: RVC Conversion Done.")
+print("✅ Step 2: RVC Conversion Done.")
 
 # ═══════════════════════════════════════════════════════════
-# 🧼 الخطوة 2: تنظيف الصوت (نسخة محسنة لوضوح الحروف)
+# 🧼 Step 3: Cleaning Audio
 # ═══════════════════════════════════════════════════════════
-print("⏳ Step 2: Cleaning audio (preserving consonants)...")
+print("⏳ Step 3: Cleaning audio (preserving consonants)...")
 
-# 🔥 سلسلة الفلاتر المعدلة
 audio_filters = (
     "highpass=f=80,"
     "lowpass=f=15000,"
-    "afftdn=nf=-35,"                          # 🔥 خففنا الضوضاء شوي عشان ما تمسح الحروف
-    "equalizer=f=2500:t=q:w=2:g=2,"           # 🔥 رفعنا ترددات وضوح الحروف (النون والراء)
-    "equalizer=f=3500:t=q:w=2:g=-3,"          # تخفيف حدة السكات
-    "equalizer=f=200:t=q:w=1:g=1.5,"          # دفء خفيف
+    "afftdn=nf=-35,"                          
+    "equalizer=f=2500:t=q:w=2:g=2,"           
+    "equalizer=f=3500:t=q:w=2:g=-3,"          
+    "equalizer=f=200:t=q:w=1:g=1.5,"          
     "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.9"
 )
@@ -78,7 +117,7 @@ if res_clean.returncode != 0:
     print("⚠️ Cleaning failed, keeping raw RVC output.")
     os.replace(rvc_output, OUTPUT_AUDIO)
 else:
-    print("✅ Step 2: Audio cleaned successfully.")
+    print("✅ Step 3: Audio cleaned successfully.")
 
 if os.path.exists(rvc_output) and rvc_output != OUTPUT_AUDIO:
     os.remove(rvc_output)
