@@ -34,10 +34,10 @@ cmd = [
     "--model", MODEL_PATH,
     "--input", fixed_input,
     "--output", OUTPUT_AUDIO,
-    "--f0-method", "rmvpe",
-    "--pitch", "0", 
-    "--protect", "0.33",
-    "--index-rate", "0.75",
+    "--f0-method", "pm",     # 🔥 التعديل 1: pm بدل rmvpe (أنعم للـ TTS)
+    "--pitch", "0",          # 🔥 التعديل 2: 0 بدل 3 (عشان ما يبرج)
+    "--protect", "0.5",      # 🔥 التعديل 3: حماية أعلى للحروف
+    "--index-rate", "0.5",   # 🔥 التعديل 4: index أقل عشان صوت طبيعي
     "--index", INDEX_PATH,
     "--overwrite"
 ]
