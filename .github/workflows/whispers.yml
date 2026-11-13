@@ -75,12 +75,11 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Edge TTS)
+      - name: Build Audio (Forced Edge TTS)
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
-          TTS_ENGINE: "2" # يستخدم Edge TTS
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          # 🔥 شلنا GEMINI_API_KEYS نهائياً من هنا
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           python scripts/whispers_audio.py \
