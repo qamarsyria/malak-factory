@@ -6,17 +6,17 @@ if len(sys.argv) < 3:
     print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
     sys.exit(1)
 
-INPUT_AUDIO = sys.argv[1]
-OUTPUT_AUDIO = sys.argv[2]
-
+# 1. تحديد المسارات المطلقة قبل الدخول لمجلد RVC
+INPUT_AUDIO = os.path.abspath(sys.argv[1])
+OUTPUT_AUDIO = os.path.abspath(sys.argv[2])
+MODEL_PATH = os.path.abspath("malak_voice.pth")
+INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
-MODEL_PATH = "malak_voice.pth"
-INDEX_PATH = "added_malak_voice.index"
 
 print(f"⏳ جاري تحويل {INPUT_AUDIO} إلى صوت ملك...")
 
 # RVC يحتاج الصوت 48kHz
-fixed_input = "fixed_input.wav"
+fixed_input = os.path.abspath("fixed_input.wav")
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
 
 env = os.environ.copy()
