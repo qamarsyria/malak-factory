@@ -1,8 +1,13 @@
 import os
 import subprocess
 import sys
+import math
+import warnings
+
+warnings.filterwarnings("ignore")
 
 if len(sys.argv) < 3:
+    print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
     sys.exit(1)
 
 INPUT_AUDIO = os.path.abspath(sys.argv[1])
@@ -11,30 +16,43 @@ MODEL_PATH = os.path.abspath("malak_voice.pth")
 INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
-print(f"⏳ Step 1: Pre-cleaning input audio...")
+if not os.path.exists(INPUT_AUDIO):
+    print(f"❌ File {INPUT_AUDIO} not found!")
+    sys.exit(1)
 
-raw_input = os.path.abspath("fixed_input.wav")
-pre_cleaned_input = os.path.abspath("pre_cleaned.wav")
+print(f"⏳ Step 1: Analyzing input voice pitch...")
 
-subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
-
-# فلاتر قبل التحويل (خفيفة عشان ما نمسح تفاصيل الصوت)
-pre_filters = (
-    "highpass=f=80,"
-    "lowpass=f=12000,"
-    "afftdn=nf=-30"
-)
-
-subprocess.run([
-    "ffmpeg", "-y", "-i", raw_input,
-    "-af", pre_filters,
-    pre_cleaned_input
-], capture_output=True)
+fixed_input = os.path.abspath("fixed_input.wav")
+subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
 
 # ═══════════════════════════════════════════════════════════
-# ⚙️ Step 2: RVC Conversion (الرقم الثابت 7)
+# 🧠 العقل المدبر (نسخة محسنة - هدف 190 هرتز)
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 2: Converting to Malak Voice (Fixed Pitch: 7, Index: 0.6)...")
+TARGET_PITCH_HZ = 190.0 # 🔥 نزلنا الهدف من 210 لـ 190 عشان نقلل الحدة
+auto_pitch = 4
+
+try:
+    import librosa
+    import numpy as np
+    
+    y, sr = librosa.load(fixed_input, sr=None)
+    f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+    f0_voiced = f0[voiced_flag]
+    
+    if len(f0_voiced) > 0:
+        input_pitch_hz = np.median(f0_voiced)
+        auto_pitch = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
+        print(f"🎯 Input Pitch: {input_pitch_hz:.1f} Hz | Target: {TARGET_PITCH_HZ} Hz")
+        print(f"🔥 Auto-Calculated Pitch Shift: {auto_pitch} semitones")
+    else:
+        print("⚠️ Could not detect pitch, using default pitch 4.")
+except Exception as e:
+    print(f"⚠️ Pitch analysis failed ({e}), using default pitch 4.")
+
+# ═══════════════════════════════════════════════════════════
+# ⚙️ Step 2: RVC Conversion (إعدادات مضادة للبلغم)
+# ═══════════════════════════════════════════════════════════
+print(f"⏳ Step 2: Converting to Malak Voice via RVC...")
 
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
@@ -44,43 +62,60 @@ rvc_output = os.path.abspath("rvc_raw_output.wav")
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
-    "--input", pre_cleaned_input,
+    "--input", fixed_input,
     "--output", rvc_output,
     "--f0-method", "rmvpe",
-    "--pitch", "7",            # 🔥 الحدة الثابتة (حل وسط بين الأنوثة والحدة)
-    "--protect", "0.4",        # 🔥 حماية الحروف
-    "--index-rate", "0.6",     # 🔥 ننزل الـ Index عشان نمسح الخشة
-    "--rms-mix-rate", "0.3",   # 🔥 مستوى طبيعي
+    "--pitch", str(auto_pitch),
+    "--protect", "0.5",          # 🔥 رفعنا الحماية عشان نقلل خلط الصوت
+    "--index-rate", "0.8",       # 🔥 استخدام البصمة عشان نمسح التخنيقة
+    "--rms-mix-rate", "0.25",    # 🔥 منع التلاعب بمستوى الصوت (يمسح البلغم)
     "--index", INDEX_PATH,
     "--overwrite"
 ]
 
 result = subprocess.run(cmd, cwd=RVC_DIR, env=env)
+
 if result.returncode != 0:
+    print("❌ RVC Conversion failed!")
     sys.exit(1)
 
-# ═══════════════════════════════════════════════════════════
-# 🧼 Step 3: Post-Filters (بسيطة جداً)
-# ═══════════════════════════════════════════════════════════
-print("⏳ Step 3: Applying Final Polish...")
+print("✅ Step 2: RVC Conversion Done.")
 
-# شلنا كل الـ equalizers القوية اللي كانت بتعمل خشة
-post_filters = (
-    "highpass=f=80,"
-    "lowpass=f=14000,"
-    "equalizer=f=2500:t=q:w=2:g=1.5,"         # إبراز وضوح الحروف شوي بس
-    "acompressor=threshold=0.1:ratio=3:attack=20:release=250,"
-    "alimiter=level_in=1:level_out=0.95"
+# ═══════════════════════════════════════════════════════════
+# 🧼 Step 3: Cleaning Audio (فلاتر موسعة)
+# ═══════════════════════════════════════════════════════════
+print("⏳ Step 3: Cleaning audio...")
+
+audio_filters = (
+    "highpass=f=90,"                          # قطع الترددات المنخفضة جداً (سبب البلغم)
+    "lowpass=f=14000,"                        # قطع الترددات العالية جداً (سبب الحدة)
+    "afftdn=nf=-30,"                          # إزالة ضوضاء متوسطة
+    "equalizer=f=350:t=q:w=2:g=-3,"           # 🔥 قطع "البلغم" (ترددات 350Hz)
+    "equalizer=f=2500:t=q:w=2:g=2,"           # إبراز وضوح الحروف
+    "equalizer=f=4500:t=q:w=2:g=-2,"          # تخفيف الحدة الإضافية
+    "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
+    "alimiter=level_in=1:level_out=0.9"
 )
 
-subprocess.run([
+cleaned_output = OUTPUT_AUDIO
+ffmpeg_clean_cmd = [
     "ffmpeg", "-y", "-i", rvc_output,
-    "-af", post_filters,
+    "-af", audio_filters,
     "-ar", "48000", "-ac", "1",
-    OUTPUT_AUDIO
-], capture_output=True)
+    cleaned_output
+]
 
-for f in [rvc_output, raw_input, pre_cleaned_input]:
-    if os.path.exists(f): os.remove(f)
+res_clean = subprocess.run(ffmpeg_clean_cmd, capture_output=True, text=True)
+
+if res_clean.returncode != 0:
+    print("⚠️ Cleaning failed, keeping raw RVC output.")
+    os.replace(rvc_output, OUTPUT_AUDIO)
+else:
+    print("✅ Step 3: Audio cleaned successfully.")
+
+if os.path.exists(rvc_output) and rvc_output != OUTPUT_AUDIO:
+    os.remove(rvc_output)
+if os.path.exists(fixed_input):
+    os.remove(fixed_input)
 
 print("✅ Done:", OUTPUT_AUDIO)
