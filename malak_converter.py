@@ -13,31 +13,30 @@ INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
 if not os.path.exists(INPUT_AUDIO):
-    print(f"❌ الملف {INPUT_AUDIO} غير موجود!")
+    print(f"❌ File {INPUT_AUDIO} not found!")
     sys.exit(1)
 
-print(f"⏳ جاري تحويل {INPUT_AUDIO} إلى صوت ملك...")
+print(f"⏳ Converting {INPUT_AUDIO} to Malak Voice...")
 
 fixed_input = os.path.abspath("fixed_input.wav")
-res = subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True, text=True)
-
-if not os.path.exists(fixed_input):
-    print(f"❌ فشل FFmpeg:\n{res.stderr}")
-    sys.exit(1)
+subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", fixed_input], capture_output=True)
 
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
+# 🔥 الإعدادات السحرية لمنع الرجفة
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH,
     "--input", fixed_input,
     "--output", OUTPUT_AUDIO,
-    "--f0-method", "pm",     # 🔥 التعديل 1: pm بدل rmvpe (أنعم للـ TTS)
-    "--pitch", "0",          # 🔥 التعديل 2: 0 بدل 3 (عشان ما يبرج)
-    "--protect", "0.5",      # 🔥 التعديل 3: حماية أعلى للحروف
-    "--index-rate", "0.5",   # 🔥 التعديل 4: index أقل عشان صوت طبيعي
+    "--f0-method", "rmvpe",       # الأدق للكلام
+    "--pitch", "2",               # رفع بسيط عشان ما يطلع عجوز
+    "--protect", "0.33",          # حماية الحروف
+    "--index-rate", "0.6",        # توازن بين الجرس والطبيعية
+    "--filter-radius", "3",       # 🔥 سر التنعيم (يمسح الرجفة)
+    "--rms-mix-rate", "0.25",     # 🔥 سر منع الطابع المعدني
     "--index", INDEX_PATH,
     "--overwrite"
 ]
@@ -45,7 +44,7 @@ cmd = [
 result = subprocess.run(cmd, cwd=RVC_DIR, env=env)
 
 if result.returncode != 0:
-    print("❌ فشل التحويل في RVC")
+    print("❌ Conversion failed!")
     sys.exit(1)
 
-print("✅ تم التحويل بنجاح! الملف الجاهز هو:", OUTPUT_AUDIO)
+print("✅ Done:", OUTPUT_AUDIO)
