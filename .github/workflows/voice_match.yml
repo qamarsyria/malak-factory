@@ -2,6 +2,11 @@ name: 🎯 Voice Match & Raa Extract
 
 on:
   workflow_dispatch:
+    inputs:
+      user_pitch_hz:
+        description: 'ترددك بالهرتز (من تحليل سابق)'
+        required: false
+        default: '117.2'
 
 jobs:
   analyze_match_extract:
@@ -11,50 +16,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: 🐍 Python 3.10
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies
+      - name: 📦 تثبيت الاعتماديات
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg zip
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip -q
+          pip install -q numpy scipy librosa praat-parselmouth requests
 
-      - name: Install Python Libraries
-        run: |
-          python -m pip install --upgrade pip
-          pip install librosa numpy scipy praat-parselmouth faster-whisper pydub requests
-
-      - name: Download User Voice Recordings
+      - name: ⬇️ تحميل تسجيلات صوتك
         run: |
           wget -q -O 8.m4a "https://github.com/qamarsyria/malak-factory/releases/download/v2.0-myvoice/8.m4a"
           wget -q -O 9.m4a "https://github.com/qamarsyria/malak-factory/releases/download/v2.0-myvoice/9.m4a"
-          
-          # دمجهم في ملف واحد
-          ffmpeg -y -i 8.m4a -ar 16000 -ac 1 part1.wav
-          ffmpeg -y -i 9.m4a -ar 16000 -ac 1 part2.wav
-          
-          echo "file 'part1.wav'" > list.txt
-          echo "file 'part2.wav'" >> list.txt
-          ffmpeg -y -f concat -safe 0 -i list.txt -ar 16000 -ac 1 my_voice.wav
-          
-          echo "✅ تم تجميع ملفات صوتك: $(ls -lh my_voice.wav | awk '{print $5}')"
+          ffmpeg -y -i 8.m4a -ar 16000 -ac 1 part1.wav 2>/dev/null
+          ffmpeg -y -i 9.m4a -ar 16000 -ac 1 part2.wav 2>/dev/null
+          printf "file '%s'\n" "$PWD/part1.wav" "$PWD/part2.wav" > list.txt
+          ffmpeg -y -f concat -safe 0 -i list.txt -ar 16000 -ac 1 my_voice.wav 2>/dev/null
+          echo "✅ my_voice.wav: $(du -h my_voice.wav | cut -f1)"
 
-      - name: 1. Analyze User Voice
+      - name: 📊 تحليل صوتك
         run: python analyze_voice.py
 
-      - name: 2. Match with Reciters
+      - name: 🎯 مطابقة القراء
         run: python match_reciter.py
 
-      - name: 3. Extract Raa Samples
+      - name: 🎼 استخراج الراء من الحصري
+        env:
+          USER_PITCH_HZ: ${{ github.event.inputs.user_pitch_hz || '117.2' }}
         run: python extract_raa.py
 
-      - name: Upload Results (ZIP)
+      - name: 📋 ملخص النتائج
+        run: |
+          echo "================================"
+          echo "✅ الملفات الجاهزة للرفع على Kaggle:"
+          echo "================================"
+          ls -lh my_voice.wav raa_raw_master.wav raa_matched_master.wav raa_manifest.txt 2>/dev/null || true
+          echo "================================"
+
+      - name: 📤 رفع الملفات (Artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: Voice-Match-Results
+          name: voice-training-bundle
           path: |
-            user_features.json
-            best_match.json
-            raa_samples.zip
-          retention-days: 7
+            my_voice.wav
+            raa_raw_master.wav
+            raa_matched_master.wav
+            raa_manifest.txt
+            raa_raw/
+            raa_matched/
+          retention-days: 30
