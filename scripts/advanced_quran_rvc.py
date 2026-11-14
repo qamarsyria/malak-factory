@@ -8,8 +8,8 @@ warnings.filterwarnings("ignore")
 
 INPUT_AUDIO = sys.argv[1]
 OUTPUT_AUDIO = sys.argv[2]
-MODEL_PATH = "malak_voice.pth"
-INDEX_PATH = "added_malak_voice.index"
+MODEL_PATH = os.path.abspath("malak_voice.pth")
+INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 TEMP_DIR = "tmp_chunks"
 
