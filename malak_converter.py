@@ -17,27 +17,25 @@ INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
 PITCH_OFFSET = int(os.environ.get("PITCH_OFFSET", "0"))
+TEMPO_SLOW = 0.75
+TEMPO_FAST = 1.0 / TEMPO_SLOW
 
-# 🔥 إعدادات التبطيء والرجوع
-TEMPO_SLOW = 0.75         # تبطيء 25%
-TEMPO_FAST = 1.0 / TEMPO_SLOW  # رجوع للسرعة الأصلية (1.333)
-
-print(f"⏳ Step 1: Pre-Filter + Slow down by 25%...")
+print(f"⏳ Step 1: Pre-Filter + Slow down 25%...")
 raw_input = os.path.abspath("fixed_input.wav")
 pre_cleaned = os.path.abspath("pre_cleaned.wav")
 
 if not os.path.exists(INPUT_AUDIO):
-    print(f"❌ Input file {INPUT_AUDIO} not found!")
     sys.exit(1)
 
-# 🔥 نبطئ الصوت بنسبة 25% قبل RVC (عشان HuBERT يفهم الحروف)
+subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
+
 pre_filters = (
     "highpass=f=60,"
     "lowpass=f=15500,"
     "afftdn=nr=2:nf=-50,"
     f"atempo={TEMPO_SLOW}"
 )
-subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", "-af", pre_filters, pre_cleaned], capture_output=True)
+subprocess.run(["ffmpeg", "-y", "-i", raw_input, "-af", pre_filters, pre_cleaned], capture_output=True)
 
 print(f"⏳ Step 2: Analyzing Pitch (Offset: {PITCH_OFFSET:+d})...")
 TARGET_PITCH_HZ = 190.0
@@ -60,7 +58,7 @@ final_pitch = auto_pitch + PITCH_OFFSET
 final_pitch = min(14, max(-4, final_pitch))
 print(f"🔥 Final Pitch: {final_pitch}")
 
-print(f"⏳ Step 3: RVC Conversion (Pitch: {final_pitch})...")
+print(f"⏳ Step 3: RVC with ContentVec...")
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
@@ -70,8 +68,8 @@ cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH, "--input", pre_cleaned, "--output", rvc_output,
     "--f0-method", "rmvpe", "--pitch", str(final_pitch),
-    "--protect", "0.3",
-    "--index-rate", "0.4",
+    "--protect", "0.5",
+    "--index-rate", "0.8",
     "--rms-mix-rate", "0.25",
     "--index", INDEX_PATH, "--overwrite"
 ]
@@ -84,8 +82,6 @@ if result.returncode != 0:
 print(f"✅ RVC Done. Size: {os.path.getsize(rvc_output)} bytes")
 
 print(f"⏳ Step 4: Restore Speed + Final Polish (MP3)...")
-
-# 🔥 نرجع السرعة الأصلية + الفلاتر النهائية
 post_filters = (
     f"atempo={TEMPO_FAST},"
     "highpass=f=90,"
