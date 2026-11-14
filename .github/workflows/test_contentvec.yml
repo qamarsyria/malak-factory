@@ -1,0 +1,108 @@
+name: 🧪 Test ContentVec - Maryam 11
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test_contentvec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip==24.0
+          pip install omegaconf==2.0.5
+          pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3 av onnxruntime pyworld torchcrepe matplotlib
+
+      - name: Download RVC Engine & Prepare
+        run: |
+          wget -q https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/archive/refs/heads/main.zip
+          unzip -q main.zip
+          mv Retrieval-based-Voice-Conversion-WebUI-main Retrieval-based-Voice-Conversion-WebUI
+          
+          cd Retrieval-based-Voice-Conversion-WebUI
+          mkdir -p infer infer/modules infer/modules/vc assets/hubert_base assets/rmvpe
+          touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
+          
+          # Config for HuBERT/ContentVec
+          wget -q -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
+          
+          # RMVPE
+          wget -q -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
+
+      - name: 🔥 Download ContentVec (Replace HuBERT)
+        run: |
+          echo "⏳ Downloading ContentVec (Best version)..."
+          wget -q -O contentvec.pt "https://huggingface.co/lengyue233/content-vec-best/resolve/main/checkpoint_best_legacy_500.pt"
+          
+          echo "✅ ContentVec downloaded: $(ls -lh contentvec.pt | awk '{print $5}')"
+          
+          # Backup HuBERT
+          mv Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model_hubert.bin 2>/dev/null || true
+          
+          # Replace HuBERT with ContentVec
+          cp contentvec.pt Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin
+          
+          echo "✅ ContentVec installed at HuBERT path"
+          ls -lh Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/
+
+      - name: Download Malak Models
+        run: |
+          wget -q -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
+          wget -q -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
+
+      - name: Download Maryam 11 - Abdul Basit
+        run: |
+          wget -q -O abdul.mp3 https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/019011.mp3
+          ffmpeg -y -i abdul.mp3 -ar 48000 -ac 1 abdul.wav
+
+      - name: Download Maryam 11 - Alafasy
+        run: |
+          wget -q -O alafasy.mp3 https://everyayah.com/data/Alafasy_128kbps/019011.mp3
+          ffmpeg -y -i alafasy.mp3 -ar 48000 -ac 1 alafasy.wav
+
+      - name: Convert Abdul Basit (+1 Pitch)
+        env:
+          PITCH_OFFSET: "1"
+        run: |
+          python malak_converter.py abdul.wav out_abdul_contentvec.mp3
+
+      - name: Convert Alafasy (-1 Pitch)
+        env:
+          PITCH_OFFSET: "-1"
+        run: |
+          python malak_converter.py alafasy.wav out_alafasy_contentvec.mp3
+
+      - name: Debug - List Files
+        run: |
+          ls -la *.mp3
+
+      - name: Send to Telegram
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ ! -f "out_abdul_contentvec.mp3" ]; then
+            echo "❌ Abdul Basit output missing!"
+            exit 1
+          fi
+          if [ ! -f "out_alafasy_contentvec.mp3" ]; then
+            echo "❌ Alafasy output missing!"
+            exit 1
+          fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_contentvec.mp3" -F "caption=🧪 ContentVec | عبد الباسط - مريم 11 | حدة 12"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_contentvec.mp3" -F "caption=🧪 ContentVec | العفاسي - مريم 11 | حدة 12"
