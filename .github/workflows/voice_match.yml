@@ -1,0 +1,60 @@
+name: 🎯 Voice Match & Raa Extract
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze_match_extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg zip
+
+      - name: Install Python Libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install librosa numpy scipy praat-parselmouth faster-whisper pydub requests
+
+      - name: Download User Voice Recordings
+        run: |
+          wget -q -O 8.m4a "https://github.com/qamarsyria/malak-factory/releases/download/v2.0-myvoice/8.m4a"
+          wget -q -O 9.m4a "https://github.com/qamarsyria/malak-factory/releases/download/v2.0-myvoice/9.m4a"
+          
+          # دمجهم في ملف واحد
+          ffmpeg -y -i 8.m4a -ar 16000 -ac 1 part1.wav
+          ffmpeg -y -i 9.m4a -ar 16000 -ac 1 part2.wav
+          
+          echo "file 'part1.wav'" > list.txt
+          echo "file 'part2.wav'" >> list.txt
+          ffmpeg -y -f concat -safe 0 -i list.txt -ar 16000 -ac 1 my_voice.wav
+          
+          echo "✅ تم تجميع ملفات صوتك: $(ls -lh my_voice.wav | awk '{print $5}')"
+
+      - name: 1. Analyze User Voice
+        run: python analyze_voice.py
+
+      - name: 2. Match with Reciters
+        run: python match_reciter.py
+
+      - name: 3. Extract Raa Samples
+        run: python extract_raa.py
+
+      - name: Upload Results (ZIP)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voice-Match-Results
+          path: |
+            user_features.json
+            best_match.json
+            raa_samples.zip
+          retention-days: 7
