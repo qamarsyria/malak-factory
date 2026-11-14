@@ -45,18 +45,17 @@ jobs:
 
       - name: 🔥 Download ContentVec (Replace HuBERT)
         run: |
-          echo "⏳ Downloading ContentVec (Best version)..."
-          wget -q -O contentvec.pt "https://huggingface.co/lengyue233/content-vec-best/resolve/main/checkpoint_best_legacy_500.pt"
+          echo "⏳ Downloading ContentVec..."
+          # رابط ContentVec الصحيح
+          wget -q -O contentvec.pt "https://huggingface.co/innnky/contentvec/resolve/main/checkpoint_best_legacy_500.pt"
           
           echo "✅ ContentVec downloaded: $(ls -lh contentvec.pt | awk '{print $5}')"
           
-          # Backup HuBERT
+          # استبدال HuBERT بـ ContentVec
           mv Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model_hubert.bin 2>/dev/null || true
-          
-          # Replace HuBERT with ContentVec
           cp contentvec.pt Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin
           
-          echo "✅ ContentVec installed at HuBERT path"
+          echo "✅ ContentVec installed"
           ls -lh Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/
 
       - name: Download Malak Models
