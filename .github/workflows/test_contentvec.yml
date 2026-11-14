@@ -37,23 +37,16 @@ jobs:
           mkdir -p infer infer/modules infer/modules/vc assets/hubert_base assets/rmvpe
           touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
           
-          # Config for HuBERT/ContentVec
-          wget -q -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
-          
           # RMVPE
           wget -q -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
 
-      - name: 🔥 Download ContentVec (Replace HuBERT)
+      - name: 🔥 Download ContentVec (HuggingFace format)
         run: |
-          echo "⏳ Downloading ContentVec..."
-          # رابط ContentVec الصحيح
-          wget -q -O contentvec.pt "https://huggingface.co/innnky/contentvec/resolve/main/checkpoint_best_legacy_500.pt"
-          
-          echo "✅ ContentVec downloaded: $(ls -lh contentvec.pt | awk '{print $5}')"
-          
-          # استبدال HuBERT بـ ContentVec
-          mv Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model_hubert.bin 2>/dev/null || true
-          cp contentvec.pt Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin
+          echo "⏳ Downloading ContentVec (HF format)..."
+          wget -q -O Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/pytorch_model.bin \
+            "https://huggingface.co/lengyue233/content-vec-best/resolve/main/pytorch_model.bin"
+          wget -q -O Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/config.json \
+            "https://huggingface.co/lengyue233/content-vec-best/resolve/main/config.json"
           
           echo "✅ ContentVec installed"
           ls -lh Retrieval-based-Voice-Conversion-WebUI/assets/hubert_base/
