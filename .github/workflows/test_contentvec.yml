@@ -37,7 +37,6 @@ jobs:
           mkdir -p infer infer/modules infer/modules/vc assets/hubert_base assets/rmvpe
           touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
           
-          # RMVPE
           wget -q -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
 
       - name: 🔥 Download ContentVec (HuggingFace format)
@@ -82,19 +81,65 @@ jobs:
         run: |
           ls -la *.mp3
 
-      - name: Send to Telegram
+      - name: Send to Telegram (with Retry & Fallback)
         env:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ ! -f "out_abdul_contentvec.mp3" ]; then
-            echo "❌ Abdul Basit output missing!"
-            exit 1
-          fi
-          if [ ! -f "out_alafasy_contentvec.mp3" ]; then
-            echo "❌ Alafasy output missing!"
-            exit 1
+          send_file() {
+            local FILE=$1
+            local CAPTION=$2
+            local ENDPOINT=$3
+            
+            for attempt in 1 2 3; do
+              echo "🔄 Attempt $attempt/3 for $FILE via $ENDPOINT"
+              
+              if [ "$ENDPOINT" = "sendVoice" ]; then
+                HTTP_CODE=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
+                  "https://api.telegram.org/bot${TOKEN}/sendVoice" \
+                  -F "chat_id=${CHAT_ID}" \
+                  -F "voice=@${FILE}" \
+                  -F "caption=${CAPTION}")
+              else
+                HTTP_CODE=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
+                  "https://api.telegram.org/bot${TOKEN}/sendDocument" \
+                  -F "chat_id=${CHAT_ID}" \
+                  -F "document=@${FILE}" \
+                  -F "caption=${CAPTION}")
+              fi
+              
+              echo "   HTTP: $HTTP_CODE"
+              head -c 300 /tmp/resp.json
+              echo ""
+              
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "   ✅ Success!"
+                return 0
+              fi
+              
+              echo "   ⏳ Waiting 10s before retry..."
+              sleep 10
+            done
+            return 1
+          }
+          
+          echo "=========================================="
+          echo "📤 Sending Abdul Basit..."
+          echo "=========================================="
+          if ! send_file "out_abdul_contentvec.mp3" "🧪 ContentVec | عبد الباسط - مريم 11" "sendVoice"; then
+            echo "⚠️ sendVoice failed, trying sendDocument..."
+            send_file "out_abdul_contentvec.mp3" "🧪 ContentVec | عبد الباسط - مريم 11" "sendDocument" || echo "❌ Failed to send Abdul Basit after all retries"
           fi
           
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_contentvec.mp3" -F "caption=🧪 ContentVec | عبد الباسط - مريم 11 | حدة 12"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_contentvec.mp3" -F "caption=🧪 ContentVec | العفاسي - مريم 11 | حدة 12"
+          echo ""
+          sleep 5
+          echo "=========================================="
+          echo "📤 Sending Alafasy..."
+          echo "=========================================="
+          if ! send_file "out_alafasy_contentvec.mp3" "🧪 ContentVec | العفاسي - مريم 11" "sendVoice"; then
+            echo "⚠️ sendVoice failed, trying sendDocument..."
+            send_file "out_alafasy_contentvec.mp3" "🧪 ContentVec | العفاسي - مريم 11" "sendDocument" || echo "❌ Failed to send Alafasy after all retries"
+          fi
+          
+          echo ""
+          echo "🎯 Done sending files"
