@@ -1,6 +1,8 @@
-# extract_raa.py — نسخة مُصلحة (بدون Whisper، بدون افتراضات)
-# تُحمّل آيات الحصري الغنية بالراء مباشرة من everyayah.com
-# الأمان: لا تلمس malak_converter.py ولا أي ملف ذهبي
+# extract_raa.py — نسخة مُصلحة v2
+# - تحمّل الآيات مباشرة من everyayah.com (غير محظور، لا VPN)
+# - لا تستخدم Whisper (غير موثوق للقرآن)
+# - تنتج نسختين: raw + pitch-matched لتردد المستخدم
+# - الأمان: لا تلمس malak_converter.py
 
 import os
 import subprocess
@@ -9,112 +11,160 @@ import urllib.request
 
 RECITER_NAME = "Husary"
 BASE_URL = "https://everyayah.com/data/Husary_128kbps/"
+USER_PITCH_HZ = float(os.environ.get("USER_PITCH_HZ", "117.2"))
+HUSARY_PITCH_HZ = 165.8  # من match_reciter.py
 
-# آيات غنية بحرف الراء (مختارة بعناية)
-# المصدر: نص قرآني معروف — لا حاجة لـ Whisper
+# آيات غنية بالراء (مرجع: النص القرآني — لا ASR)
 TARGETS = [
-    ("001", "الفاتحة", [1, 2, 3, 6, 7]),          # الرحمن الرحيم، رب، الصراط، غير
-    ("093", "الضحى",   [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),  # ربك، فارج، الرحمه
-    ("097", "القدر",   [1, 2, 3, 4, 5]),           # القدر، ربهم
-    ("105", "الفيل",   [1, 2, 3, 4, 5]),           # بربك
-    ("106", "قريش",    [1, 2, 3, 4]),              # رحلة، فليعبدوا رب
-    ("110", "النصر",   [1, 2, 3]),                 # ربك
-    ("102", "التكاثر", [1, 2, 3, 4, 5, 6, 7, 8]),  # لم تعلمون... ربهم
+    ("001", "الفاتحة", [1, 2, 3, 6, 7]),                       # الرحمن الرحيم، رب، الصراط، غير
+    ("093", "الضحى",   list(range(1, 12))),                    # ربك، فارج، الرحمه، فترضى
+    ("094", "الشرح",   [1, 2, 3, 4, 5, 6, 7, 8]),              # ربك، يسر، العسر
+    ("097", "القدر",   [1, 2, 3, 4, 5]),                        # القدر، ربهم
+    ("102", "التكاثر", list(range(1, 9))),                      # ربهم، لترون
+    ("105", "الفيل",   [1, 2, 3, 4, 5]),                        # بربك
+    ("106", "قريش",    [1, 2, 3, 4]),                           # رحلة، رب
+    ("110", "النصر",   [1, 2, 3]),                              # ربك
+    ("112", "الإخلاص", [1, 2, 3, 4]),                           # الصمد
+    ("113", "الفلق",   [1, 2, 3, 4, 5]),                        # الغاسق، النفاثات
+    ("114", "الناس",   [1, 2, 3, 4, 5, 6]),                     # الوسواس، الناس
 ]
+
+PITCH_SHIFT = round(12 * (USER_PITCH_HZ / HUSARY_PITCH_HZ).bit_length() * 0)  # placeholder
+# نحسبها بدقة:
+import math
+SEMITONES = round(12 * math.log2(USER_PITCH_HZ / HUSARY_PITCH_HZ), 2)  # ≈ -6.0
+print(f"🎼 إزاحة التردد: {SEMITONES:+.2f} نصف تون (من {HUSARY_PITCH_HZ} إلى {USER_PITCH_HZ} Hz)")
 
 
 def download_mp3(url, path):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30) as r:
             with open(path, "wb") as f:
-                f.write(response.read())
+                f.write(r.read())
         return True
     except Exception as e:
-        print(f"   ⚠️ فشل تحميل {url}: {e}")
+        print(f"   ⚠️ {url} → {e}")
         return False
 
 
-def mp3_to_wav(mp3, wav):
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-i", mp3, "-ar", "48000", "-ac", "1", wav],
+def to_wav(src, dst):
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-i", src, "-ar", "48000", "-ac", "1", dst],
         capture_output=True,
     )
-    return result.returncode == 0
+    return r.returncode == 0
+
+
+def pitch_shift(src, dst, semitones):
+    """pitch shift دون تغيير المدة — نستخدم rubberband (متاح في ffmpeg 8)"""
+    factor = 2 ** (semitones / 12)
+    # rubberband: pitch shift بالحفاظ على الطول
+    r = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", src,
+            "-af", f"rubberband=pitch={factor:.6f}",
+            "-ar", "48000", "-ac", "1", dst,
+        ],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        # fallback: asetrate + aresample + atempo (الطريقة الكلاسيكية)
+        r = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", src,
+                "-af", f"asetrate=48000*{factor:.6f},aresample=48000,atempo={1/factor:.6f}",
+                "-ar", "48000", "-ac", "1", dst,
+            ],
+            capture_output=True,
+        )
+    return r.returncode == 0
 
 
 def main():
-    print(f"🎯 استخراج الراء من: {RECITER_NAME}")
-    print(f"📡 المصدر: everyayah.com (مباشر، لا يحتاج VPN)")
+    print(f"🎯 الراء من: {RECITER_NAME}")
+    print(f"📡 المصدر: everyayah.com (مباشر)")
+    print(f"🎼 ترددك المستهدف: {USER_PITCH_HZ} Hz")
     total = sum(len(t[2]) for t in TARGETS)
     print(f"📋 {total} آية مستهدفة\n")
 
-    os.makedirs("raa_ayahs", exist_ok=True)
-    downloaded_wavs = []
+    os.makedirs("raa_raw", exist_ok=True)
+    os.makedirs("raa_matched", exist_ok=True)
+
+    raw_list, matched_list = [], []
 
     for surah_num, surah_name, ayahs in TARGETS:
-        print(f"📖 سورة {surah_name} ({surah_num})")
-        for ayah_num in ayahs:
-            mp3_name = f"{surah_num}{ayah_num:03d}.mp3"
+        print(f"📖 {surah_name} ({surah_num})")
+        for ayah in ayahs:
+            mp3_name = f"{surah_num}{ayah:03d}.mp3"
             url = f"{BASE_URL}{mp3_name}"
-            mp3_path = f"raa_ayahs/{mp3_name}"
-            wav_path = f"raa_ayahs/{surah_num}_{ayah_num:03d}.wav"
+            mp3_path = f"raa_raw/{mp3_name}"
+            raw_wav = f"raa_raw/{surah_num}_{ayah:03d}.wav"
+            matched_wav = f"raa_matched/{surah_num}_{ayah:03d}_p.wav"
 
             if not download_mp3(url, mp3_path):
-                print(f"   ❌ آية {ayah_num}: فشل التحميل")
+                continue
+            if not to_wav(mp3_path, raw_wav):
+                print(f"   ❌ تحويل فشل: {mp3_name}")
                 continue
 
-            if not mp3_to_wav(mp3_path, wav_path):
-                print(f"   ❌ آية {ayah_num}: فشل التحويل")
-                continue
+            raw_list.append(raw_wav)
+            size_kb = os.path.getsize(raw_wav) // 1024
+            print(f"   ✅ آية {ayah}: {size_kb} KB", end="")
 
-            size_kb = os.path.getsize(wav_path) // 1024
-            downloaded_wavs.append(wav_path)
-            print(f"   ✅ آية {ayah_num}: {size_kb} KB")
+            if pitch_shift(raw_wav, matched_wav, SEMITONES):
+                matched_list.append(matched_wav)
+                print(f"  + pitch_matched")
+            else:
+                print(f"  (pitch فشل)")
 
-    if not downloaded_wavs:
-        print("\n❌ لم يتم تحميل أي آية! تحقق من المصدر")
+    if not raw_list:
+        print("\n❌ لم يتم تحميل أي آية")
         sys.exit(1)
 
-    print(f"\n🔗 دمج {len(downloaded_wavs)} آية في raa_master.wav...")
-    with open("raa_concat.txt", "w") as f:
-        for wav in downloaded_wavs:
-            f.write(f"file '{os.path.abspath(wav)}'\n")
-
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", "raa_concat.txt", "-c", "copy", "raa_master.wav",
-        ],
+    # دمج النسختين
+    print(f"\n🔗 دمج {len(raw_list)} آية → raa_raw_master.wav")
+    with open("_c1.txt", "w") as f:
+        for w in raw_list:
+            f.write(f"file '{os.path.abspath(w)}'\n")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "_c1.txt", "-c", "copy", "raa_raw_master.wav"],
         capture_output=True,
     )
 
-    if not os.path.exists("raa_master.wav"):
-        print("❌ فشل الدمج!")
-        sys.exit(1)
+    print(f"🔗 دمج {len(matched_list)} آية → raa_matched_master.wav")
+    with open("_c2.txt", "w") as f:
+        for w in matched_list:
+            f.write(f"file '{os.path.abspath(w)}'\n")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "_c2.txt", "-c", "copy", "raa_matched_master.wav"],
+        capture_output=True,
+    )
 
-    master_size = os.path.getsize("raa_master.wav")
-    duration = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", "raa_master.wav",
-        ],
-        capture_output=True, text=True,
-    ).stdout.strip()
+    # تقرير
+    def dur(p):
+        return float(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", p],
+            capture_output=True, text=True).stdout.strip() or 0)
 
-    print(f"\n✅ تم! raa_master.wav")
-    print(f"   الحجم: {master_size // 1024} KB")
-    print(f"   المدة: {float(duration):.1f} ثانية")
-    print(f"   الآيات: {len(downloaded_wavs)}")
+    print(f"\n✅ النتائج:")
+    for f in ["raa_raw_master.wav", "raa_matched_master.wav"]:
+        if os.path.exists(f):
+            print(f"   {f}: {os.path.getsize(f)//1024} KB | {dur(f):.1f}s")
 
     with open("raa_manifest.txt", "w", encoding="utf-8") as f:
         f.write(f"القارئ: {RECITER_NAME}\n")
-        f.write(f"المدة: {duration} ثانية\n")
-        f.write(f"عدد الآيات: {len(downloaded_wavs)}\n\n")
-        for wav in downloaded_wavs:
-            f.write(f"{wav}\n")
-
-    print(f"📝 Manifest: raa_manifest.txt")
+        f.write(f"ترددك: {USER_PITCH_HZ} Hz\n")
+        f.write(f"تردد الحصري: {HUSARY_PITCH_HZ} Hz\n")
+        f.write(f"إزاحة: {SEMITONES:+.2f} نصف تون\n")
+        f.write(f"عدد الآيات: {len(raw_list)}\n\n")
+        f.write("== RAW ==\n")
+        for w in raw_list:
+            f.write(f"{w}\n")
+        f.write("\n== MATCHED ==\n")
+        for w in matched_list:
+            f.write(f"{w}\n")
 
 
 if __name__ == "__main__":
