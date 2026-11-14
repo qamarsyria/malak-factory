@@ -1,4 +1,4 @@
-name: 🧪 Test Maryam (Short) - Refined
+name: 🧪 Test Maryam Ayah 10
 
 on:
   workflow_dispatch:
@@ -48,8 +48,8 @@ jobs:
           wget -q -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
           wget -q -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
 
-      # ═══ 1. عبد الباسط (مريم 2-6) + PITCH +1 ═══
-      - name: Test Abdul Basit (Maryam 2-6, +1 Pitch)
+      # ═══ عبد الباسط (مريم 7-10) + PITCH +1 ═══
+      - name: Test Abdul Basit (Maryam 7-10, +1 Pitch)
         env:
           PITCH_OFFSET: "1"
         run: |
@@ -57,7 +57,7 @@ jobs:
           import urllib.request, os, subprocess
           os.makedirs('tmp', exist_ok=True)
           files = []
-          for i in range(2, 7):
+          for i in range(7, 11):
               fn = f'019{i:03d}.mp3'
               url = f'https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/{fn}'
               path = os.path.abspath(f'tmp/{fn}')
@@ -69,8 +69,8 @@ jobs:
           "
           python malak_converter.py input_abdul.wav out_abdul_maryam.wav
 
-      # ═══ 2. العفاسي (مريم 2-6) + PITCH -1 ═══
-      - name: Test Alafasy (Maryam 2-6, -1 Pitch)
+      # ═══ العفاسي (مريم 7-10) + PITCH -1 ═══
+      - name: Test Alafasy (Maryam 7-10, -1 Pitch)
         env:
           PITCH_OFFSET: "-1"
         run: |
@@ -78,7 +78,7 @@ jobs:
           import urllib.request, os, subprocess
           os.makedirs('tmp', exist_ok=True)
           files = []
-          for i in range(2, 7):
+          for i in range(7, 11):
               fn = f'019{i:03d}.mp3'
               url = f'https://everyayah.com/data/Alafasy_128kbps/{fn}'
               path = os.path.abspath(f'tmp/{fn}')
@@ -90,19 +90,10 @@ jobs:
           "
           python malak_converter.py input_alafasy.wav out_alafasy_maryam.wav
 
-      # ═══ فحص الملفات قبل الإرسال ═══
+      # ═══ فحص الملفات ═══
       - name: Debug - List Files
         run: |
-          echo "📂 الملفات الصوتية الموجودة في المجلد الرئيسي:"
-          ls -la *.wav || echo "⚠️ ما في ملفات wav في المجلد الرئيسي"
-          
-          echo ""
-          echo "📂 الملفات الصوتية في مجلد RVC:"
-          ls -la Retrieval-based-Voice-Conversion-WebUI/*.wav || echo "⚠️ ما في ملفات wav في مجلد RVC"
-          
-          echo ""
-          echo "📂 ملفات الإدخال:"
-          ls -la input_*.wav || echo "⚠️ ما في ملفات إدخال"
+          ls -la *.wav || echo "No wav files found"
 
       # ═══ الإرسال للتلغرام ═══
       - name: Send to Telegram
@@ -111,13 +102,13 @@ jobs:
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ ! -f "out_abdul_maryam.wav" ]; then
-            echo "❌ ملف عبد الباسط مش موجود!"
+            echo "❌ Abdul Basit file missing!"
             exit 1
           fi
           if [ ! -f "out_alafasy_maryam.wav" ]; then
-            echo "❌ ملف العفاسي مش موجود!"
+            echo "❌ Alafasy file missing!"
             exit 1
           fi
           
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 2-6) - حدة +1"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 2-6) - حدة -1"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 7-10) - حدة عالية (14)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 7-10) - حدة طبيعية"
