@@ -22,6 +22,10 @@ print(f"⏳ Step 1: Minimal Pre-Filter...")
 raw_input = os.path.abspath("fixed_input.wav")
 pre_cleaned = os.path.abspath("pre_cleaned.wav")
 
+if not os.path.exists(INPUT_AUDIO):
+    print(f"❌ Input file {INPUT_AUDIO} not found!")
+    sys.exit(1)
+
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
 
 pre_filters = (
@@ -49,8 +53,6 @@ except Exception as e:
     print(f"⚠️ Pitch failed, using default 4.")
 
 final_pitch = auto_pitch + PITCH_OFFSET
-
-# 🔥 السقف الجديد: 14 بدل 10 (عشان عبد الباسط)
 final_pitch = min(14, max(-4, final_pitch))
 print(f"🔥 Final Pitch (capped at 14): {final_pitch}")
 
@@ -77,7 +79,7 @@ if result.returncode != 0:
 
 print(f"✅ RVC Done. Size: {os.path.getsize(rvc_output)} bytes")
 
-print(f"⏳ Step 4: Final Polish...")
+print(f"⏳ Step 4: Final Polish (Output MP3)...")
 post_filters = (
     "highpass=f=90,"
     "lowpass=f=14000,"
@@ -91,7 +93,7 @@ post_filters = (
     "alimiter=level_in=1:level_out=0.9"
 )
 
-result_ffmpeg = subprocess.run(["ffmpeg", "-y", "-i", rvc_output, "-af", post_filters, "-ar", "48000", "-ac", "1", OUTPUT_AUDIO], capture_output=True, text=True)
+result_ffmpeg = subprocess.run(["ffmpeg", "-y", "-i", rvc_output, "-af", post_filters, "-ar", "48000", "-ac", "1", "-b:a", "192k", OUTPUT_AUDIO], capture_output=True, text=True)
 if result_ffmpeg.returncode != 0:
     print("❌ FFmpeg Failed:", result_ffmpeg.stderr[-800:])
     sys.exit(1)
