@@ -54,9 +54,10 @@ jobs:
           wget -q -O ayah11.mp3 https://everyayah.com/data/Alafasy_128kbps/019011.mp3
           ffmpeg -y -i ayah11.mp3 -ar 16000 -ac 1 ayah11.wav
 
+      # 🔥 التعديل الوحيد: غيرنا المسار لـ scripts/advanced_quran_rvc.py
       - name: Run Advanced Pipeline
         run: |
-          python advanced_quran_rvc.py ayah11.wav output_phoneme.wav
+          python scripts/advanced_quran_rvc.py ayah11.wav output_phoneme.wav
 
       - name: Debug - List Files
         run: |
