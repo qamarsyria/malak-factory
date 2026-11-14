@@ -18,7 +18,11 @@ RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
 PITCH_OFFSET = int(os.environ.get("PITCH_OFFSET", "0"))
 
-print(f"⏳ Step 1: Minimal Pre-Filter...")
+# 🔥 إعدادات التبطيء والرجوع
+TEMPO_SLOW = 0.75         # تبطيء 25%
+TEMPO_FAST = 1.0 / TEMPO_SLOW  # رجوع للسرعة الأصلية (1.333)
+
+print(f"⏳ Step 1: Pre-Filter + Slow down by 25%...")
 raw_input = os.path.abspath("fixed_input.wav")
 pre_cleaned = os.path.abspath("pre_cleaned.wav")
 
@@ -26,14 +30,14 @@ if not os.path.exists(INPUT_AUDIO):
     print(f"❌ Input file {INPUT_AUDIO} not found!")
     sys.exit(1)
 
-subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
-
+# 🔥 نبطئ الصوت بنسبة 25% قبل RVC (عشان HuBERT يفهم الحروف)
 pre_filters = (
     "highpass=f=60,"
     "lowpass=f=15500,"
-    "afftdn=nr=2:nf=-50"
+    "afftdn=nr=2:nf=-50,"
+    f"atempo={TEMPO_SLOW}"
 )
-subprocess.run(["ffmpeg", "-y", "-i", raw_input, "-af", pre_filters, pre_cleaned], capture_output=True)
+subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", "-af", pre_filters, pre_cleaned], capture_output=True)
 
 print(f"⏳ Step 2: Analyzing Pitch (Offset: {PITCH_OFFSET:+d})...")
 TARGET_PITCH_HZ = 190.0
@@ -50,11 +54,11 @@ try:
         auto_pitch = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
         print(f"🎯 Input: {input_pitch_hz:.1f} Hz | Auto: {auto_pitch}")
 except Exception as e:
-    print(f"⚠️ Pitch failed, using default 4.")
+    print(f"⚠️ Pitch failed: {e}")
 
 final_pitch = auto_pitch + PITCH_OFFSET
 final_pitch = min(14, max(-4, final_pitch))
-print(f"🔥 Final Pitch (capped at 14): {final_pitch}")
+print(f"🔥 Final Pitch: {final_pitch}")
 
 print(f"⏳ Step 3: RVC Conversion (Pitch: {final_pitch})...")
 env = os.environ.copy()
@@ -79,8 +83,11 @@ if result.returncode != 0:
 
 print(f"✅ RVC Done. Size: {os.path.getsize(rvc_output)} bytes")
 
-print(f"⏳ Step 4: Final Polish (Output MP3)...")
+print(f"⏳ Step 4: Restore Speed + Final Polish (MP3)...")
+
+# 🔥 نرجع السرعة الأصلية + الفلاتر النهائية
 post_filters = (
+    f"atempo={TEMPO_FAST},"
     "highpass=f=90,"
     "lowpass=f=14000,"
     "afftdn=nf=-30,"
@@ -100,5 +107,5 @@ if result_ffmpeg.returncode != 0:
 
 print(f"✅ Done! Size: {os.path.getsize(OUTPUT_AUDIO)} bytes")
 
-for f in [rvc_output, raw_input, pre_cleaned]:
+for f in [rvc_output, pre_cleaned]:
     if os.path.exists(f): os.remove(f)
