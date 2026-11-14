@@ -16,25 +16,26 @@ MODEL_PATH = os.path.abspath("malak_voice.pth")
 INDEX_PATH = os.path.abspath("added_malak_voice.index")
 RVC_DIR = "Retrieval-based-Voice-Conversion-WebUI"
 
-print(f"⏳ Step 1: Minimal Pre-Filter (10% strength)...")
+# 🔥 تعديل الحدة اليدوي (زيادة أو نقصان درجة)
+PITCH_OFFSET = int(os.environ.get("PITCH_OFFSET", "0"))
+
+print(f"⏳ Step 1: Minimal Pre-Filter...")
 raw_input = os.path.abspath("fixed_input.wav")
 pre_cleaned = os.path.abspath("pre_cleaned.wav")
 
 subprocess.run(["ffmpeg", "-y", "-i", INPUT_AUDIO, "-ar", "48000", "-ac", "1", raw_input], capture_output=True)
 
-# 🔥 فلاتر قبلية 10% فقط (خفيفة جداً - بس تنظيف الزمجره)
 pre_filters = (
-    "highpass=f=60,"                          
-    "lowpass=f=15500,"                        
-    "afftdn=nr=2:nf=-50"                      # ضوضاء خفيفة جداً (كان nr=20)
+    "highpass=f=60,"
+    "lowpass=f=15500,"
+    "afftdn=nr=2:nf=-50"
 )
-
 subprocess.run(["ffmpeg", "-y", "-i", raw_input, "-af", pre_filters, pre_cleaned], capture_output=True)
 
 # ═══════════════════════════════════════════════════════════
-# 🧠 العقل المدبر (Target 190)
+# 🧠 العقل المدبر + PITCH_OFFSET
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 2: Analyzing Pitch...")
+print(f"⏳ Step 2: Analyzing Pitch (Offset: {PITCH_OFFSET:+d})...")
 TARGET_PITCH_HZ = 190.0
 auto_pitch = 4
 
@@ -47,14 +48,18 @@ try:
     if len(f0_voiced) > 0:
         input_pitch_hz = np.median(f0_voiced)
         auto_pitch = round(12 * math.log2(TARGET_PITCH_HZ / input_pitch_hz))
-        print(f"🎯 Input: {input_pitch_hz:.1f} Hz | Shift: {auto_pitch}")
+        print(f"🎯 Input: {input_pitch_hz:.1f} Hz | Auto: {auto_pitch}")
 except Exception as e:
     print(f"⚠️ Pitch failed, using default 4.")
 
+# 🔥 إضافة التعديل اليدوي
+final_pitch = auto_pitch + PITCH_OFFSET
+print(f"🔥 Final Pitch (Auto + Offset): {auto_pitch} + {PITCH_OFFSET} = {final_pitch}")
+
 # ═══════════════════════════════════════════════════════════
-# ⚙️ RVC Conversion (مع تعديل الحروف الناجح)
+# ⚙️ RVC Conversion
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 3: RVC Conversion (Pitch: {auto_pitch})...")
+print(f"⏳ Step 3: RVC Conversion (Pitch: {final_pitch})...")
 env = os.environ.copy()
 env["PYTHONPATH"] = os.path.abspath(RVC_DIR)
 env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
@@ -63,27 +68,29 @@ rvc_output = os.path.abspath("rvc_raw.wav")
 cmd = [
     sys.executable, "-m", "infer.cli",
     "--model", MODEL_PATH, "--input", pre_cleaned, "--output", rvc_output,
-    "--f0-method", "rmvpe", "--pitch", str(auto_pitch),
-    "--protect", "0.3",        # 🔥 تعديل الحروف الناجح
-    "--index-rate", "0.4",     # 🔥 تعديل الحروف الناجح
+    "--f0-method", "rmvpe", "--pitch", str(final_pitch),
+    "--protect", "0.3",
+    "--index-rate", "0.4",
     "--rms-mix-rate", "0.25",
     "--index", INDEX_PATH, "--overwrite"
 ]
 subprocess.run(cmd, cwd=RVC_DIR, env=env)
 
 # ═══════════════════════════════════════════════════════════
-# 🧼 Post-Filters (فلتر العين والهمزة - نجح)
+# 🧼 Post-Filters (مع تخفيف الغباش في المدود)
 # ═══════════════════════════════════════════════════════════
-print(f"⏳ Step 4: Final Polish...")
+print(f"⏳ Step 4: Final Polish (Reducing Muddy Reverb in Mudd)...")
 
 post_filters = (
     "highpass=f=90,"
     "lowpass=f=14000,"
     "afftdn=nf=-30,"
     "equalizer=f=350:t=q:w=2:g=-3,"
-    "equalizer=f=1200:t=q:w=2:g=2.5,"         # 🔥 يبرز العين والهمزة (نجح)
+    "equalizer=f=1200:t=q:w=2:g=2.5,"
     "equalizer=f=2500:t=q:w=2:g=2,"
     "equalizer=f=4500:t=q:w=2:g=-2,"
+    "equalizer=f=8000:t=q:w=3:g=-3,"          # 🔥 تخفيف الغباش في المدود (ترددات عالية)
+    "deesser=i=0.3:m=0.5:f=6000,"             # 🔥 تقليل حدة السين أثناء المد
     "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.9"
 )
