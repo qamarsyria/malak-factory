@@ -8,7 +8,6 @@ import numpy as np
 warnings.filterwarnings("ignore")
 
 if len(sys.argv) < 3:
-    print("❌ Usage: python malak_converter.py <input_audio> <output_audio>")
     sys.exit(1)
 
 INPUT_AUDIO = os.path.abspath(sys.argv[1])
@@ -23,7 +22,6 @@ print(f"⏳ Step 1: Minimal Pre-Filter...")
 raw_input = os.path.abspath("fixed_input.wav")
 pre_cleaned = os.path.abspath("pre_cleaned.wav")
 
-# رادار: تأكد إن ملف الدخل موجود
 if not os.path.exists(INPUT_AUDIO):
     print(f"❌ Input file {INPUT_AUDIO} not found!")
     sys.exit(1)
@@ -55,7 +53,10 @@ except Exception as e:
     print(f"⚠️ Pitch failed, using default 4.")
 
 final_pitch = auto_pitch + PITCH_OFFSET
-print(f"🔥 Final Pitch (Auto + Offset): {auto_pitch} + {PITCH_OFFSET} = {final_pitch}")
+
+# 🔥 السقف: منع الحدة من تجاوز 10 (عشان ما يطلع حاد جداً)
+final_pitch = min(10, max(-4, final_pitch))
+print(f"🔥 Final Pitch (capped at 10): {final_pitch}")
 
 print(f"⏳ Step 3: RVC Conversion (Pitch: {final_pitch})...")
 env = os.environ.copy()
@@ -73,12 +74,10 @@ cmd = [
     "--index", INDEX_PATH, "--overwrite"
 ]
 
-# 🔥 رادار: تتبع نتيجة RVC
 result = subprocess.run(cmd, cwd=RVC_DIR, env=env, capture_output=True, text=True)
 
 if result.returncode != 0:
     print("❌ RVC Conversion Failed!")
-    print("STDOUT:", result.stdout[-1000:])
     print("STDERR:", result.stderr[-1000:])
     sys.exit(1)
     
@@ -86,9 +85,10 @@ if not os.path.exists(rvc_output):
     print("❌ RVC finished but did not create output file!")
     sys.exit(1)
 
-print(f"✅ RVC Conversion Done. Raw file size: {os.path.getsize(rvc_output)} bytes")
+print(f"✅ RVC Done. Raw file size: {os.path.getsize(rvc_output)} bytes")
 
 print(f"⏳ Step 4: Final Polish...")
+# 🔥 شلنا deesser (كان هو سبب الفشل)
 post_filters = (
     "highpass=f=90,"
     "lowpass=f=14000,"
@@ -98,12 +98,10 @@ post_filters = (
     "equalizer=f=2500:t=q:w=2:g=2,"
     "equalizer=f=4500:t=q:w=2:g=-2,"
     "equalizer=f=8000:t=q:w=3:g=-3,"
-    "deesser=i=0.3:m=0.5:f=6000,"
     "acompressor=threshold=0.089:ratio=3:attack=20:release=250,"
     "alimiter=level_in=1:level_out=0.9"
 )
 
-# 🔥 رادار: تتبع نتيجة ffmpeg
 result_ffmpeg = subprocess.run(["ffmpeg", "-y", "-i", rvc_output, "-af", post_filters, "-ar", "48000", "-ac", "1", OUTPUT_AUDIO], capture_output=True, text=True)
 
 if result_ffmpeg.returncode != 0:
@@ -116,8 +114,6 @@ if not os.path.exists(OUTPUT_AUDIO):
     sys.exit(1)
 
 print(f"✅ Done! Output file size: {os.path.getsize(OUTPUT_AUDIO)} bytes")
-print(f"📂 Location: {OUTPUT_AUDIO}")
 
-# تنظيف الملفات المؤقتة (بس بعد ما نتأكد إن الملف النهائي موجود)
 for f in [rvc_output, raw_input, pre_cleaned]:
     if os.path.exists(f): os.remove(f)
