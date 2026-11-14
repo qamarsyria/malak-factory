@@ -60,10 +60,11 @@ jobs:
           for i in range(2, 12):
               fn = f'019{i:03d}.mp3'
               url = f'https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/{fn}'
-              urllib.request.urlretrieve(url, f'tmp/{fn}')
-              files.append(f'tmp/{fn}')
+              path = os.path.abspath(f'tmp/{fn}')
+              urllib.request.urlretrieve(url, path)
+              files.append(path)
           with open('tmp/list.txt', 'w') as f:
-              for m in files: f.write(f\"file '{m}'\n\")
+              for m in files: f.write(f'file \'{m}\'\n')
           subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', 'tmp/list.txt', '-ar', '48000', '-ac', '1', 'input_abdul.wav'], check=True)
           "
           python malak_converter.py input_abdul.wav out_abdul_maryam.wav
@@ -80,10 +81,11 @@ jobs:
           for i in range(2, 12):
               fn = f'019{i:03d}.mp3'
               url = f'https://everyayah.com/data/Alafasy_128kbps/{fn}'
-              urllib.request.urlretrieve(url, f'tmp/{fn}')
-              files.append(f'tmp/{fn}')
+              path = os.path.abspath(f'tmp/{fn}')
+              urllib.request.urlretrieve(url, path)
+              files.append(path)
           with open('tmp/list.txt', 'w') as f:
-              for m in files: f.write(f\"file '{m}'\n\")
+              for m in files: f.write(f'file \'{m}\'\n')
           subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', 'tmp/list.txt', '-ar', '48000', '-ac', '1', 'input_alafasy.wav'], check=True)
           "
           python malak_converter.py input_alafasy.wav out_alafasy_maryam.wav
@@ -94,5 +96,5 @@ jobs:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 2-11) - حدة +1 (الغباش مخفف)"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 2-11) - حدة -1 (الغباش مخفف)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 2-11) - حدة +1"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 2-11) - حدة -1"
