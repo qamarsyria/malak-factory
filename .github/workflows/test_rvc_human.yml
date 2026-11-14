@@ -96,5 +96,5 @@ jobs:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 2-11) - حدة +1"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 2-11) - حدة -1"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 2-11) - حدة +1 (الغباش مخفف)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 2-11) - حدة -1 (الغباش مخفف)"
