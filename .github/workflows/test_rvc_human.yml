@@ -1,12 +1,12 @@
-name: 🧪 Test Phonetic Fix (4 Reciters)
+name: 🧪 Test Maryam (5 min) - Refined
 
 on:
   workflow_dispatch:
 
 jobs:
-  test_voices:
+  test_maryam:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code
@@ -48,29 +48,45 @@ jobs:
           wget -q -O malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
           wget -q -O added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
 
-      # ═══ 1. السديس ═══
-      - name: Test Sudais
+      # ═══ 1. عبد الباسط (مريم 2-11) + PITCH +1 ═══
+      - name: Test Abdul Basit (Maryam 2-11, +1 Pitch)
+        env:
+          PITCH_OFFSET: "1"
         run: |
-          wget -q -O sudais.mp3 https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/002255.mp3
-          python malak_converter.py sudais.mp3 out_sudais.wav
+          python -c "
+          import urllib.request, os, subprocess
+          os.makedirs('tmp', exist_ok=True)
+          files = []
+          for i in range(2, 12):
+              fn = f'019{i:03d}.mp3'
+              url = f'https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/{fn}'
+              urllib.request.urlretrieve(url, f'tmp/{fn}')
+              files.append(f'tmp/{fn}')
+          with open('tmp/list.txt', 'w') as f:
+              for m in files: f.write(f\"file '{m}'\n\")
+          subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', 'tmp/list.txt', '-ar', '48000', '-ac', '1', 'input_abdul.wav'], check=True)
+          "
+          python malak_converter.py input_abdul.wav out_abdul_maryam.wav
 
-      # ═══ 2. المنشاوي ═══
-      - name: Test Minshawy
+      # ═══ 2. العفاسي (مريم 2-11) + PITCH -1 ═══
+      - name: Test Alafasy (Maryam 2-11, -1 Pitch)
+        env:
+          PITCH_OFFSET: "-1"
         run: |
-          wget -q -O minshawy.mp3 https://everyayah.com/data/Minshawy_Murattal_128kbps/002255.mp3
-          python malak_converter.py minshawy.mp3 out_minshawy.wav
-
-      # ═══ 3. عبد الباسط ═══
-      - name: Test Abdul Basit
-        run: |
-          wget -q -O abdulbasit.mp3 https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/002255.mp3
-          python malak_converter.py abdulbasit.mp3 out_abdulbasit.wav
-
-      # ═══ 4. العفاسي ═══
-      - name: Test Alafasy
-        run: |
-          wget -q -O alafasy.mp3 https://everyayah.com/data/Alafasy_128kbps/002255.mp3
-          python malak_converter.py alafasy.mp3 out_alafasy.wav
+          python -c "
+          import urllib.request, os, subprocess
+          os.makedirs('tmp', exist_ok=True)
+          files = []
+          for i in range(2, 12):
+              fn = f'019{i:03d}.mp3'
+              url = f'https://everyayah.com/data/Alafasy_128kbps/{fn}'
+              urllib.request.urlretrieve(url, f'tmp/{fn}')
+              files.append(f'tmp/{fn}')
+          with open('tmp/list.txt', 'w') as f:
+              for m in files: f.write(f\"file '{m}'\n\")
+          subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', 'tmp/list.txt', '-ar', '48000', '-ac', '1', 'input_alafasy.wav'], check=True)
+          "
+          python malak_converter.py input_alafasy.wav out_alafasy_maryam.wav
 
       # ═══ الإرسال للتلغرام ═══
       - name: Send to Telegram
@@ -78,7 +94,5 @@ jobs:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_sudais.wav" -F "caption=🎧 1. السديس (تعديل الحروف + no pre-filters)"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_minshawy.wav" -F "caption=🎧 2. المنشاوي (تعديل الحروف + no pre-filters)"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdulbasit.wav" -F "caption=🎧 3. عبد الباسط (تعديل الحروف + no pre-filters)"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy.wav" -F "caption=🎧 4. العفاسي (تعديل الحروف + no pre-filters)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_abdul_maryam.wav" -F "caption=🎧 عبد الباسط (مريم 2-11) - حدة +1 (الغباش مخفف)"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" -F "chat_id=${CHAT_ID}" -F "audio=@out_alafasy_maryam.wav" -F "caption=🎧 العفاسي (مريم 2-11) - حدة -1 (الغباش مخفف)"
