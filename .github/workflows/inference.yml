@@ -38,7 +38,6 @@ jobs:
           sudo apt-get install -y ffmpeg git wget
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          # تم إضافة ffmpeg-python وضمان استمرار العمل لو فشل fairseq
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
           pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
 
@@ -52,8 +51,13 @@ jobs:
       - name: 📥 Download Models
         working-directory: rvc
         run: |
-          mkdir -p assets/hubert assets/rmvpe assets/weights assets/pretrained_v2
-          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt -O assets/hubert/hubert_base.pt
+          mkdir -p assets/hubert_base assets/rmvpe assets/weights assets/pretrained_v2
+          
+          # تحميل ملفات HuBERT الثلاثة الجديدة
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json -O assets/hubert_base/config.json
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/preprocessor_config.json -O assets/hubert_base/preprocessor_config.json
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin -O assets/hubert_base/pytorch_model.bin
+          
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
@@ -77,7 +81,6 @@ jobs:
           echo "✅ Using $CLI"
           export PYTHONPATH=$PWD
           
-          # تم شل الأوامر الزائدة لضمان عدم حدوث خطأ في الـ arguments
           python $CLI \
             --model assets/weights/my_voice.pth \
             --input input.wav \
