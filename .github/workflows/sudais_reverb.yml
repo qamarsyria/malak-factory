@@ -1,4 +1,4 @@
-name: 🎙️ Yasser (Qaf 18-20) - Clean Mix
+name: 🎙️ Pure Clean Voice (Yasser Qaf 18-20)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: '-6'
 
 env:
-  RELEASE_TAG: 'v3.1-myvoice' # أو v4.0-clean
+  RELEASE_TAG: 'v4.0-clean' 
 
 jobs:
   convert:
@@ -18,10 +18,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - name: 🐍 Setup Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: 📦 Install Dependencies
         run: |
           sudo apt-get update -qq
@@ -30,7 +32,8 @@ jobs:
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
           pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
-      - name: 📥 Clone & Download
+
+      - name: 📥 Clone & Download NEW Models
         run: |
           git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
           cd rvc
@@ -42,12 +45,19 @@ jobs:
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index
-      - name: 🎵 Convert & Mix
+          
+          # تحميل الموديل النظيف الجديد بصيغة pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_clean_voice.pth -O assets/weights/my_clean_voice.pth
+          
+          # ملف الاندكس
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_clean_voice.index -O added_my_clean_voice.index
+
+      - name: 🎵 Convert Yasser (Pure)
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
+          
+          # 1. تحميل ياسر الدوسري (سورة ق 18-20)
           URL="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
           rm -f list.txt part_*.mp3
           for a in 18 19 20; do
@@ -57,17 +67,27 @@ jobs:
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_yasser.wav
 
-          python infer/cli.py --model assets/weights/my_voice.pth --input input_yasser.wav --output raw_user.wav --index added_my_voice.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch }} --protect 0.33 --index-rate 0.75 --rms-mix-rate 0.5
+          # 2. التحويل بالموديل الجديد النقي
+          echo "🎙️ Converting to your clean voice..."
+          python infer/cli.py \
+            --model assets/weights/my_clean_voice.pth \
+            --input input_yasser.wav \
+            --output raw_user.wav \
+            --index added_my_clean_voice.index \
+            --f0-method rmvpe \
+            --pitch ${{ github.event.inputs.pitch }} \
+            --protect 0.33 \
+            --index-rate 0.5 \
+            --rms-mix-rate 0.7
             
-          # استخراج الحروف من ياسر (فوق 6000Hz فقط - يعني صوت ياسر رح يختفي تقريباً)
-          ffmpeg -y -i input_yasser.wav -af "highpass=f=6000" letters_yasser.wav
-          
-          # استخراج الجرس من صوتك (تحت 6000Hz)
-          ffmpeg -y -i raw_user.wav -af "lowpass=f=6000" timbre_user.wav
-          
-          # دمج ذكي (صوتك هو الأساس، الحروف ياسر بس 30% بالخلفية)
-          ffmpeg -y -i timbre_user.wav -i letters_yasser.wav -filter_complex "[0:a]volume=1.0[a1];[1:a]volume=0.3[a2];[a1][a2]amix=inputs=2:duration=first" mixed_output.wav
-          
-          ffmpeg -y -i mixed_output.wav -b:a 320k final_mixed.mp3
+          # 3. فلترة خفيفة جداً (توضيح الصوت فقط)
+          echo "🧹 Polishing audio..."
+          ffmpeg -y -i raw_user.wav \
+            -af "highpass=f=60,lowpass=f=16000,equalizer=f=300:t=q:w=2:g=-1,equalizer=f=3000:t=q:w=2:g=1.5,acompressor=threshold=0.1:ratio=2:attack=20:release=200,alimiter" \
+            -b:a 320k final_clean.mp3
             
-          curl -s -F chat_id="-1004433624098" -F audio=@final_mixed.mp3 -F caption="🎙️ ياسر (ق 18-20) - صوتك يطغى - Pitch: ${{ github.event.inputs.pitch }}" "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
+          # 4. إرسال للتلغرام
+          curl -s -F chat_id="-1004433624098" \
+               -F audio=@final_clean.mp3 \
+               -F caption="🎙️ ياسر (ق 18-20) - الموديل النظيف v4 | Pitch: ${{ github.event.inputs.pitch }}" \
+               "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
