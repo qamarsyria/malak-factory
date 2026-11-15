@@ -1,4 +1,4 @@
-name: 🎙️ Advanced Mix + Smooth Tremor
+name: 🎙️ Advanced Mix + Smooth Tremor (Fixed)
 
 on:
   workflow_dispatch:
@@ -63,14 +63,14 @@ jobs:
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
 
-          # 2. التحويل العادي (نستخدم harvest لأنه أنعم وأقل رجفة)
-          echo "🎙️ Converting to your voice (Harvest method for smoothness)..."
+          # 2. التحويل العادي (استخدمنا pm بدل harvest)
+          echo "🎙️ Converting to your voice (PM method for smoothness)..."
           python infer/cli.py \
             --model assets/weights/my_voice.pth \
             --input input_sudais.wav \
             --output raw_user.wav \
             --index added_my_voice.index \
-            --f0-method harvest \
+            --f0-method pm \
             --pitch ${{ github.event.inputs.pitch }} \
             --protect 0.33 \
             --index-rate 0.75 \
@@ -83,8 +83,6 @@ jobs:
           ffmpeg -y -i input_sudais.wav -af "highpass=f=4000" letters_sudais.wav
           
           # ب) استخراج الترددات المنخفضة (الجرس) + فلترة ناعمة جداً للرجفة
-          # equalizer: يخفض التردد 250Hz اللي غالباً بيعمل رجفة
-          # acompressor: يوازن الصوت
           ffmpeg -y -i raw_user.wav -af "lowpass=f=4000,equalizer=f=250:t=q:w=2:g=-2,acompressor=threshold=0.1:ratio=2:attack=20:release=200" timbre_user.wav
           
           # ج) دمجهم مع بعض!
@@ -96,5 +94,5 @@ jobs:
           # 5. إرسال للتلغرام
           curl -s -F chat_id="-1004433624098" \
                -F audio=@final_mixed.mp3 \
-               -F caption="🎙️ السديس + صوتك | رجفة أقل وحروف نقية - Pitch: ${{ github.event.inputs.pitch }}" \
+               -F caption="🎙️ السديس + صوتك | PM Method - Pitch: ${{ github.event.inputs.pitch }}" \
                "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
