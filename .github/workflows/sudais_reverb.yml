@@ -1,7 +1,15 @@
-name: 🎙️ Sudais Rhythm + My Voice + Reverb
+name: 🎙️ Sudais Rhythm + My Voice (Clear Audio)
 
 on:
   workflow_dispatch:
+    inputs:
+      pitch:
+        description: 'درجة الصوت (نزلها للسالب عشان تصير طبقتك)'
+        required: true
+        default: '-6'
+
+env:
+  RELEASE_TAG: 'v3.1-myvoice' 
 
 jobs:
   convert:
@@ -37,14 +45,15 @@ jobs:
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/my_voice.pth
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O added_my_voice.index
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index
 
-      - name: 🎵 Convert Sudais Rhythm + Reverb Magic
+      - name: 🎵 Convert Sudais Rhythm (Clear Audio)
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
+          # 1. تحميل السديس
           URL="https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/"
           rm -f list.txt part_*.mp3
           for a in {10..15}; do
@@ -54,9 +63,28 @@ jobs:
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
 
-          python infer/cli.py --model assets/weights/my_voice.pth --input input_sudais.wav --output raw_user.wav --index added_my_voice.index --f0-method rmvpe --pitch 0 --protect 0.4 --index-rate 0.2 --rms-mix-rate 0.7
+          # 2. التحويل (رفعنا الحماية لـ 0.33، والبصمة لـ 0.35)
+          # والـ Pitch صار متغير عشان تجرب -6 أو -8
+          python infer/cli.py \
+            --model assets/weights/my_voice.pth \
+            --input input_sudais.wav \
+            --output raw_user.wav \
+            --index added_my_voice.index \
+            --f0-method rmvpe \
+            --pitch ${{ github.event.inputs.pitch }} \
+            --protect 0.33 \
+            --index-rate 0.35 \
+            --rms-mix-rate 0.7
             
-          echo "🧹 Applying Reverb & Magic Effects..."
-          ffmpeg -y -i raw_user.wav -af "highpass=f=80,lowpass=f=14000,equalizer=f=300:t=q:w=2:g=-2,equalizer=f=3000:t=q:w=2:g=2,aecho=0.8:0.88:60:0.4,agate=threshold=0.02:ratio=3:attack=10:release=200,acompressor=threshold=0.1:ratio=3:attack=20:release=200,alimiter" -b:a 192k final_sudais_rhythm.mp3
+          # 3. فلترة نظيفة جداً (بدون صدى وبدون تغبيش)
+          # بس مسح للوشة وتوازن للصوت
+          echo "🧹 Cleaning Audio (No Reverb)..."
+          ffmpeg -y -i raw_user.wav \
+            -af "highpass=f=80,lowpass=f=14000,agate=threshold=0.02:ratio=3:attack=10:release=200,afftdn=nr=5:nf=-50,acompressor=threshold=0.1:ratio=3:attack=20:release=200,alimiter" \
+            -b:a 192k final_sudais_clean.mp3
             
-          curl -s -F chat_id="-1004433624098" -F audio=@final_sudais_rhythm.mp3 -F caption="🎙️ مريم (10-15) | إيقاع السديس + صوتك + مؤثرات الصدى" "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
+          # 4. إرسال للتلغرام
+          curl -s -F chat_id="-1004433624098" \
+               -F audio=@final_sudais_clean.mp3 \
+               -F caption="🎙️ إيقاع السديس + صوتك (نظيف بدون تغبيش) - Pitch: ${{ github.event.inputs.pitch }}" \
+               "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
