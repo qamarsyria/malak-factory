@@ -38,7 +38,9 @@ jobs:
           sudo apt-get install -y ffmpeg git wget
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf fairseq==0.12.2
+          # تم إضافة ffmpeg-python وضمان استمرار العمل لو فشل fairseq
+          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
+          pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
 
       - name: 📥 Clone RVC & Fix Torch Bug
         run: |
@@ -57,7 +59,7 @@ jobs:
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
           
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth || { echo "❌ my_voice.pth failed"; exit 1; }
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index || { echo "❌ added_my_voice.index failed"; exit 1; }
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index || { exit 1; }
 
       - name: 🎵 Convert Audio
         working-directory: rvc
@@ -68,20 +70,14 @@ jobs:
           for i in 1 2 3; do echo "file 'part${i}.mp3'" >> list.txt; done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input.wav
 
-          # 🚨 فحص ذكي لمسار ملف التحويل
-          if [ -f tools/infer_cli.py ]; then 
-            CLI="tools/infer_cli.py"
-          elif [ -f infer/cli.py ]; then 
-            CLI="infer/cli.py"
-          else 
-            echo "❌ لم يتم العثور على ملف التحويل!"
-            find . -name "*cli*.py" 
-            exit 1
-          fi
+          if [ -f tools/infer_cli.py ]; then CLI="tools/infer_cli.py"
+          elif [ -f infer/cli.py ]; then CLI="infer/cli.py"
+          else echo "❌ No CLI found"; exit 1; fi
           
-          echo "✅ استخدام الملف: $CLI"
-          
+          echo "✅ Using $CLI"
           export PYTHONPATH=$PWD
+          
+          # تم شل الأوامر الزائدة لضمان عدم حدوث خطأ في الـ arguments
           python $CLI \
             --model assets/weights/my_voice.pth \
             --input input.wav \
@@ -89,9 +85,7 @@ jobs:
             --index added_my_voice.index \
             --f0-method rmvpe \
             --pitch ${{ github.event.inputs.pitch }} \
-            --protect 0.33 \
-            --index-rate 0.75 \
-            --rms-mix-rate 0.25
+            --protect 0.33
 
       - name: 📤 Send to Telegram
         if: always()
@@ -104,5 +98,5 @@ jobs:
             echo "✅ Sent to Telegram"
           else
             curl -s -X POST "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendMessage" \
-                 -d chat_id="-1004433624098" -d text="⚠️ فشل التحويل - تحقق من Logs"
+                 -d chat_id="-1004433624098" -d text="⚠️ فشل التحويل - راجع الـ Logs"
           fi
