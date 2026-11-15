@@ -1,4 +1,4 @@
-name: 🎙️ Sudais Rhythm + My Voice (Original Clean)
+name: 🎙️ Yasser Al-Dosari (Qaf 18-20) + Mixing
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: '-6'
 
 env:
-  RELEASE_TAG: 'v3.1-myvoice' # أو v4.0-clean لو رفعت الجديد
+  RELEASE_TAG: 'v3.1-myvoice' # غيرها لـ v4.0-clean لما ترفع الموديل النظيف
 
 jobs:
   convert:
@@ -48,40 +48,51 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index
 
-      - name: 🎵 Convert Sudais Rhythm (Clean & Accurate)
+      - name: 🎵 Advanced Conversion & Frequency Mixing
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
-          # 1. تحميل السديس
-          URL="https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/"
+          # 1. تحميل ياسر الدوسري - سورة ق (50) - الآيات 18، 19، 20
+          URL="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
           rm -f list.txt part_*.mp3
-          for a in {10..15}; do
+          for a in 18 19 20; do
             padded_a=$(printf "%03d" $a)
-            wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
+            wget -q "${URL}050${padded_a}.mp3" -O part_${a}.mp3
             echo "file 'part_${a}.mp3'" >> list.txt
           done
-          ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
+          ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_yasser.wav
 
-          # 2. التحويل (رجّعنا rmvpe لأنه كان الأفضل، والبصمة 0.2 والـ pitch متغير)
+          # 2. التحويل العادي (لإنتاج الجرس)
           echo "🎙️ Converting to your voice..."
           python infer/cli.py \
             --model assets/weights/my_voice.pth \
-            --input input_sudais.wav \
+            --input input_yasser.wav \
             --output raw_user.wav \
             --index added_my_voice.index \
             --f0-method rmvpe \
             --pitch ${{ github.event.inputs.pitch }} \
-            --protect 0.4 \
-            --index-rate 0.2 \
-            --rms-mix-rate 0.7
+            --protect 0.33 \
+            --index-rate 0.75 \
+            --rms-mix-rate 0.5
             
-          # 3. تنظيف بسيط جداً (بدون صدى وبدون تغبيش)
-          echo "🧹 Cleaning Audio..."
-          ffmpeg -y -i raw_user.wav -af "highpass=f=80,lowpass=f=14000,agate=threshold=0.02:ratio=3:attack=10:release=200,acompressor=threshold=0.1:ratio=3:attack=20:release=200,alimiter" -b:a 192k final_sudais_clean.mp3
+          # 3. 🚀 السحر: دمج الترددات (Frequency Band Mixing)
+          echo "🔬 Mixing Frequencies (Reciter's Letters + Your Timbre)..."
+          
+          # أ) استخراج الترددات العالية (الحروف) من ياسر الأصلي (فوق 4000Hz)
+          ffmpeg -y -i input_yasser.wav -af "highpass=f=4000" letters_yasser.wav
+          
+          # ب) استخراج الترددات المنخفضة (الجرس) من صوتك (تحت 4000Hz)
+          ffmpeg -y -i raw_user.wav -af "lowpass=f=4000" timbre_user.wav
+          
+          # ج) دمجهم مع بعض!
+          ffmpeg -y -i timbre_user.wav -i letters_yasser.wav -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0" mixed_output.wav
+          
+          # 4. تحويل لـ MP3 
+          ffmpeg -y -i mixed_output.wav -b:a 320k final_mixed.mp3
             
-          # 4. إرسال للتلغرام
+          # 5. إرسال للتلغرام
           curl -s -F chat_id="-1004433624098" \
-               -F audio=@final_sudais_clean.mp3 \
-               -F caption="🎙️ إيقاع السديس + صوتك (النسخة الأصلية النظيفة) - Pitch: ${{ github.event.inputs.pitch }}" \
+               -F audio=@final_mixed.mp3 \
+               -F caption="🎙️ ياسر الدوسري (ق 18-20) + صوتك - Pitch: ${{ github.event.inputs.pitch }}" \
                "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
