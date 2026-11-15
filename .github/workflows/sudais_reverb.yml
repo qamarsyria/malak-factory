@@ -1,31 +1,25 @@
-name: 🎙️ Ultimate Studio (No EQ - Manual Chorus Control)
+name: 🎙️ Triple-Layer Chorus (Clean + Rough + Malak)
 
 on:
   workflow_dispatch:
     inputs:
-      pitch:
-        description: 'درجة الصوت الأساسي (Pitch)'
+      pitch_clean:
+        description: 'باتش الصافي (45%)'
         required: true
         default: '-6'
-      reverb_amount:
-        description: 'شدة الصدى (0.0 إلى 1.0)'
+      pitch_rough:
+        description: 'باتش المشوش (35%)'
         required: true
-        default: '0.3'
-      doubling:
-        description: 'تفعيل الصوت المزدوج (true/false)'
+        default: '-4'
+      pitch_malak:
+        description: 'باتش ملك (20%)'
         required: true
-        default: 'true'
-      delay_ms:
-        description: 'زمن المزامنة للصوت الثاني (بالمللي ثانية - 1 يعني واحد بالألف)'
-        required: true
-        default: '1'
-      pitch_voice_2:
-        description: 'طبقة الصوت الثاني (0.98 أعمق / 1.02 أحد)'
-        required: true
-        default: '0.98'
+        default: '0'
 
 env:
-  RELEASE_TAG: 'v4.0-clean' 
+  RELEASE_CLEAN: 'v4.0-clean'
+  RELEASE_ROUGH: 'v3.1-myvoice'
+  RELEASE_MALAK: 'v1.0'
 
 jobs:
   convert:
@@ -49,7 +43,7 @@ jobs:
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
           pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
 
-      - name: 📥 Clone & Download NEW Models
+      - name: 📥 Clone & Download 3 Models
         run: |
           git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
           cd rvc
@@ -61,89 +55,65 @@ jobs:
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_clean_voice.pth -O assets/weights/my_clean_voice.pth
-          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_clean_voice.index -O added_my_clean_voice.index
+          
+          # تحميل الموديلات الثلاثة
+          echo "Downloading Clean Model..."
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_CLEAN }}/my_clean_voice.pth -O assets/weights/clean.pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_CLEAN }}/added_my_clean_voice.index -O clean.index
+          
+          echo "Downloading Rough Model..."
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_ROUGH }}/my_voice.pth -O assets/weights/rough.pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_ROUGH }}/added_my_voice.index -O rough.index
+          
+          echo "Downloading Malak Model..."
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_MALAK }}/malak_voice.pth -O assets/weights/malak.pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_MALAK }}/added_malak_voice.index -O malak.index
 
-      - name: 🎵 Convert All Reciters (Maryam 10-15)
+      - name: 🎵 Convert 3 Layers & Mix
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
-          declare -A RECITERS=(
-            ["Yasser"]="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
-            ["Nasser"]="https://everyayah.com/data/Nasser_Alqatami_128kbps/"
-            ["Maher"]="https://everyayah.com/data/MaherAlMuaiqly128kbps/"
-            ["Ajmi"]="https://everyayah.com/data/Ahmed_ibn_Ali_al-Ajamy_128kbps/"
-            ["Minshawi"]="https://everyayah.com/data/Minshawy_Murattal_128kbps/"
-          )
-
-          for RECITER in "${!RECITERS[@]}"; do
-            URL="${RECITERS[$RECITER]}"
-            echo "====================================="
-            echo "🎙️ Processing: $RECITER (Maryam 10-15)"
-            echo "====================================="
-            
-            # 1. تحميل الآيات
-            rm -f list.txt part_*.mp3
-            SKIP_RECITER=0
-            for a in {10..15}; do
-              padded_a=$(printf "%03d" $a)
-              wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
-              if [ $? -ne 0 ]; then
-                echo "❌ فشل تحميل الآية $a. جاري تخطي $RECITER..."
-                SKIP_RECITER=1
-                break
-              fi
-              echo "file 'part_${a}.mp3'" >> list.txt
-            done
-
-            if [ $SKIP_RECITER -eq 1 ]; then continue; fi
-
-            ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
-
-            # 2. التحويل بالموديل النظيف (بدون معادل)
-            echo "🎙️ Converting..."
-            python infer/cli.py \
-              --model assets/weights/my_clean_voice.pth \
-              --input input_${RECITER}.wav \
-              --output raw_${RECITER}.wav \
-              --index added_my_clean_voice.index \
-              --f0-method rmvpe \
-              --pitch ${{ github.event.inputs.pitch }} \
-              --protect 0.4 \
-              --index-rate 0.4 \
-              --rms-mix-rate 0.8
-
-            # 3. إضافة الصدى (Reverb) مباشرة على الصوت الخام
-            echo "🌊 Applying Reverb..."
-            REVERB_AMOUNT=${{ github.event.inputs.reverb_amount }}
-            ffmpeg -y -i raw_${RECITER}.wav \
-              -af "aecho=0.8:${REVERB_AMOUNT}:60:0.5" \
-              reverb_${RECITER}.wav
-
-            # 4. القراءة الجماعية (المزدوج بالتحكم اليدوي)
-            if [ "${{ github.event.inputs.doubling }}" = "true" ]; then
-              echo "👥 Applying Manual Doubling (Delay: ${{ github.event.inputs.delay_ms }}ms)..."
-              
-              DELAY=${{ github.event.inputs.delay_ms }}
-              PITCH2=${{ github.event.inputs.pitch_voice_2 }}
-              
-              ffmpeg -y -i reverb_${RECITER}.wav -filter_complex \
-                "[0:a]asplit=2[a1][a2]; \
-                 [a2]asetrate=48000*${PITCH2},aresample=48000,adelay=${DELAY}|${DELAY},volume=0.6[a2]; \
-                 [a1][a2]amix=inputs=2:duration=first" \
-                 doubled_${RECITER}.wav
-              FINAL_FILE="doubled_${RECITER}.wav"
-            else
-              FINAL_FILE="reverb_${RECITER}.wav"
-            fi
-
-            # 5. تحويل لـ MP3 وإرسال
-            ffmpeg -y -i $FINAL_FILE -b:a 320k final_${RECITER}.mp3
-            curl -s -F chat_id="-1004433624098" \
-                 -F audio=@final_${RECITER}.mp3 \
-                 -F caption="🎙️ مريم (10-15) - $RECITER | Delay: ${{ github.event.inputs.delay_ms }}ms" \
-                 "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
-                 
-            echo "✅ $RECITER done and sent!"
+          URL="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
+          rm -f list.txt part_*.mp3
+          for a in {10..15}; do
+            padded_a=$(printf "%03d" $a)
+            wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
+            echo "file 'part_${a}.mp3'" >> list.txt
           done
+          ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_yasser.wav
+
+          echo "====================================="
+          echo "🎙️ Layer 1: Clean (45%) - Pich: ${{ github.event.inputs.pitch_clean }}"
+          echo "====================================="
+          python infer/cli.py --model assets/weights/clean.pth --input input_yasser.wav --output out_clean.wav --index clean.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch_clean }} --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
+
+          echo "====================================="
+          echo "🎙️ Layer 2: Rough (35%) - Pitch: ${{ github.event.inputs.pitch_rough }}"
+          echo "====================================="
+          python infer/cli.py --model assets/weights/rough.pth --input input_yasser.wav --output out_rough.wav --index rough.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch_rough }} --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
+
+          echo "====================================="
+          echo "🎙️ Layer 3: Malak (20%) - Pitch: ${{ github.event.inputs.pitch_malak }}"
+          echo "====================================="
+          python infer/cli.py --model assets/weights/malak.pth --input input_yasser.wav --output out_malak.wav --index malak.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch_malak }} --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
+
+          echo "====================================="
+          echo "🔬 Mixing 3 Layers (45% + 35% + 20%)..."
+          echo "====================================="
+          # دمج الطبقات بالنسبة المطلوبة بدون تغيير مستوى الصوت التلقائي
+          ffmpeg -y -i out_clean.wav -i out_rough.wav -i out_malak.wav -filter_complex \
+            "[0:a]volume=0.45[a1]; \
+             [1:a]volume=0.35[a2]; \
+             [2:a]volume=0.20[a3]; \
+             [a1][a2][a3]amix=inputs=3:normalize=0,alimiter" \
+             final_triple_layer.wav
+
+          # تحويل لـ MP3 وإرسال
+          ffmpeg -y -i final_triple_layer.wav -b:a 320k final_triple.mp3
+          curl -s -F chat_id="-1004433624098" \
+               -F audio=@final_triple.mp3 \
+               -F caption="🎙️ مريم (10-15) | Triple-Layer Chorus (Clean 45% + Rough 35% + Malak 20%)" \
+               "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
+               
+          echo "✅ Done!"
