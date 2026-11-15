@@ -6,7 +6,7 @@ on:
       pitch:
         description: 'درجة الصوت (Pitch)'
         required: true
-        default: '-4'
+        default: '10'
 
 env:
   RELEASE_TAG: 'v3.1-myvoice' 
@@ -59,7 +59,6 @@ jobs:
         run: |
           export PYTHONPATH=$PWD
           
-          # تعريف القراء والروابط
           declare -A RECITERS=(
             ["AbdulBasit"]="https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/"
             ["Sudais"]="https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/"
@@ -70,10 +69,9 @@ jobs:
           for RECITER in "${!RECITERS[@]}"; do
             URL="${RECITERS[$RECITER]}"
             echo "====================================="
-            echo "🎙️ Processing: $RECITER"
+            echo "🎙️ Processing: $RECITER (Pitch: ${{ github.event.inputs.pitch }})"
             echo "====================================="
             
-            # 1. تحميل الآيات من 10 إلى 15 (سورة مريم = 019)
             rm -f list.txt part_*.mp3
             for a in {10..15}; do
               padded_a=$(printf "%03d" $a)
@@ -81,13 +79,12 @@ jobs:
               echo "file 'part_${a}.mp3'" >> list.txt
             done
             
-            # 2. دمج الآيات
             ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
             
-            # 3. التحويل
             if [ -f tools/infer_cli.py ]; then CLI="tools/infer_cli.py"
             else CLI="infer/cli.py"; fi
             
+            # تعديل حماية الصوت لـ 0.45 لمنع البحّة
             python $CLI \
               --model assets/weights/my_voice.pth \
               --input input_${RECITER}.wav \
@@ -95,18 +92,18 @@ jobs:
               --index added_my_voice.index \
               --f0-method rmvpe \
               --pitch ${{ github.event.inputs.pitch }} \
-              --protect 0.33
+              --protect 0.45 \
+              --rms-mix-rate 0.25
               
-            # 4. الفلترة الخفيفة (تنظيف الوشة بدون تخريب الحروف) + تحويل لـ MP3
-            echo "🧹 Filtering and converting to MP3..."
+            # فلترة أخف بكثير (nr=3) عشان ما نخنق الصوت
+            echo "🧹 Filtering gently and converting to MP3..."
             ffmpeg -y -i raw_${RECITER}.wav \
-              -af "highpass=f=60,lowpass=f=14000,afftdn=nr=8:nf=-45,alimiter" \
+              -af "highpass=f=60,lowpass=f=16000,afftdn=nr=3:nf=-50" \
               -b:a 192k final_${RECITER}.mp3
               
-            # 5. إرسال للتلغرام
             curl -s -F chat_id="-1004433624098" \
                  -F audio=@final_${RECITER}.mp3 \
-                 -F caption="🎙️ سورة مريم (10-15) بصوتك - $RECITER" \
+                 -F caption="🎙️ مريم (10-15) بصوتك - $RECITER (Pitch: ${{ github.event.inputs.pitch }})" \
                  "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
             
             echo "✅ $RECITER sent to Telegram!"
