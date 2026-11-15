@@ -1,4 +1,4 @@
-name: 🎙️ Ultimate Studio (Manual Chorus Control)
+name: 🎙️ Ultimate Studio (No EQ - Manual Chorus Control)
 
 on:
   workflow_dispatch:
@@ -101,7 +101,7 @@ jobs:
 
             ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
 
-            # 2. التحويل
+            # 2. التحويل بالموديل النظيف (بدون معادل)
             echo "🎙️ Converting..."
             python infer/cli.py \
               --model assets/weights/my_clean_voice.pth \
@@ -113,25 +113,18 @@ jobs:
               --protect 0.4 \
               --index-rate 0.4 \
               --rms-mix-rate 0.8
-              
-            # 3. المعادل الصوتي (EQ)
-            echo "🎛️ Applying EQ..."
-            ffmpeg -y -i raw_${RECITER}.wav \
-              -af "equalizer=f=200:t=q:w=1.5:g=1,equalizer=f=3000:t=q:w=2:g=1.5,equalizer=f=8000:t=q:w=2:g=-2,equalizer=f=10000:t=q:w=1.5:g=0.5" \
-              eq_${RECITER}.wav
 
-            # 4. إضافة الصدى (Reverb)
+            # 3. إضافة الصدى (Reverb) مباشرة على الصوت الخام
             echo "🌊 Applying Reverb..."
             REVERB_AMOUNT=${{ github.event.inputs.reverb_amount }}
-            ffmpeg -y -i eq_${RECITER}.wav \
+            ffmpeg -y -i raw_${RECITER}.wav \
               -af "aecho=0.8:${REVERB_AMOUNT}:60:0.5" \
               reverb_${RECITER}.wav
 
-            # 5. القراءة الجماعية (المزدوج بالتحكم اليدوي)
+            # 4. القراءة الجماعية (المزدوج بالتحكم اليدوي)
             if [ "${{ github.event.inputs.doubling }}" = "true" ]; then
               echo "👥 Applying Manual Doubling (Delay: ${{ github.event.inputs.delay_ms }}ms)..."
               
-              # هنا نستخدم المتغيرات اللي أنت بتكتبها في جيت هوب
               DELAY=${{ github.event.inputs.delay_ms }}
               PITCH2=${{ github.event.inputs.pitch_voice_2 }}
               
@@ -145,7 +138,7 @@ jobs:
               FINAL_FILE="reverb_${RECITER}.wav"
             fi
 
-            # 6. تحويل لـ MP3 وإرسال
+            # 5. تحويل لـ MP3 وإرسال
             ffmpeg -y -i $FINAL_FILE -b:a 320k final_${RECITER}.mp3
             curl -s -F chat_id="-1004433624098" \
                  -F audio=@final_${RECITER}.mp3 \
