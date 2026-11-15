@@ -1,4 +1,4 @@
-name: 🎙️ Triple-Layer Mixer (Custom Ratios)
+name: 🎙️ Triple-Layer Mixer (Qaf 17-21)
 
 on:
   workflow_dispatch:
@@ -77,30 +77,36 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_MALAK }}/malak_voice.pth -O assets/weights/malak.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_MALAK }}/added_malak_voice.index -O malak.index
 
-      - name: 🎵 Convert 3 Layers & Custom Mix
+      - name: 🎵 Convert 3 Layers (Qaf 17-21)
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
           URL="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
           rm -f list.txt part_*.mp3
-          for a in {10..15}; do
+          
+          # تحميل الآيات من 17 إلى 21 من سورة ق (050)
+          for a in {17..21}; do
             padded_a=$(printf "%03d" $a)
-            wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
+            wget -q "${URL}050${padded_a}.mp3" -O part_${a}.mp3
             echo "file 'part_${a}.mp3'" >> list.txt
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_yasser.wav
 
+          echo "🎙️ Layer 1: Clean (Pitch: ${{ github.event.inputs.pitch_clean }})"
           python infer/cli.py --model assets/weights/clean.pth --input input_yasser.wav --output out_clean.wav --index clean.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch_clean }} --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
+
+          echo "🎙️ Layer 2: Rough (Pitch: ${{ github.event.inputs.pitch_rough }})"
           python infer/cli.py --model assets/weights/rough.pth --input input_yasser.wav --output out_rough.wav --index rough.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch_rough }} --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
+
+          echo "🎙️ Layer 3: Malak (Pitch: ${{ github.event.inputs.pitch_malak }})"
           python infer/cli.py --model assets/weights/malak.pth --input input_yasser.wav --output out_malak.wav --index malak.index --f0-method rmvpe --pitch ${{ github.event.inputs.pitch_malak }} --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
 
-          echo "🔬 Mixing with Custom Ratios..."
+          echo "🔬 Mixing..."
           CLEAN="${{ github.event.inputs.ratio_clean }}"; [ -z "$CLEAN" ] && CLEAN="0.65"
           ROUGH="${{ github.event.inputs.ratio_rough }}"; [ -z "$ROUGH" ] && ROUGH="0.25"
           MALAK="${{ github.event.inputs.ratio_malak }}"; [ -z "$MALAK" ] && MALAK="0.10"
 
-          # دمج الطبقات بالنسبة اللي أنت كتبتها في الخانات
           ffmpeg -y -i out_clean.wav -i out_rough.wav -i out_malak.wav -filter_complex \
             "[0:a]volume=${CLEAN}[a1]; \
              [1:a]volume=${ROUGH}[a2]; \
@@ -111,5 +117,5 @@ jobs:
           ffmpeg -y -i final_custom_mix.wav -b:a 320k final_custom.mp3
           curl -s -F chat_id="-1004433624098" \
                -F audio=@final_custom.mp3 \
-               -F caption="🎙️ مريم (10-15) | Mix: Clean ${CLEAN} + Rough ${ROUGH} + Malak ${MALAK}" \
+               -F caption="🎙️ ق (17-21) | وجاءت سكرة الموت | Clean ${CLEAN} + Rough ${ROUGH} + Malak ${MALAK}" \
                "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
