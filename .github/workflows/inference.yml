@@ -62,15 +62,27 @@ jobs:
       - name: 🎵 Convert Audio
         working-directory: rvc
         run: |
-          # تنزيل الصوت داخل مجلد rvc مباشرة
           for i in 1 2 3; do
             wget -q "${{ github.event.inputs.reciter_url }}${{ github.event.inputs.surah_num }}00${i}.mp3" -O part${i}.mp3
           done
           for i in 1 2 3; do echo "file 'part${i}.mp3'" >> list.txt; done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input.wav
 
+          # 🚨 فحص ذكي لمسار ملف التحويل
+          if [ -f tools/infer_cli.py ]; then 
+            CLI="tools/infer_cli.py"
+          elif [ -f infer/cli.py ]; then 
+            CLI="infer/cli.py"
+          else 
+            echo "❌ لم يتم العثور على ملف التحويل!"
+            find . -name "*cli*.py" 
+            exit 1
+          fi
+          
+          echo "✅ استخدام الملف: $CLI"
+          
           export PYTHONPATH=$PWD
-          python tools/infer_cli.py \
+          python $CLI \
             --model assets/weights/my_voice.pth \
             --input input.wav \
             --output ../result.wav \
