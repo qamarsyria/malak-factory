@@ -1,4 +1,4 @@
-name: 🎙️ Advanced Frequency Band Mixing (Fix Letters + Timbre)
+name: 🎙️ Advanced Mix + Smooth Tremor
 
 on:
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index
 
-      - name: 🎵 Advanced Conversion & Frequency Mixing
+      - name: 🎵 Convert & Mix (Tremor Fixed)
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
@@ -63,36 +63,38 @@ jobs:
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
 
-          # 2. التحويل العادي (لإنتاج الجرس)
-          echo "🎙️ Converting to your voice..."
+          # 2. التحويل العادي (نستخدم harvest لأنه أنعم وأقل رجفة)
+          echo "🎙️ Converting to your voice (Harvest method for smoothness)..."
           python infer/cli.py \
             --model assets/weights/my_voice.pth \
             --input input_sudais.wav \
             --output raw_user.wav \
             --index added_my_voice.index \
-            --f0-method rmvpe \
+            --f0-method harvest \
             --pitch ${{ github.event.inputs.pitch }} \
             --protect 0.33 \
             --index-rate 0.75 \
             --rms-mix-rate 0.5
             
-          # 3. 🚀 السحر: دمج الترددات (Frequency Band Mixing)
-          echo "🔬 Mixing Frequencies (Reciter's Letters + Your Timbre)..."
+          # 3. 🚀 دمج الترددات (Frequency Band Mixing)
+          echo "🔬 Mixing Frequencies (Reciter's Letters + Your Smooth Timbre)..."
           
-          # أ) استخراج الترددات العالية (الحروف) من السديس الأصلي (فوق 4000Hz)
+          # أ) استخراج الترددات العالية (الحروف) من السديس الأصلي - بدون أي فلتر
           ffmpeg -y -i input_sudais.wav -af "highpass=f=4000" letters_sudais.wav
           
-          # ب) استخراج الترددات المنخفضة (الجرس) من صوتك (تحت 4000Hz)
-          ffmpeg -y -i raw_user.wav -af "lowpass=f=4000" timbre_user.wav
+          # ب) استخراج الترددات المنخفضة (الجرس) + فلترة ناعمة جداً للرجفة
+          # equalizer: يخفض التردد 250Hz اللي غالباً بيعمل رجفة
+          # acompressor: يوازن الصوت
+          ffmpeg -y -i raw_user.wav -af "lowpass=f=4000,equalizer=f=250:t=q:w=2:g=-2,acompressor=threshold=0.1:ratio=2:attack=20:release=200" timbre_user.wav
           
           # ج) دمجهم مع بعض!
           ffmpeg -y -i timbre_user.wav -i letters_sudais.wav -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0" mixed_output.wav
           
-          # 4. تحويل لـ MP3 (بدون أي فلترة إضافية عشان ما نغبش الصوت)
+          # 4. تحويل لـ MP3
           ffmpeg -y -i mixed_output.wav -b:a 320k final_mixed.mp3
             
           # 5. إرسال للتلغرام
           curl -s -F chat_id="-1004433624098" \
                -F audio=@final_mixed.mp3 \
-               -F caption="🎙️ السديس + صوتك (الترددات الأصلية للحروف) - Pitch: ${{ github.event.inputs.pitch }}" \
+               -F caption="🎙️ السديس + صوتك | رجفة أقل وحروف نقية - Pitch: ${{ github.event.inputs.pitch }}" \
                "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
