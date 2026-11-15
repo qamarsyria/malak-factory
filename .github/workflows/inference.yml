@@ -1,4 +1,4 @@
-name: 🎙️ Sudais Rhythm + My Voice + Reverb
+name: 🎙️ Accurate Words + User Timbre
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
           pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
 
-      - name: 📥 Clone & Download Models
+      - name: 📥 Clone & Download
         run: |
           git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
           cd rvc
@@ -43,48 +43,45 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index
 
-      - name: 🎵 Convert Sudais Rhythm + Reverb Magic
+      - name: 🎵 Convert with Accurate Words
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
-          # 1. تحميل سورة مريم من 10 إلى 15 بصوت السديس (للإيقاع)
-          URL="https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/"
-          rm -f list.txt part_*.mp3
-          for a in {10..15}; do
-            padded_a=$(printf "%03d" $a)
-            wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
-            echo "file 'part_${a}.mp3'" >> list.txt
+          declare -A RECITERS=(
+            ["Husary"]="https://everyayah.com/data/Husary_128kbps/"
+            ["Alafasy"]="https://everyayah.com/data/Alafasy_128kbps/"
+          )
+          
+          for RECITER in "${!RECITERS[@]}"; do
+            URL="${RECITERS[$RECITER]}"
+            echo "🎙️ Processing: $RECITER (Accurate Mode)"
+            
+            rm -f list.txt part_*.mp3
+            for a in {10..15}; do
+              padded_a=$(printf "%03d" $a)
+              wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
+              echo "file 'part_${a}.mp3'" >> list.txt
+            done
+            ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
+            
+            python infer/cli.py \
+              --model assets/weights/my_voice.pth \
+              --input input_${RECITER}.wav \
+              --output raw_${RECITER}.wav \
+              --index added_my_voice.index \
+              --f0-method rmvpe \
+              --pitch 0 \
+              --protect 0.3 \
+              --index-rate 0.1 \
+              --rms-mix-rate 0.7
+            
+            ffmpeg -y -i raw_${RECITER}.wav \
+              -af "highpass=f=80,lowpass=f=14000,agate=threshold=0.02:ratio=3:attack=10:release=200,afftdn=nr=4:nf=-50,alimiter" \
+              -b:a 192k final_${RECITER}.mp3
+            
+            curl -s -F chat_id="-1004433624098" \
+                 -F audio=@final_${RECITER}.mp3 \
+                 -F caption="🎙️ مريم (10-15) - $RECITER | Index:0.1 (كلمات دقيقة)" \
+                 "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
           done
-          ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
-
-          # 2. التحويل بصوتك (نستخدم إعدادات index-rate متوسطة لضمان النطق)
-          python infer/cli.py \
-            --model assets/weights/my_voice.pth \
-            --input input_sudais.wav \
-            --output raw_user.wav \
-            --index added_my_voice.index \
-            --f0-method rmvpe \
-            --pitch 0 \
-            --protect 0.4 \
-            --index-rate 0.2 \
-            --rms-mix-rate 0.7
-            
-          # 3. 🎛️ السحر كله هنا: (مؤثرات الصدى + موازنة الصوت + فلترة البحة)
-          echo "🧹 Applying Reverb & Magic Effects..."
-          ffmpeg -y -i raw_user.wav \
-            -af "highpass=f=80,\
-lowpass=f=14000,\
-equalizer=f=300:t=q:w=2:g=-2,\
-equalizer=f=3000:t=q:w=2:g=2,\
-aecho=0.8:0.88:60:0.4,\
-agate=threshold=0.02:ratio=3:attack=10:release=200,\
-acompressor=threshold=0.1:ratio=3:attack=20:release=200,\
-alimiter" \
-            -b-a 192k final_sudais_rhythm.mp3
-            
-          # 4. إرسال النتيجة للتلغرام
-          curl -s -F chat_id="-1004433624098" \
-               -F audio=@final_sudais_rhythm.mp3 \
-               -F caption="🎙️ مريم (10-15) | إيقاع السديس + صوتك + مؤثرات الصدى (Hall)" \
-               "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
