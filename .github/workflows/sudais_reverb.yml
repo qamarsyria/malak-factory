@@ -1,4 +1,4 @@
-name: 🎙️ Advanced Mix + Smooth Tremor (Fixed)
+name: 🎙️ Sudais Rhythm + My Voice (Original Clean)
 
 on:
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index
 
-      - name: 🎵 Convert & Mix (Tremor Fixed)
+      - name: 🎵 Convert Sudais Rhythm (Clean & Accurate)
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
@@ -63,36 +63,25 @@ jobs:
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
 
-          # 2. التحويل العادي (استخدمنا pm بدل harvest)
-          echo "🎙️ Converting to your voice (PM method for smoothness)..."
+          # 2. التحويل (رجّعنا rmvpe لأنه كان الأفضل، والبصمة 0.2 والـ pitch متغير)
+          echo "🎙️ Converting to your voice..."
           python infer/cli.py \
             --model assets/weights/my_voice.pth \
             --input input_sudais.wav \
             --output raw_user.wav \
             --index added_my_voice.index \
-            --f0-method pm \
+            --f0-method rmvpe \
             --pitch ${{ github.event.inputs.pitch }} \
-            --protect 0.33 \
-            --index-rate 0.75 \
-            --rms-mix-rate 0.5
+            --protect 0.4 \
+            --index-rate 0.2 \
+            --rms-mix-rate 0.7
             
-          # 3. 🚀 دمج الترددات (Frequency Band Mixing)
-          echo "🔬 Mixing Frequencies (Reciter's Letters + Your Smooth Timbre)..."
-          
-          # أ) استخراج الترددات العالية (الحروف) من السديس الأصلي - بدون أي فلتر
-          ffmpeg -y -i input_sudais.wav -af "highpass=f=4000" letters_sudais.wav
-          
-          # ب) استخراج الترددات المنخفضة (الجرس) + فلترة ناعمة جداً للرجفة
-          ffmpeg -y -i raw_user.wav -af "lowpass=f=4000,equalizer=f=250:t=q:w=2:g=-2,acompressor=threshold=0.1:ratio=2:attack=20:release=200" timbre_user.wav
-          
-          # ج) دمجهم مع بعض!
-          ffmpeg -y -i timbre_user.wav -i letters_sudais.wav -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0" mixed_output.wav
-          
-          # 4. تحويل لـ MP3
-          ffmpeg -y -i mixed_output.wav -b:a 320k final_mixed.mp3
+          # 3. تنظيف بسيط جداً (بدون صدى وبدون تغبيش)
+          echo "🧹 Cleaning Audio..."
+          ffmpeg -y -i raw_user.wav -af "highpass=f=80,lowpass=f=14000,agate=threshold=0.02:ratio=3:attack=10:release=200,acompressor=threshold=0.1:ratio=3:attack=20:release=200,alimiter" -b:a 192k final_sudais_clean.mp3
             
-          # 5. إرسال للتلغرام
+          # 4. إرسال للتلغرام
           curl -s -F chat_id="-1004433624098" \
-               -F audio=@final_mixed.mp3 \
-               -F caption="🎙️ السديس + صوتك | PM Method - Pitch: ${{ github.event.inputs.pitch }}" \
+               -F audio=@final_sudais_clean.mp3 \
+               -F caption="🎙️ إيقاع السديس + صوتك (النسخة الأصلية النظيفة) - Pitch: ${{ github.event.inputs.pitch }}" \
                "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
