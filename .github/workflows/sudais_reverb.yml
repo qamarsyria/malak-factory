@@ -1,20 +1,28 @@
-name: 🎙️ Ultimate Studio (5 Reciters + EQ + Reverb + Doubling)
+name: 🎙️ Ultimate Studio (Manual Chorus Control)
 
 on:
   workflow_dispatch:
     inputs:
       pitch:
-        description: 'درجة الصوت (Pitch)'
+        description: 'درجة الصوت الأساسي (Pitch)'
         required: true
         default: '-6'
       reverb_amount:
-        description: 'شدة الصدى (0.0 إلى 1.0) - 0.3 مناسب'
+        description: 'شدة الصدى (0.0 إلى 1.0)'
         required: true
         default: '0.3'
       doubling:
-        description: 'القراءة الجماعية (true/false)'
+        description: 'تفعيل الصوت المزدوج (true/false)'
         required: true
         default: 'true'
+      delay_ms:
+        description: 'زمن المزامنة للصوت الثاني (بالمللي ثانية - 1 يعني واحد بالألف)'
+        required: true
+        default: '1'
+      pitch_voice_2:
+        description: 'طبقة الصوت الثاني (0.98 أعمق / 1.02 أحد)'
+        required: true
+        default: '0.98'
 
 env:
   RELEASE_TAG: 'v4.0-clean' 
@@ -22,7 +30,7 @@ env:
 jobs:
   convert:
     runs-on: ubuntu-latest
-    timeout-minutes: 90 # رفعنا الوقت عشان 5 قراء
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -56,18 +64,17 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_clean_voice.pth -O assets/weights/my_clean_voice.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_clean_voice.index -O added_my_clean_voice.index
 
-      - name: 🎵 Convert All 5 Reciters (Maryam 10-15)
+      - name: 🎵 Convert All Reciters (Maryam 10-15)
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
-          # قائمة القراء الخمسة
           declare -A RECITERS=(
             ["Yasser"]="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
             ["Nasser"]="https://everyayah.com/data/Nasser_Alqatami_128kbps/"
             ["Maher"]="https://everyayah.com/data/MaherAlMuaiqly128kbps/"
             ["Ajmi"]="https://everyayah.com/data/Ahmed_ibn_Ali_al-Ajamy_128kbps/"
-            ["Ghamdi"]="https://everyayah.com/data/Ghamadi_192kbps/"
+            ["Minshawi"]="https://everyayah.com/data/Minshawy_Murattal_128kbps/"
           )
 
           for RECITER in "${!RECITERS[@]}"; do
@@ -76,16 +83,25 @@ jobs:
             echo "🎙️ Processing: $RECITER (Maryam 10-15)"
             echo "====================================="
             
-            # 1. تحميل الآيات 10 إلى 15 من سورة مريم
+            # 1. تحميل الآيات
             rm -f list.txt part_*.mp3
+            SKIP_RECITER=0
             for a in {10..15}; do
               padded_a=$(printf "%03d" $a)
               wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
+              if [ $? -ne 0 ]; then
+                echo "❌ فشل تحميل الآية $a. جاري تخطي $RECITER..."
+                SKIP_RECITER=1
+                break
+              fi
               echo "file 'part_${a}.mp3'" >> list.txt
             done
+
+            if [ $SKIP_RECITER -eq 1 ]; then continue; fi
+
             ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
 
-            # 2. التحويل بالموديل النظيف
+            # 2. التحويل
             echo "🎙️ Converting..."
             python infer/cli.py \
               --model assets/weights/my_clean_voice.pth \
@@ -98,7 +114,7 @@ jobs:
               --index-rate 0.4 \
               --rms-mix-rate 0.8
               
-            # 3. المعادل الصوتي (EQ) المخصص
+            # 3. المعادل الصوتي (EQ)
             echo "🎛️ Applying EQ..."
             ffmpeg -y -i raw_${RECITER}.wav \
               -af "equalizer=f=200:t=q:w=1.5:g=1,equalizer=f=3000:t=q:w=2:g=1.5,equalizer=f=8000:t=q:w=2:g=-2,equalizer=f=10000:t=q:w=1.5:g=0.5" \
@@ -111,21 +127,29 @@ jobs:
               -af "aecho=0.8:${REVERB_AMOUNT}:60:0.5" \
               reverb_${RECITER}.wav
 
-            # 5. القراءة الجماعية (Doubling)
+            # 5. القراءة الجماعية (المزدوج بالتحكم اليدوي)
             if [ "${{ github.event.inputs.doubling }}" = "true" ]; then
-              echo "👥 Applying Doubling..."
-              ffmpeg -y -i reverb_${RECITER}.wav -af "adelay=30|30,volume=0.7" delayed_${RECITER}.wav
-              ffmpeg -y -i reverb_${RECITER}.wav -i delayed_${RECITER}.wav -filter_complex "[0:a][1:a]amix=inputs=2:duration=first" doubled_${RECITER}.wav
+              echo "👥 Applying Manual Doubling (Delay: ${{ github.event.inputs.delay_ms }}ms)..."
+              
+              # هنا نستخدم المتغيرات اللي أنت بتكتبها في جيت هوب
+              DELAY=${{ github.event.inputs.delay_ms }}
+              PITCH2=${{ github.event.inputs.pitch_voice_2 }}
+              
+              ffmpeg -y -i reverb_${RECITER}.wav -filter_complex \
+                "[0:a]asplit=2[a1][a2]; \
+                 [a2]asetrate=48000*${PITCH2},aresample=48000,adelay=${DELAY}|${DELAY},volume=0.6[a2]; \
+                 [a1][a2]amix=inputs=2:duration=first" \
+                 doubled_${RECITER}.wav
               FINAL_FILE="doubled_${RECITER}.wav"
             else
               FINAL_FILE="reverb_${RECITER}.wav"
             fi
 
-            # 6. تحويل لـ MP3 وإرسال للتلغرام
+            # 6. تحويل لـ MP3 وإرسال
             ffmpeg -y -i $FINAL_FILE -b:a 320k final_${RECITER}.mp3
             curl -s -F chat_id="-1004433624098" \
                  -F audio=@final_${RECITER}.mp3 \
-                 -F caption="🎙️ مريم (10-15) - $RECITER | EQ + Reverb + Doubling" \
+                 -F caption="🎙️ مريم (10-15) - $RECITER | Delay: ${{ github.event.inputs.delay_ms }}ms" \
                  "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
                  
             echo "✅ $RECITER done and sent!"
