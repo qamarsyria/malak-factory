@@ -1,34 +1,31 @@
-name: 🎯 Voice Match & Raa Extract
+name: 🎯 Prepare Training Data
 
 on:
   workflow_dispatch:
     inputs:
       user_pitch_hz:
-        description: 'ترددك بالهرتز (من تحليل سابق)'
+        description: 'ترددك (130 = موصى)'
         required: false
-        default: '117.2'
+        default: '130'
 
 jobs:
-  analyze_match_extract:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: 🐍 Python 3.10
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 📦 تثبيت الاعتماديات
+      - name: 📦 ffmpeg
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
-          python -m pip install --upgrade pip -q
-          pip install -q numpy scipy librosa praat-parselmouth requests
+          sudo apt-get install -y ffmpeg zip
 
-      - name: ⬇️ تحميل تسجيلات صوتك
+      - name: ⬇️ تحميل صوتك
         run: |
           wget -q -O 8.m4a "https://github.com/qamarsyria/malak-factory/releases/download/v2.0-myvoice/8.m4a"
           wget -q -O 9.m4a "https://github.com/qamarsyria/malak-factory/releases/download/v2.0-myvoice/9.m4a"
@@ -38,34 +35,14 @@ jobs:
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 16000 -ac 1 my_voice.wav 2>/dev/null
           echo "✅ my_voice.wav: $(du -h my_voice.wav | cut -f1)"
 
-      - name: 📊 تحليل صوتك
-        run: python analyze_voice.py
-
-      - name: 🎯 مطابقة القراء
-        run: python match_reciter.py
-
-      - name: 🎼 استخراج الراء من الحصري
+      - name: 🎼 تجهيز الحزمة
         env:
-          USER_PITCH_HZ: ${{ github.event.inputs.user_pitch_hz || '117.2' }}
-        run: python extract_raa.py
+          USER_PITCH_HZ: ${{ github.event.inputs.user_pitch_hz || '130' }}
+        run: python prepare_training_data.py
 
-      - name: 📋 ملخص النتائج
-        run: |
-          echo "================================"
-          echo "✅ الملفات الجاهزة للرفع على Kaggle:"
-          echo "================================"
-          ls -lh my_voice.wav raa_raw_master.wav raa_matched_master.wav raa_manifest.txt 2>/dev/null || true
-          echo "================================"
-
-      - name: 📤 رفع الملفات (Artifact)
+      - name: 📤 رفع Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: voice-training-bundle
-          path: |
-            my_voice.wav
-            raa_raw_master.wav
-            raa_matched_master.wav
-            raa_manifest.txt
-            raa_raw/
-            raa_matched/
+          name: training-data
+          path: training_data.zip
           retention-days: 30
