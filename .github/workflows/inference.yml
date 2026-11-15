@@ -38,7 +38,6 @@ jobs:
           sudo apt-get install -y ffmpeg git wget
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          # أضفنا matplotlib و fairseq و omegaconf هنا
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf fairseq==0.12.2
 
       - name: 📥 Clone RVC & Fix Torch Bug
@@ -52,37 +51,28 @@ jobs:
         working-directory: rvc
         run: |
           mkdir -p assets/hubert assets/rmvpe assets/weights assets/pretrained_v2
-
-          echo "=== Downloading HuBERT ==="
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt -O assets/hubert/hubert_base.pt
-
-          echo "=== Downloading RMVPE ==="
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
-
-          echo "=== Downloading Pretrained V2 ==="
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
-
-          echo "=== Downloading Your Voice Model ==="
+          
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth || { echo "❌ my_voice.pth failed"; exit 1; }
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index || { echo "❌ added_my_voice.index failed"; exit 1; }
-
-          echo "=== Files Ready ==="
-          ls -lh assets/weights/my_voice.pth added_my_voice.index
 
       - name: 🎵 Convert Audio
         working-directory: rvc
         run: |
+          # تنزيل الصوت داخل مجلد rvc مباشرة
           for i in 1 2 3; do
-            wget -q "${{ github.event.inputs.reciter_url }}${{ github.event.inputs.surah_num }}00${i}.mp3" -O ../part${i}.mp3
+            wget -q "${{ github.event.inputs.reciter_url }}${{ github.event.inputs.surah_num }}00${i}.mp3" -O part${i}.mp3
           done
-          for i in 1 2 3; do echo "file '../part${i}.mp3'" >> ../list.txt; done
-          ffmpeg -y -f concat -safe 0 -i ../list.txt -ar 48000 -ac 1 ../input.wav
+          for i in 1 2 3; do echo "file 'part${i}.mp3'" >> list.txt; done
+          ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input.wav
 
           export PYTHONPATH=$PWD
           python tools/infer_cli.py \
             --model assets/weights/my_voice.pth \
-            --input ../input.wav \
+            --input input.wav \
             --output ../result.wav \
             --index added_my_voice.index \
             --f0-method rmvpe \
