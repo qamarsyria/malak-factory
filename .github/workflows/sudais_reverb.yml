@@ -1,4 +1,4 @@
-name: 🎙️ Pure Clean Voice (Yasser Qaf 18-20)
+name: 🎙️ Maryam 10-15 (Yasser & Sudais) - Clean Model
 
 on:
   workflow_dispatch:
@@ -45,49 +45,59 @@ jobs:
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
-          
-          # تحميل الموديل النظيف الجديد بصيغة pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_clean_voice.pth -O assets/weights/my_clean_voice.pth
-          
-          # ملف الاندكس
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_clean_voice.index -O added_my_clean_voice.index
 
-      - name: 🎵 Convert Yasser (Pure)
+      - name: 🎵 Convert Maryam (10-15) for Two Reciters
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
           
-          # 1. تحميل ياسر الدوسري (سورة ق 18-20)
-          URL="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
-          rm -f list.txt part_*.mp3
-          for a in 18 19 20; do
-            padded_a=$(printf "%03d" $a)
-            wget -q "${URL}050${padded_a}.mp3" -O part_${a}.mp3
-            echo "file 'part_${a}.mp3'" >> list.txt
-          done
-          ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_yasser.wav
+          declare -A RECITERS=(
+            ["Yasser"]="https://everyayah.com/data/Yasser_Ad-Dussary_128kbps/"
+            ["Sudais"]="https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/"
+          )
 
-          # 2. التحويل بالموديل الجديد النقي
-          echo "🎙️ Converting to your clean voice..."
-          python infer/cli.py \
-            --model assets/weights/my_clean_voice.pth \
-            --input input_yasser.wav \
-            --output raw_user.wav \
-            --index added_my_clean_voice.index \
-            --f0-method rmvpe \
-            --pitch ${{ github.event.inputs.pitch }} \
-            --protect 0.33 \
-            --index-rate 0.5 \
-            --rms-mix-rate 0.7
+          for RECITER in "${!RECITERS[@]}"; do
+            URL="${RECITERS[$RECITER]}"
+            echo "====================================="
+            echo "🎙️ Processing: $RECITER (Maryam 10-15)"
+            echo "====================================="
             
-          # 3. فلترة خفيفة جداً (توضيح الصوت فقط)
-          echo "🧹 Polishing audio..."
-          ffmpeg -y -i raw_user.wav \
-            -af "highpass=f=60,lowpass=f=16000,equalizer=f=300:t=q:w=2:g=-1,equalizer=f=3000:t=q:w=2:g=1.5,acompressor=threshold=0.1:ratio=2:attack=20:release=200,alimiter" \
-            -b:a 320k final_clean.mp3
-            
-          # 4. إرسال للتلغرام
-          curl -s -F chat_id="-1004433624098" \
-               -F audio=@final_clean.mp3 \
-               -F caption="🎙️ ياسر (ق 18-20) - الموديل النظيف v4 | Pitch: ${{ github.event.inputs.pitch }}" \
-               "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
+            # 1. تحميل الآيات 10 إلى 15 من سورة مريم (019)
+            rm -f list.txt part_*.mp3
+            for a in {10..15}; do
+              padded_a=$(printf "%03d" $a)
+              wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
+              echo "file 'part_${a}.mp3'" >> list.txt
+            done
+            ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
+
+            # 2. التحويل (إعدادات تقليل الرجفة)
+            # protect=0.4 (تثبيت الحروف)، index=0.4 (تقليل تأثير البصمة المهتزة)، rms=0.8 (استقرار الصوت)
+            echo "🎙️ Converting..."
+            python infer/cli.py \
+              --model assets/weights/my_clean_voice.pth \
+              --input input_${RECITER}.wav \
+              --output raw_${RECITER}.wav \
+              --index added_my_clean_voice.index \
+              --f0-method rmvpe \
+              --pitch ${{ github.event.inputs.pitch }} \
+              --protect 0.4 \
+              --index-rate 0.4 \
+              --rms-mix-rate 0.8
+              
+            # 3. فلترة خفيفة (تنعيم الرجفة بدون طمس الحروف)
+            echo "🧹 Smoothing audio..."
+            ffmpeg -y -i raw_${RECITER}.wav \
+              -af "highpass=f=80,lowpass=f=14000,deesser=i=0.2,equalizer=f=3000:t=q:w=2:g=1.5,acompressor=threshold=0.1:ratio=2:attack=20:release=250,alimiter" \
+              -b:a 320k final_${RECITER}.mp3
+              
+            # 4. إرسال للتلغرام
+            curl -s -F chat_id="-1004433624098" \
+                 -F audio=@final_${RECITER}.mp3 \
+                 -F caption="🎙️ مريم (10-15) - $RECITER | الموديل النظيف v4 - Pitch: ${{ github.event.inputs.pitch }}" \
+                 "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
+                 
+            echo "✅ $RECITER done!"
+          done
