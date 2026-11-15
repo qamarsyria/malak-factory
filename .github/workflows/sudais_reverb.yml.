@@ -48,7 +48,7 @@ jobs:
         run: |
           export PYTHONPATH=$PWD
           
-          # 1. تحميل سورة مريم من 10 إلى 15 بصوت السديس (للإيقاع)
+          # 1. تحميل سورة مريم من 10 إلى 15 بصوت السديس
           URL="https://everyayah.com/data/Abdurrahmaan_As-Sudais_192kbps/"
           rm -f list.txt part_*.mp3
           for a in {10..15}; do
@@ -58,7 +58,7 @@ jobs:
           done
           ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_sudais.wav
 
-          # 2. التحويل بصوتك (نستخدم إعدادات index-rate متوسطة لضمان النطق)
+          # 2. التحويل بصوتك
           python infer/cli.py \
             --model assets/weights/my_voice.pth \
             --input input_sudais.wav \
@@ -70,21 +70,9 @@ jobs:
             --index-rate 0.2 \
             --rms-mix-rate 0.7
             
-          # 3. 🎛️ السحر كله هنا: (مؤثرات الصدى + موازنة الصوت + فلترة البحة)
+          # 3. المؤثرات الصوتية (فلترة + صدى)
           echo "🧹 Applying Reverb & Magic Effects..."
-          ffmpeg -y -i raw_user.wav \
-            -af "highpass=f=80,\
-lowpass=f=14000,\
-equalizer=f=300:t=q:w=2:g=-2,\
-equalizer=f=3000:t=q:w=2:g=2,\
-aecho=0.8:0.88:60:0.4,\
-agate=threshold=0.02:ratio=3:attack=10:release=200,\
-acompressor=threshold=0.1:ratio=3:attack=20:release=200,\
-alimiter" \
-            -b-a 192k final_sudais_rhythm.mp3
+          ffmpeg -y -i raw_user.wav -af "highpass=f=80,lowpass=f=14000,equalizer=f=300:t=q:w=2:g=-2,equalizer=f=3000:t=q:w=2:g=2,aecho=0.8:0.88:60:0.4,agate=threshold=0.02:ratio=3:attack=10:release=200,acompressor=threshold=0.1:ratio=3:attack=20:release=200,alimiter" -b:a 192k final_sudais_rhythm.mp3
             
           # 4. إرسال النتيجة للتلغرام
-          curl -s -F chat_id="-1004433624098" \
-               -F audio=@final_sudais_rhythm.mp3 \
-               -F caption="🎙️ مريم (10-15) | إيقاع السديس + صوتك + مؤثرات الصدى (Hall)" \
-               "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
+          curl -s -F chat_id="-1004433624098" -F audio=@final_sudais_rhythm.mp3 -F caption="🎙️ مريم (10-15) | إيقاع السديس + صوتك + مؤثرات الصدى" "https://api.telegram.org/bot8959255443:AAE7OLIma9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
