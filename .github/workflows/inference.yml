@@ -1,12 +1,12 @@
-name: 🎙️ Convert Reciters to My Voice (Fixed Quality)
+name: 🎙️ Convert Reciters to My Voice (Anti-Tremor & De-Noise)
 
 on:
   workflow_dispatch:
     inputs:
       pitch:
-        description: 'درجة الصوت (Pitch) - جرب 4'
+        description: 'درجة الصوت (خليها 0 أو 1)'
         required: true
-        default: '4'
+        default: '0'
 
 env:
   RELEASE_TAG: 'v3.1-myvoice' 
@@ -54,7 +54,7 @@ jobs:
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/my_voice.pth -O assets/weights/my_voice.pth || { echo "❌ my_voice.pth failed"; exit 1; }
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/${{ env.RELEASE_TAG }}/added_my_voice.index -O added_my_voice.index || { exit 1; }
 
-      - name: 🎵 Convert 4 Reciters (Maryam 10-15) - FIXED
+      - name: 🎵 Convert 4 Reciters - CLEAN AUDIO
         working-directory: rvc
         run: |
           export PYTHONPATH=$PWD
@@ -68,28 +68,21 @@ jobs:
 
           for RECITER in "${!RECITERS[@]}"; do
             URL="${RECITERS[$RECITER]}"
-            echo "====================================="
-            echo "🎙️ Processing: $RECITER"
-            echo "   pitch=${{ github.event.inputs.pitch }} | protect=0.5 | index-rate=0.5 | rms-mix=0.7"
-            echo "====================================="
+            echo "Processing: $RECITER"
             
-            rm -f list.txt part_*.mp3 input_${RECITER}.wav raw_${RECITER}.wav
+            rm -f list.txt part_*.mp3
             for a in {10..15}; do
               padded_a=$(printf "%03d" $a)
               wget -q "${URL}019${padded_a}.mp3" -O part_${a}.mp3
               echo "file 'part_${a}.mp3'" >> list.txt
             done
             
-            # دمج + تنظيف بسيط للصوت الأصلي من القارئ
             ffmpeg -y -f concat -safe 0 -i list.txt -ar 48000 -ac 1 input_${RECITER}.wav
             
             if [ -f tools/infer_cli.py ]; then CLI="tools/infer_cli.py"
             else CLI="infer/cli.py"; fi
             
-            # 🎯 الإعدادات المصححة:
-            # - protect 0.5: حماية عالية للحروف الساكنة (بحة أقل)
-            # - index-rate 0.5: يعتمد أكثر على المحتوى = كلمات صح
-            # - rms-mix-rate 0.7: يستخدم RMS القارئ في الصمت = لا شخير
+            # 1. التحويل الأساسي (حماية 0.33 للتوازن، ونسبة البصمة 0.6)
             python $CLI \
               --model assets/weights/my_voice.pth \
               --input input_${RECITER}.wav \
@@ -97,20 +90,22 @@ jobs:
               --index added_my_voice.index \
               --f0-method rmvpe \
               --pitch ${{ github.event.inputs.pitch }} \
-              --protect 0.5 \
-              --index-rate 0.5 \
-              --rms-mix-rate 0.7
+              --protect 0.33 \
+              --index-rate 0.6 \
+              --rms-mix-rate 0.5
               
-            # فلترة خفيفة جداً (لا تخنق الصوت) + MP3
-            echo "🧹 Light filtering + MP3..."
+            # 2. فلترة سحرية (تمسح البحة، الرجفة، والشخير في الصمت)
+            # - agate: يقص الأصوات الضعيفة (الشخير)
+            # - deesser: يمسح البحة (Sibilance)
+            # - afftdn: دنويزر
+            # - equalizer: ينقي الترددات
+            echo "🧹 Advanced Cleaning..."
             ffmpeg -y -i raw_${RECITER}.wav \
-              -af "highpass=f=80,lowpass=f=13000,afftdn=nr=5:nf=-50,acompressor=threshold=0.1:ratio=2:attack=20:release=250" \
+              -af "highpass=f=80,lowpass=f=13000,agate=threshold=0.02:ratio=3:attack=10:release=200,deesser=i=0.5,afftdn=nr=6:nf=-50,equalizer=f=200:t=q:w=2:g=-2,equalizer=f=3000:t=q:w=2:g=2,acompressor=threshold=0.1:ratio=3:attack=20:release=200,alimiter" \
               -b:a 192k final_${RECITER}.mp3
               
             curl -s -F chat_id="-1004433624098" \
                  -F audio=@final_${RECITER}.mp3 \
-                 -F caption="🎙️ مريم (10-15) بصوتك - $RECITER | Pitch: ${{ github.event.inputs.pitch }}" \
+                 -F caption="🎙️ مريم (10-15) - $RECITER | Pitch: ${{ github.event.inputs.pitch }}" \
                  "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
-            
-            echo "✅ $RECITER sent!"
           done
