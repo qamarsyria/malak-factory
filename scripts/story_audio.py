@@ -27,8 +27,8 @@ else:
     def generate_audio(text, out_path):
         try:
             async def _run():
-                # صوت بنت سورية (أمل)
-                comm = edge_tts.Communicate(text, "ar-SY-AmalNeural", rate="-5%")
+                # 🌟 صوت ذكر سوري (ليث) بدل البنت (أمل)
+                comm = edge_tts.Communicate(text, "ar-SY-LaithNeural", rate="-5%")
                 await comm.save(out_path)
             asyncio.run(_run())
             return Path(out_path).exists() and Path(out_path).stat().st_size > 1000
@@ -93,7 +93,7 @@ def apply_stealth_filter(input_wav, output_wav):
         shutil.copy(input_wav, output_wav)
         return False
 
-# 🌟 تعديل 1: مزج عشوائي بين ياسر والحصري
+# 🌟 مزج عشوائي بين ياسر والحصري
 def download_human_ayah(surah, ayah, out_path):
     filename = f"{surah:03d}{ayah:03d}.mp3"
     import random
@@ -297,7 +297,7 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
 
     cleanup_dir(work)
 
-# 🌟 تعديل 2: إصلاح قراءة الأوامر (حل مشكلة --mode)
+# 🌟 إصلاح قراءة الأوامر (حل مشكلة --mode)
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
