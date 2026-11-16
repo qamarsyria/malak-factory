@@ -39,7 +39,6 @@ else:
 TARGET_SR = "24000"
 SILENCE_DUR = 0.15 
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
-RECITER = "Alafasy_128kbps" 
 QURAN_BASE_URL = "https://everyayah.com/data"
 
 _ayah_lib = {}
@@ -94,9 +93,13 @@ def apply_stealth_filter(input_wav, output_wav):
         shutil.copy(input_wav, output_wav)
         return False
 
+# 🌟 تعديل 1: مزج عشوائي بين ياسر والحصري
 def download_human_ayah(surah, ayah, out_path):
     filename = f"{surah:03d}{ayah:03d}.mp3"
-    url = f"{QURAN_BASE_URL}/{RECITER}/{filename}"
+    import random
+    reciters = ["Yasser_Ad-Dussary_128kbps", "Husary_128kbps"]
+    reciter = random.choice(reciters)
+    url = f"{QURAN_BASE_URL}/{reciter}/{filename}"
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
@@ -294,7 +297,15 @@ def build_episode_audio(json_path, out_yt_mp3, out_social_mp3):
 
     cleanup_dir(work)
 
+# 🌟 تعديل 2: إصلاح قراءة الأوامر (حل مشكلة --mode)
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        sys.exit(1)
-    build_episode_audio(sys.argv[1], sys.argv[2], sys.argv[3])
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", default="human")
+    parser.add_argument("--json", required=True)
+    parser.add_argument("--out_audio", required=True)
+    parser.add_argument("--out_meta", required=True)
+    args = parser.parse_args()
+    
+    # نمرر مسار وهمي لملف الـ yt لأننا مش محتاجينه في القصص
+    build_episode_audio(args.json, "/tmp/dummy_yt.mp3", args.out_audio)
