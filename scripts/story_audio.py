@@ -11,9 +11,9 @@ from utilities import cleanup_dir
 # ═══════════════════════════════════════════════════════════
 # 🌟 إجبار المحرك على Edge TTS بالقوة (لا يعتمد على متغيرات البيئة)
 # ═══════════════════════════════════════════════════════════
-TTS_ENGINE = "2" # 🔥 مثبتة يدوياً هنا
+TTS_ENGINE = "2" # 🔥 1 = Gemini TTS | 2 = Edge TTS (مجاني وبدون حدود)
 
-if TTS_ENGINE == "2":
+if TTS_ENGINE == "1":
     from gemini_tts_pool import gemini_tts_with_pool as _engine_generate
     def generate_audio(text, out_path):
         try:
@@ -27,7 +27,7 @@ else:
     def generate_audio(text, out_path):
         try:
             async def _run():
-                # 🌟 صوت ذكر سوري (ليث) بدل البنت (أمل)
+                # صوت ذكر سوري (ليث)
                 comm = edge_tts.Communicate(text, "ar-SY-LaithNeural", rate="-5%")
                 await comm.save(out_path)
             asyncio.run(_run())
@@ -112,10 +112,18 @@ def smart_diacritize(text):
     if not text or not text.strip(): return text
     if not re.search(r'[\u0600-\u06FF]', text): return text
     
-    prompt = f"""أنت خبير في اللغة العربية والنحو والصرف.
-المهمة: أضف التشكيل الكامل (الحركات) للنص التالي بناءً على موقعه في الجملة (الإعراب).
-لا تغير أي كلمة، فقط أضف التشكيل الصحيح.
-رجع النص المشكول فقط، بدون أي شرح.
+    # 🌟 prompt محسن: يطلب فهم السياق كامل
+    prompt = f"""أنت عالم لغوي متخصص في النحو والإعراب العربي.
+المهمة: أضف التشكيل الكامل (الفتحة، الضمة، الكسرة، السكون، الشدة، التنوين) للنص التالي بحيث يتوافق مع:
+1. السياق الكامل للجملة (وليس كل كلمة على حدة).
+2. قواعد النحو والإعراب (الفاعل، المفعول، المضاف، إلخ).
+3. المعنى العام للجملة.
+
+قواعد صارمة:
+- لا تغير أي كلمة أو حرف.
+- لا تحذف أي كلمة.
+- لا تضف كلمات جديدة.
+- لا تشرح، فقط أرجع النص المشكول.
 
 النص:
 {text}
@@ -127,14 +135,14 @@ def smart_diacritize(text):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000}
+            "generationConfig": {"temperature": 0.05, "maxOutputTokens": 2000}
         }
-        r = requests.post(url, json=body, timeout=60)
+        r = requests.post(url, json=body, timeout=90)
         if r.status_code == 200:
             parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
             if parts:
                 diacritized = parts[0].get("text", "").strip()
-                if diacritized and len(diacritized) > 5:
+                if diacritized and 0.8 < len(diacritized) / len(text) < 1.5:
                     return diacritized
     except Exception as e:
         print(f"   ⚠️ التشكيل الذكي فشل: {str(e)[:100]}", flush=True)
@@ -307,5 +315,4 @@ if __name__ == "__main__":
     parser.add_argument("--out_meta", required=True)
     args = parser.parse_args()
     
-    # نمرر مسار وهمي لملف الـ yt لأننا مش محتاجينه في القصص
     build_episode_audio(args.json, "/tmp/dummy_yt.mp3", args.out_audio)
