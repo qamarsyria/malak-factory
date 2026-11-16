@@ -27,24 +27,52 @@ try:
 except Exception as e:
     print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
 
-def retrieve_context(story, limit=15):
+# ═══════════════════════════════════════════════════════════
+# 🌟 استرجاع ذكي: نبحث أولاً عن آيات تذكر اسم الشخصية
+# ═══════════════════════════════════════════════════════════
+def retrieve_context(story, limit=25):
     if not _ayah_lib: return "لا توجد نصوص متاحة."
     
     sources = story.get("sources", [])
     if not sources: sources = ["القرآن"]
     
-    context = []
-    for surah_name in sources:
-        clean_name = surah_name.replace("سورة ", "").replace("سُورَةُ ", "").strip()
-        for item in _ayah_lib:
-            if clean_name in item.get("surah_name", ""):
-                context.append(f"- {item['surah_name']} (سورة رقم {item['surah_number']}، آية رقم {item['ayah_number']}): {item['text']} | التفسير: {item.get('tafsir', '')[:100]}")
-                if len(context) >= limit:
-                    break
-        if len(context) >= limit:
-            break
+    title = story.get("title", "")
+    # استخراج اسم الشخصية من العنوان (آدم عليه السلام → آدم)
+    character = re.sub(r'عليه\s+السلام|عليه\s+الصلاة\s+والسلام|عليهم\s+السلام', '', title).strip()
     
-    return "\n".join(context) if context else "لم يتم العثور على آيات مطابقة."
+    # المرحلة 1: آيات تذكر اسم الشخصية في السور المحددة
+    priority = []
+    for item in _ayah_lib:
+        surah = item.get("surah_name", "")
+        if any(s in surah for s in sources):
+            if character and character in item.get("text", ""):
+                priority.append(item)
+    
+    # المرحلة 2: آيات من نفس السور (بدون تكرار)
+    seen = set(f"{i['surah_number']}:{i['ayah_number']}" for i in priority)
+    fallback = []
+    for item in _ayah_lib:
+        surah = item.get("surah_name", "")
+        if any(s in surah for s in sources):
+            key = f"{item['surah_number']}:{item['ayah_number']}"
+            if key not in seen:
+                fallback.append(item)
+                seen.add(key)
+    
+    # نأخذ 15 من الأولوية + 10 من الباقي
+    selected = priority[:15] + fallback[:10]
+    selected = selected[:limit]
+    
+    if not selected:
+        return "لم يتم العثور على آيات مطابقة."
+    
+    context_lines = []
+    for item in selected:
+        tafsir = item.get('tafsir', '')[:100]
+        context_lines.append(f"- {item['surah_name']} ({item['surah_number']}:{item['ayah_number']}): {item['text']}" + (f" | {tafsir}" if tafsir else ""))
+    
+    print(f"📚 تم استرجاع {len(selected)} آية (منها {len(priority)} تذكر '{character}')", flush=True)
+    return "\n".join(context_lines)
 
 def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
     pool = get_pool()
@@ -65,7 +93,7 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 
                 r = requests.post(url, json=body, timeout=timeout)
@@ -89,7 +117,7 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
                     breaker.record_failure(f"model:{model}"); break
             except requests.exceptions.Timeout:
                 pass
-            except Exception as e: 
+            except Exception: 
                 pass
     return None
 
@@ -99,16 +127,8 @@ def clean_narration_text(t: str) -> str:
     t = re.sub(r'\b\d+\b', '', t)
     t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
     t = re.sub(r'[﴿﴾\(\)]', '', t)
-    
-    # 🌟 فلتر دقيق: بس الكلمات الشاذة اللي مالهاش أي سياق إسلامي مشروع
-    bad_words = [
-        "زومبي", "سايبورغ", "روبوت",  # كلمات حديثة دخيلة
-        "عاري", "عريان", "عارية",  # وصف غير لائق
-        "لعن", "غبي", "أحمق", "كاذب", "خائن", "حقير", "تافه",  # إهانات
-    ]
-    for bw in bad_words: 
-        t = re.sub(re.escape(bw), "", t, flags=re.IGNORECASE)
-    
+    bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
+    for bw in bad_words: t = t.replace(bw, "")
     return re.sub(r'\s+', ' ', t).strip()
 
 def split_narration(text, max_chars=150):
@@ -122,39 +142,48 @@ def split_narration(text, max_chars=150):
     if current: chunks.append(current.strip())
     return chunks
 
+# 🌟 إضافة visual field حسب كلمات مفتاحية
+def guess_visual(text):
+    text_lower = text or ""
+    if any(w in text_lower for w in ["بحر", "موج", "غرق", "يم"]): return "ocean waves cinematic"
+    if any(w in text_lower for w in ["جبل", "طور", "صخر"]): return "misty mountains cinematic"
+    if any(w in text_lower for w in ["سماء", "نجم", "قمر", "كوكب"]): return "starry night milky way"
+    if any(w in text_lower for w in ["جنة", "بستان", "نهر", "شجر", "ثمر"]): return "enchanted forest magical"
+    if any(w in text_lower for w in ["صحراء", "رمل", "كثبان"]): return "desert dunes sunset"
+    if any(w in text_lower for w in ["مطر", "سحاب", "غيوم", "برق", "رعد"]): return "thunderstorm cinematic"
+    if any(w in text_lower for w in ["نار", "حرق", "عذاب"]): return "dramatic fire cinematic"
+    if any(w in text_lower for w in ["بيت", "مدينة", "قصر", "بناء"]): return "ancient architecture cinematic"
+    if any(w in text_lower for w in ["ملاك", "ملائكة", "نور"]): return "heavenly light clouds"
+    return "islamic architecture animation"
+
 def parse_script_with_verses(script_text):
     text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-    
-    for name, num in SURAH_NAME_TO_NUM.items(): 
-        text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
-        text = text.replace(f"[{name}:", f"[{num}:").replace(f"({name}:", f"({num}:")
     
     patterns = [
         r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",
         r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",
         r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",
-        r"\[(\d+)\s*[:\-]\s*(\d+)\]",
-        r"\[سورة\s+(\d+)[:\s]+آية\s+(\d+)\]",
+        r"\[?\s*(\d+)\s*[:\-]\s*(\d+)\s*\]?"
     ]
     
     parts = None
     for pat in patterns:
-        parts = re.split(pat, text)
-        if len(parts) > 1: break
-        
+        test_parts = re.split(pat, text)
+        if len(test_parts) > 1:
+            parts = test_parts
+            break
+            
     if not parts or len(parts) == 1: 
-        return [{"type": "narration", "text": clean_narration_text(c)} for c in split_narration(text) if c.strip()]
+        return [{"type": "narration", "text": clean_narration_text(c), "visual": guess_visual(c)} for c in split_narration(text) if c.strip()]
 
     segments, i, used_ayahs = [], 0, set()
     while i < len(parts):
         if i % 3 == 0:
-            chunk = parts[i].strip()
-            chunk = re.sub(r'[\(\[﴿].*?[\)\]﴾]', '', chunk) 
-            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", chunk).strip()
+            chunk = re.sub(r"[\[\(]آ[يی]ة[^\]]*[\]\)]", "", parts[i]).strip()
             chunk = clean_narration_text(chunk)
             if len(chunk) > 5:
                 for piece in split_narration(chunk): 
-                    segments.append({"type": "narration", "text": piece.strip()})
+                    segments.append({"type": "narration", "text": piece.strip(), "visual": guess_visual(piece)})
             i += 1
         else:
             try: surah, ayah = int(parts[i]), int(parts[i + 1])
@@ -162,49 +191,66 @@ def parse_script_with_verses(script_text):
             if surah not in SURAH_NAMES or ayah < 1 or ayah > 286: i += 2; continue
             ayah_key = f"{surah}:{ayah}"
             if ayah_key not in used_ayahs:
-                segments.append({"type": "quran", "surah": surah, "surah_name": SURAH_NAMES.get(surah), "ayah_numbers": [ayah], "display": f"{SURAH_NAMES.get(surah)}: {ayah}"})
+                segments.append({
+                    "type": "quran", 
+                    "surah": surah, 
+                    "surah_name": SURAH_NAMES.get(surah), 
+                    "ayah_numbers": [ayah], 
+                    "display": f"{SURAH_NAMES.get(surah)}: {ayah}",
+                    "visual": "kaaba mecca"
+                })
                 used_ayahs.add(ayah_key)
             i += 2
     return segments
 
+# 🌟 prompt الخطة: يمنع اختراع الأحداث ويوجه للتعميق
 def build_plan_prompt(story, ep_num, state):
-    total_eps = story.get("target_episodes", 15)
+    total_eps = story.get("target_episodes", 20)
     covered = state.get("covered_topics", [])
     covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
     
-    return f'''أنت مؤرخ إسلامي دقيق جداً. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}".
-المواضيع التي تمت تغطيتها في الحلقات السابقة:
+    return f'''أنت مؤرخ إسلامي دقيق. نصنع سلسلة من {total_eps} حلقة عن "{story["title"]}".
+المواضيع المغطاة سابقاً:
 {covered_str}
 
-⚠️ تنبيه هام جداً: قصة "{story["title"]}" قد لا تحتوي على أحداث تاريخية كافية لـ {total_eps} حلقة. لذلك، في الحلقات المتقدمة، يجب أن تركز على **تحليل العبر والدروس المستفادة** من الأحداث السابقة، أو **تفسير الآيات** بشكل أعمق، أو **الرد على الشبهات** المتعلقة بالقصة.
-ممنوع منعاً باتاً اختراع أحداث غير موجودة في القرآن أو السنة الصحيحة (ممنوع الإسرائيليات).
-ممنوع الإطالة أو الحشو لمجرد الوصول لعدد كلمات معين.
+⚠️ قواعد صارمة:
+1. ممنوع اختراع أحداث غير موجودة في القرآن أو السنة الصحيحة.
+2. إذا كانت الأحداث التاريخية محدودة، **لا تحشو**. بدلاً من ذلك اختر واحداً من:
+   - تفسير أعمق لآية محددة من الآيات المرتبطة بالقصة
+   - استخلاص عبرة معاصرة من حدث سابق
+   - الرد على شبهة شائعة حول هذه القصة
+3. يجب أن تكون الخطة عن **جزء محدد جداً** (حدث واحد، آية واحدة، أو عبرة واحدة). ممنوع "كلام عام".
+4. ركز على الشخصية الرئيسية "{story['title']}" وليس غيرها.
 
-اكتب خطة للحلقة {ep_num}. يجب أن تركز على جزء محدد جداً (حدث، أو عبرة، أو تفسير آية).
-أعد JSON فقط: {{"title": "عنوان دقيق", "summary": "ملخص مركز...", "topic": "الموضوع الجديد"}}'''
+اكتب خطة للحلقة {ep_num}.
+أعد JSON فقط: {{"title": "عنوان دقيق ومحدد", "summary": "ملخص مركز في سطرين", "topic": "الموضوع الجديد"}}'''
 
+# 🌟 prompt السرد: يمنع الحشو + يطلب 350 كلمة فقط
 def build_script_prompt(story, plan, ep_num, context):
-    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي صارم.
+    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي دقيق.
+الشخصية: {story['title']}
 الخطة: {plan['title']} - {plan['summary']}
-القصة المطلوبة: {story['title']}
 
-لقد قمنا باستخراج النصوص التالية من مصادرنا الموثوقة. **أنت مجبر على استخدام هذه النصوص فقط:**
-
-المراجع:
+المراجع المتاحة (يجب الاعتماد عليها حصرياً):
 {context}
 
-قواعد صارمة جداً (ممنوع كسرها):
-1. اكتب سرداً قصصياً مركزاً (حوالي 300-400 كلمة فقط). لا تحشو الكلام لمجرد الوصول لعدد كلمات معين. الجودة أهم من الكمية.
-2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
-3. **الآيات (إجباري)**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه. الصيغة الإجبارية: [آية: رقم_السورة:رقم_الآية]. مثال: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
-4. **اللغة**: اللغة العربية الفصحى فقط. يُمنع منعاً باتاً كتابة أي حرف إنجليزي.
-5. **المحاذير الشرعية الصارمة**: يُمنع منعاً باتاً تشبيه أو وصف الذات الإلهية، أو الأنبياء، أو الملائكة، أو الصحابة بأي وصف بشري مخلوق، أو وصفهم بأجساد أو صور. احترامهم بشكل مطلق.
-6. اكتب النص السردي فقط، بدون عناوين فرعية."""
+⚠️ قواعد صارمة (احترامها إجباري):
+1. **الطول**: 300-400 كلمة فقط. الجودة أهم من الكمية. إذا لم تجد معلومات كافية، اكتب أقل.
+2. **التوثيق**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
+3. **الشخصية**: ابدأ النص بذكر "{story['title']}" خلال أول 15 كلمة لضمان التركيز.
+4. **الآيات**: يجب إدراج 3 آيات على الأقل من المراجع. الصيغة: [آية: رقم_السورة:رقم_الآية]. **ممنوع كتابة نص الآية، اكتب المرجع فقط**.
+5. **ممنوع الحشو**: ممنوع الجمل العامة ("وهكذا نتعلم من القصة...")، التكرار، أو العبارات الإنشائية الفارغة. كل جملة يجب أن تحمل معلومة جديدة من المراجع.
+6. **ممنوع ذكر شخصية أخرى** غير {story['title']} (إلا إذا كانت مرتبطة بحدث أساسي في الآيات المذكورة).
+7. **اللغة**: العربية الفصحى فقط. ممنوع أي حرف إنجليزي أو رقم في النص (باستثناء مراجع الآيات).
+8. احترام مطلق للذات الإلهية والأنبياء والملائكة والصحابة.
+9. اكتب السرد فقط، بدون عناوين أو مقدمات أو خاتمة.
+
+إذا لم تجد معلومات كافية في المراجع، **قلل الطول ولا تخترع**. النص القصير الصادق أفضل من نص طويل كاذب."""
 
 def build_teaser_prompt(story, ep_num):
     return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
-قواعد صارمة:
-1. ابدأ **مباشرة** بسؤال درامي.
+قواعد:
+1. ابدأ مباشرة بسؤال درامي.
 2. ممنوع أن تبدأ بـ: "إليك"، "هذا"، "النص"، "ترقبوا".
 3. أعد الجملة فقط، بدون علامات اقتباس."""
 
@@ -215,9 +261,8 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    context = retrieve_context(story, limit=15)
-    print(f"📚 تم استرجاع المراجع من {len(story.get('sources', []))} سورة.", flush=True)
-
+    context = retrieve_context(story, limit=25)
+    
     print("📝 جاري توليد الخطة...", flush=True)
     plan_raw = call_llm(build_plan_prompt(story, ep_num, state))
     
@@ -233,26 +278,31 @@ def main():
     cleaned_title = re.sub(r'الحلقة\s*\d+[:\s\-]*', '', raw_title).strip()
     plan["title"] = cleaned_title or f"الحلقة {ep_num}"
 
-    print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
+    print("✍️ جاري توليد السرد...", flush=True)
     
-    max_retries = 5
+    max_retries = 3
     script_text = None
     for attempt in range(max_retries):
         script_text = call_llm(build_script_prompt(story, plan, ep_num, context), is_json=False)
         if script_text:
             temp_segments = parse_script_with_verses(script_text)
             ayah_count = sum(1 for s in temp_segments if s["type"] == "quran")
-            if ayah_count >= 2:
-                print(f"✅ وجدنا {ayah_count} آيات في المحاولة {attempt+1}.", flush=True)
+            # نتحقق من ذكر الشخصية
+            character = re.sub(r'عليه\s+السلام|عليه\s+الصلاة\s+والسلام', '', story['title']).strip()
+            first_200 = script_text[:200]
+            mentions_character = character in first_200
+            
+            if ayah_count >= 2 and mentions_character:
+                print(f"✅ {ayah_count} آيات، والشخصية مذكورة. موافق.", flush=True)
                 break
             else:
-                print(f"⚠️ المحاولة {attempt+1}: وجدنا {ayah_count} آية فقط. نطلب المزيد...", flush=True)
+                print(f"⚠️ المحاولة {attempt+1}: {ayah_count} آية، الشخصية={'✓' if mentions_character else '✗'}. إعادة...", flush=True)
         else:
             print(f"⚠️ المحاولة {attempt+1}: فشل الاتصال.", flush=True)
-        time.sleep(3)
+        time.sleep(5)
     
     if not script_text:
-        print("❌ فشل توليد النص بعد 5 محاولات.", flush=True)
+        print("❌ فشل توليد النص.", flush=True)
         sys.exit(1)
 
     script_text = re.sub(r'\(.*?\)|\[مشهد.*?\]', '', script_text)
@@ -263,14 +313,14 @@ def main():
     summary_clean = clean_narration_text(summary_raw if isinstance(summary_raw, str) else "")
     if not summary_clean or len(summary_clean) < 20:
         summary_clean = "وهكذا تتجلى عظمة تدبير الله، وأن الصبر والتوكل هما زاد المؤمن."
-    segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky"})
+    segments.append({"type": "summary", "text": summary_clean, "visual": "sunrise sky hope"})
 
     print("📢 جاري توليد التشويق...", flush=True)
     teaser_raw = call_llm(build_teaser_prompt(story, ep_num), is_json=False)
     teaser_clean = clean_narration_text(teaser_raw if isinstance(teaser_raw, str) else "")
     if not teaser_clean or len(teaser_clean) < 20:
         teaser_clean = "فماذا حدث بعد ذلك؟ تابعوا الحلقة القادمة."
-    segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة"})
+    segments.append({"type": "teaser", "text": teaser_clean, "next_episode_title": f"الحلقة {ep_num + 1}", "url": "https://qamarsyria.github.io/qamar-malak/", "platform_name": "ملاك المعرفة", "visual": "mysterious fog cinematic"})
 
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
