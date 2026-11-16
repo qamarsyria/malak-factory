@@ -34,9 +34,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install --force-reinstall phonemizer==3.2.1
-          # تأكيد تثبيت edge-tts عشان السرد ما يفشل
           pip install -q edge-tts
-          # مكتبات RVC
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
@@ -56,7 +54,7 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Narration + Human)
+      - name: Build Audio (Narration Gemini + Quran Human)
         id: soc_aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
@@ -113,7 +111,7 @@ jobs:
           echo "--- محتويات مجلد الفيديو ---"
           ls -lh videos/
 
-      - name: Upload to Telegram (Compressed)
+      - name: Upload to Telegram (Aggressive Compression)
         if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -131,8 +129,36 @@ jobs:
             if [ -f "$f" ]; then
               echo "جاري ضغط الفيديو: $f (الحجم الأصلي: $(du -h "$f" | cut -f1))"
               compressed_file="compressed_$(basename $f)"
-              ffmpeg -y -i "$f" -vcodec libx264 -crf 30 -preset fast -acodec aac -b:a 128k "$compressed_file"
+              
+              # 🌟 ضغط مضمون: 720p + 24fps + maxrate 600k
+              ffmpeg -y -i "$f" \
+                -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24" \
+                -c:v libx264 -crf 30 -preset medium \
+                -maxrate 600k -bufsize 1200k \
+                -c:a aac -b:a 48k -ac 1 \
+                -movflags +faststart \
+                "$compressed_file"
+              
               if [ -f "$compressed_file" ]; then
+                FINAL_SIZE_MB=$(du -m "$compressed_file" | cut -f1)
+                echo "✅ تم الضغط. الحجم الجديد: ${FINAL_SIZE_MB} MB"
+                
+                # 🌟 ضغط احتياطي إذا الملف لا يزال كبيراً
+                if [ "$FINAL_SIZE_MB" -gt 48 ]; then
+                  echo "⚠️ الملف لا يزال كبيراً (${FINAL_SIZE_MB} MB)، جاري ضغط إضافي..."
+                  ffmpeg -y -i "$compressed_file" \
+                    -vf "scale=854:480,fps=20" \
+                    -c:v libx264 -crf 32 -preset medium \
+                    -maxrate 350k -bufsize 700k \
+                    -c:a aac -b:a 32k -ac 1 \
+                    -movflags +faststart \
+                    "smaller_${compressed_file}"
+                  rm "$compressed_file"
+                  mv "smaller_${compressed_file}" "$compressed_file"
+                  FINAL_SIZE_MB=$(du -m "$compressed_file" | cut -f1)
+                  echo "✅ ضغط إضافي. الحجم النهائي: ${FINAL_SIZE_MB} MB"
+                fi
+                
                 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
                   -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${compressed_file}" -F "caption=🎬 $(basename $f)"
                 rm "$compressed_file"
