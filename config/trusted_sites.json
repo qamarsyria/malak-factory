@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "methodology": "أهل السنة والجماعة - النهج السلفي",
+  "sites": [
+    {
+      "id": "dorar",
+      "name": "الدرر السنية",
+      "url": "https://dorar.net",
+      "trust_level": "high",
+      "content_types": ["stories", "tafsir", "hadith"],
+      "notes": "موسوعة شاملة، تفسير 124 مرجعاً، على منهج أهل السنة"
+    },
+    {
+      "id": "islamway",
+      "name": "طريق الإسلام",
+      "url": "https://ar.islamway.net",
+      "trust_level": "high",
+      "content_types": ["stories", "articles"],
+      "notes": "قصص الأنبياء مع الفوائد"
+    },
+    {
+      "id": "anasalafy",
+      "name": "أنا السلفي",
+      "url": "https://anasalafy.com",
+      "trust_level": "high",
+      "content_types": ["tafsir", "stories"],
+      "notes": "تفاسير معتمدة (السعدي، ابن كثير)"
+    },
+    {
+      "id": "islamqa",
+      "name": "الإسلام سؤال وجواب",
+      "url": "https://islamqa.info/ar",
+      "trust_level": "high",
+      "content_types": ["qa", "stories"],
+      "notes": "فتاوى ومقالات محققة"
+    }
+  ],
+  "tafsir_sources": [
+    {"id": "ibn_kathir", "name": "تفسير ابن كثير"},
+    {"id": "tabari", "name": "تفسير الطبري"},
+    {"id": "saadi", "name": "تفسير السعدي"},
+    {"id": "qurtubi", "name": "تفسير القرطبي"}
+  ],
+  "forbidden_content": {
+    "depictions": [
+      "الله عز وجل", "الأنبياء", "الرسل", "الصحابة", "الملائكة",
+      "المبشرون بالجنة", "أمهات المؤمنين"
+    ],
+    "animals": ["الكلاب", "الخنازير", "القردة"],
+    "concepts": ["الإسرائيليات", "الأحاديث الضعيفة", "الموضوعات"]
+  }
+}
