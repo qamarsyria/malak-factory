@@ -34,7 +34,6 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install --force-reinstall phonemizer==3.2.1
-          # تثبيت مكتبات RVC المطلوبة
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
@@ -66,55 +65,32 @@ jobs:
             --out_audio "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
             --out_meta "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json"
 
-      - name: Convert Voice with RVC (Triple-Layer + Echo)
-        if: steps.soc_aud.outcome == 'success'
+      - name: Setup RVC
         run: |
-          echo "🎙️ تجهيز استوديو الصوت..."
           git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
           cd rvc
           grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
           mkdir -p assets/hubert_base assets/rmvpe assets/weights assets/pretrained_v2
-          
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json -O assets/hubert_base/config.json
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/preprocessor_config.json -O assets/hubert_base/preprocessor_config.json
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin -O assets/hubert_base/pytorch_model.bin
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
           wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
-          
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/my_clean_voice.pth -O assets/weights/clean.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/added_my_clean_voice.index -O clean.index
-          
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/rough.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O rough.index
-          
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth -O assets/weights/malak.pth
           wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index -O malak.index
 
-          # تجهيز ملف القصة
-          cd ..
-          INPUT_AUDIO="$PWD/out/social_${{ steps.gen.outputs.EP_NAME }}.mp3"
-          ffmpeg -y -i "$INPUT_AUDIO" -ar 48000 -ac 1 input_story.wav
-          
-          cd rvc
-          export PYTHONPATH=$PWD
-          
-          echo "🎙️ التحويل بالبصمات الثلاثة..."
-          python infer/cli.py --model assets/weights/clean.pth --input ../input_story.wav --output out_clean.wav --index clean.index --f0-method rmvpe --pitch -6 --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
-          python infer/cli.py --model assets/weights/rough.pth --input ../input_story.wav --output out_rough.wav --index rough.index --f0-method rmvpe --pitch -4 --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
-          python infer/cli.py --model assets/weights/malak.pth --input ../input_story.wav --output out_malak.wav --index malak.index --f0-method rmvpe --pitch 0 --protect 0.4 --index-rate 0.4 --rms-mix-rate 0.8
-
-          echo "🔬 الخلط بالنسب (900 / 50 / 50)..."
-          ffmpeg -y -i out_clean.wav -i out_rough.wav -i out_malak.wav -filter_complex \
-            "[0:a]volume=0.9[a1]; [1:a]volume=0.05[a2]; [2:a]volume=0.05[a3]; [a1][a2][a3]amix=inputs=3:normalize=0,alimiter" \
-             mixed.wav
-
-          echo "🌊 تطبيق الصدى..."
-          # الصدى: 150ms، شدة 0.3، 3 تكرارات
-          ffmpeg -y -i mixed.wav -af "aecho=0.8:0.9:150|300|450:0.3|0.15|0.075" final_story.wav
-          
-          echo "💾 تحديث ملف الصوت الأصلي للفيديو..."
-          ffmpeg -y -i final_story.wav -b:a 320k "$INPUT_AUDIO"
+      - name: Apply RVC to Quran Only
+        if: steps.soc_aud.outcome == 'success'
+        run: |
+          python scripts/apply_rvc_to_quran.py \
+            "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
+            "out/social_${{ steps.gen.outputs.EP_NAME }}_rvc.mp3"
 
       - name: Build Video
         if: steps.soc_aud.outcome == 'success'
@@ -123,7 +99,7 @@ jobs:
         run: |
           mkdir -p videos
           python scripts/story_video.py \
-            "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            "out/social_${{ steps.gen.outputs.EP_NAME }}_rvc.mp3" \
             "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
             "videos/social_${{ steps.gen.outputs.EP_NAME }}.mp4"
           echo "--- محتويات مجلد الفيديو ---"
@@ -135,7 +111,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          for f in out/social_*.mp3; do
+          for f in out/social_*_rvc.mp3; do
             if [ -f "$f" ]; then
               echo "جاري رفع الصوت: $f (الحجم: $(du -h "$f" | cut -f1))"
               curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" \
@@ -170,5 +146,4 @@ jobs:
         if: always()
         run: |
           rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json data/stories/generated/*.json out/latest_episode.txt
-          rm -rf rvc
-          rm -f input_story.wav
+          rm -rf rvc temp_chunks
