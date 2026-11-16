@@ -57,10 +57,15 @@ for m in [model_clean, model_rough, model_malak]:
         print(f"❌ الموديل مفقود: {m}")
         sys.exit(1)
 
+# 🌟 إعداد البيئة (أهم خطوة لحل الخطأ)
+env = os.environ.copy()
+env["PYTHONPATH"] = rvc_dir
+
 print("🎙️ تحويل الآيات بالبصمة الثلاثية...")
 for name, model, idx, pitch in [("clean", model_clean, idx_clean, "-6"), ("rough", model_rough, idx_rough, "-4"), ("malak", model_malak, idx_malak, "0")]:
     out_wav = os.path.abspath(f"temp_chunks/quran_{name}.wav")
-    subprocess.run([PY, os.path.join(rvc_dir, "infer/cli.py"), "--model", model, "--input", input_all, "--output", out_wav, "--index", idx, "--f0-method", "rmvpe", "--pitch", pitch, "--protect", "0.4", "--index-rate", "0.4", "--rms-mix-rate", "0.8"], check=True)
+    # نضيف cwd=rvc_dir و env=env عشان RVC يلاقي مكتباته
+    subprocess.run([PY, "infer/cli.py", "--model", model, "--input", input_all, "--output", out_wav, "--index", idx, "--f0-method", "rmvpe", "--pitch", pitch, "--protect", "0.4", "--index-rate", "0.4", "--rms-mix-rate", "0.8"], cwd=rvc_dir, env=env, check=True)
 
 # 4. الخلط والصدى
 print("🔬 الخلط والصدى...")
