@@ -13,7 +13,7 @@ from utilities import cleanup_dir
 # ═══════════════════════════════════════════════════════════
 TTS_ENGINE = "2" # 🔥 مثبتة يدوياً هنا
 
-if TTS_ENGINE == "1":
+if TTS_ENGINE == "2":
     from gemini_tts_pool import gemini_tts_with_pool as _engine_generate
     def generate_audio(text, out_path):
         try:
