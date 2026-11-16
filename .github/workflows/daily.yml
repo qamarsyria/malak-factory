@@ -14,8 +14,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
 
@@ -28,13 +27,12 @@ jobs:
       - name: Install ffmpeg & tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg git wget
+          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri
 
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
           pip install --force-reinstall phonemizer==3.2.1
-          pip install -q edge-tts
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
@@ -54,22 +52,23 @@ jobs:
             exit 1
           fi
 
-      - name: Build Audio (Narration Gemini + Quran Human)
+      - name: Build Audio (Gemini Narration + Human Quran)
         id: soc_aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TTS_ENGINE: '1'
         run: |
           python scripts/story_audio.py \
-            --mode human \
             --json "${{ steps.gen.outputs.EP_FILE }}" \
-            --out_audio "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
-            --out_meta "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json"
+            --out_yt "out/social_${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
+            --out_social "out/social_${{ steps.gen.outputs.EP_NAME }}.mp3" \
+            --mode human
 
       - name: Setup RVC
         if: steps.soc_aud.outcome == 'success'
         run: |
-          echo "⏳ جاري تحميل RVC والموديلات..."
+          echo "⏳ تحميل RVC والموديلات..."
           git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
           cd rvc
           grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
@@ -108,10 +107,9 @@ jobs:
             "out/social_${{ steps.gen.outputs.EP_NAME }}_rvc.mp3" \
             "out/social_${{ steps.gen.outputs.EP_NAME }}_meta.json" \
             "videos/social_${{ steps.gen.outputs.EP_NAME }}.mp4"
-          echo "--- محتويات مجلد الفيديو ---"
           ls -lh videos/
 
-      - name: Upload to Telegram (Aggressive Compression)
+      - name: Upload to Telegram (Smart Compression - Keep Resolution)
         if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -119,7 +117,7 @@ jobs:
         run: |
           for f in out/social_*_rvc.mp3; do
             if [ -f "$f" ]; then
-              echo "جاري رفع الصوت: $f (الحجم: $(du -h "$f" | cut -f1))"
+              echo "رفع الصوت: $f"
               curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" \
                 -F "chat_id=${TELEGRAM_CHAT_ID}" -F "audio=@${f}" -F "caption=🎧 $(basename $f)"
             fi
@@ -127,42 +125,47 @@ jobs:
 
           for f in videos/*.mp4; do
             if [ -f "$f" ]; then
-              echo "جاري ضغط الفيديو: $f (الحجم الأصلي: $(du -h "$f" | cut -f1))"
+              echo "📹 الأصلي: $(du -h "$f" | cut -f1)"
               compressed_file="compressed_$(basename $f)"
               
-              # 🌟 ضغط مضمون: 720p + 24fps + maxrate 600k
+              # 🌟 حساب bitrate ديناميكي لهدف 45 MB (بدون تصغير الدقة)
+              DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
+              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", (45 * 8 * 1024 * 1024) / $DURATION / 1000}")
+              if [ "$TARGET_KBPS" -gt 900 ]; then TARGET_KBPS=900; fi
+              if [ "$TARGET_KBPS" -lt 400 ]; then TARGET_KBPS=400; fi
+              
+              echo "⏱️ ${DURATION}s | ${TARGET_KBPS}kbps | دقة كاملة"
+              
+              # 🌟 الدقة الكاملة (لا scale!)
               ffmpeg -y -i "$f" \
-                -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24" \
-                -c:v libx264 -crf 30 -preset medium \
-                -maxrate 600k -bufsize 1200k \
-                -c:a aac -b:a 48k -ac 1 \
+                -c:v libx264 -crf 28 -preset medium \
+                -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
+                -c:a aac -b:a 64k \
                 -movflags +faststart \
                 "$compressed_file"
               
-              if [ -f "$compressed_file" ]; then
-                FINAL_SIZE_MB=$(du -m "$compressed_file" | cut -f1)
-                echo "✅ تم الضغط. الحجم الجديد: ${FINAL_SIZE_MB} MB"
-                
-                # 🌟 ضغط احتياطي إذا الملف لا يزال كبيراً
-                if [ "$FINAL_SIZE_MB" -gt 48 ]; then
-                  echo "⚠️ الملف لا يزال كبيراً (${FINAL_SIZE_MB} MB)، جاري ضغط إضافي..."
-                  ffmpeg -y -i "$compressed_file" \
-                    -vf "scale=854:480,fps=20" \
-                    -c:v libx264 -crf 32 -preset medium \
-                    -maxrate 350k -bufsize 700k \
-                    -c:a aac -b:a 32k -ac 1 \
-                    -movflags +faststart \
-                    "smaller_${compressed_file}"
-                  rm "$compressed_file"
-                  mv "smaller_${compressed_file}" "$compressed_file"
-                  FINAL_SIZE_MB=$(du -m "$compressed_file" | cut -f1)
-                  echo "✅ ضغط إضافي. الحجم النهائي: ${FINAL_SIZE_MB} MB"
-                fi
-                
-                curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-                  -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${compressed_file}" -F "caption=🎬 $(basename $f)"
+              FINAL_SIZE_MB=$(du -m "$compressed_file" | cut -f1)
+              echo "✅ بعد الضغط: ${FINAL_SIZE_MB} MB"
+              
+              # احتياطي: لو لسا كبير
+              if [ "$FINAL_SIZE_MB" -gt 48 ]; then
+                echo "⚠️ ضغط إضافي..."
+                ffmpeg -y -i "$compressed_file" \
+                  -vf "scale=854:480,fps=24" \
+                  -c:v libx264 -crf 30 -preset medium \
+                  -maxrate 350k -bufsize 700k \
+                  -c:a aac -b:a 32k \
+                  -movflags +faststart \
+                  "smaller_${compressed_file}"
                 rm "$compressed_file"
+                mv "smaller_${compressed_file}" "$compressed_file"
+                FINAL_SIZE_MB=$(du -m "$compressed_file" | cut -f1)
+                echo "✅ نهائي: ${FINAL_SIZE_MB} MB"
               fi
+              
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+                -F "chat_id=${TELEGRAM_CHAT_ID}" -F "video=@${compressed_file}" -F "caption=🎬 $(basename $f)"
+              rm "$compressed_file"
             fi
           done
 
