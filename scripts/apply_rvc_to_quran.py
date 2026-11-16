@@ -51,12 +51,12 @@ for item in chunk_info:
     base_name = os.path.basename(input_wav).replace(".wav", "")
     reciter = item["reciter"]
     
-    # 🌟 التسريع حسب القارئ
-    tempo = 1.05 if "Yasser" in reciter else 1.15
-    tempo_label = "5% (Yasser)" if "Yasser" in reciter else "15% (Husary)"
+    # 🌟 التسريع: ياسر 5% / الحصري 20%
+    tempo = 1.05 if "Yasser" in reciter else 1.20
+    tempo_label = "5% (Yasser)" if "Yasser" in reciter else "20% (Husary)"
     print(f"   🎵 {base_name} - {tempo_label}")
     
-    # RVC
+    # RVC (3 طبقات)
     for name, model, idx, pitch in [
         ("clean", "assets/weights/clean.pth", "clean.index", "-6"),
         ("rough", "assets/weights/rough.pth", "rough.index", "-4"),
@@ -68,7 +68,7 @@ for item in chunk_info:
     # Mix
     mixed_wav = os.path.abspath(f"temp_chunks/mix_{base_name}.wav")
     subprocess.run([
-        "ffmpeg", "-y", 
+        "ffmpeg", "-y",
         "-i", os.path.abspath(f"temp_chunks/rvc_{base_name}_clean.wav"),
         "-i", os.path.abspath(f"temp_chunks/rvc_{base_name}_rough.wav"),
         "-i", os.path.abspath(f"temp_chunks/rvc_{base_name}_malak.wav"),
@@ -76,7 +76,7 @@ for item in chunk_info:
         mixed_wav
     ], check=True)
     
-    # 🌟 Speedup + light echo (بعد RVC)
+    # Speedup + صدى خفيف (بعد RVC)
     echo_wav = os.path.abspath(f"temp_chunks/final_{base_name}.wav")
     subprocess.run(["ffmpeg", "-y", "-i", mixed_wav, "-af", f"atempo={tempo},aecho=0.8:0.85:100|200:0.15|0.08", echo_wav], check=True)
     
