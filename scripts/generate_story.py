@@ -27,10 +27,7 @@ try:
 except Exception as e:
     print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 البحث الشامل: من كل السور المذكورة في القصة
-# ═══════════════════════════════════════════════════════════
-def retrieve_context(story, limit=12):
+def retrieve_context(story, limit=15):
     if not _ayah_lib: return "لا توجد نصوص متاحة."
     
     sources = story.get("sources", [])
@@ -38,7 +35,6 @@ def retrieve_context(story, limit=12):
     
     context = []
     for surah_name in sources:
-        # تنظيف اسم السورة
         clean_name = surah_name.replace("سورة ", "").replace("سُورَةُ ", "").strip()
         for item in _ayah_lib:
             if clean_name in item.get("surah_name", ""):
@@ -69,7 +65,7 @@ def call_llm(prompt, is_json=True, timeout=180, max_tokens=8192):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}
                 if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
                 
                 r = requests.post(url, json=body, timeout=timeout)
@@ -103,8 +99,16 @@ def clean_narration_text(t: str) -> str:
     t = re.sub(r'\b\d+\b', '', t)
     t = re.sub(r'\(\s*\)|\[\s*\]', '', t)
     t = re.sub(r'[﴿﴾\(\)]', '', t)
-    bad_words = ["وبخ", "موبخ", "بخع", "لعن", "غبي", "أحمق", "كاذب", "خائن", "مذلول", "حقير", "تافه"]
-    for bw in bad_words: t = t.replace(bw, "")
+    
+    # 🌟 فلتر دقيق: بس الكلمات الشاذة اللي مالهاش أي سياق إسلامي مشروع
+    bad_words = [
+        "زومبي", "سايبورغ", "روبوت",  # كلمات حديثة دخيلة
+        "عاري", "عريان", "عارية",  # وصف غير لائق
+        "لعن", "غبي", "أحمق", "كاذب", "خائن", "حقير", "تافه",  # إهانات
+    ]
+    for bw in bad_words: 
+        t = re.sub(re.escape(bw), "", t, flags=re.IGNORECASE)
+    
     return re.sub(r'\s+', ' ', t).strip()
 
 def split_narration(text, max_chars=150):
@@ -118,24 +122,19 @@ def split_narration(text, max_chars=150):
     if current: chunks.append(current.strip())
     return chunks
 
-# ═══════════════════════════════════════════════════════════
-# 🌟 المحلل الذكي (يقبل أي صيغة يكتبها جيميني)
-# ═══════════════════════════════════════════════════════════
 def parse_script_with_verses(script_text):
     text = script_text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     
-    # تحويل أسماء السور لأرقام
     for name, num in SURAH_NAME_TO_NUM.items(): 
         text = text.replace(f"آية: {name}:", f"آية: {num}:").replace(f"آية {name}:", f"آية {num}:")
         text = text.replace(f"[{name}:", f"[{num}:").replace(f"({name}:", f"({num}:")
     
-    # أنماط متعددة (مع أو بدون كلمة "آية"، مع أو بدون أقواس)
     patterns = [
-        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",  # [آية: 2:30]
-        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",  # [آية 2:30]
-        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",  # (آية 2:30)
-        r"\[(\d+)\s*[:\-]\s*(\d+)\]",               # [2:30] أو [2-30]
-        r"\[سورة\s+(\d+)[:\s]+آية\s+(\d+)\]",        # [سورة 2: آية 30]
+        r"\[آ[يی]ة[:\s]*(\d+)\s*[:\-،]\s*(\d+)\]",
+        r"\[آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)\s*\]",
+        r"[\(（]آ[يی]ة\s+(\d+)\s*[:\-،]\s*(\d+)[\)）]",
+        r"\[(\d+)\s*[:\-]\s*(\d+)\]",
+        r"\[سورة\s+(\d+)[:\s]+آية\s+(\d+)\]",
     ]
     
     parts = None
@@ -172,15 +171,20 @@ def build_plan_prompt(story, ep_num, state):
     total_eps = story.get("target_episodes", 15)
     covered = state.get("covered_topics", [])
     covered_str = "\n".join([f"- {t}" for t in covered]) if covered else "لا يوجد."
-    return f'''أنت مؤرخ إسلامي. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}" بتفاصيل دقيقة.
+    
+    return f'''أنت مؤرخ إسلامي دقيق جداً. نحن نصنع سلسلة من {total_eps} حلقة تغطي قصة "{story["title"]}".
 المواضيع التي تمت تغطيتها في الحلقات السابقة:
 {covered_str}
 
-اكتب خطة للحلقة {ep_num} (من أصل {total_eps}). يجب أن تركز على جزء محدد جداً وجديد من حياته (لم يتم تغطيته سابقاً).
-أعد JSON فقط: {{"title": "عنوان", "summary": "ملخص دقيق ووقور...", "topic": "الموضوع الجديد"}}'''
+⚠️ تنبيه هام جداً: قصة "{story["title"]}" قد لا تحتوي على أحداث تاريخية كافية لـ {total_eps} حلقة. لذلك، في الحلقات المتقدمة، يجب أن تركز على **تحليل العبر والدروس المستفادة** من الأحداث السابقة، أو **تفسير الآيات** بشكل أعمق، أو **الرد على الشبهات** المتعلقة بالقصة.
+ممنوع منعاً باتاً اختراع أحداث غير موجودة في القرآن أو السنة الصحيحة (ممنوع الإسرائيليات).
+ممنوع الإطالة أو الحشو لمجرد الوصول لعدد كلمات معين.
+
+اكتب خطة للحلقة {ep_num}. يجب أن تركز على جزء محدد جداً (حدث، أو عبرة، أو تفسير آية).
+أعد JSON فقط: {{"title": "عنوان دقيق", "summary": "ملخص مركز...", "topic": "الموضوع الجديد"}}'''
 
 def build_script_prompt(story, plan, ep_num, context):
-    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي.
+    return f"""أنت راوي قصص الأنبياء ومؤرخ إسلامي صارم.
 الخطة: {plan['title']} - {plan['summary']}
 القصة المطلوبة: {story['title']}
 
@@ -189,12 +193,13 @@ def build_script_prompt(story, plan, ep_num, context):
 المراجع:
 {context}
 
-قواعد صارمة جداً:
-1. اكتب سرداً قصصياً مشوقاً (حوالي 600 كلمة، 5 دقائق فيديو). ابدأ بسؤال وثائقي مشوق.
-2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع. ممنوع الإسرائيليات.
+قواعد صارمة جداً (ممنوع كسرها):
+1. اكتب سرداً قصصياً مركزاً (حوالي 300-400 كلمة فقط). لا تحشو الكلام لمجرد الوصول لعدد كلمات معين. الجودة أهم من الكمية.
+2. **التوثيق 100%**: لا تضف أي معلومة غير موجودة في المراجع أعلاه. ممنوع الإسرائيليات.
 3. **الآيات (إجباري)**: يجب إدراج **3 آيات على الأقل** من الآيات المذكورة أعلاه. الصيغة الإجبارية: [آية: رقم_السورة:رقم_الآية]. مثال: [آية: 2:30]. **ممنوع كتابة نص الآية، اكتب مرجعها فقط**.
 4. **اللغة**: اللغة العربية الفصحى فقط. يُمنع منعاً باتاً كتابة أي حرف إنجليزي.
-5. اكتب النص السردي فقط، بدون عناوين فرعية."""
+5. **المحاذير الشرعية الصارمة**: يُمنع منعاً باتاً تشبيه أو وصف الذات الإلهية، أو الأنبياء، أو الملائكة، أو الصحابة بأي وصف بشري مخلوق، أو وصفهم بأجساد أو صور. احترامهم بشكل مطلق.
+6. اكتب النص السردي فقط، بدون عناوين فرعية."""
 
 def build_teaser_prompt(story, ep_num):
     return f"""أنت راوي قصص محترف. اكتب **جملة واحدة فقط** تشوّق المستمع للحلقة {ep_num + 1} من قصة {story['title']}.
@@ -210,7 +215,6 @@ def main():
     save_state(state)
     print(f"🚀 {story['title']} — الحلقة {ep_num}", flush=True)
 
-    # 🌟 البحث الشامل في كل سور القصة
     context = retrieve_context(story, limit=15)
     print(f"📚 تم استرجاع المراجع من {len(story.get('sources', []))} سورة.", flush=True)
 
@@ -231,7 +235,6 @@ def main():
 
     print("✍️ جاري توليد السرد (بناءً على المراجع)...", flush=True)
     
-    # 🌟 5 محاولات (بدل 3) عشان نضمن الآيات
     max_retries = 5
     script_text = None
     for attempt in range(max_retries):
