@@ -28,17 +28,17 @@ on:
         required: true
         default: '0'
       echo_delay_ms:
-        description: 'زمن تأخير الصدى بالمللي ثانية (1 = واحد بالألف)'
+        description: 'زمن تأخير الصدى بالمللي ثانية (150 = صدى واضح)'
         required: true
-        default: '1'
+        default: '150'
       echo_volume_permille:
-        description: 'نسبة صوت الصدى (من 1000) - 100 تعني 10%'
+        description: 'نسبة صوت الصدى (من 1000) - 300 تعني 30%'
         required: true
-        default: '100'
+        default: '300'
       echo_repeats:
         description: 'عدد تكرارات الصدى (مثلاً 2 أو 3)'
         required: true
-        default: '2'
+        default: '3'
 
 env:
   RELEASE_CLEAN: 'v4.0-clean'
@@ -122,14 +122,12 @@ jobs:
              final_custom_mix.wav
 
           echo "🌊 Applying Custom Echo..."
-          DELAY="${{ github.event.inputs.echo_delay_ms }}"; [ -z "$DELAY" ] && DELAY="1"
-          VOL="${{ github.event.inputs.echo_volume_permille }}"; [ -z "$VOL" ] && VOL="100"
-          REPEATS="${{ github.event.inputs.echo_repeats }}"; [ -z "$REPEATS" ] && REPEATS="2"
+          DELAY="${{ github.event.inputs.echo_delay_ms }}"; [ -z "$DELAY" ] && DELAY="150"
+          VOL="${{ github.event.inputs.echo_volume_permille }}"; [ -z "$VOL" ] && VOL="300"
+          REPEATS="${{ github.event.inputs.echo_repeats }}"; [ -z "$REPEATS" ] && REPEATS="3"
 
-          # تحويل الصوت من 1000 إلى نسبة عشرية
           VOL_DEC=$(awk "BEGIN {print $VOL / 1000}")
 
-          # بناء أوامر التأخير والتكرار (ديناميكياً حسب عدد التكرارات)
           DELAYS=""
           DECAYS=""
           CURRENT_DELAY=0
@@ -142,20 +140,16 @@ jobs:
                   DECAYS="$CURRENT_DECAY"
               else
                   DELAYS="$DELAYS|$CURRENT_DELAY"
-                  CURRENT_DECAY=$(awk "BEGIN {print $CURRENT_DECAY / 2}") # كل تكرار بيضعف للنص
+                  CURRENT_DECAY=$(awk "BEGIN {print $CURRENT_DECAY / 2}")
                   DECAYS="$DECAYS|$CURRENT_DECAY"
               fi
           done
 
-          echo "Echo: Delay=${DELAY}ms | Volume=${VOL_DEC} | Repeats=${REPEATS}"
-          echo "Aecho Filter: aecho=0.8:0.9:${DELAYS}:${DECAYS}"
-
-          # تطبيق الصدى
+          echo "Echo Filter: aecho=0.8:0.9:${DELAYS}:${DECAYS}"
           ffmpeg -y -i final_custom_mix.wav -af "aecho=0.8:0.9:${DELAYS}:${DECAYS}" final_with_echo.wav
 
-          # تحويل لـ MP3 وإرسال
           ffmpeg -y -i final_with_echo.wav -b:a 320k final_output.mp3
           curl -s -F chat_id="-1004433624098" \
                -F audio=@final_output.mp3 \
-               -F caption="🎙️ ق (17-21) | Mix: ${PERM_CLEAN}/${PERM_ROUGH}/${PERM_MALAK} | Echo: ${DELAY}ms" \
+               -F caption="🎙️ ق (17-21) | صدى واضح (${DELAY}ms)" \
                "https://api.telegram.org/bot8959255443:AAE7OLIMa9ZFyFlcNQrJ2UO9nquaCvktvsc/sendAudio"
