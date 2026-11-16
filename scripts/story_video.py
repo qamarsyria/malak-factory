@@ -24,13 +24,13 @@ def _find_arabic_font():
         files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
         if files: return files[0]
     except Exception: pass
-    raise RuntimeError("❌ لم يتم العثور على أي خط عربي في النظام!")
+    raise RuntimeError("❌ لم يتم العثور على أي خط عربي!")
 
 try:
     FONT_PATH = _find_arabic_font()
-    print(f"✅ تم العثور على الخط: {FONT_PATH}")
+    print(f"✅ الخط: {FONT_PATH}")
 except Exception as e:
-    print(f"⚠️ تحذير: {e}")
+    print(f"⚠️ {e}")
     FONT_PATH = None
 
 def _shape(text): return arabic_reshaper.reshape(str(text))
@@ -52,36 +52,46 @@ def get_duration(path):
     try: return float(r.stdout.strip())
     except: return 0.0
 
-# 🌟 فلترة صارمة جداً (بدون "dark" لأنها تطرد فيديوهات جميلة)
-def is_video_safe(tags):
+# ═══════════════════════════════════════════════════════════
+# 🌟 فلترة صارمة (بدون "dark" لأنها تطرد فيديوهات جميلة)
+# ═══════════════════════════════════════════════════════════
+FORBIDDEN_TAGS = [
+    # مشاهد مرعبة/شاذة
+    "skeleton", "skull", "bone", "zombie", "horror", "scary", "creepy",
+    "monster", "demon", "ghost", "devil", "satan", "occult", "gore", 
+    "blood", "war", "military", "weapon", "gun", "bomb", "fight", 
+    "death", "dead", "graveyard", "cemetery", "haunted", "witch", 
+    "vampire", "werewolf", "clown", "spider", "snake",
+    # روبوتات/آلات
+    "robot", "cyborg", "alien", "artificial", "machine", "android",
+    # أنبياء/صحابة (تحسباً لمشاهد غير لائقة)
+    "turban", "beard", "sheikh", "imam", "priest", "monk", "robe", 
+    "religious leader", "arab man", "man with beard",
+    # نساء وأطفال (إلا لو niqab)
+    "woman", "women", "girl", "girls", "female", "lady", "ladies",
+    "child", "children", "boy", "boys", "kid", "baby",
+    # وجوه (إلا لو niqab)
+    "face", "person", "people", "human", "crowd"
+]
+
+def is_video_safe(tags, allow_niqab=False):
     tags_lower = tags.lower()
-    
-    # كلمات ممنوعة (أخطر ما في)
-    forbidden = [
-        "skeleton", "skull", "bone", "zombie", "horror", "scary", "creepy",
-        "monster", "demon", "ghost", "devil", "satan", "occult", "gore", 
-        "blood", "war", "military", "weapon", "gun", "bomb", "fight", 
-        "death", "dead", "graveyard", "cemetery", "haunted", "witch", 
-        "vampire", "werewolf", "clown", "spider", "snake",
-        "robot", "cyborg", "alien", "artificial", "machine",
-        # حماية الأنبياء والصحابة
-        "turban", "beard", "sheikh", "imam", "priest", "monk", "robe", 
-        "religious leader", "arab man", "man with beard",
-        # نساء
-        "woman", "girl", "female", "lady", "women", "girls"
-    ]
-    
-    for word in forbidden:
-        # \b (word boundary) عشان "man" ما تصطاد "mansion" أو "mango"
+    for word in FORBIDDEN_TAGS:
+        if allow_niqab and word in ("woman", "women", "girl", "girls", "female", "lady", "ladies", "face", "person", "people", "human"):
+            continue
         if re.search(r'\b' + re.escape(word) + r'\b', tags_lower):
             return False
-    
     return True
 
 def get_visual_query(seg):
     stype = seg.get("type")
-    text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
     
+    # 🌟 الأولوية 1: visual field من generate_story.py
+    visual = seg.get("visual", "")
+    if visual:
+        return visual
+    
+    # الأولوية 2: حسب النوع
     if stype == "quran":
         return random.choice([
             "kaaba mecca", "al aqsa mosque", "prophet mosque madinah",
@@ -95,38 +105,35 @@ def get_visual_query(seg):
     if stype == "teaser":
         return random.choice(["mysterious fog cinematic", "starry night milky way", "ancient ruins cinematic"])
     
-    if stype == "cta" or stype == "outro":
+    if stype in ("cta", "outro"):
         return random.choice(["mosque architecture", "islamic geometric pattern", "old city sunset"])
     
-    # مشاهد درامية (قصة)
-    if any(w in text for w in ["غرق", "نجا", "موت", "قتل", "عذاب", "هلاك"]):
+    # الأولوية 3: كلمات مفتاحية من النص
+    text = " ".join(c.get("text","") for c in seg.get("chunks",[]))
+    
+    if any(w in text for w in ["غرق", "نجا", "موت", "عذاب", "هلاك"]):
         return random.choice(["stormy sea dramatic", "desert sandstorm", "thunderstorm cinematic"])
-    
     if any(w in text for w in ["بحر", "موج", "يم"]):
-        return random.choice(["ocean waves cinematic", "magical sea sunset", "stormy sea cinematic"])
-    
+        return random.choice(["ocean waves cinematic", "stormy sea cinematic"])
     if any(w in text for w in ["جبل", "طور", "صخر"]):
-        return random.choice(["misty mountain fantasy", "mountain clouds cinematic", "rocky mountain sunrise"])
-    
+        return random.choice(["misty mountains cinematic", "rocky mountain sunrise"])
     if any(w in text for w in ["ماء", "نهر", "عين", "واحة"]):
-        return random.choice(["magical waterfall", "glowing river animation", "crystal water nature"])
-    
+        return random.choice(["magical waterfall", "crystal water nature", "flowing river cinematic"])
     if any(w in text for w in ["سماء", "نجم", "قمر"]):
-        return random.choice(["starry night milky way", "magical night sky", "fantasy galaxy animation"])
-    
-    if any(w in text for w in ["شجر", "نخل", "خريف", "بستان"]):
-        return random.choice(["autumn leaves forest", "enchanted forest magical", "glowing trees fantasy"])
-    
+        return random.choice(["starry night milky way", "magical night sky"])
+    if any(w in text for w in ["شجر", "نخل", "خريف", "بستان", "جنة"]):
+        return random.choice(["enchanted forest magical", "autumn forest sun rays", "glowing trees fantasy"])
     if any(w in text for w in ["صحراء", "رمل", "كثبان"]):
-        return random.choice(["desert dunes sunset", "magical desert night", "sahara sand"])
-    
-    if any(w in text for w in ["مطر", "غيوم", "سحاب"]):
-        return random.choice(["rain window cozy", "magical rain nature", "clouds sky cinematic"])
-    
+        return random.choice(["desert dunes sunset", "sahara sand cinematic"])
+    if any(w in text for w in ["مطر", "غيوم", "سحاب", "برق", "رعد"]):
+        return random.choice(["thunderstorm cinematic", "rain clouds dramatic"])
+    if any(w in text for w in ["بيت", "مدينة", "قصر", "بناء", "معبد"]):
+        return random.choice(["ancient ruins cinematic", "old city cinematic"])
+    if any(w in text for w in ["ملائكة", "ملاك", "نور", "ضياء"]):
+        return random.choice(["heavenly light clouds", "sun rays through clouds"])
     if any(w in text for w in ["شام", "دمشق", "قدس", "بيت المقدس"]):
         return random.choice(["old damascus street", "al aqsa mosque", "islamic history"])
     
-    # default
     return random.choice([
         "enchanted forest magical", "fantasy waterfall glowing",
         "autumn forest sun rays", "misty mountains cinematic",
@@ -139,21 +146,22 @@ def _find_local(query):
     for base in (Path(BG_VIDEOS_DIR), Path(BG_IMAGES_DIR)):
         if not base.exists(): continue
         for f in base.glob(f"*{slug}*"):
-            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000:
-                return str(f)
+            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000: return str(f)
     return None
 
 def fetch_media(query, work_dir, used_urls):
     local = _find_local(query)
     if local: return local
     
-    if not PIXABAY_KEY: 
-        return ""
+    if not PIXABAY_KEY: return ""
 
     try:
+        # نتحقق لو الـ query يخص niqab
+        allow_niqab = "niqab" in query.lower() or "hijab" in query.lower()
+        
         r = requests.get("https://pixabay.com/api/videos/", params={
             "key": PIXABAY_KEY, "q": query, "video_type": "film",
-            "safesearch": "true", "per_page": 30, "min_width": 1080
+            "safesearch": "true", "per_page": 50, "min_width": 1080
         }, timeout=20)
         
         if r.status_code == 200:
@@ -162,26 +170,22 @@ def fetch_media(query, work_dir, used_urls):
             for hit in hits:
                 tags = hit.get("tags", "")
                 
-                if not is_video_safe(tags): 
+                if not is_video_safe(tags, allow_niqab=allow_niqab):
                     continue
-                        
-                url = hit.get("videos", {}).get("large", {}).get("url") or \
-                      hit.get("videos", {}).get("medium", {}).get("url")
-                if not url or url in used_urls: 
-                    continue
+                
+                url = hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url")
+                if not url or url in used_urls: continue
                 
                 slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
                 out = work_dir / f"vid_{slug}_{hit['id']}.mp4"
                 try:
                     with open(out, "wb") as f:
-                        for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192): 
-                            f.write(chunk)
+                        for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192): f.write(chunk)
                     used_urls.add(url)
                     return str(out)
-                except: 
-                    pass
+                except: pass
     except Exception as e:
-        print(f"⚠️ خطأ في جلب الفيديو: {e}")
+        print(f"⚠️ خطأ جلب الفيديو: {e}")
         
     return ""
 
@@ -191,8 +195,7 @@ def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
         try: font = ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
         except: font = ImageFont.truetype(font_path, size)
         lines = _wrap(_shape(text), font, max_width, ddraw)
-        if len(lines) * int(size * 1.6) <= max_height: 
-            return font, lines, int(size * 1.6)
+        if len(lines) * int(size * 1.6) <= max_height: return font, lines, int(size * 1.6)
     font = ImageFont.truetype(font_path, min_size)
     return font, _wrap(_shape(text), font, max_width, ddraw), int(min_size * 1.6)
 
@@ -206,20 +209,20 @@ def make_caption_overlay(chunk_text, display_ref, is_quran, ep_title, out_path):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    if not FONT_PATH: raise RuntimeError("لا يمكن رسم النص بدون خط عربي.")
+    if not FONT_PATH: raise RuntimeError("لا خط عربي.")
 
     if ep_title:
-        ep_title = re.sub(r'[a-zA-Z]', '', ep_title) 
-        try: ft = ImageFont.truetype(FONT_PATH, 45, layout_engine=ImageFont.Layout.RAQM)
-        except: ft = ImageFont.truetype(FONT_PATH, 45)
+        ep_title = re.sub(r'[a-zA-Z0-9]', '', ep_title)
+        try: ft = ImageFont.truetype(FONT_PATH, 38, layout_engine=ImageFont.Layout.RAQM)
+        except: ft = ImageFont.truetype(FONT_PATH, 38)
         _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black")
 
     chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text)
-    chunk_text = re.sub(r'[a-zA-Z]', '', chunk_text).strip()
+    chunk_text = re.sub(r'[a-zA-Z0-9]', '', chunk_text).strip()
     chunk_text = chunk_text.replace("ﷺ", "صلى الله عليه وسلم ")
     
     if display_ref:
-        display_ref = re.sub(r'[a-zA-Z]', '', display_ref).strip()
+        display_ref = re.sub(r'[a-zA-Z0-9]', '', display_ref).strip()
     
     if not chunk_text and not is_quran: 
         overlay.save(out_path); return
@@ -256,23 +259,23 @@ def build_video(audio_path, meta_path, output_mp4):
             if seg_duration <= 0: continue
             
             query = get_visual_query(seg)
-            print(f"🎬 جلب مشهد: {query}")
+            print(f"🎬 مشهد: {query}")
             
             num_bgs = max(1, math.ceil(seg_duration / 15))
             bg_files = [fetch_media(query, work_dir, used_urls) for _ in range(num_bgs)]
             bg_files = [bg for bg in bg_files if bg]
             
-            # Fallback ذكي: من المكتبة المحلية بدل الأسود
             if not bg_files:
-                local_images = list(Path(BG_IMAGES_DIR).glob("*")) if Path(BG_IMAGES_DIR).exists() else []
-                if local_images:
-                    bg_files = [str(random.choice(local_images))]
-                    print(f"⚠️ لم نجد فيديو، استخدام صورة محلية: {bg_files[0]}")
+                # Fallback: مكتبة محلية
+                local_imgs = list(Path(BG_IMAGES_DIR).glob("*")) if Path(BG_IMAGES_DIR).exists() else []
+                if local_imgs:
+                    bg_files = [str(random.choice(local_imgs))]
+                    print(f"⚠️ لا فيديو، استخدام صورة محلية")
                 else:
                     black = work_dir / "black.jpg"
                     Image.new("RGB", (VIDEO_W, VIDEO_H), (10, 10, 10)).save(black)
                     bg_files = [str(black)]
-                    print(f"⚠️ لا يوجد مكتبة محلية، استخدام شاشة سوداء")
+                    print(f"⚠️ شاشة سوداء")
             
             bg_duration = seg_duration / len(bg_files)
             processed_bgs = []
@@ -280,18 +283,14 @@ def build_video(audio_path, meta_path, output_mp4):
             for b_idx, bg in enumerate(bg_files):
                 temp_bg = work_dir / f"bg_{i}_{b_idx}.mp4"
                 is_img = bg.lower().endswith(('.jpg', '.jpeg', '.png'))
-                cmd_bg = ["ffmpeg", "-y"] + \
-                         (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + \
-                         ["-t", str(bg_duration), 
-                          "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=30,format=yuv420p,setsar=1", 
-                          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(temp_bg)]
+                # 🌟 دقة كاملة (VIDEO_W x VIDEO_H)
+                cmd_bg = ["ffmpeg", "-y"] + (["-loop", "1", "-i", bg] if is_img else ["-stream_loop", "-1", "-i", bg]) + ["-t", str(bg_duration), "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},fps=24,format=yuv420p,setsar=1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(temp_bg)]
                 subprocess.run(cmd_bg, check=True, capture_output=True)
                 processed_bgs.append(temp_bg)
                 
             bg_concat_txt = work_dir / f"bg_concat_{i}.txt"
             with open(bg_concat_txt, "w") as f:
-                for p_bg in processed_bgs: 
-                    f.write(f"file '{p_bg.resolve()}'\n")
+                for p_bg in processed_bgs: f.write(f"file '{p_bg.resolve()}'\n")
             bg_video_path = work_dir / f"bg_{i}.mp4"
             subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(bg_concat_txt), "-c", "copy", str(bg_video_path)], check=True, capture_output=True)
 
@@ -324,7 +323,7 @@ def build_video(audio_path, meta_path, output_mp4):
 
         audio_dur = get_duration(audio_path)
         (work_dir / "concat.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "faster", "-crf", "28", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / "concat.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", str(audio_dur), str(output_mp4)], check=True, capture_output=True)
         print(f"✅ فيديو: {output_mp4}", flush=True)
     finally:
         cleanup_dir(work_dir)
