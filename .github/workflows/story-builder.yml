@@ -93,6 +93,35 @@ jobs:
           pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
 
       # ═══════════════════════════════════════════════════════
+      # 0.5) تحقق من وجود audited/ قبل البدء
+      # ═══════════════════════════════════════════════════════
+      - name: Verify story is prepared
+        id: verify
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          STORY_ID=$(python -c "import sys; sys.path.insert(0, 'scripts'); from story_library import load_global; print(load_global()['current_story_id'])")
+          AUDITED="data/stories/${STORY_ID}/audited/events"
+          
+          echo "📖 القصة الحالية: $STORY_ID"
+          
+          if [ ! -d "$AUDITED" ] || [ -z "$(ls -A $AUDITED 2>/dev/null)" ]; then
+            echo ""
+            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد!"
+            echo ""
+            echo "⚠️ يجب تشغيل 'story-prep.yml' أولاً:"
+            echo "   Actions → 🧪 تجهيز القصة التالية → Run workflow"
+            echo ""
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "text=⚠️ يجب تشغيل story-prep أولاً للقصة: ${STORY_ID}" || true
+            exit 1
+          fi
+          echo "✅ القصة '$STORY_ID' مجهزة"
+          ls -la "$AUDITED" | head -20
+
+      # ═══════════════════════════════════════════════════════
       # Cache RVC (توفير 7-10 دقائق/تشغيل)
       # ═══════════════════════════════════════════════════════
       - name: Cache RVC
