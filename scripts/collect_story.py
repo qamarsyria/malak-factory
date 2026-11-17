@@ -290,19 +290,43 @@ def main():
     # 6. الحفظ
     print("\n💾 حفظ الملفات...")
     
-    (collected_dir / "ayahs.json").write_text(
+    # حفظ الآيات والسرد الإجمالي (للمرجع)
+    (collected_dir / "ayahs_all.json").write_text(
         json.dumps(ayahs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    
-    (collected_dir / "narrative.json").write_text(
+    (collected_dir / "narrative_all.json").write_text(
         json.dumps(narrative_texts, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     
-    (collected_dir / "events.json").write_text(
-        json.dumps(events_data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    # إنشاء مجلد الأحداث (اللي audit_story.py بيدور عليه)
+    events_dir = collected_dir / "events"
+    events_dir.mkdir(exist_ok=True)
+
+    for i, ev in enumerate(events_data.get("events", [])):
+        ev_id = ev.get("event_id", f"event_{i+1:02d}")
+        ev_dir = events_dir / ev_id
+        ev_dir.mkdir(exist_ok=True)
+        
+        # فلترة الآيات الخاصة بالحدث ده
+        ayah_indices = ev.get("ayah_indices", [])
+        ev_ayahs = [ayahs[idx] for idx in ayah_indices if 0 <= idx < len(ayahs)]
+        
+        # فلترة السرد الخاص بالحدث ده
+        narr_indices = ev.get("narrative_indices", [])
+        ev_narr = [narrative_texts[idx] for idx in narr_indices if 0 <= idx < len(narrative_texts)]
+        
+        (ev_dir / "ayahs.json").write_text(
+            json.dumps(ev_ayahs, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (ev_dir / "narrative.json").write_text(
+            json.dumps(ev_narr, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (ev_dir / "meta.json").write_text(
+            json.dumps({"event_id": ev_id, "title": ev.get("title", ev_id)}, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     print(f"✅ تم جمع {len(ayahs)} آية و {len(events_data['events'])} حدث.")
+    print(f"   📁 تم إنشاء مجلدات الأحداث في: {events_dir}")
     print("=" * 60)
 
 if __name__ == "__main__":
