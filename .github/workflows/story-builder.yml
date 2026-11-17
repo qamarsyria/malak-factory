@@ -70,16 +70,21 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri
+          # أضفنا espeak-ng لـ phonemizer وحزم lxml لـ BeautifulSoup
+          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri espeak-ng libespeak-ng-dev libxml2-dev libxslt1-dev
 
       - name: Install Python deps
         run: |
+          # تحديث pip وتثبيت المتطلبات
+          pip install --upgrade pip
           pip install -r requirements.txt
+          
+          # تثبيت مكتبات الصوت والفيديو المتقدمة
           pip install --force-reinstall phonemizer==3.2.1
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
-          pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
+          pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped (optional)"
 
       - name: Verify story is prepared
         id: verify
@@ -90,7 +95,7 @@ jobs:
           STORY_ID=$(python -c "import sys; sys.path.insert(0, 'scripts'); from story_library import load_global; print(load_global()['current_story_id'])")
           AUDITED="data/stories/${STORY_ID}/audited/events"
           if [ ! -d "$AUDITED" ] || [ -z "$(ls -A $AUDITED 2>/dev/null)" ]; then
-            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد!"
+            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد! (تأكد من تشغيل collect_story.py و audit_story.py أولاً)"
             exit 1
           fi
           echo "✅ القصة '$STORY_ID' مجهزة"
@@ -114,7 +119,7 @@ jobs:
             echo "has_episode=false" >> $GITHUB_OUTPUT
           fi
 
-      # بناء الصوت (Social فقط)
+      # بناء الصوت
       - name: Build audio
         if: steps.gen.outputs.has_episode == 'true'
         id: audio
@@ -128,7 +133,7 @@ jobs:
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
 
-      # بناء الفيديو الطولي فقط (توفير وقت)
+      # بناء الفيديو الطولي
       - name: Build vertical video
         if: steps.audio.outcome == 'success'
         env:
@@ -140,7 +145,7 @@ jobs:
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
           ls -lh videos/
 
-      # الرفع (مع ضغط قوي)
+      # الرفع (مع ضغط قوي وفحص استجابة تلغرام)
       - name: Compress & Upload to Telegram
         id: telegram
         if: steps.gen.outputs.has_episode == 'true'
@@ -161,18 +166,17 @@ jobs:
             DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
             
             # حساب البتريت المستهدف (استهداف 42 ميجا كحد أقصى)
-            # ناقص 64 kbps للصوت
             TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 64}")
             
-            # تثبيت الحدود (أقل حاجة 300، وأقصى حاجة 800)
+            # تثبيت الحدود
             [ "$TARGET_KBPS" -gt 800 ] && TARGET_KBPS=800
             [ "$TARGET_KBPS" -lt 300 ] && TARGET_KBPS=300
 
             echo "⏱️ ${DURATION}s | ${TARGET_KBPS}kbps | 720p"
 
-            # الضغط (دقة 720p، بتريت ثابت عشان نضمن الحجم)
+            # 🛠️ إصلاح الفلتر: ضمان أبعاد زوجية (حتى لا يفشل H.264) وضغط آمن
             ffmpeg -y -i "$f" \
-              -vf "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease" \
+              -vf "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" \
               -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
               -preset medium \
               -c:a aac -b:a 64k \
@@ -189,12 +193,17 @@ jobs:
               continue
             fi
 
-            if curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            # 🛠️ إصلاح: فحص استجابة تلغرام بدلاً من الاكتفاء بنجاح curl
+            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
                 -F "chat_id=${TELEGRAM_CHAT_ID}" \
                 -F "video=@${COMPRESSED}" \
-                -F "caption=🎬 $(basename $f)"; then
+                -F "caption=🎬 $(basename $f)")
+
+            if echo "$RESPONSE" | grep -q '"ok":true'; then
+              echo "✅ رُفع بنجاح"
               UPLOADED=$((UPLOADED+1))
             else
+              echo "❌ فشل الرفع (تلغرام): $RESPONSE"
               FAILED=$((FAILED+1))
             fi
             rm "$COMPRESSED"
