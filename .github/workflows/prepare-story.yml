@@ -1,0 +1,155 @@
+name: 🧪 تجهيز القصة التالية
+
+on:
+  schedule:
+    - cron: '0 2 */3 * *'   # كل 3 أيام الساعة 2 فجراً UTC
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests==2.32.3 beautifulsoup4==4.12.3 lxml==5.2.2 soupsieve==2.5
+
+      - name: Check if prep needed
+        id: check
+        run: |
+          # بناخد آخر سطر بس من المخرجات عشان نتجنب مشكلة الـ Output
+          STORY=$(python scripts/check_prep_needed.py 2>&1 | tail -n 1 | tr -d '\r' || echo "")
+          
+          if [ -n "$STORY" ] && [ "$STORY" != "" ]; then
+            echo "story_to_prep=$STORY" >> $GITHUB_OUTPUT
+            echo "🔧 سيُجهّز: $STORY"
+          else
+            echo "story_to_prep=" >> $GITHUB_OUTPUT
+            echo "⏭️ لا حاجة للتجهيز"
+          fi
+
+      - name: Collect Story Sources
+        id: collect
+        if: steps.check.outputs.story_to_prep != ''
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python scripts/collect_story.py "${{ steps.check.outputs.story_to_prep }}"
+
+      - name: Verify narrative is not empty
+        id: verify
+        if: steps.collect.outcome == 'success'
+        run: |
+          STORY="${{ steps.check.outputs.story_to_prep }}"
+          NARRATIVE="data/stories/${STORY}/collected/events"
+          
+          if [ ! -d "$NARRATIVE" ]; then
+            echo "❌ لم يُنشأ مجلد الأحداث: $NARRATIVE"
+            exit 1
+          fi
+          
+          EMPTY=0
+          for ev_dir in "$NARRATIVE"/event_*; do
+            [ -d "$ev_dir" ] || continue
+            narr_file="$ev_dir/narrative.json"
+            if [ ! -f "$narr_file" ]; then
+              echo "❌ ملف مفقود: $narr_file"
+              EMPTY=$((EMPTY+1))
+              continue
+            fi
+            COUNT=$(python -c "import json; print(len(json.load(open('$narr_file'))))")
+            echo "   📄 $(basename $ev_dir): $COUNT block"
+            if [ "$COUNT" -eq 0 ]; then
+              EMPTY=$((EMPTY+1))
+            fi
+          done
+          
+          if [ "$EMPTY" -gt 0 ]; then
+            echo "❌ فشل: $EMPTY حدث بسرد فارغ!"
+            exit 1
+          fi
+          echo "✅ كل الأحداث فيها سرد"
+
+      - name: Audit Story
+        id: audit
+        if: steps.verify.outcome == 'success'
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python scripts/audit_story.py "${{ steps.check.outputs.story_to_prep }}"
+
+      - name: Verify audited narrative
+        id: verify_audited
+        if: steps.audit.outcome == 'success'
+        run: |
+          STORY="${{ steps.check.outputs.story_to_prep }}"
+          AUDITED="data/stories/${STORY}/audited/events"
+          
+          EMPTY=0
+          for ev_dir in "$AUDITED"/event_*; do
+            [ -d "$ev_dir" ] || continue
+            narr_file="$ev_dir/narrative.json"
+            if [ ! -f "$narr_file" ]; then
+              EMPTY=$((EMPTY+1))
+              continue
+            fi
+            COUNT=$(python -c "import json; print(len(json.load(open('$narr_file'))))")
+            echo "   📄 $(basename $ev_dir): $COUNT block بعد التدقيق"
+            if [ "$COUNT" -eq 0 ]; then
+              EMPTY=$((EMPTY+1))
+            fi
+          done
+          
+          if [ "$EMPTY" -gt 0 ]; then
+            echo "❌ فشل: سرد فارغ بعد التدقيق!"
+            exit 1
+          fi
+          echo "✅ التدقيق سليم"
+
+      - name: Notify Success
+        if: success() && steps.check.outputs.story_to_prep != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=✅ تجهيز القصة جاهز: ${{ steps.check.outputs.story_to_prep }}"
+
+      - name: Notify Failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}"
+
+      - name: Commit Prepared Data
+        if: success() && steps.check.outputs.story_to_prep != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/stories/
+          git commit -m "🧪 تجهيز قصة: ${{ steps.check.outputs.story_to_prep }}" || echo "لا تغييرات"
+          git push || true
