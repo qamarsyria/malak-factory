@@ -1,0 +1,300 @@
+name: 🎬 بناء حلقة قصص
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # يومياً منتصف الليل UTC
+  workflow_dispatch:
+
+jobs:
+  # ═══════════════════════════════════════════════════════
+  # 0) تحقق إذا الحلقة تحتاج مراجعة (أول 3 حلقات من القسم)
+  # ═══════════════════════════════════════════════════════
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_review: ${{ steps.check.outputs.needs_review }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Check review requirement
+        id: check
+        run: |
+          python - <<'EOF'
+          import sys, os
+          sys.path.insert(0, 'scripts')
+          from story_library import load_global, needs_manual_review
+
+          gstate = load_global()
+          era = gstate.get("current_era", "")
+          needs = needs_manual_review(era)
+
+          output_file = os.environ.get("GITHUB_OUTPUT", "/tmp/out")
+          with open(output_file, "a") as f:
+              f.write(f"needs_review={'true' if needs else 'false'}\n")
+          print(f"era={era} needs_review={needs}")
+          EOF
+
+  # ═══════════════════════════════════════════════════════
+  # 1) بوابة المراجعة (شرطية — أول 3 حلقات فقط)
+  # ═══════════════════════════════════════════════════════
+  review-gate:
+    needs: prepare
+    if: needs.prepare.outputs.needs_review == 'true'
+    runs-on: ubuntu-latest
+    environment: story-review
+    steps:
+      - run: echo "✅ تمت الموافقة على المراجعة"
+
+  # ═══════════════════════════════════════════════════════
+  # 2) الإنتاج الكامل
+  # ═══════════════════════════════════════════════════════
+  produce:
+    needs: [prepare, review-gate]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.review-gate.result == 'success' || needs.review-gate.result == 'skipped')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    permissions:
+      contents: write
+      models: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri
+
+      - name: Install Python deps
+        run: |
+          pip install -r requirements.txt
+          pip install --force-reinstall phonemizer==3.2.1
+          pip install -q "pip<24.1" "setuptools<81"
+          pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
+          pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
+
+      # ═══════════════════════════════════════════════════════
+      # Cache RVC (توفير 7-10 دقائق/تشغيل)
+      # ═══════════════════════════════════════════════════════
+      - name: Cache RVC
+        uses: actions/cache@v4
+        id: rvc-cache
+        with:
+          path: |
+            rvc
+            clean.index
+            rough.index
+            malak.index
+          key: rvc-v1-${{ hashFiles('requirements.txt') }}
+          restore-keys: rvc-v1-
+
+      - name: Setup RVC (if not cached)
+        if: steps.rvc-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "⏳ تحميل RVC والموديلات (أول مرة فقط)..."
+          git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
+          cd rvc
+          grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
+          mkdir -p assets/hubert_base assets/rmvpe assets/weights assets/pretrained_v2
+
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json -O assets/hubert_base/config.json
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/preprocessor_config.json -O assets/hubert_base/preprocessor_config.json
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin -O assets/hubert_base/pytorch_model.bin
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
+
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/my_clean_voice.pth -O assets/weights/clean.pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/rough.pth
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth -O assets/weights/malak.pth
+
+          cd ..
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/added_my_clean_voice.index -O clean.index
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O rough.index
+          wget -nv https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index -O malak.index
+
+      # ═══════════════════════════════════════════════════════
+      # 1. توليد السكريبت
+      # ═══════════════════════════════════════════════════════
+      - name: Generate script
+        id: gen
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -u scripts/generate_story.py
+          if [ -f out/latest_episode.txt ]; then
+            EP_FILE=$(cat out/latest_episode.txt)
+            EP_NAME=$(basename "$EP_FILE" .json)
+            echo "ep_file=$EP_FILE" >> $GITHUB_OUTPUT
+            echo "ep_name=$EP_NAME" >> $GITHUB_OUTPUT
+            echo "has_episode=true" >> $GITHUB_OUTPUT
+            echo "✅ $EP_NAME"
+          else
+            echo "has_episode=false" >> $GITHUB_OUTPUT
+            echo "⏭️ لا حلقة جديدة (قصة مكتملة أو لم تُولّد)"
+          fi
+
+      # ═══════════════════════════════════════════════════════
+      # 2. بناء الصوت (YT + Social)
+      # ═══════════════════════════════════════════════════════
+      - name: Build audio
+        if: steps.gen.outputs.has_episode == 'true'
+        id: audio
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TTS_ENGINE: '1'
+        run: |
+          mkdir -p out
+          python scripts/story_audio.py \
+            "${{ steps.gen.outputs.ep_file }}" \
+            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
+            "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
+
+      # ═══════════════════════════════════════════════════════
+      # 3. تطبيق RVC على YT (الحصري فقط)
+      # ═══════════════════════════════════════════════════════
+      - name: Apply RVC to Quran (YT only)
+        if: steps.audio.outcome == 'success'
+        run: |
+          python scripts/apply_rvc_to_quran.py \
+            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
+            "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
+            "out/yt_${{ steps.gen.outputs.ep_name }}_rvc.mp3"
+
+      # ═══════════════════════════════════════════════════════
+      # 4. بناء الفيديوهين (YT أفقي + Social عمودي)
+      # ═══════════════════════════════════════════════════════
+      - name: Build videos
+        if: steps.audio.outcome == 'success'
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p videos
+          python scripts/story_video.py --both \
+            "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
+            "out/yt_${{ steps.gen.outputs.ep_name }}_rvc.mp3" \
+            "out/social_${{ steps.gen.outputs.ep_name }}_meta.json" \
+            "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
+          ls -lh videos/
+
+      # ═══════════════════════════════════════════════════════
+      # 5. رفع تلغرام (بلا تصغير دقة)
+      # ═══════════════════════════════════════════════════════
+      - name: Upload to Telegram
+        id: telegram
+        if: steps.gen.outputs.has_episode == 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          UPLOADED=0
+          FAILED=0
+
+          for f in videos/*.mp4; do
+            [ -f "$f" ] || continue
+
+            echo "📹 الأصلي: $(du -h "$f" | cut -f1) — $f"
+            COMPRESSED="compressed_$(basename $f)"
+
+            DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
+            TARGET_KBPS=$(awk "BEGIN {printf \"%d\", (45 * 8 * 1024 * 1024) / $DURATION / 1000}")
+            [ "$TARGET_KBPS" -gt 900 ] && TARGET_KBPS=900
+            [ "$TARGET_KBPS" -lt 400 ] && TARGET_KBPS=400
+            echo "⏱️ ${DURATION}s | ${TARGET_KBPS}kbps | دقة كاملة"
+
+            ffmpeg -y -i "$f" \
+              -c:v libx264 -crf 28 -preset medium \
+              -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
+              -c:a aac -b:a 64k \
+              -movflags +faststart \
+              "$COMPRESSED"
+
+            FINAL_SIZE_MB=$(du -m "$COMPRESSED" | cut -f1)
+            echo "✅ بعد الضغط: ${FINAL_SIZE_MB} MB"
+
+            if [ "$FINAL_SIZE_MB" -gt 48 ]; then
+              echo "❌ $f تجاوز 48 MB حتى بعد الضغط (${FINAL_SIZE_MB} MB) — يتخطى الرفع"
+              FAILED=$((FAILED+1))
+              rm "$COMPRESSED"
+              continue
+            fi
+
+            if curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+                -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                -F "video=@${COMPRESSED}" \
+                -F "caption=🎬 $(basename $f)"; then
+              UPLOADED=$((UPLOADED+1))
+            else
+              FAILED=$((FAILED+1))
+            fi
+            rm "$COMPRESSED"
+          done
+
+          echo "📊 رُفع: $UPLOADED | فشل: $FAILED"
+
+          if [ "$UPLOADED" -eq 0 ]; then
+            echo "❌ لم يُرفع أي فيديو — إيقاف"
+            exit 1
+          fi
+
+      # ═══════════════════════════════════════════════════════
+      # 6. Finalize (تحديث الحالة — فقط بعد نجاح الرفع)
+      # ═══════════════════════════════════════════════════════
+      - name: Finalize episode
+        if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
+        run: |
+          python scripts/finalize_episode.py "${{ steps.gen.outputs.ep_file }}"
+
+      # ═══════════════════════════════════════════════════════
+      # 7. Cleanup (فقط بعد النجاح)
+      # ═══════════════════════════════════════════════════════
+      - name: Cleanup
+        if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
+        run: |
+          python scripts/cleanup_old_files.py --episode "${{ steps.gen.outputs.ep_name }}"
+
+      # ═══════════════════════════════════════════════════════
+      # 8. Commit state
+      # ═══════════════════════════════════════════════════════
+      - name: Commit state
+        if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/ data/stories/*/state.json || true
+          git commit -m "🎬 ${{ steps.gen.outputs.ep_name }}" || echo "لا تغييرات"
+          git push || true
+
+      # ═══════════════════════════════════════════════════════
+      # 9. إشعار فشل
+      # ═══════════════════════════════════════════════════════
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=🚨 فشل بناء حلقة: ${{ steps.gen.outputs.ep_name || 'unknown' }}"
