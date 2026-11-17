@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "categories": {
+    "nature": ["forest", "spring", "mountain", "valley", "river", "waterfall", "meadow", "cave", "desert", "oasis", "sea", "beach", "cliff", "palm tree"],
+    "sky_weather": ["clouds", "rain", "storm", "lightning", "thunder", "fog", "mist", "sunrise", "sunset", "rainbow", "snow"],
+    "space_cosmos": ["galaxy", "nebula", "stars", "milky way", "cosmos", "planet", "moon", "aurora", "meteor"],
+    "power_of_creator": ["volcano", "lava", "eruption", "hurricane", "tornado", "tsunami", "flood", "earthquake", "wildfire"],
+    "old_damascus": ["old damascus", "damascus aerial", "arab house", "islamic city", "ancient alley", "arab courtyard", "syrian architecture"],
+    "creatures": ["bird", "eagle", "dove", "butterfly", "flower", "rose", "bloom", "bee", "horse", "camel", "sheep", "fish", "deer", "gazelle"],
+    "islamic_architecture": ["mosque", "minaret", "kaaba", "islamic architecture", "quran book", "prayer beads", "islamic pattern", "mihrab", "dome"]
+  }
+}
