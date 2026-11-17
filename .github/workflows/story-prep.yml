@@ -11,20 +11,23 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install deps
+      - name: Install minimal deps
         run: |
-          pip install -r requirements.txt
-          pip install -q pyarabic beautifulsoup4
+          pip install --upgrade pip
+          pip install requests==2.32.3 beautifulsoup4==4.12.3
 
       - name: Check if prep needed
         id: check
@@ -39,32 +42,47 @@ jobs:
           fi
 
       - name: Collect
+        id: collect
         if: steps.check.outputs.story_to_prep != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python scripts/collect_story.py ${{ steps.check.outputs.story_to_prep }}
+          python scripts/collect_story.py "${{ steps.check.outputs.story_to_prep }}"
 
       - name: Audit
-        if: steps.check.outputs.story_to_prep != ''
+        id: audit
+        if: steps.collect.outcome == 'success'
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python scripts/audit_story.py ${{ steps.check.outputs.story_to_prep }}
+          python scripts/audit_story.py "${{ steps.check.outputs.story_to_prep }}"
 
       - name: Notify success
-        if: steps.check.outputs.story_to_prep != '' && success()
+        if: success() && steps.check.outputs.story_to_prep != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d "text=✅ تم تجهيز القصة التالية: ${{ steps.check.outputs.story_to_prep }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=✅ تجهيز القصة التالية جاهز: ${{ steps.check.outputs.story_to_prep }}"
 
-      - name: Commit
-        if: steps.check.outputs.story_to_prep != '' && success()
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}"
+
+      - name: Commit prepared data
+        if: success() && steps.check.outputs.story_to_prep != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
