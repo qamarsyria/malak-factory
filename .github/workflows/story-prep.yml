@@ -24,7 +24,6 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      # ✅ إضافة lxml و soupsieve لأداء أفضل مع scraping
       - name: Install minimal deps
         run: |
           pip install --upgrade pip
@@ -33,7 +32,9 @@ jobs:
       - name: Check if prep needed
         id: check
         run: |
-          STORY=$(python scripts/check_prep_needed.py 2>&1 || echo "")
+          # السطر ده هو الإصلاح: بناخد آخر سطر بس من المخرجات
+          STORY=$(python scripts/check_prep_needed.py 2>&1 | tail -n 1 | tr -d '\r' || echo "")
+          
           if [ -n "$STORY" ] && [ "$STORY" != "" ]; then
             echo "story_to_prep=$STORY" >> $GITHUB_OUTPUT
             echo "🔧 سيُجهّز: $STORY"
@@ -52,7 +53,6 @@ jobs:
         run: |
           python scripts/collect_story.py "${{ steps.check.outputs.story_to_prep }}"
 
-      # ✅ فحص جديد: تأكد أن السرد ليس فارغاً قبل التدقيق
       - name: Verify narrative is not empty
         id: verify
         if: steps.collect.outcome == 'success'
@@ -65,7 +65,6 @@ jobs:
             exit 1
           fi
           
-          # فحص كل حدث: هل narrative.json فيه على الأقل block واحد؟
           EMPTY=0
           for ev_dir in "$NARRATIVE"/event_*; do
             [ -d "$ev_dir" ] || continue
@@ -75,7 +74,6 @@ jobs:
               EMPTY=$((EMPTY+1))
               continue
             fi
-            # عدّ الـ blocks
             COUNT=$(python -c "import json; print(len(json.load(open('$narr_file'))))")
             echo "   📄 $(basename $ev_dir): $COUNT block"
             if [ "$COUNT" -eq 0 ]; then
@@ -101,7 +99,6 @@ jobs:
         run: |
           python scripts/audit_story.py "${{ steps.check.outputs.story_to_prep }}"
 
-      # ✅ فحص نهائي: تأكد أن التدقيق لم يفرّغ السرد
       - name: Verify audited narrative
         id: verify_audited
         if: steps.audit.outcome == 'success'
@@ -131,7 +128,6 @@ jobs:
           fi
           echo "✅ التدقيق سليم"
 
-      # ✅ فحص استجابة تلغرام بدلاً من الاكتفاء بنجاح curl
       - name: Notify success
         if: success() && steps.check.outputs.story_to_prep != ''
         env:
@@ -153,10 +149,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          FAILED_STEP="${{ steps.verify.outcome == 'failure' && 'جمع السرد' || steps.verify_audited.outcome == 'failure' && 'التدقيق' || 'خطوة غير معروفة' }}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            -d "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}%0A🔍 مكان الفشل: ${FAILED_STEP}"
+            -d "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}"
 
       - name: Commit prepared data
         if: success() && steps.check.outputs.story_to_prep != ''
