@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "pigs": ["pig", "pigs", "boar", "boars", "swine", "hog", "pork", "piglet"],
+  "monkeys": ["monkey", "monkeys", "ape", "apes", "chimpanzee", "chimp", "gorilla", "orangutan", "baboon", "primate"],
+  "dogs": ["dog", "dogs", "puppy", "puppies", "canine", "wolf", "wolves", "fox", "coyote", "jackal", "hyena"]
+}
