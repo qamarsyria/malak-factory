@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "nudity": ["nude", "nudity", "naked", "topless", "sexy", "erotic", "lingerie", "underwear", "swimsuit", "bikini"],
+  "horror": ["horror", "scary", "creepy", "terrifying", "monster", "demon", "devil", "satan", "ghost", "zombie", "vampire", "witch", "skull", "skeleton", "haunted", "occult"],
+  "gore": ["gore", "blood", "bloody", "corpse", "dead body", "murder", "torture", "wound", "injury"],
+  "violence": ["war", "weapon", "gun", "rifle", "knife", "sword fight", "combat", "battle scene"],
+  "addictions": ["alcohol", "wine", "beer", "cigarette", "smoking", "drugs", "casino", "gambling"],
+  "occult_symbols": ["666", "pentagram", "baphomet"]
+}
