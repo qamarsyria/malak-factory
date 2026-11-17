@@ -1,15 +1,6 @@
 """
-audit_story.py — المرحلة 2: التدقيق
-يقرأ collected/events/*/narrative.json ويدقّق كل block عبر LLM:
-  - يكشف المخالفات (تشبيه، إسرائيليات، تناقض، إضافة دينية غير موثقة)
-  - يعيد صياغة الـ block بحيث يحذف الجزء المخالف ويبقي السياق القصصي
-  - يسجّل كل تعديل في audit_log.json
-
-الآيات (ayahs.json) لا تُمسّ إطلاقاً — تُنسخ كما هي.
-
-الاستخدام:
-    python audit_story.py <story_id>
-    python audit_story.py <story_id> --force
+audit_story.py — المرحلة 2: التدقيق (نسخة ذكية ومقاومة للـ Timeouts)
+يقرأ collected/events/*/narrative.json ويدقّق كل block عبر LLM.
 """
 
 import os, re, sys, json, time
@@ -26,17 +17,14 @@ from utilities import get_breaker, notify_telegram
 from filters_loader import get_llm_forbidden_rules
 
 # ═══════════════════════════════════════════════════════════
-# المسارات
+# المسارات والإعدادات
 # ═══════════════════════════════════════════════════════════
 STORIES_JSON   = _REPO_ROOT / "data" / "library" / "stories.json"
 STORIES_DIR    = _REPO_ROOT / "data" / "stories"
 
-# ═══════════════════════════════════════════════════════════
-# إعدادات
-# ═══════════════════════════════════════════════════════════
-BATCH_SIZE = 3              # عدد الـ blocks في كل استدعاء LLM
-MIN_BLOCK_LENGTH = 30       # block أقل من 30 حرف → يُتجاهل (نص فارغ أو قصير جداً)
-MAX_BLOCK_LENGTH = 3000     # block أطول من 3000 حرف → يُقسّم قبل التدقيق
+BATCH_SIZE = 2              # ✅ تقليل الحجم لتجنب الـ Timeout
+MIN_BLOCK_LENGTH = 30       
+MAX_BLOCK_LENGTH = 2000     # ✅ تقليل الطول الأقصى
 
 # ═══════════════════════════════════════════════════════════
 # prompt التدقيق
@@ -44,29 +32,25 @@ MAX_BLOCK_LENGTH = 3000     # block أطول من 3000 حرف → يُقسّم �
 AUDIT_PROMPT_TEMPLATE = """أنت مدقّق شرعي متخصص في قصص الأنبياء. مهمتك مراجعة النصوص التالية (سرد قصصي، ليست آيات قرآنية) وحذف أي مخالفة.
 
 قواعد التدقيق الصارمة:
-
 🔴 مخالفات تُحذف دائماً:
-1. أي تشبيه أو تجسيد للذات الإلهية (يد، وجه، عين، ساق، نزول حسي، رؤية بصرية، جلوس، مكان...).
-2. أي وصف لشكل أو هيئة أو ملامح الأنبياء / الملائكة / الصحابة (طول، عرض، وجه، شعر، ملابس، أعضاء، هيئة...).
+1. أي تشبيه أو تجسيد للذات الإلهية.
+2. أي وصف لشكل أو هيئة أو ملامح الأنبياء / الملائكة / الصحابة.
 3. الإسرائيليات (روايات من كتب أهل الكتاب لم تثبت في الإسلام).
 4. أي حديث ضعيف أو موضوع يُنسب إلى النبي ﷺ.
-5. أي معلومة دينية صريحة (اسم، رقم، حدث، حكم شرعي) لا يوجد لها أصل واضح في القرآن أو التفسير الميسر أو صحيح السيرة.
-6. أي تناقض مع التفسير الميسر أو الآيات.
-7. أي إيحاء جنسي أو تعري أو وصف شهواني.
+5. أي معلومة دينية صريحة لا يوجد لها أصل واضح.
+6. أي إيحاء جنسي أو تعري.
 
 🟢 ما يبقى (وصف قصصي مشروع):
-- المشاهد الطبيعية والأجواء (ليلة، نجوم، صحراء، مطر).
-- الحالة النفسية (حزن، فرح، خوف، تأمل) بدون وصف جسدي.
-- الحوارات والأسئلة (بدون تشبيه أو إضافة دينية).
-- انتقالات زمنية ومكانية (ثم غادر، عاد بعد سنوات).
+- المشاهد الطبيعية والأجواء.
+- الحالة النفسية بدون وصف جسدي.
+- الحوارات والأسئلة.
+- انتقالات زمنية ومكانية.
 - العبرة والعظة العامة.
 
 📋 قواعد إعادة الصياغة:
 - احذف الجزء المخالف فقط، وحافظ على بقية الجملة.
-- لا تُغيّر الأسماء الصحيحة أو الآيات المرجعية [آية: x:y].
-- لا تُضف معلومات جديدة.
+- لا تُغيّر الأسماء الصحيحة أو الآيات المرجعية.
 - إذا كانت الجملة كلها مخالفة → احذفها بالكامل.
-- اللغة: عربية فصحى.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {forbidden_rules}
@@ -82,15 +66,11 @@ AUDIT_PROMPT_TEMPLATE = """أنت مدقّق شرعي متخصص في قصص ا�
       "block_id": 1,
       "clean_text": "...",
       "changed": true,
-      "violations": ["تشبيه", "إضافة غير موثقة"],
+      "violations": ["تشبيه"],
       "reason": "سبب مختصر"
-    }},
-    ...
+    }}
   ]
 }}
-
-إذا كان النص نظيفاً:
-  "changed": false, "violations": [], "clean_text" = نفس النص الأصلي.
 """
 
 # ═══════════════════════════════════════════════════════════
@@ -103,15 +83,7 @@ def load_story_meta(story_id: str) -> dict:
         raise RuntimeError(f"القصة '{story_id}' غير موجودة في stories.json")
     return story
 
-
 def load_collected(story_id: str) -> dict:
-    """
-    يقرأ:
-      collected/events/event_NN/ayahs.json
-      collected/events/event_NN/narrative.json
-    ويعيد:
-      {event_id: {"ayahs": [...], "narrative": [...]}}
-    """
     base = STORIES_DIR / story_id / "collected" / "events"
     if not base.exists():
         raise RuntimeError(f"لم يُجمع بعد: {base}")
@@ -119,46 +91,24 @@ def load_collected(story_id: str) -> dict:
     events = {}
     for ev_dir in sorted(base.glob("event_*")):
         event_id = ev_dir.name
-        ayahs = []
-        narrative = []
-
-        ayahs_file = ev_dir / "ayahs.json"
-        if ayahs_file.exists():
-            ayahs = json.loads(ayahs_file.read_text(encoding="utf-8"))
-
-        narrative_file = ev_dir / "narrative.json"
-        if narrative_file.exists():
-            narrative = json.loads(narrative_file.read_text(encoding="utf-8"))
-
+        ayahs, narrative = [], []
+        if (ev_dir / "ayahs.json").exists():
+            ayahs = json.loads((ev_dir / "ayahs.json").read_text(encoding="utf-8"))
+        if (ev_dir / "narrative.json").exists():
+            narrative = json.loads((ev_dir / "narrative.json").read_text(encoding="utf-8"))
         events[event_id] = {"ayahs": ayahs, "narrative": narrative}
-
     print(f"📂 {len(events)} حدث محمّل من {base}")
     return events
 
-
-# ═══════════════════════════════════════════════════════════
-# تقسيم الـ blocks الطويلة
-# ═══════════════════════════════════════════════════════════
 def preprocess_blocks(blocks: list) -> list:
-    """
-    - يتجاهل blocks القصيرة جداً
-    - يُقسّم blocks الأطول من MAX_BLOCK_LENGTH لجمل
-    - يعيد قائمة جديدة مع index مرجعي
-    """
     out = []
     for original in blocks:
         text = (original.get("text") or "").strip()
         if len(text) < MIN_BLOCK_LENGTH:
-            # نبقيه بدون تدقيق (يُنسخ كما هو)
-            out.append({
-                "original": original,
-                "audit_needed": False,
-                "text": text,
-            })
+            out.append({"original": original, "audit_needed": False, "text": text})
             continue
 
         if len(text) > MAX_BLOCK_LENGTH:
-            # تقسيم لجمل
             sentences = re.split(r'(?<=[.!؟])\s+', text)
             buf = ""
             for sent in sentences:
@@ -166,123 +116,88 @@ def preprocess_blocks(blocks: list) -> list:
                     buf += " " + sent
                 else:
                     if buf.strip():
-                        out.append({
-                            "original": {**original, "text": buf.strip()},
-                            "audit_needed": True,
-                            "text": buf.strip(),
-                        })
+                        out.append({"original": {**original, "text": buf.strip()}, "audit_needed": True, "text": buf.strip()})
                     buf = sent
             if buf.strip():
-                out.append({
-                    "original": {**original, "text": buf.strip()},
-                    "audit_needed": True,
-                    "text": buf.strip(),
-                })
+                out.append({"original": {**original, "text": buf.strip()}, "audit_needed": True, "text": buf.strip()})
         else:
-            out.append({
-                "original": original,
-                "audit_needed": True,
-                "text": text,
-            })
+            out.append({"original": original, "audit_needed": True, "text": text})
     return out
 
-
 # ═══════════════════════════════════════════════════════════
-# استدعاء LLM للتدقيق (batch)
+# [ذكاء] استدعاء LLM مع معالجة Timeouts
 # ═══════════════════════════════════════════════════════════
 def audit_batch(batch: list) -> list:
-    """
-    batch: list of dicts (each with block_id + text)
-    returns: list of dicts {block_id, clean_text, changed, violations, reason}
-    """
     if not batch:
         return []
 
-    blocks_json = json.dumps(
-        [{"block_id": b["block_id"], "text": b["text"]} for b in batch],
-        ensure_ascii=False,
-        indent=2
-    )
-
-    prompt = AUDIT_PROMPT_TEMPLATE.format(
-        forbidden_rules=get_llm_forbidden_rules(),
-        blocks_json=blocks_json
-    )
+    blocks_json = json.dumps([{"block_id": b["block_id"], "text": b["text"]} for b in batch], ensure_ascii=False, indent=2)
+    prompt = AUDIT_PROMPT_TEMPLATE.format(forbidden_rules=get_llm_forbidden_rules(), blocks_json=blocks_json)
 
     pool = get_pool()
     breaker = get_breaker()
-    models = discover_and_cache(force=False)[:3]
+    # ✅ تثبيت موديلات معروفة بالاستقرار لتجنب موديلات الـ Alias
+    models = ["gemini-1.5-flash", "gemini-1.5-pro"] + discover_and_cache(force=False)[:2]
+    models = list(dict.fromkeys(models)) # إزالة التكرار
 
     for model in models:
-        if breaker.is_open(f"model:{model}"):
-            continue
-        for attempt in range(2):
+        if breaker.is_open(f"model:{model}"): continue
+        for attempt in range(3):  # 3 محاولات
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 body = {
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.2,
-                        "maxOutputTokens": 8192,
-                        "responseMimeType": "application/json",
-                    }
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096, "responseMimeType": "application/json"}
                 }
-                r = requests.post(url, json=body, timeout=180)
-                if r.status_code == 429:
+                
+                # ✅ مهلة ذكية: 20 ثانية للاتصال، 300 ثانية للقراءة
+                r = requests.post(url, json=body, timeout=(20, 300))
+                
+                if r.status_code == 200:
+                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    if not parts: continue
+                    text = parts[0].get("text", "")
+                    s, e = text.find("{"), text.rfind("}")
+                    if s == -1: continue
+                    parsed = json.loads(text[s:e+1])
+                    results = parsed.get("results", [])
+                    if results:
+                        if hasattr(pool, '_advance'): pool._advance()
+                        elif hasattr(pool, 'advance'): pool.advance()
+                        breaker.record_success(f"model:{model}")
+                        return results
+                elif r.status_code == 429:
+                    print(f"      ⚠️ 429 (Rate Limit) على {model} - تدوير المفتاح")
                     pool.mark_failed(3600)
-                    continue
-                if r.status_code != 200:
-                    continue
-
-                parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                if not parts:
-                    continue
-
-                text = parts[0].get("text", "")
-                s, e = text.find("{"), text.rfind("}")
-                if s == -1:
-                    continue
-                parsed = json.loads(text[s:e+1])
-                results = parsed.get("results", [])
-                if results:
-                    pool._advance()
-                    breaker.record_success(f"model:{model}")
-                    return results
+                    continue # جرب مفتاح تاني
+                elif r.status_code in (404, 503):
+                    breaker.record_failure(f"model:{model}")
+                    break # جرب موديل تاني
+                    
+            except requests.exceptions.Timeout:
+                print(f"      ⏱️ Timeout على {model} محاولة {attempt+1} - تدوير المفتاح")
+                pool.mark_failed(600) # اعزل المفتاح ده 10 دقايق
+                continue
             except Exception as e:
-                print(f"      ⚠️ {model} محاولة {attempt+1}: {str(e)[:80]}")
+                print(f"      ⚠️ خطأ {model}: {str(e)[:60]}")
                 continue
     return []
-
 
 # ═══════════════════════════════════════════════════════════
 # تدقيق حدث واحد
 # ═══════════════════════════════════════════════════════════
 def audit_event(event_id: str, event_data: dict) -> tuple[dict, dict]:
-    """
-    يدقّق narrative blocks لحدث واحد.
-    يعيد: (audited_narrative, audit_details)
-    """
     blocks = event_data["narrative"]
     if not blocks:
         print(f"   {event_id}: لا سرد للتدقيق")
         return [], {"blocks_total": 0, "blocks_changed": 0, "changes": []}
 
     print(f"   {event_id}: {len(blocks)} block")
-
-    # 1. preprocessing
     preprocessed = preprocess_blocks(blocks)
 
-    # 2. تجميع blocks للتدقيق في دفعات
-    to_audit = []
-    for idx, item in enumerate(preprocessed):
-        if item["audit_needed"]:
-            to_audit.append({
-                "block_id": idx,
-                "text": item["text"],
-            })
+    to_audit = [{"block_id": idx, "text": item["text"]} for idx, item in enumerate(preprocessed) if item["audit_needed"]]
 
-    # 3. استدعاء LLM بدفعات
     audit_results = {}
     total_batches = (len(to_audit) + BATCH_SIZE - 1) // BATCH_SIZE
     for i in range(0, len(to_audit), BATCH_SIZE):
@@ -296,21 +211,18 @@ def audit_event(event_id: str, event_data: dict) -> tuple[dict, dict]:
                 audit_results[bid] = res
         time.sleep(1)
 
-    # 4. دمج النتائج
     audited_narrative = []
     changes_log = []
 
     for idx, item in enumerate(preprocessed):
         original = item["original"]
-
         if not item["audit_needed"]:
-            # block قصير → يُنسخ كما هو
             audited_narrative.append(original)
             continue
 
         result = audit_results.get(idx)
         if not result:
-            # LLM فشل → نُبقي النص الأصلي (بأمان)
+            # ✅ حماية: الاحتفاظ بالنص الأصلي لو فشل التدقيق
             print(f"      ⚠️ block {idx} بدون نتيجة → يُبقى كما هو")
             audited_narrative.append(original)
             continue
@@ -319,60 +231,22 @@ def audit_event(event_id: str, event_data: dict) -> tuple[dict, dict]:
         changed = result.get("changed", False)
 
         if changed:
-            violations = result.get("violations", [])
-            reason = result.get("reason", "")
-
-            # إذا النص النظيف فارغ → نحذف الـ block
+            violations, reason = result.get("violations", []), result.get("reason", "")
             if not clean_text or len(clean_text) < 10:
-                changes_log.append({
-                    "block_index": idx,
-                    "action": "removed",
-                    "original_text": item["text"][:500],
-                    "violations": violations,
-                    "reason": reason,
-                })
+                changes_log.append({"block_index": idx, "action": "removed", "original_text": item["text"][:500], "violations": violations, "reason": reason})
                 continue
-
-            new_block = {
-                "text": clean_text,
-                "source": original.get("source", ""),
-                "related_ayah": original.get("related_ayah"),
-                "_audited": True,
-            }
+            new_block = {"text": clean_text, "source": original.get("source", ""), "related_ayah": original.get("related_ayah"), "_audited": True}
             audited_narrative.append(new_block)
-            changes_log.append({
-                "block_index": idx,
-                "action": "rephrased",
-                "original_text": item["text"][:500],
-                "clean_text": clean_text[:500],
-                "violations": violations,
-                "reason": reason,
-            })
+            changes_log.append({"block_index": idx, "action": "rephrased", "original_text": item["text"][:500], "clean_text": clean_text[:500], "violations": violations, "reason": reason})
         else:
-            # لم يتغير
             audited_narrative.append(original)
 
-    audit_details = {
-        "blocks_total": len(blocks),
-        "blocks_changed": len(changes_log),
-        "changes": changes_log,
-    }
-    print(f"   ✅ {event_id}: {len(changes_log)} تعديل من {len(blocks)} block")
-    return audited_narrative, audit_details
-
+    return audited_narrative, {"blocks_total": len(blocks), "blocks_changed": len(changes_log), "changes": changes_log}
 
 # ═══════════════════════════════════════════════════════════
-# الحفظ
+# الحفظ والدالة الرئيسية
 # ═══════════════════════════════════════════════════════════
 def save_audited(story_id: str, events: dict, audit_log: dict, force: bool = False):
-    """
-    يحفظ:
-    data/stories/{id}/audited/
-      ├── events/event_NN/ayahs.json       (نسخة حرفية)
-      ├── events/event_NN/narrative.json   (نظيف)
-      ├── audit_log.json
-      └── audit_summary.json
-    """
     base = STORIES_DIR / story_id / "audited"
     if base.exists() and force:
         import shutil
@@ -382,109 +256,46 @@ def save_audited(story_id: str, events: dict, audit_log: dict, force: bool = Fal
     for event_id, data in events.items():
         ev_dir = base / "events" / event_id
         ev_dir.mkdir(parents=True, exist_ok=True)
+        (ev_dir / "ayahs.json").write_text(json.dumps(data["ayahs"], ensure_ascii=False, indent=2), encoding="utf-8")
+        (ev_dir / "narrative.json").write_text(json.dumps(data["audited_narrative"], ensure_ascii=False, indent=2), encoding="utf-8")
 
-        (ev_dir / "ayahs.json").write_text(
-            json.dumps(data["ayahs"], ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
-        (ev_dir / "narrative.json").write_text(
-            json.dumps(data["audited_narrative"], ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
-
-    (base / "audit_log.json").write_text(
-        json.dumps(audit_log, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
-
+    (base / "audit_log.json").write_text(json.dumps(audit_log, ensure_ascii=False, indent=2), encoding="utf-8")
+    
     summary = {
-        "story_id": story_id,
-        "audited_at": datetime.now(timezone.utc).isoformat(),
-        "events": {
-            eid: {
-                "blocks_total": d["details"]["blocks_total"],
-                "blocks_changed": d["details"]["blocks_changed"],
-            }
-            for eid, d in events.items()
-        },
-        "total_blocks_changed": sum(
-            d["details"]["blocks_changed"] for d in events.values()
-        ),
+        "story_id": story_id, "audited_at": datetime.now(timezone.utc).isoformat(),
+        "events": {eid: {"blocks_total": d["details"]["blocks_total"], "blocks_changed": d["details"]["blocks_changed"]} for eid, d in events.items()},
+        "total_blocks_changed": sum(d["details"]["blocks_changed"] for d in events.values()),
     }
-    (base / "audit_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    (base / "audit_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"💾 حُفظ: {base}")
 
-    size_mb = sum(
-        f.stat().st_size for f in base.rglob("*.json")
-    ) / (1024 * 1024)
-    print(f"💾 حُفظ: {base} ({size_mb:.2f} MB)")
-    return size_mb
-
-
-# ═══════════════════════════════════════════════════════════
-# الدالة الرئيسية
-# ═══════════════════════════════════════════════════════════
 def audit_story(story_id: str, force: bool = False):
     print("=" * 60)
     print(f"🔍 تدقيق: {story_id}")
     print("=" * 60)
-
     story = load_story_meta(story_id)
     print(f"📖 {story['title']}")
-
-    base = STORIES_DIR / story_id / "audited"
-    if base.exists() and not force:
-        print(f"ℹ️ موجود سابقاً: {base} (استخدم --force لإعادة التدقيق)")
-        return
 
     collected = load_collected(story_id)
     if not collected:
         print("❌ لا توجد بيانات مجمّعة")
         sys.exit(1)
 
-    audited_events = {}
-    audit_log = {"story_id": story_id, "audited_at": datetime.now(timezone.utc).isoformat(), "events": {}}
-
+    audited_events, audit_log = {}, {"story_id": story_id, "audited_at": datetime.now(timezone.utc).isoformat(), "events": {}}
     total_changes = 0
+    
     for event_id, event_data in collected.items():
         print(f"\n📦 {event_id}")
         audited_narrative, details = audit_event(event_id, event_data)
-        audited_events[event_id] = {
-            "ayahs": event_data["ayahs"],  # لا تُمسّ
-            "audited_narrative": audited_narrative,
-            "details": details,
-        }
+        audited_events[event_id] = {"ayahs": event_data["ayahs"], "audited_narrative": audited_narrative, "details": details}
         audit_log["events"][event_id] = details
         total_changes += details["blocks_changed"]
 
-    size_mb = save_audited(story_id, audited_events, audit_log, force=force)
-
-    notify_telegram(
-        f"✅ اكتمل التدقيق: {story['title']}\n"
-        f"📊 {total_changes} تعديل | {size_mb:.1f} MB",
-        level="success"
-    )
-
+    save_audited(story_id, audited_events, audit_log, force=force)
     print(f"\n🎉 اكتمل التدقيق! إجمالي التعديلات: {total_changes}")
 
-
-# ═══════════════════════════════════════════════════════════
-# CLI
-# ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("الاستخدام: python audit_story.py <story_id> [--force]")
         sys.exit(1)
-
-    story_id = sys.argv[1]
-    force = "--force" in sys.argv
-
-    try:
-        audit_story(story_id, force=force)
-    except Exception as e:
-        print(f"❌ خطأ فادح: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    audit_story(sys.argv[1], force="--force" in sys.argv)
