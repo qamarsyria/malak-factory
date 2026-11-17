@@ -2,8 +2,9 @@
 collect_story.py — المرحلة 1: جمع المصادر
 يجمع كل ما يتعلق بقصة معينة بترتيب منطقي:
   1. القرآن + التفسير الميسر (الأساس)
-  2. قصص ابن كثير (إن وُجد)
-  3. المقالات (dorar + islamway + LLM)
+  2. تفسير ابن كثير (عبر API)
+  3. قصص الأنبياء من إسلام ويب (عبر scraping)
+  4. LLM كخيار أخير (لتوليد سرد من الآيات إذا فشلت كل المصادر)
 ثم:
   - يكتشف الأحداث (LLM + فصول ابن كثير)
   - يفصل الآيات عن السرد في ملفات منفصلة
@@ -14,6 +15,7 @@ import os, re, sys, json, gzip, time
 from pathlib import Path
 from datetime import datetime, timezone
 import requests
+from bs4 import BeautifulSoup
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,6 +37,12 @@ STORIES_OUTPUT     = _REPO_ROOT / "data" / "stories"
 # حدود
 # ═══════════════════════════════════════════════════════════
 MAX_TOTAL_SIZE_MB  = 2.0     # تحذير لو تجاوزت المادة 2MB
+
+# ═══════════════════════════════════════════════════════════
+# روابط المصادر الخارجية
+# ═══════════════════════════════════════════════════════════
+TAFSIR_IBN_KATHIR_API = "https://quranapi.misryoum.com/api/tafsir/ibnkathir/surah/{surah}/ayah/{ayah}"
+ISLAMWEB_STORIES_URL = "https://www.islamweb.net/ar/library/index.php?page=bookcontents&idfrom=1&idto=272&bk_no=86&ID=2"
 
 # ═══════════════════════════════════════════════════════════
 # كلمات مفتاحية لكل قصة (للبحث في التفسير)
@@ -106,7 +114,6 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: 
                         text = text[s:e+1]
                     try:
                         parsed = json.loads(text) if is_json else text
-                        # محاولة تدوير المفاتيح بأمان
                         if hasattr(pool, '_advance'):
                             pool._advance()
                         elif hasattr(pool, 'advance'):
@@ -159,6 +166,119 @@ def normalize_ayah(ayah: dict) -> dict:
     return ayah
 
 # ═══════════════════════════════════════════════════════════
+# دوال جلب السرد من مصادر خارجية
+# ═══════════════════════════════════════════════════════════
+def fetch_tafsir_ibn_kathir(ayah_ref: str) -> str:
+    """
+    يجلب تفسير ابن كثير لآية محددة من API خارجي.
+    ayah_ref: بصيغة "surah:ayah" مثل "12:4"
+    """
+    try:
+        parts = ayah_ref.split(":")
+        if len(parts) != 2:
+            return ""
+        surah, ayah = parts
+        url = TAFSIR_IBN_KATHIR_API.format(surah=surah, ayah=ayah)
+        r = requests.get(url, timeout=30)
+        if r.status_code == 200:
+            data = r.json()
+            # استخراج النص من الاستجابة (الهيكل قد يختلف)
+            text = data.get("text") or data.get("tafsir") or (data.get("data", {}) or {}).get("text")
+            if text and len(str(text).strip()) > 50:
+                return str(text).strip()
+    except Exception as e:
+        print(f"   ⚠️ فشل جلب تفسير ابن كثير لـ {ayah_ref}: {e}")
+    return ""
+
+
+def fetch_islamweb_stories() -> list:
+    """
+    يجلب نصوصاً من كتاب قصص الأنبياء على إسلام ويب.
+    يعيد قائمة من dicts: {"source": "إسلام ويب", "text": "..."}
+    """
+    blocks = []
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(ISLAMWEB_STORIES_URL, headers=headers, timeout=60)
+        if r.status_code != 200:
+            print(f"   ⚠️ إسلام ويب أرجع HTTP {r.status_code}")
+            return blocks
+
+        soup = BeautifulSoup(r.content, "html.parser")
+        # محاولة تحديد الحاوية الرئيسية للنص
+        body = soup.select_one("#pagebody") or soup.select_one(".book_content") or soup.find("div", {"class": "content"})
+        
+        if not body:
+            # fallback: أخذ كل الفقرات الطويلة
+            body = soup
+
+        # استخراج الفقرات النصية
+        paragraphs = body.find_all(["p", "div"], recursive=True)
+        current_text = []
+        for p in paragraphs:
+            txt = p.get_text(strip=True)
+            if len(txt) > 100 and not re.search(r'[<>{}]', txt):
+                current_text.append(txt)
+                if len(" ".join(current_text)) > 3000:  # حد أقصى للـ block
+                    blocks.append({"source": "إسلام ويب - قصص الأنبياء", "text": " ".join(current_text)})
+                    current_text = []
+        
+        if current_text:
+            blocks.append({"source": "إسلام ويب - قصص الأنبياء", "text": " ".join(current_text)})
+
+        print(f"   📚 إسلام ويب: {len(blocks)} block")
+    except Exception as e:
+        print(f"   ⚠️ فشل جلب إسلام ويب: {e}")
+    return blocks
+
+
+def fetch_tafsir_muyassar(ayahs: list) -> list:
+    """
+    يجلب التفسير الميسر من مكتبة الآيات المحلية (الحقل tafsir).
+    """
+    blocks = []
+    for ayah in ayahs:
+        tafsir = (ayah.get("tafsir") or "").strip()
+        if tafsir and len(tafsir) > 50:
+            blocks.append({
+                "source": f"التفسير الميسر - {ayah.get('ref', '')}",
+                "text": tafsir,
+                "related_ayah": ayah.get("ref", "")
+            })
+    print(f"   📚 التفسير الميسر: {len(blocks)} block")
+    return blocks
+
+
+def generate_fallback_narrative(story_title: str, ayahs: list) -> list:
+    """
+    خيار أخير: توليد سرد من الآيات عبر LLM إذا فشلت كل المصادر.
+    """
+    if not ayahs:
+        return []
+    ayahs_summary = "\n".join([
+        f"- {a.get('surah_name', '')} {a.get('ref', '')}: {a.get('text', '')}"
+        for a in ayahs[:20]
+    ])
+    prompt = f"""أنت راوي قصص إسلامي. اكتب سرداً قصصياً موثقاً (300-500 كلمة) 
+لقصة "{story_title}" بناءً على الآيات التالية فقط، دون إسرائيليات:
+
+{ayahs_summary}
+
+أعد JSON: {{"narrative": [{{"text": "...", "source": "توليد من الآيات"}}]}}"""
+
+    result = call_llm(prompt, is_json=True, timeout=120)
+    blocks = []
+    if result and isinstance(result, dict):
+        for block in result.get("narrative", []):
+            if block.get("text") and len(block["text"]) > 50:
+                blocks.append({
+                    "source": block.get("source", "توليد من الآيات"),
+                    "text": block["text"]
+                })
+    print(f"   🤖 LLM fallback: {len(blocks)} block")
+    return blocks
+
+# ═══════════════════════════════════════════════════════════
 # البحث عن الآيات ذات الصلة بالقصة
 # ═══════════════════════════════════════════════════════════
 def find_story_ayahs(ayah_lib: list, story_id: str, story_sources: list) -> list:
@@ -173,7 +293,6 @@ def find_story_ayahs(ayah_lib: list, story_id: str, story_sources: list) -> list
 
         for kw in keywords:
             if kw in text or kw in tafsir:
-                # إصلاح وتوحيد الشكل قبل الإضافة
                 found.append(normalize_ayah(ayah))
                 break
 
@@ -181,16 +300,9 @@ def find_story_ayahs(ayah_lib: list, story_id: str, story_sources: list) -> list
     return found
 
 # ═══════════════════════════════════════════════════════════
-# جمع من مصادر خارجية (ابن كثير)
-# ═══════════════════════════════════════════════════════════
-def fetch_ibn_kathir_story(story_id: str) -> str:
-    return ""
-
-# ═══════════════════════════════════════════════════════════
 # اكتشاف الأحداث وفصل الآيات عن السرد
 # ═══════════════════════════════════════════════════════════
 def detect_events_and_separate(ayahs: list, narrative_texts: list, story_title: str) -> dict:
-    # ضمان إن كل الآيات متوحدة الشكل
     ayahs = [normalize_ayah(a) for a in ayahs]
     
     ayahs_block = "\n".join([f"[{i}] {a['surah_name']} {a['ref']}: {a['text']}" for i, a in enumerate(ayahs)])
@@ -276,21 +388,66 @@ def main():
     if not ayahs:
         print("   ⚠️ لم يتم العثور على آيات، سيتم استخدام آيات عامة أو مصدر آخر.")
 
-    # 4. جمع النصوص السردية
-    print("\n📝 جمع النصوص السردية...")
+    # ═══════════════════════════════════════════════════════════
+    # 4. جمع السرد من مصادر متعددة (الأولوية بالترتيب)
+    # ═══════════════════════════════════════════════════════════
+    print("\n📝 جمع السرد من مصادر متعددة...")
     narrative_texts = []
-    kathir_text = fetch_ibn_kathir_story(story_id)
-    if kathir_text:
-        narrative_texts.append({"source": "ابن كثير", "text": kathir_text})
-    
-    # 5. اكتشاف الأحداث
+
+    # المصدر 1: التفسير الميسر (من مكتبة الآيات المحلية)
+    muyassar_blocks = fetch_tafsir_muyassar(ayahs)
+    narrative_texts.extend(muyassar_blocks)
+
+    # المصدر 2: تفسير ابن كثير (عبر API) - لكل آية
+    print("   📚 جلب تفسير ابن كثير (API)...")
+    for ayah in ayahs[:10]:  # حد أقصى 10 آيات لتوفير الوقت
+        ref = ayah.get("ref", "")
+        if ref:
+            kathir_text = fetch_tafsir_ibn_kathir(ref)
+            if kathir_text:
+                narrative_texts.append({
+                    "source": f"ابن كثير - {ref}",
+                    "text": kathir_text,
+                    "related_ayah": ref
+                })
+            time.sleep(0.5)  # تجنب الحظر
+    print(f"   📚 ابن كثير: {len([b for b in narrative_texts if 'ابن كثير' in b.get('source', '')])} block")
+
+    # المصدر 3: إسلام ويب (كتاب قصص الأنبياء)
+    islamweb_blocks = fetch_islamweb_stories()
+    narrative_texts.extend(islamweb_blocks)
+
+    # الخيار الأخير: LLM (فقط إذا لم يُجمع أي سرد)
+    if not narrative_texts:
+        print("   ⚠️ لم يُجمع أي سرد من المصادر المتاحة، جاري التوليد عبر LLM...")
+        llm_blocks = generate_fallback_narrative(story_title, ayahs)
+        narrative_texts.extend(llm_blocks)
+
+    # ═══════════════════════════════════════════════════════════
+    # 5. التحقق النهائي: لا تحفظ ملفاً فارغاً!
+    # ═══════════════════════════════════════════════════════════
+    if not narrative_texts:
+        print("\n❌ فشل جمع السرد نهائياً — جميع المصادر فارغة أو فاشلة.")
+        print("   🔧 تحقق من: اتصال API، صلاحية روابط إسلام ويب، وجود تفسير في مكتبة الآيات.")
+        notify_telegram(
+            f"❌ فشل جمع السرد لقصة: {story_title}\n"
+            f"🔗 المصادر: التفسير الميسر، ابن كثير API، إسلام ويب\n"
+            f"💡 تحقق من الاتصال بالإنترنت وصلاحية الروابط.",
+            level="error"
+        )
+        sys.exit(1)
+
+    print(f"\n✅ إجمالي السرد: {len(narrative_texts)} block")
+    for i, b in enumerate(narrative_texts[:5]):
+        print(f"      [{i}] {b.get('source', '')}: {b.get('text', '')[:80]}...")
+
+    # 6. اكتشاف الأحداث
     print("\n🔍 اكتشاف الأحداث...")
     events_data = detect_events_and_separate(ayahs, narrative_texts, story_title)
     
-    # 6. الحفظ
+    # 7. الحفظ
     print("\n💾 حفظ الملفات...")
     
-    # حفظ الآيات والسرد الإجمالي (للمرجع)
     (collected_dir / "ayahs_all.json").write_text(
         json.dumps(ayahs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -298,7 +455,6 @@ def main():
         json.dumps(narrative_texts, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     
-    # إنشاء مجلد الأحداث (اللي audit_story.py بيدور عليه)
     events_dir = collected_dir / "events"
     events_dir.mkdir(exist_ok=True)
 
@@ -307,11 +463,9 @@ def main():
         ev_dir = events_dir / ev_id
         ev_dir.mkdir(exist_ok=True)
         
-        # فلترة الآيات الخاصة بالحدث ده
         ayah_indices = ev.get("ayah_indices", [])
         ev_ayahs = [ayahs[idx] for idx in ayah_indices if 0 <= idx < len(ayahs)]
         
-        # فلترة السرد الخاص بالحدث ده
         narr_indices = ev.get("narrative_indices", [])
         ev_narr = [narrative_texts[idx] for idx in narr_indices if 0 <= idx < len(narrative_texts)]
         
