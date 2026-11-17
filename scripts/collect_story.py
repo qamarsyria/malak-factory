@@ -1,6 +1,6 @@
 """
 collect_story.py — المرحلة 1: جمع المصادر
-يجمع كل ما يتعلق بقصة معينة بترتيب منطقي (ب):
+يجمع كل ما يتعلق بقصة معينة بترتيب منطقي:
   1. القرآن + التفسير الميسر (الأساس)
   2. قصص ابن كثير (إن وُجد)
   3. المقالات (dorar + islamway + LLM)
@@ -8,10 +8,6 @@ collect_story.py — المرحلة 1: جمع المصادر
   - يكتشف الأحداث (LLM + فصول ابن كثير)
   - يفصل الآيات عن السرد في ملفات منفصلة
   - يحفظ كل شيء في data/stories/{id}/collected/
-
-الاستخدام:
-    python collect_story.py <story_id>
-    python collect_story.py <story_id> --force   # يتجاهل الـ cache
 """
 
 import os, re, sys, json, gzip, time
@@ -110,6 +106,7 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: 
                         text = text[s:e+1]
                     try:
                         parsed = json.loads(text) if is_json else text
+                        # محاولة تدوير المفاتيح بأمان
                         if hasattr(pool, '_advance'):
                             pool._advance()
                         elif hasattr(pool, 'advance'):
@@ -144,6 +141,24 @@ def load_ayah_library() -> list:
         return json.load(f)
 
 # ═══════════════════════════════════════════════════════════
+# توحيد شكل الآيات (عشان نمنع أي KeyError)
+# ═══════════════════════════════════════════════════════════
+def normalize_ayah(ayah: dict) -> dict:
+    """يتأكد إن كل آية فيها ref و surah_name و text"""
+    if "ref" not in ayah:
+        s = ayah.get("surah", ayah.get("surah_number", ayah.get("surah_id", "")))
+        a = ayah.get("ayah", ayah.get("ayah_number", ayah.get("numberInSurah", ayah.get("number", ""))))
+        ayah["ref"] = f"{s}:{a}"
+    
+    if "surah_name" not in ayah:
+        ayah["surah_name"] = ayah.get("surah_name_ar", f"سورة {ayah.get('surah', '')}")
+        
+    if "text" not in ayah:
+        ayah["text"] = ayah.get("arabic_text", "")
+        
+    return ayah
+
+# ═══════════════════════════════════════════════════════════
 # البحث عن الآيات ذات الصلة بالقصة
 # ═══════════════════════════════════════════════════════════
 def find_story_ayahs(ayah_lib: list, story_id: str, story_sources: list) -> list:
@@ -158,7 +173,8 @@ def find_story_ayahs(ayah_lib: list, story_id: str, story_sources: list) -> list
 
         for kw in keywords:
             if kw in text or kw in tafsir:
-                found.append(ayah)
+                # إصلاح وتوحيد الشكل قبل الإضافة
+                found.append(normalize_ayah(ayah))
                 break
 
     print(f"   📖 وُجدت {len(found)} آية متعلقة بـ '{story_id}' (من أصل {len(ayah_lib)} آية)")
@@ -168,15 +184,15 @@ def find_story_ayahs(ayah_lib: list, story_id: str, story_sources: list) -> list
 # جمع من مصادر خارجية (ابن كثير)
 # ═══════════════════════════════════════════════════════════
 def fetch_ibn_kathir_story(story_id: str) -> str:
-    """
-    محاولة جمع سرد ابن كثير. (حالياً نرجع نص فارغ لأننا سنعتمد على LLM والمقالات)
-    """
     return ""
 
 # ═══════════════════════════════════════════════════════════
 # اكتشاف الأحداث وفصل الآيات عن السرد
 # ═══════════════════════════════════════════════════════════
 def detect_events_and_separate(ayahs: list, narrative_texts: list, story_title: str) -> dict:
+    # ضمان إن كل الآيات متوحدة الشكل
+    ayahs = [normalize_ayah(a) for a in ayahs]
+    
     ayahs_block = "\n".join([f"[{i}] {a['surah_name']} {a['ref']}: {a['text']}" for i, a in enumerate(ayahs)])
     narrative_block = "\n\n".join([f"[{i}] {t[:500]}..." for i, t in enumerate(narrative_texts)])
 
@@ -189,8 +205,8 @@ def detect_events_and_separate(ayahs: list, narrative_texts: list, story_title: 
 {narrative_block}
 
 المطلوب:
-1. اكتشف الأحداث الكبرى التي تتكون منها القصة (مثلاً: خلق آدم، سجود الملائكة، إبليس، الخروج من الجنة).
-2. لكل حدث، حدد الآيات التي تنتمي إليه (بأرقامها).
+1. اكتشف الأحداث الكبرى التي تتكون منها القصة.
+2. لكل حدث، حدد الآيات التي تنتمي إليه (بأرقامها بين الأقواس المربعة).
 3. لكل حدث، حدد النصوص السردية التي تنتمي إليه (بأرقامها).
 4. رتب الأحداث زمنياً.
 
@@ -260,7 +276,7 @@ def main():
     if not ayahs:
         print("   ⚠️ لم يتم العثور على آيات، سيتم استخدام آيات عامة أو مصدر آخر.")
 
-    # 4. جمع النصوص السردية (محاكاة من المقالات أو ابن كثير)
+    # 4. جمع النصوص السردية
     print("\n📝 جمع النصوص السردية...")
     narrative_texts = []
     kathir_text = fetch_ibn_kathir_story(story_id)
@@ -274,17 +290,14 @@ def main():
     # 6. الحفظ
     print("\n💾 حفظ الملفات...")
     
-    # حفظ الآيات
     (collected_dir / "ayahs.json").write_text(
         json.dumps(ayahs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     
-    # حفظ السرد
     (collected_dir / "narrative.json").write_text(
         json.dumps(narrative_texts, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     
-    # حفظ الأحداث
     (collected_dir / "events.json").write_text(
         json.dumps(events_data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
