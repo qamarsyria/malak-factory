@@ -75,7 +75,6 @@ jobs:
 
       - name: Install Python deps
         run: |
-          # تحديث pip وتثبيت المتطلبات
           pip install --upgrade pip
           pip install -r requirements.txt
           
@@ -133,16 +132,19 @@ jobs:
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
 
-      # بناء الفيديو الطولي
+      # بناء الفيديو الطولي (تم إصلاح الترتيب هنا)
       - name: Build vertical video
         if: steps.audio.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
-          python scripts/story_video.py --social \
+          # الترتيب الصح: ميتا، صوت، فيديو ناتج، وضع (سوشيال)
+          python scripts/story_video.py \
             "out/social_${{ steps.gen.outputs.ep_name }}_meta.json" \
-            "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
+            "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
+            "videos/social_${{ steps.gen.outputs.ep_name }}.mp4" \
+            social
           ls -lh videos/
 
       # الرفع (مع ضغط قوي وفحص استجابة تلغرام)
@@ -174,7 +176,7 @@ jobs:
 
             echo "⏱️ ${DURATION}s | ${TARGET_KBPS}kbps | 720p"
 
-            # 🛠️ إصلاح الفلتر: ضمان أبعاد زوجية (حتى لا يفشل H.264) وضغط آمن
+            # إصلاح الفلتر: ضمان أبعاد زوجية (حتى لا يفشل H.264) وضغط آمن
             ffmpeg -y -i "$f" \
               -vf "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" \
               -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
@@ -193,7 +195,7 @@ jobs:
               continue
             fi
 
-            # 🛠️ إصلاح: فحص استجابة تلغرام بدلاً من الاكتفاء بنجاح curl
+            # إصلاح: فحص استجابة تلغرام بدلاً من الاكتفاء بنجاح curl
             RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
                 -F "chat_id=${TELEGRAM_CHAT_ID}" \
                 -F "video=@${COMPRESSED}" \
