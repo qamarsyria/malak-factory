@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "forbidden": {
+    "depictions": {
+      "prophets": ["prophet", "messenger", "rasul", "nabi", "muhammad", "isa", "jesus figure", "musa", "moses figure", "ibrahim", "abraham figure"],
+      "companions": ["companion", "sahabi", "sahaba", "caliph", "imam figure"],
+      "angels": ["angel", "cherub", "seraph", "jibril", "gabriel figure"],
+      "family_of_prophet": ["ahl al-bayt", "prophet's family", "mother of believers"]
+    },
+    "idols": {
+      "objects": ["statue", "idol", "sculpture of a person", "idol worship", "pagan"],
+      "places": ["temple of idol", "shrine of idol"]
+    },
+    "other_religions": {
+      "symbols": ["cross", "crucifix", "star of david", "pentagram", "om symbol", "buddha statue", "shiva", "hindu deity"],
+      "ceremonies": ["christian mass", "jewish prayer", "buddhist meditation", "pagan ritual"]
+    },
+    "forbidden_content": {
+      "quran_mishandling": ["burning quran", "destroyed quran", "torn quran"],
+      "islamic_mockery": ["mockery of islam", "islamic satire", "islamophobic"]
+    }
+  },
+  "note": "أي شيء يمس قدسية الإسلام أو يحرّف العقيدة — ممنوع نهائياً"
+}
