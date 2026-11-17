@@ -1,14 +1,16 @@
 """
 generate_story.py — المرحلة 3: التوليد
-يقرأ audited/events/ ويُنتج حلقات (5 دقائق = ~700 كلمة + 3-4 آيات):
-  1. يكتشف الأحداث الضخمة → LLM يقسمها لحلقات (يُحفظ في split.json)
-  2. لكل حلقة:
-     - LLM يحوّل السرد لسكريبت قصصي (بلا حشو، بلا نص قرآني)
-     - LLM يكتب خلاصة (3 أسطر)
-     - LLM يكتب تشويق (جملة واحدة)
-     - CTA من القوالب
-  3. يحفظ: generated/{story}-{ep}.json
-  4. يُحدّث state.json + global.json
+يقرأ audited/events/ ويُنتج حلقات (5 دقائق = ~700 كلمة + 3-4 آيات).
+
+⚠️ ملاحظة مهمة:
+    هذا الملف لا يُحدّث الحالة (state) بعد التوليد!
+    تحديث الحالة يتم في finalize_episode.py — فقط بعد نجاح الرفع على تلغرام.
+    إذا فشل الرفع، الكاش يبقى، وإعادة التشغيل تستخدم الـ JSON الموجود.
+
+⚠️ إدارة LATEST_EPISODE:
+    - يُحذف في بداية التشغيل.
+    - يُكتب في نهاية التوليد الناجح.
+    - إذا كانت القصة مكتملة، لا يُكتب (workflow يتخطى البناء).
 
 الاستخدام:
     python generate_story.py
@@ -34,19 +36,18 @@ from outro_templates import OUTRO_TEMPLATES
 STORIES_JSON   = _REPO_ROOT / "data" / "library" / "stories.json"
 GLOBAL_STATE   = _REPO_ROOT / "state" / "global.json"
 STORIES_DIR    = _REPO_ROOT / "data" / "stories"
-OUTPUT_DIR     = STORIES_DIR  # generated/ داخل مجلد القصة
+LATEST_EPISODE = _REPO_ROOT / "out" / "latest_episode.txt"
 
 # ═══════════════════════════════════════════════════════════
 # إعدادات
 # ═══════════════════════════════════════════════════════════
-TARGET_WORDS_MIN   = 600        # حد أدنى لكلمات السرد في الحلقة
-TARGET_WORDS_MAX   = 800        # حد أعلى
-AYAHS_PER_EPISODE  = (3, 5)     # نطاق معقول (min, max)
-SPLIT_THRESHOLD_AYAHS  = 6      # > 6 آيات → حدث ضخم
-SPLIT_THRESHOLD_WORDS  = 1000   # > 1000 كلمة سرد → حدث ضخم
+TARGET_WORDS_MIN  = 600
+TARGET_WORDS_MAX  = 800
+SPLIT_THRESHOLD_AYAHS  = 6
+SPLIT_THRESHOLD_WORDS  = 1000
 
 # ═══════════════════════════════════════════════════════════
-# مساعدات: تحويل الأرقام لكلمات عربية
+# الأرقام العربية
 # ═══════════════════════════════════════════════════════════
 _ARABIC_UNITS = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"]
 _ARABIC_TEENS = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر",
@@ -56,7 +57,6 @@ _ARABIC_HUNDREDS = ["", "مئة", "مئتان", "ثلاثمائة", "أربعم�
 
 
 def num_to_arabic(n: int) -> str:
-    """يحول 0-9999 لكلمات عربية."""
     if n == 0:
         return "صفر"
     if n < 10:
@@ -76,14 +76,12 @@ def num_to_arabic(n: int) -> str:
 
 
 def arabize_numbers(text: str) -> str:
-    """يستبدل كل الأرقام المستقلة بكلماتها العربية."""
-    def _replace(match):
-        return num_to_arabic(int(match.group(0)))
+    def _replace(m):
+        return num_to_arabic(int(m.group(0)))
     return re.sub(r'\b(\d{1,4})\b', _replace, text)
 
 
 def clean_narration(text: str) -> str:
-    """تنظيف السرد: أرقام عربية، حذف إنجليزي ورموز."""
     if not text:
         return ""
     text = arabize_numbers(text)
@@ -94,7 +92,7 @@ def clean_narration(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
-# استدعاء LLM
+# LLM
 # ═══════════════════════════════════════════════════════════
 def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: int = 8192):
     pool = get_pool()
@@ -149,13 +147,9 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: 
 
 
 # ═══════════════════════════════════════════════════════════
-# 1. تقسيم الأحداث الضخمة
+# تقسيم الأحداث
 # ═══════════════════════════════════════════════════════════
 def llm_split_event(event_id: str, event_title: str, ayahs: list, narrative: list) -> dict:
-    """
-    يطلب من LLM تقسيم حدث ضخم لحلقات متعددة.
-    يعيد: {"episodes": [{"sub_title", "ayah_refs", "narrative_indices"}], "reason": "..."}
-    """
     ayah_index = "\n".join([
         f"[{i}] {a['surah_name']} {a['ref']}: {a['text'][:150]}"
         for i, a in enumerate(ayahs)
@@ -177,18 +171,17 @@ def llm_split_event(event_id: str, event_title: str, ayahs: list, narrative: lis
 
 قسّم هذا الحدث لحلقات بحيث:
 - كل حلقة: 3-4 آيات + ~700 كلمة سرد.
-- احترم التسلسل الزمني (لا تقفز).
-- كل آية من الآيات المذكورة يجب أن تظهر في حلقة واحدة فقط.
-- كل narrative index يجب أن يظهر في حلقة واحدة فقط.
-- عدد الحلقات: 2 إلى 4 (حسب الحجم).
+- احترم التسلسل الزمني.
+- كل آية تظهر في حلقة واحدة فقط.
+- كل narrative index يظهر في حلقة واحدة فقط.
 
 أعد JSON فقط:
 {{
   "episodes": [
     {{
-      "sub_title": "عنوان مختصر للحلقة",
-      "ayah_refs": ["12:4", "12:5"],
-      "narrative_indices": [0, 1, 2, 3]
+      "sub_title": "عنوان مختصر",
+      "ayah_refs": ["12:4"],
+      "narrative_indices": [0, 1]
     }}
   ],
   "reason": "شرح مختصر"
@@ -197,7 +190,7 @@ def llm_split_event(event_id: str, event_title: str, ayahs: list, narrative: lis
     result = call_llm(prompt, is_json=True, timeout=180, max_tokens=4096)
     if result and isinstance(result, dict) and result.get("episodes"):
         return result
-    # fallback: 2 حلقات متساوية
+
     half = len(ayahs) // 2
     return {
         "episodes": [
@@ -206,12 +199,11 @@ def llm_split_event(event_id: str, event_title: str, ayahs: list, narrative: lis
             {"sub_title": "الجزء الثاني", "ayah_refs": [a["ref"] for a in ayahs[half:]],
              "narrative_indices": list(range(len(narrative) // 2, len(narrative)))},
         ],
-        "reason": "fallback: تقسيم متساوٍ"
+        "reason": "fallback"
     }
 
 
 def ensure_splits(story_id: str):
-    """يضمن وجود split.json لكل حدث (يُولّدها عند الحاجة)."""
     events_dir = STORIES_DIR / story_id / "audited" / "events"
     if not events_dir.exists():
         raise RuntimeError(f"لا توجد أحداث مدققة: {events_dir}")
@@ -236,8 +228,7 @@ def ensure_splits(story_id: str):
             }
         else:
             print(f"   🔪 تقسيم {ev_dir.name} ({len(ayahs)} آية, {total_words} كلمة)")
-            title = ev_dir.name.replace("event_", "الحدث ")
-            split_data = llm_split_event(ev_dir.name, title, ayahs, narrative)
+            split_data = llm_split_event(ev_dir.name, ev_dir.name.replace("event_", "الحدث "), ayahs, narrative)
 
         split_file.write_text(json.dumps(split_data, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"   ✅ {ev_dir.name}: {len(split_data['episodes'])} حلقة")
@@ -246,7 +237,7 @@ def ensure_splits(story_id: str):
 
 
 # ═══════════════════════════════════════════════════════════
-# 2. توليد حلقة واحدة
+# توليد سكريبت حلقة
 # ═══════════════════════════════════════════════════════════
 SCRIPT_PROMPT = """أنت راوي قصص إسلامي محترف. مهمتك تحويل المادة التالية إلى سكريبت صوتي قصصي مشوق.
 
@@ -255,7 +246,7 @@ SCRIPT_PROMPT = """أنت راوي قصص إسلامي محترف. مهمتك ت
 📖 الحدث: {event_title}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-الآيات المتاحة (يجب تضمينها كلها في السكريبت):
+الآيات المتاحة (يجب تضمينها كلها):
 {ayahs_block}
 
 السرد المتاح (المراجع):
@@ -264,27 +255,24 @@ SCRIPT_PROMPT = """أنت راوي قصص إسلامي محترف. مهمتك ت
 
 🎯 الشكل المطلوب:
 سكريبت يتناوب بين:
-- "narration": سرد قصصي مشوق (لا يحتوي نصاً قرآنياً حرفياً أبداً)
-- "quran": إشارة لآية (نستخدم [آية: سورة:آية] كمرجع فقط)
+- "narration": سرد قصصي مشوق (لا يحتوي نصاً قرآنياً حرفياً)
+- "quran": إشارة لآية (مرجع فقط [سورة:آية])
 
 ⚠️ قواعد صارمة:
 
-1️⃣ **الآيات لا تُكتب حرفياً في السرد أبداً**. إذا كان في السرد الأصلي نص قرآني، حوّله لشرح قصصي.
-   مثال خاطئ: "قال تعالى: كلما دخل عليها زكريا المحراب"
-   مثال صحيح: "كان زكريا عليه السلام كلما دخل على مريم في محرابها يجد عندها رزقاً عجيباً"
+1️⃣ **الآيات لا تُكتب حرفياً في السرد**. إذا كان النص الأصلي فيه آية، حوّلها لشرح قصصي.
 
-2️⃣ **السرد 600-800 كلمة** (لا أكثر، لا أقل). حلقة 5 دقائق.
+2️⃣ **السرد 600-800 كلمة**.
 
-3️⃣ **التوثيق 100%**: كل معلومة من السرد المتاح أو من الآيات. ممنوع الإسرائيليات.
+3️⃣ **التوثيق 100%**. لا إسرائيليات.
 
-4️⃣ **مكافحة الحشو**: يُمنع منعاً باتاً:
-   - "في خضم الأحداث"، "لا شك أن"، "من المعلوم"، "تجدر الإشارة"
-   - "كما نعلم جميعاً"، "في هذا السياق"، "خلاصة القول"
-   - أي جملة لا تحمل معلومة جديدة أو حدثاً أو مشهداً
+4️⃣ **مكافحة الحشو**: يُمنع:
+   - "في خضم الأحداث"، "لا شك أن"، "من المعلوم"
+   - أي جملة لا تحمل معلومة جديدة
 
-5️⃣ **ترتيب الآيات**: كل آية تأتي في لحظتها المناسبة من السرد (مرتبطة بحدثها).
+5️⃣ **ترتيب الآيات**: كل آية في لحظتها.
 
-6️⃣ **اللغة**: عربية فصحى. يُمنع أي حرف إنجليزي أو رقم (باستثناء مراجع الآيات [x:y]).
+6️⃣ **اللغة**: عربية فصحى، بلا إنجليزي أو أرقام (عدا مراجع الآيات).
 
 7️⃣ **احترام مطلق**: لا وصف لشكل الأنبياء/الملائكة/الصحابة، لا تشبيه للذات الإلهية.
 
@@ -294,24 +282,19 @@ SCRIPT_PROMPT = """أنت راوي قصص إسلامي محترف. مهمتك ت
 
 أعد JSON فقط:
 {{
-  "title": "عنوان الحلقة الرئيسي (3-6 كلمات)",
+  "title": "عنوان الحلقة (3-6 كلمات)",
   "segments": [
     {{"type": "narration", "text": "..."}},
     {{"type": "quran", "surah": 12, "ayah_numbers": [4], "display": "يوسف: 4"}},
-    {{"type": "narration", "text": "..."}},
     ...
   ]
 }}
 
-⚠️ يجب أن يحتوي السكريبت على {ayahs_expected} آية قرآنية على الأقل.
-⚠️ السرد الكلي (كل مقاطع narration) يجب أن يكون بين 600 و 800 كلمة.
+⚠️ السرد الكلي بين 600 و 800 كلمة.
 """
 
 
-def generate_episode_script(story_title: str, ep_title: str, event_title: str,
-                            ayahs: list, narrative: list) -> dict | None:
-    """يولّد سكريبت حلقة واحدة عبر LLM."""
-
+def generate_episode_script(story_title, ep_title, event_title, ayahs, narrative):
     ayahs_block = "\n".join([
         f"[{a['ref']}] سورة {a['surah_name']}: {a['text']}"
         for a in ayahs
@@ -320,7 +303,7 @@ def generate_episode_script(story_title: str, ep_title: str, event_title: str,
     narrative_block = "\n\n".join([
         f"[{i}] (المصدر: {b.get('source', '')})\n{b.get('text', '')[:800]}"
         for i, b in enumerate(narrative)
-    ]) if narrative else "(لا يوجد سرد إضافي)"
+    ]) if narrative else "(لا يوجد سرد)"
 
     prompt = SCRIPT_PROMPT.format(
         story_title=story_title,
@@ -329,63 +312,48 @@ def generate_episode_script(story_title: str, ep_title: str, event_title: str,
         ayahs_block=ayahs_block,
         narrative_block=narrative_block,
         forbidden_rules=get_llm_forbidden_rules(),
-        ayahs_expected=len(ayahs) if ayahs else 3,
     )
 
-    result = call_llm(prompt, is_json=True, timeout=240, max_tokens=8192)
-    if not result or not isinstance(result, dict) or "segments" not in result:
-        return None
-    return result
+    return call_llm(prompt, is_json=True, timeout=240, max_tokens=8192)
 
 
-def validate_script(script: dict, expected_ayahs: list) -> tuple[bool, list[str]]:
-    """يتحقق من جودة السكريبت."""
+def validate_script(script, expected_ayahs):
     issues = []
     segments = script.get("segments", [])
-
     if not segments:
         return False, ["no_segments"]
 
-    # 1. التحقق من الآيات
-    ayahs_in_script = [s for s in segments if s.get("type") == "quran"]
     expected_refs = {a["ref"] for a in expected_ayahs}
     actual_refs = set()
-    for s in ayahs_in_script:
-        surah = s.get("surah")
-        for n in s.get("ayah_numbers", []):
-            actual_refs.add(f"{surah}:{n}")
-
-    missing = expected_refs - actual_refs
-    if missing:
-        issues.append(f"missing_ayahs: {sorted(missing)}")
-
-    # 2. عدد الكلمات
-    narration_words = sum(
-        len(s.get("text", "").split())
-        for s in segments if s.get("type") == "narration"
-    )
-    if narration_words < TARGET_WORDS_MIN:
-        issues.append(f"too_short: {narration_words} < {TARGET_WORDS_MIN}")
-    elif narration_words > TARGET_WORDS_MAX + 200:
-        issues.append(f"too_long: {narration_words} > {TARGET_WORDS_MAX}")
-
-    # 3. لا إنجليزي في narration
     for s in segments:
-        if s.get("type") == "narration":
-            if re.search(r'[a-zA-Z]', s.get("text", "")):
-                issues.append("english_in_narration")
-                break
+        if s.get("type") == "quran":
+            surah = s.get("surah")
+            for n in s.get("ayah_numbers", []):
+                actual_refs.add(f"{surah}:{n}")
+    if expected_refs - actual_refs:
+        issues.append(f"missing_ayahs: {sorted(expected_refs - actual_refs)}")
+
+    narration_words = sum(len(s.get("text", "").split())
+                          for s in segments if s.get("type") == "narration")
+    if narration_words < TARGET_WORDS_MIN:
+        issues.append(f"too_short: {narration_words}")
+    elif narration_words > TARGET_WORDS_MAX + 200:
+        issues.append(f"too_long: {narration_words}")
+
+    for s in segments:
+        if s.get("type") == "narration" and re.search(r'[a-zA-Z]', s.get("text", "")):
+            issues.append("english_in_narration")
+            break
 
     return (len(issues) == 0), issues
 
 
 # ═══════════════════════════════════════════════════════════
-# 3. الخلاصة والتشويق
+# الخلاصة والتشويق
 # ═══════════════════════════════════════════════════════════
-def generate_summary(story_title: str, ep_title: str, script_segments: list) -> str:
-    """استدعاء منفصل لتوليد خلاصة (3 أسطر)."""
+def generate_summary(story_title, ep_title, segments):
     narration_text = " ".join(
-        s.get("text", "") for s in script_segments if s.get("type") == "narration"
+        s.get("text", "") for s in segments if s.get("type") == "narration"
     )[:3000]
 
     prompt = f"""القصة: {story_title} — {ep_title}
@@ -394,7 +362,7 @@ def generate_summary(story_title: str, ep_title: str, script_segments: list) -> 
 
 اكتب "خلاصة وعبرة" بليغة من 3 أسطر:
 - لا تكرر السرد.
-- عبرة عامة تستفيد منها.
+- عبرة عامة.
 - فصحى.
 - بلا مقدمات ("وفي الختام" ممنوعة).
 
@@ -404,15 +372,14 @@ def generate_summary(story_title: str, ep_title: str, script_segments: list) -> 
     return clean_narration(result) if isinstance(result, str) else ""
 
 
-def generate_teaser(story_title: str, next_ep_title: str | None) -> str:
-    """استدعاء منفصل لتوليد جملة تشويق."""
+def generate_teaser(story_title, next_ep_title):
     next_hint = f"الحلقة القادمة: {next_ep_title}" if next_ep_title else "الحلقة القادمة"
 
     prompt = f"""القصة: {story_title}. {next_hint}.
 
 اكتب جملة واحدة فقط تشوّق المستمع للحلقة القادمة.
-- ابدأ بسؤال درامي (فكيف...؟ ماذا...؟ هل...؟).
-- بلا مقدمات ("إليك"، "هذا"، "ترقبوا" ممنوعة).
+- ابدأ بسؤال درامي.
+- بلا مقدمات.
 - جملة واحدة فقط.
 
 أعد الجملة فقط."""
@@ -425,9 +392,9 @@ def generate_teaser(story_title: str, next_ep_title: str | None) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
-# 4. الحالة (state.json لكل قصة)
+# الحالة
 # ═══════════════════════════════════════════════════════════
-def load_story_state(story_id: str) -> dict:
+def load_story_state(story_id):
     path = STORIES_DIR / story_id / "state.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -441,30 +408,35 @@ def load_story_state(story_id: str) -> dict:
     }
 
 
-def save_story_state(story_id: str, state: dict):
+def save_story_state(story_id, state):
     path = STORIES_DIR / story_id / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     state["last_generated"] = datetime.now(timezone.utc).isoformat()
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def load_global_state() -> dict:
+def load_global_state():
     return json.loads(GLOBAL_STATE.read_text(encoding="utf-8"))
 
 
-def save_global_state(state: dict):
+def save_global_state(state):
     GLOBAL_STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ═══════════════════════════════════════════════════════════
-# 5. الدالة الرئيسية
+# الدالة الرئيسية
 # ═══════════════════════════════════════════════════════════
-def main():
+def main(clear_latest: bool = True):
+    if clear_latest:
+        LATEST_EPISODE.parent.mkdir(parents=True, exist_ok=True)
+        if LATEST_EPISODE.exists():
+            LATEST_EPISODE.unlink()
+
     print("=" * 60)
     print("🎬 توليد حلقة جديدة")
     print("=" * 60)
 
-    # 1. القصة الحالية
+    # 1. القصة
     gstate = load_global_state()
     story_id = gstate["current_story_id"]
     library = json.loads(STORIES_JSON.read_text(encoding="utf-8"))
@@ -475,72 +447,85 @@ def main():
 
     print(f"📖 {story['title']}")
 
-    # 2. تجهيز الـ splits
+    # 2. splits
     print("\n🔪 تجهيز التقسيمات...")
     ev_dirs = ensure_splits(story_id)
     print(f"📦 {len(ev_dirs)} حدث")
 
-    # 3. الحالة
+    # 3. حالة القصة
     sstate = load_story_state(story_id)
     ev_idx = sstate["current_event_index"]
     sub_idx = sstate["current_sub_episode"]
 
-    # 4. هل انتهت القصة؟
+    # 4. هل القصة مكتملة؟
     if ev_idx >= len(ev_dirs):
         print(f"\n🎉 القصة '{story['title']}' مكتملة!")
         sstate["completed"] = True
         save_story_state(story_id, sstate)
 
-        # انتقال للقصة التالية
         next_idx = gstate["current_story_index"] + 1
         if next_idx >= len(library["stories"]):
             print("🎊 الموسوعة كاملة! دورة جديدة")
             gstate["completed_stories"] = [s["id"] for s in library["stories"]]
             gstate["current_story_index"] = 0
-            gstate["project_cycle"] += 1
+            gstate["project_cycle"] = gstate.get("project_cycle", 0) + 1
             next_idx = 0
 
         gstate["current_story_id"] = library["stories"][next_idx]["id"]
         gstate["current_story_index"] = next_idx
-        gstate["current_story_phase"] = "audited"  # ستُعاد الجمع لاحقاً
+        gstate["current_story_phase"] = "audited"
         save_global_state(gstate)
-        notify_telegram(f"✅ اكتملت: {story['title']}\n🎯 التالي: {library['stories'][next_idx]['title']}", level="success")
+        notify_telegram(
+            f"✅ اكتملت: {story['title']}\n🎯 التالي: {library['stories'][next_idx]['title']}",
+            level="success"
+        )
         return
 
-    # 5. الحدث الحالي
+    # 5. الحدث
     ev_dir = ev_dirs[ev_idx]
     split = json.loads((ev_dir / "split.json").read_text(encoding="utf-8"))
     episodes_in_event = split["episodes"]
 
     if sub_idx >= len(episodes_in_event):
-        # ننتقل للحدث التالي
         sstate["current_event_index"] += 1
         sstate["current_sub_episode"] = 0
         save_story_state(story_id, sstate)
         print(f"⏭️ انتقال للحدث التالي")
-        return main()  # استدعاء recursively (آمن — مرة واحدة)
+        return main(clear_latest=False)
 
     # 6. تجهيز مادة الحلقة
     ep_spec = episodes_in_event[sub_idx]
     ayahs_all = json.loads((ev_dir / "ayahs.json").read_text(encoding="utf-8"))
     narrative_all = json.loads((ev_dir / "narrative.json").read_text(encoding="utf-8"))
 
-    if ep_spec.get("ayah_refs") is None:
-        ayahs_ep = ayahs_all
-    else:
-        ayahs_ep = [a for a in ayahs_all if a["ref"] in ep_spec["ayah_refs"]]
-
-    if ep_spec.get("narrative_indices") is None:
-        narrative_ep = narrative_all
-    else:
-        narrative_ep = [narrative_all[i] for i in ep_spec["narrative_indices"] if i < len(narrative_all)]
+    ayahs_ep = ayahs_all if ep_spec.get("ayah_refs") is None else [
+        a for a in ayahs_all if a["ref"] in ep_spec["ayah_refs"]
+    ]
+    narrative_ep = narrative_all if ep_spec.get("narrative_indices") is None else [
+        narrative_all[i] for i in ep_spec["narrative_indices"] if i < len(narrative_all)
+    ]
 
     ep_num = sstate["total_episodes_generated"] + 1
     ev_title = ep_spec.get("sub_title") or ev_dir.name
     print(f"\n🎬 حلقة {ep_num}: {ev_title}")
     print(f"   📖 {len(ayahs_ep)} آية | 📝 {len(narrative_ep)} block")
 
-    # 7. توليد السكريبت (مع retry)
+    # 7. هل الحلقة موجودة سابقاً؟ (فشل رفع سابق)
+    generated_dir = STORIES_DIR / story_id / "generated"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    output_path = generated_dir / f"{story_id}-{ep_num:02d}.json"
+
+    if output_path.exists():
+        print(f"\n♻️ الحلقة {ep_num} موجودة سابقاً (محاولة رفع سابقة فشلت)")
+        print(f"   استخدام: {output_path}")
+        LATEST_EPISODE.write_text(str(output_path), encoding="utf-8")
+        notify_telegram(
+            f"♻️ إعادة استخدام الحلقة {ep_num}: {story['title']}",
+            level="info"
+        )
+        return
+
+    # 8. التوليد
     script = None
     for attempt in range(3):
         print(f"   ✍️ محاولة {attempt+1}/3...")
@@ -561,20 +546,18 @@ def main():
         time.sleep(3)
 
     if not script:
-        print("❌ فشل توليد السكريبت بعد 3 محاولات")
+        print("❌ فشل التوليد")
         sys.exit(1)
 
-    # 8. الخلاصة والتشويق
+    # 9. الخلاصة والتشويق
     print("   📝 خلاصة...")
     summary = generate_summary(story["title"], ev_title, script["segments"])
 
-    # العنوان القادم
     next_sub = sub_idx + 1
     if next_sub < len(episodes_in_event):
         next_ep_title = episodes_in_event[next_sub].get("sub_title", "")
     elif ev_idx + 1 < len(ev_dirs):
-        next_ev = ev_dirs[ev_idx + 1]
-        next_split = json.loads((next_ev / "split.json").read_text(encoding="utf-8"))
+        next_split = json.loads((ev_dirs[ev_idx + 1] / "split.json").read_text(encoding="utf-8"))
         next_ep_title = next_split["episodes"][0].get("sub_title", "")
     else:
         next_ep_title = None
@@ -582,7 +565,7 @@ def main():
     print("   📢 تشويق...")
     teaser = generate_teaser(story["title"], next_ep_title)
 
-    # 9. تجميع الحلقة النهائية
+    # 10. تجميع
     segments = script["segments"]
     if summary:
         segments.append({"type": "summary", "text": summary, "visual": "sunrise sky"})
@@ -597,12 +580,10 @@ def main():
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
 
-    # تنظيف narration
     for s in segments:
         if s.get("type") == "narration":
             s["text"] = clean_narration(s["text"])
 
-    # 10. الحفظ
     ep_data = {
         "episode_number": ep_num,
         "story_id": story_id,
@@ -611,30 +592,21 @@ def main():
         "segments": segments,
     }
 
-    generated_dir = STORIES_DIR / story_id / "generated"
-    generated_dir.mkdir(parents=True, exist_ok=True)
-    output_path = generated_dir / f"{story_id}-{ep_num:02d}.json"
+    # 11. الحفظ
     output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n💾 حُفظ: {output_path}")
 
-    # 11. تحديث الحالة
-    sstate["current_sub_episode"] += 1
-    sstate["total_episodes_generated"] = ep_num
-    save_story_state(story_id, sstate)
+    # 12. LATEST_EPISODE
+    LATEST_EPISODE.write_text(str(output_path), encoding="utf-8")
+    print(f"📌 out/latest_episode.txt ← {output_path.name}")
 
-    gstate["total_episodes_published"] = gstate.get("total_episodes_published", 0) + 1
-    if gstate.get("current_era") != story["era"]:
-        gstate["current_era"] = story["era"]
-        gstate["current_era_episodes_published"] = 0
-    gstate["current_era_episodes_published"] = gstate.get("current_era_episodes_published", 0) + 1
-    save_global_state(gstate)
-
+    # 13. إشعار (الحالة ستُحدَّث في finalize_episode.py — لا هنا!)
     notify_telegram(
-        f"🎬 حلقة جديدة: {story['title']} — {ep_num}\n"
+        f"✍️ حلقة جاهزة للبناء: {story['title']} — {ep_num}\n"
         f"📖 {script.get('title', ev_title)}",
-        level="success"
+        level="info"
     )
-    print(f"\n🎉 اكتملت الحلقة {ep_num}")
+    print(f"\n🎉 اكتملت الحلقة {ep_num} — بانتظار البناء والرفع")
 
 
 if __name__ == "__main__":
