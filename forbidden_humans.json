@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "general_rule": "لا بشر إطلاقاً",
+  "forbidden_tags": [
+    "man", "men", "male", "males",
+    "boy", "boys", "gentleman",
+    "woman", "women", "female", "females", "lady", "ladies",
+    "girl", "girls",
+    "child", "children", "kid", "kids", "baby", "babies", "toddler",
+    "person", "people", "human", "humans",
+    "crowd", "audience", "group of people",
+    "face", "faces", "portrait", "headshot",
+    "hand", "hands", "finger", "fingers", "arm", "arms",
+    "eye", "eyes", "smile",
+    "silhouette of person", "back of person"
+  ],
+  "exception": {
+    "niqab_woman": {
+      "allowed": true,
+      "tags": ["niqab", "niqab woman", "woman in niqab", "burqa"],
+      "conditions": ["لا وجه مكشوف", "لا زينة", "ملابس فضفاضة فقط"],
+      "note": "المنقبات مسموحات — بشروط"
+    }
+  }
+}
