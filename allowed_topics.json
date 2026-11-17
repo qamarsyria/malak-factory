@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "note": "القوائم الإيجابية — ما يمكن البحث عنه. مقسمة لتسهيل التوليد العشوائي",
+  "categories": {
+    "nature": {
+      "keywords": ["forest", "spring", "mountain", "valley", "river", "waterfall", "meadow", "cave", "desert", "oasis", "sea", "beach", "cliff"],
+      "priority": "high"
+    },
+    "sky_weather": {
+      "keywords": ["clouds", "rain", "storm", "lightning", "thunder", "fog", "mist", "sunrise", "sunset", "rainbow", "snow"],
+      "priority": "high"
+    },
+    "space_cosmos": {
+      "keywords": ["galaxy", "nebula", "stars", "milky way", "cosmos", "planet", "moon", "solar system", "aurora", "meteor"],
+      "priority": "high"
+    },
+    "power_of_creator": {
+      "keywords": ["volcano", "lava", "eruption", "hurricane", "tornado", "tsunami", "flood", "earthquake", "storm surge", "wildfire"],
+      "priority": "high",
+      "note": "تُظهر قوة الخالق وغضبه"
+    },
+    "old_damascus": {
+      "keywords": ["old damascus", "damascus aerial", "arab house", "islamic city", "ancient alley", "arab courtyard", "syrian architecture"],
+      "priority": "medium",
+      "note": "مناظر سوريا والإرث الإسلامي"
+    },
+    "creatures": {
+      "keywords": ["bird", "eagle", "dove", "butterfly", "flower", "rose", "bloom", "bee", "horse", "camel", "sheep", "fish", "deer", "gazelle"],
+      "priority": "medium",
+      "note": "مع استثناء المحظورات أدناه"
+    },
+    "islamic_architecture": {
+      "keywords": ["mosque", "minaret", "kaaba", "islamic architecture", "quran book", "prayer beads", "islamic pattern", "mihrab", "dome"],
+      "priority": "high"
+    }
+  }
+}
