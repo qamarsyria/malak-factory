@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "vehicles": ["car", "cars", "truck", "bus", "motorcycle", "bike", "bicycle", "van", "taxi", "ambulance", "police car", "jeep", "suv"],
+  "aircraft": ["plane", "airplane", "aircraft", "helicopter", "jet", "drone", "rocket"],
+  "trains": ["train", "trains", "metro", "subway", "tram", "railway", "locomotive"],
+  "watercraft": ["boat", "boats", "ship", "yacht", "cruise", "canoe", "kayak"],
+  "modern_structures": ["skyscraper", "factory", "power plant", "highway", "billboard", "parking lot"]
+}
