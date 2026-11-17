@@ -24,16 +24,17 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
+      # ✅ إضافة lxml و soupsieve لأداء أفضل مع scraping
       - name: Install minimal deps
         run: |
           pip install --upgrade pip
-          pip install requests==2.32.3 beautifulsoup4==4.12.3
+          pip install requests==2.32.3 beautifulsoup4==4.12.3 lxml==5.2.2 soupsieve==2.5
 
       - name: Check if prep needed
         id: check
         run: |
-          STORY=$(python scripts/check_prep_needed.py 2>/dev/null || echo "")
-          if [ -n "$STORY" ]; then
+          STORY=$(python scripts/check_prep_needed.py 2>&1 || echo "")
+          if [ -n "$STORY" ] && [ "$STORY" != "" ]; then
             echo "story_to_prep=$STORY" >> $GITHUB_OUTPUT
             echo "🔧 سيُجهّز: $STORY"
           else
@@ -51,9 +52,48 @@ jobs:
         run: |
           python scripts/collect_story.py "${{ steps.check.outputs.story_to_prep }}"
 
+      # ✅ فحص جديد: تأكد أن السرد ليس فارغاً قبل التدقيق
+      - name: Verify narrative is not empty
+        id: verify
+        if: steps.collect.outcome == 'success'
+        run: |
+          STORY="${{ steps.check.outputs.story_to_prep }}"
+          NARRATIVE="data/stories/${STORY}/collected/events"
+          
+          if [ ! -d "$NARRATIVE" ]; then
+            echo "❌ لم يُنشأ مجلد الأحداث: $NARRATIVE"
+            exit 1
+          fi
+          
+          # فحص كل حدث: هل narrative.json فيه على الأقل block واحد؟
+          EMPTY=0
+          for ev_dir in "$NARRATIVE"/event_*; do
+            [ -d "$ev_dir" ] || continue
+            narr_file="$ev_dir/narrative.json"
+            if [ ! -f "$narr_file" ]; then
+              echo "❌ ملف مفقود: $narr_file"
+              EMPTY=$((EMPTY+1))
+              continue
+            fi
+            # عدّ الـ blocks
+            COUNT=$(python -c "import json; print(len(json.load(open('$narr_file'))))")
+            echo "   📄 $(basename $ev_dir): $COUNT block"
+            if [ "$COUNT" -eq 0 ]; then
+              EMPTY=$((EMPTY+1))
+            fi
+          done
+          
+          if [ "$EMPTY" -gt 0 ]; then
+            echo ""
+            echo "❌ فشل: $EMPTY حدث بسرد فارغ!"
+            echo "   🔧 تحقق من: اتصال API ابن كثير، صلاحية رابط إسلام ويب، وجود تفسير في مكتبة الآيات"
+            exit 1
+          fi
+          echo "✅ كل الأحداث فيها سرد"
+
       - name: Audit
         id: audit
-        if: steps.collect.outcome == 'success'
+        if: steps.verify.outcome == 'success'
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -61,15 +101,51 @@ jobs:
         run: |
           python scripts/audit_story.py "${{ steps.check.outputs.story_to_prep }}"
 
+      # ✅ فحص نهائي: تأكد أن التدقيق لم يفرّغ السرد
+      - name: Verify audited narrative
+        id: verify_audited
+        if: steps.audit.outcome == 'success'
+        run: |
+          STORY="${{ steps.check.outputs.story_to_prep }}"
+          AUDITED="data/stories/${STORY}/audited/events"
+          
+          EMPTY=0
+          for ev_dir in "$AUDITED"/event_*; do
+            [ -d "$ev_dir" ] || continue
+            narr_file="$ev_dir/narrative.json"
+            if [ ! -f "$narr_file" ]; then
+              echo "❌ ملف مفقود: $narr_file"
+              EMPTY=$((EMPTY+1))
+              continue
+            fi
+            COUNT=$(python -c "import json; print(len(json.load(open('$narr_file'))))")
+            echo "   📄 $(basename $ev_dir): $COUNT block بعد التدقيق"
+            if [ "$COUNT" -eq 0 ]; then
+              EMPTY=$((EMPTY+1))
+            fi
+          done
+          
+          if [ "$EMPTY" -gt 0 ]; then
+            echo "❌ فشل: $EMPTY حدث بسرد فارغ بعد التدقيق!"
+            exit 1
+          fi
+          echo "✅ التدقيق سليم"
+
+      # ✅ فحص استجابة تلغرام بدلاً من الاكتفاء بنجاح curl
       - name: Notify success
         if: success() && steps.check.outputs.story_to_prep != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            -d "text=✅ تجهيز القصة التالية جاهز: ${{ steps.check.outputs.story_to_prep }}"
+            -d "text=✅ تجهيز القصة التالية جاهز: ${{ steps.check.outputs.story_to_prep }}")
+          if echo "$RESPONSE" | grep -q '"ok":true'; then
+            echo "✅ أُرسل الإشعار"
+          else
+            echo "⚠️ فشل إشعار تلغرام (غير حرج): $RESPONSE"
+          fi
 
       - name: Notify failure
         if: failure()
@@ -77,9 +153,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          FAILED_STEP="${{ steps.verify.outcome == 'failure' && 'جمع السرد' || steps.verify_audited.outcome == 'failure' && 'التدقيق' || 'خطوة غير معروفة' }}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            -d "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}"
+            -d "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}%0A🔍 مكان الفشل: ${FAILED_STEP}"
 
       - name: Commit prepared data
         if: success() && steps.check.outputs.story_to_prep != ''
