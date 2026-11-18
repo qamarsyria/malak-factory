@@ -13,21 +13,17 @@ MAX_AGE_HOURS = 12
 
 def _model_score(name: str) -> tuple:
     n = name.lower()
-
-    # استبعاد النماذج غير النصية
     bad_tokens = [
         "tts", "speech", "audio", "image", "imagen", "veo",
         "embedding", "aqa", "vision", "gemma", "learnlm",
-        "robotics", "computer-use", "nano"
+        "robotics", "computer-use", "nano",
     ]
     if any(bad in n for bad in bad_tokens):
         return (999, 999, name)
 
-    # استخراج رقم الإصدار (مثلاً 3.8 أو 3.5 أو 4)
     m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
     ver = float(m.group(1)) if m else 0.0
 
-    # الأفضلية للنماذج الحديثة (>= 3.0)؛ 2.5 قيد الإيقاف، و<=2.0 متوقف/قديم
     if ver >= 3.0:
         tier = 0
     elif ver >= 2.5:
@@ -35,7 +31,6 @@ def _model_score(name: str) -> tuple:
     else:
         tier = 2
 
-    # داخل الجيل الواحد: Flash العادي ثم Pro ثم Flash-Lite
     if "flash" in n and "lite" not in n:
         kind = 0
     elif "pro" in n:
@@ -45,9 +40,7 @@ def _model_score(name: str) -> tuple:
     else:
         kind = 3
 
-    # تفضيل الإصدارات المستقرة على preview/exp
     is_preview = 1 if any(x in n for x in ["preview", "exp", "experimental"]) else 0
-
     return (tier, is_preview, kind, -ver, name)
 
 
@@ -64,8 +57,7 @@ def fetch_available_models(api_key: str) -> list:
             methods = m.get("supportedGenerationMethods", [])
             if "generateContent" not in methods:
                 continue
-            score = _model_score(name)
-            if score[0] < 999:
+            if _model_score(name)[0] < 999:
                 models.append(name)
 
         return sorted(models, key=_model_score)
@@ -93,7 +85,7 @@ def discover_and_cache(force: bool = False) -> list:
         return fallback
 
     all_models, seen = [], set()
-    for key in keys[:2]:
+    for key in keys:
         for m in fetch_available_models(key):
             if m not in seen:
                 seen.add(m)
