@@ -1,10 +1,10 @@
 """
 apply_rvc_to_quran.py — تطبيق البصمة الصوتية (v4.0-clean + v3.1-myvoice) عبر infer/cli.py الرسمي
-الإعدادات المطابقة لـ sudais_reverb.yml:
+الإعدادات المطابقة لـ sudais_reverb.yml + رفع صوت التلاوة +30% مقارنة بالسرد:
   - clean (v4.0-clean)  : 87.5%  | pitch = -6
   - rough (v3.1-myvoice): 12.5%  | pitch = -4
   - الصدى: aecho=0.8:0.9:150|300|450:0.3|0.15|0.075 (مع ذيل صمت 0.6s لمنع البتر)
-  - السرد (Gemini TTS) يبقى كما هو دون لمس.
+  - موازنة إلى I=-16 ثم رفع +30% (volume=1.30,alimiter=limit=0.95).
 
 الاستخدام:
     python apply_rvc_to_quran.py <yt.mp3> <yt_meta.json> <output.mp3>
@@ -29,6 +29,7 @@ RVC_LAYERS = [
 ECHO_FILTER = "aecho=0.8:0.9:150|300|450:0.3|0.15|0.075"
 TARGET_SR = "24000"
 SILENCE_DUR = 0.20
+RECITER_VOLUME_MULT = 1.30  # +30% مقارنة بالسرد
 
 
 def get_dur(path) -> float:
@@ -65,13 +66,14 @@ def run_rvc_cli(in_48k: Path, out_wav: Path, layer: dict, rvc_dir: Path, env: di
 
 
 def mix_and_echo(clean_wav: Path, rough_wav: Path, out_wav: Path):
-    """يمزج الطبقتين (87.5% / 12.5%) ويضيف الصدى مع ذيل صمت يمنع البتر."""
+    """يمزج الطبقتين (87.5% / 12.5%) ويضيف الصدى ثم يرفع الصوت +30% فوق مستوى السرد."""
     filter_complex = (
         f"[0:a]volume={RVC_LAYERS[0]['weight']}[a0];"
         f"[1:a]volume={RVC_LAYERS[1]['weight']}[a1];"
         f"[a0][a1]amix=inputs=2:normalize=0,alimiter,"
         f"apad=pad_dur=0.6,{ECHO_FILTER},"
-        f"areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-50dB,areverse"
+        f"areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-50dB,areverse,"
+        f"loudnorm=I=-16:TP=-1.5:LRA=11,volume={RECITER_VOLUME_MULT:.2f},alimiter=limit=0.95"
     )
     subprocess.run(
         [
@@ -128,7 +130,7 @@ def main():
     )
 
     print("=" * 65)
-    print("🎙️ تطبيق البصمة v4.0-clean + v3.1-myvoice على آيات الحصري")
+    print("🎙️ تطبيق البصمة v4.0-clean + v3.1-myvoice (+30% مستوى القارئ)")
     print("=" * 65)
 
     current_time = 0.0
@@ -189,7 +191,7 @@ def main():
         out_wav = temp_dir / f"final_ayah_{k}.wav"
         mix_and_echo(clean_wav, rough_wav, out_wav)
         final_ayah_wavs[k] = out_wav
-        print(f"   ✅ جاهز: {k}", flush=True)
+        print(f"   ✅ جاهز (+30%): {k}", flush=True)
 
     concat_files = []
     for entry in timeline_entries:
