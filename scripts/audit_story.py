@@ -4,8 +4,7 @@ audit_story.py — المرحلة 2: التدقيق الشرعي واللغوي 
 - يدقق كل حدث بالكامل مع منع التكرار مع الأحداث السابقة.
 - يدمج ويزيل التكرار بين الفقرات التي تشرح نفس الآية (anchor_ayah) دون اختصار مخل.
 - يصحح أي ركاكة نحوية أو لغوية أو التباس لفظي عقدي.
-- يتحقق من تطابق الآيات مع الفقرات، ويمنع تسرب نص الآية الحرفي داخل السرد.
-- يفشل بأمان (Fail-Closed): لا ينقل أي نص غير مدقق إلى audited/.
+- يضبط thinkingConfig لتسريع الاستجابة ومنع انقطاع JSON.
 """
 
 import sys
@@ -31,6 +30,15 @@ def _advance_pool(pool):
         pool._advance()
     elif hasattr(pool, "advance"):
         pool.advance()
+
+
+def _thinking_config(model: str) -> dict | None:
+    m = model.lower()
+    if any(x in m for x in ["gemini-3", "gemini-4"]):
+        return {"thinkingLevel": "low"}
+    if "gemini-2.5" in m:
+        return {"thinkingBudget": 512}
+    return None
 
 
 def load_story_meta(story_id: str) -> dict:
@@ -65,49 +73,70 @@ def load_collected(story_id: str) -> list[dict]:
 def call_audit_llm(prompt: str) -> dict | None:
     pool = get_pool()
     breaker = get_breaker()
-    models = discover_and_cache(force=False)[:5]
+    models = discover_and_cache(force=False)[:6]
     if not models:
         return None
 
     for model in models:
         if breaker.is_open(f"model:{model}"):
             continue
+
+        use_thinking = True
         for attempt in range(2):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.1,
-                        "maxOutputTokens": 4096,
-                        "responseMimeType": "application/json",
-                    },
+                gen_cfg = {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 6144,
+                    "responseMimeType": "application/json",
                 }
-                r = requests.post(url, json=body, timeout=(20, 150))
+                if use_thinking:
+                    tc = _thinking_config(model)
+                    if tc:
+                        gen_cfg["thinkingConfig"] = tc
+
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
+                r = requests.post(url, json=body, timeout=(15, 90))
+
                 if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    resp = r.json()
+                    cand = (resp.get("candidates") or [{}])[0]
+                    finish = cand.get("finishReason", "")
+                    parts = cand.get("content", {}).get("parts", [])
                     if not parts:
+                        print(f"   ⚠️ {model}: رد فارغ (finish={finish})", flush=True)
                         break
-                    txt = parts[0].get("text", "")
+                    text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
+                    txt = "\n".join(text_parts) if text_parts else parts[-1].get("text", "")
                     s, e = txt.find("{"), txt.rfind("}")
                     if s == -1 or e <= s:
+                        print(f"   ⚠️ {model}: JSON ناقص (finish={finish})", flush=True)
                         break
                     parsed = json.loads(txt[s:e + 1])
                     _advance_pool(pool)
                     breaker.record_success(f"model:{model}")
                     return parsed
+                elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
+                    use_thinking = False
+                    continue
                 elif r.status_code == 429:
                     print(f"   ⏸️ {model}: 429", flush=True)
                     pool.mark_failed(75)
                     time.sleep(2)
-                elif r.status_code in (400, 404):
+                    continue
+                elif r.status_code in (400, 403, 404):
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
                     breaker.record_failure(f"model:{model}")
                     break
-                elif r.status_code >= 500:
-                    time.sleep(3)
+                else:
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    _advance_pool(pool)
+                    break
             except requests.exceptions.Timeout:
-                time.sleep(3)
+                print(f"   ⏱️ {model}: Timeout", flush=True)
+                _advance_pool(pool)
+                break
             except Exception as e:
                 print(f"   ⚠️ {model}: {str(e)[:80]}", flush=True)
                 break
@@ -164,7 +193,7 @@ def audit_event(event: dict, story_meta: dict, prior_summaries: list[str]) -> di
 
 المطلوب بدقة:
 1. دقّق كل فقرة سرد وأزل منها: أي مخالفة شرعية، أي حشو، وأي خروج عن الخطوة الزمنية الحالية ("{timeline_step}") أو تكرار للأحداث السابقة.
-2. **دمج التكرار داخل الحدث**: إذا كانت هناك فقرتان تشرحان نفس الآية (`anchor_ayah`) وتكرران نفس المعنى (مثل تكرار نفس الفكرة من تفسيرين مختلفين لنفس الآية)، فادمج الفوائد الموثقة في صياغة واحدة غنية ومتكاملة دون تكرار، ولا تختصر التفاصيل المهمة اختصاراً مخلاً.
+2. **دمج التكرار داخل الحدث**: إذا كانت هناك فقرتان تشرحان نفس الآية (`anchor_ayah`) وتكرران نفس المعنى، فادمج الفوائد الموثقة في صياغة واحدة غنية ومتكاملة دون تكرار، ولا تختصر التفاصيل المهمة اختصاراً مخلاً.
 3. **التدقيق اللغوي والنحوي الصارم**: صحّح فوراً أي خطأ نحوي أو ركاكة تعبيرية أو التباس لفظي (مثل خطأ التذكير والتأنيث أو تعبير غير فصيح مثل "استوت خلقه" ← "خلق الله").
 4. تأكد أن فقرات السرد لا تحتوي نصاً قرآنياً حرفياً بين ﴿ ﴾ (يجب أن تشرح المعنى والحدث، بينما الآية تبقى في `keep_ayah_refs` للتلاوة المستقلة).
 5. تأكد أن كل آية في `keep_ayah_refs` تخدم وتؤكد فقرات هذا الحدث فعلاً — واحذف أي آية مقحمة أو غير مرتبطة.
@@ -250,7 +279,7 @@ def audit_story(story_id: str, force: bool = False):
             if audited_ev:
                 break
             print(f"   🔁 إعادة محاولة التدقيق لـ {ev_id}...")
-            time.sleep(3)
+            time.sleep(2)
 
         if not audited_ev:
             shutil.rmtree(tmp_events, ignore_errors=True)
@@ -270,7 +299,7 @@ def audit_story(story_id: str, force: bool = False):
 
         prior_summaries.append(f"{ev_id}: {audited_ev['summary']}")
         print(f"   ✅ {ev_id}: {len(audited_ev['narrative'])} فقرة مدققة | {len(audited_ev['ayahs'])} آية | {audited_ev['changes']}")
-        time.sleep(1.5)
+        time.sleep(1)
 
     final_events = audited_root / "events"
     if final_events.exists():
