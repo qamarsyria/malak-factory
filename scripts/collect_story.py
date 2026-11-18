@@ -1,12 +1,10 @@
 """
-collect_story.py — المرحلة 1: جمع المصادر (نظام الحدث أولاً - Story-First)
-يتبع منهجية السرد الزمني:
-  1. يجمع السرد التاريخي القصصي من المصادر الموثوقة.
-  2. يقسم السرد إلى أحداث زمنية متسلسلة (Timeline).
-  3. يطابق الآيات القرآنية الداعمة لكل حدث (من المكتبة المحلية أو عبر API).
+collect_story.py — المرحلة 1: جمع المصادر (نظام السرد الزمني العميق)
+يقرأ دليل القصة (Story Guide) من stories.json، ويبني السرد القصصي بناءً عليه.
+يطبق قواعد "بداية الخلق" الصارمة، ويجلب الآيات من API.
 """
 
-import os, re, sys, json, gzip, time
+import os, re, sys, json, time
 from pathlib import Path
 from datetime import datetime, timezone
 import requests
@@ -22,17 +20,18 @@ from utilities import get_breaker, notify_telegram
 # المسارات
 # ═══════════════════════════════════════════════════════════
 STORIES_JSON       = _REPO_ROOT / "data" / "library" / "stories.json"
-AYAH_LIBRARY       = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
 STORIES_OUTPUT     = _REPO_ROOT / "data" / "stories"
 
 # ═══════════════════════════════════════════════════════════
 # استدعاء LLM
 # ═══════════════════════════════════════════════════════════
-def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: int = 8192):
+def call_llm(prompt: str, is_json: bool = True, timeout: int = 300, max_tokens: int = 8192):
     pool = get_pool()
     breaker = get_breaker()
     models = discover_and_cache(force=False)[:5]
-    if not models: return None
+    if not models:
+        print("❌ لا توجد موديلات متاحة!")
+        return None
 
     for model in models:
         if breaker.is_open(f"model:{model}"): continue
@@ -44,8 +43,11 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: 
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}
                 }
-                if is_json: body["generationConfig"]["responseMimeType"] = "application/json"
+                if is_json:
+                    body["generationConfig"]["responseMimeType"] = "application/json"
+                
                 r = requests.post(url, json=body, timeout=timeout)
+                
                 if r.status_code == 200:
                     parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     if not parts: break
@@ -61,36 +63,19 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 180, max_tokens: 
                         breaker.record_success(f"model:{model}")
                         return parsed
                     except json.JSONDecodeError: break
-                elif r.status_code == 429: pool.mark_failed(3600)
-                elif r.status_code in (404, 503): breaker.record_failure(f"model:{model}"); break
-            except Exception: pass
+                elif r.status_code == 429:
+                    pool.mark_failed(3600)
+                elif r.status_code in (404, 503):
+                    breaker.record_failure(f"model:{model}")
+                    break
+            except Exception as e:
+                pass
     return None
 
 # ═══════════════════════════════════════════════════════════
-# تحميل مكتبة الآيات (أو استخدام API كبديل)
+# جلب الآيات من API
 # ═══════════════════════════════════════════════════════════
-def load_ayah_library() -> dict:
-    lookup = {}
-    if AYAH_LIBRARY.exists():
-        try:
-            with gzip.open(AYAH_LIBRARY, "rt", encoding="utf-8") as f:
-                ayahs = json.load(f)
-            for a in ayahs:
-                s = a.get("surah", a.get("surah_number"))
-                v = a.get("ayah", a.get("ayah_number"))
-                txt = a.get("text", a.get("arabic_text", ""))
-                tafsir = a.get("tafsir", "")
-                if s and v and txt:
-                    lookup[f"{s}:{v}"] = {"text": txt, "tafsir": tafsir}
-            print(f"✅ تم تحميل {len(lookup)} آية من المكتبة المحلية.")
-        except Exception as e:
-            print(f"⚠️ فشل تحميل المكتبة المحلية: {e}")
-    else:
-        print("⚠️ المكتبة المحلية غير موجودة، سيتم استخدام API (AlQuran Cloud) لجلب الآيات.")
-    return lookup
-
 def fetch_ayah_from_api(surah: int, ayah: int) -> dict:
-    """جلب الآية والتفسير من API مباشرة"""
     try:
         text_url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/quran-uthmani"
         tafsir_url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/ar.muyassar"
@@ -106,42 +91,77 @@ def fetch_ayah_from_api(surah: int, ayah: int) -> dict:
             tafsir_data = r_tafsir.json()["data"]["text"]
             
         return {"text": text_data, "tafsir": tafsir_data}
-    except Exception as e:
-        print(f"   ⚠️ فشل API للآية {surah}:{ayah}: {str(e)[:50]}")
+    except Exception:
         return {"text": "", "tafsir": ""}
 
 # ═══════════════════════════════════════════════════════════
-# بناء القصة (الحدث أولاً)
+# بناء السرد القصصي من دليل القصة
 # ═══════════════════════════════════════════════════════════
-def build_story_from_timeline(story_title: str, era_name: str) -> dict:
-    print(f"🧠 جاري بناء الهيكل القصصي لـ '{story_title}' (العهد: {era_name})...")
+def build_narrative(story_data: dict) -> dict:
+    guide = story_data.get("story_guide", {})
+    title = story_data.get("title", "")
+    era = story_data.get("era", "")
     
-    prompt = f"""أنت مؤرخ إسلامي خبير ومتخصص في القصص القرآني والسيرة النبوية.
-مهمتك بناء "سرد تاريخي زمني" لقصة "{story_title}" من عهد "{era_name}".
+    core_idea = guide.get("core_idea", "")
+    timeline = guide.get("timeline", [])
+    style = guide.get("narrative_style", "")
+    strict_mode = guide.get("strict_mode", False)
+    special_rules = guide.get("special_rules", [])
 
-الخطوات المطلوبة (اتبعها بدقة):
-1. استخرج الأحداث الكبرى التي تتكون منها هذه القصة من المصادر الموثوقة (ابن كثير، الطبري، صحيح السيرة). 
-2. رتب هذه الأحداث زمنياً (من البداية إلى النهاية).
-3. لكل حدث، اكتب "سرداً قصصياً" موثقاً (بدون إسرائيليات) يشرح تفاصيل الحدث.
-4. بعد كتابة السرد، ابحث عن الآيات القرآنية التي تثبت وتدعم هذا السرد (استخدم مرجع "سورة:آية"، مثلاً "2:30").
+    timeline_text = "\n".join([f"- {t}" for t in timeline])
+    rules_text = "\n".join([f"- {r}" for r in special_rules])
 
-أعد النتيجة بصيغة JSON فقط، بدون أي نص إضافي، بهذا الشكل:
+    strict_instruction = ""
+    if strict_mode:
+        strict_instruction = """
+⚠️ وضع الصرامة القصوى (Strict Mode):
+هذه القصة من عهد "بداية الخلق". يُمنع منعاً باتاً استخدام أي إسرائيليات أو صيغ التمريض (مثل: يُروى، قيل). 
+الاعتماد فقط على آيات القرآن الكريم والأحاديث النبوية الصحيحة. 
+اللغة يجب أن تكون عقائدية، دقيقة، ومهيبة، تليق بمقام الألوهية.
+"""
+    else:
+        strict_instruction = """
+⚠️ تنبيه:
+يمكنك استخدام التفاصيل من كتب التفسير (ابن كثير، الطبري)، ولكن أي معلومة غير قطعية يجب أن تُسبق أو تُلحق بصيغة التمريض (يُروى، قيل) وعبارة (والله أعلم).
+"""
+
+    prompt = f"""أنت مؤرخ إسلامي خبير ومتخصص في السرد القصصي التاريخي.
+مهمتك كتابة سرد تاريخي زمني فائق التفصيل لقصة: "{title}".
+
+الفكرة الأساسية للقصة:
+{core_idea}
+
+الأسلوب المطلوب:
+{style}
+
+يجب عليك اتباع هذا التسلسل الزمني للأحداث بدقة تامة (لا تخرج عنه):
+{timeline_text}
+
+القواعد الصارمة:
+{rules_text}
+{strict_instruction}
+
+المطلوب تقسيم القصة إلى مشاهد (Events) بالترتيب الزمني. كل حدث يجب أن يحتوي على:
+- عنوان الحدث (title).
+- سرد قصصي مفصل (narrative) يصف الحدث بأسلوب أدبي مشوق ومترابط (بحجم 300-500 كلمة).
+- الآيات القرآنية التي تدعم هذا السرد (ayah_refs) بصيغة "سورة:آية" (مثال: "2:30").
+
+أعد النتيجة بصيغة JSON فقط:
 {{
   "events": [
     {{
       "event_id": "event_01",
       "title": "عنوان الحدث",
-      "narrative": "السرد القصصي الكامل للحدث هنا (300-500 كلمة)...",
-      "ayah_refs": ["2:30", "2:31"]
+      "narrative": "السرد القصصي المفصل هنا...",
+      "ayah_refs": ["2:30"]
     }}
   ]
 }}
 """
-    result = call_llm(prompt, is_json=True, timeout=240)
+
+    result = call_llm(prompt, is_json=True, timeout=300)
     if result and "events" in result:
         return result
-    
-    print("⚠️ فشل بناء القصة.")
     return {"events": []}
 
 # ═══════════════════════════════════════════════════════════
@@ -154,38 +174,40 @@ def main():
 
     story_id = sys.argv[1]
     print("=" * 60)
-    print(f"📚 جمع المصادر (نظام الحدث أولاً): {story_id}")
+    print(f"📚 جمع المصادر: {story_id}")
     print("=" * 60)
 
+    # قراءة المكتبة
+    if not STORIES_JSON.exists():
+        print(f"❌ ملف المكتبة غير موجود: {STORIES_JSON}")
+        sys.exit(1)
+        
     library = json.loads(STORIES_JSON.read_text(encoding="utf-8"))
     story = next((s for s in library["stories"] if s["id"] == story_id), None)
+    
     if not story:
-        print(f"❌ القصة '{story_id}' غير موجودة.")
+        print(f"❌ القصة '{story_id}' غير موجودة في stories.json")
         sys.exit(1)
 
-    story_title = story.get("title", story_id)
-    story_era = story.get("era", "")
-    print(f"📖 {story_title} | العهد: {story_era}")
+    print(f"📖 {story.get('title')} | العهد: {story.get('era')}")
 
     collected_dir = STORIES_OUTPUT / story_id / "collected"
     collected_dir.mkdir(parents=True, exist_ok=True)
     events_dir = collected_dir / "events"
     events_dir.mkdir(exist_ok=True)
 
-    print("\n🔍 تحميل مكتبة الآيات...")
-    ayah_lookup = load_ayah_library()
-
-    # 1. بناء السرد والأحداث من الـ AI
-    story_data = build_story_from_timeline(story_title, story_era)
+    # 1. بناء السرد
+    print("\n🧠 جاري بناء السرد القصصي (Deep Storytelling)...")
+    story_data = build_narrative(story)
     events = story_data.get("events", [])
 
     if not events:
-        print("❌ لم يتمكن النظام من بناء القصة.")
+        print("❌ فشل الذكاء الاصطناعي في بناء السرد.")
         sys.exit(1)
 
-    print(f"\n✅ تم بناء القصة: {len(events)} حدث.")
+    print(f"✅ تم بناء السرد: {len(events)} حدث.")
 
-    # 2. معالجة كل حدث
+    # 2. معالجة كل حدث وجلب الآيات
     total_ayahs = 0
     for ev in events:
         ev_id = ev.get("event_id", "event_01")
@@ -194,66 +216,46 @@ def main():
         refs = ev.get("ayah_refs", [])
         
         print(f"\n📦 {ev_id}: {ev_title}")
-        print(f"   📝 سرد: {len(ev_narrative_text.split())} كلمة | 📖 مراجع: {len(refs)}")
+        print(f"   📝 سرد: {len(ev_narrative_text.split())} كلمة | 📖 مراجع مقترحة: {len(refs)}")
         
         ev_ayahs = []
-        ev_narrative = []
+        ev_narrative = [{"source": "سرد تاريخي موثق", "text": ev_narrative_text}]
         
-        if ev_narrative_text:
-            ev_narrative.append({
-                "source": "السرد التاريخي الموثق",
-                "text": ev_narrative_text
-            })
-        
-        # جلب الآيات
         for ref in refs:
-            ayah_data = None
-            
-            # 1. البحث في المكتبة المحلية
-            if ref in ayah_lookup:
-                ayah_data = ayah_lookup[ref]
-            # 2. إذا لم توجد، جلبها من الـ API
-            else:
-                try:
-                    s, a = ref.split(":")
-                    ayah_data = fetch_ayah_from_api(int(s), int(a))
-                    time.sleep(0.3) # تجنب الحظر
-                except:
-                    pass
-            
-            if ayah_data and ayah_data["text"]:
+            try:
                 s, a = ref.split(":")
-                ev_ayahs.append({
-                    "ref": ref,
-                    "surah": int(s),
-                    "ayah": int(a),
-                    "surah_name": f"سورة {s}", 
-                    "text": ayah_data["text"]
-                })
+                ayah_data = fetch_ayah_from_api(int(s), int(a))
                 
-                if ayah_data.get("tafsir") and len(ayah_data["tafsir"]) > 30:
-                    ev_narrative.append({
-                        "source": f"التفسير الميسر - {ref}",
-                        "text": ayah_data["tafsir"],
-                        "related_ayah": ref
+                if ayah_data and ayah_data["text"]:
+                    ev_ayahs.append({
+                        "ref": ref,
+                        "surah": int(s),
+                        "ayah": int(a),
+                        "surah_name": f"سورة {s}", 
+                        "text": ayah_data["text"]
                     })
-            else:
-                print(f"   ⚠️ تعذر جلب الآية: {ref}")
+                    if ayah_data.get("tafsir"):
+                        ev_narrative.append({
+                            "source": f"التفسير الميسر - {ref}",
+                            "text": ayah_data["tafsir"],
+                            "related_ayah": ref
+                        })
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"   ⚠️ تخطي المرجع {ref}: {e}")
 
-        # حفظ الملفات
+        # حفظ
         if ev_narrative:
             ev_path = events_dir / ev_id
             ev_path.mkdir(exist_ok=True)
-            
             (ev_path / "ayahs.json").write_text(json.dumps(ev_ayahs, ensure_ascii=False, indent=2), encoding="utf-8")
             (ev_path / "narrative.json").write_text(json.dumps(ev_narrative, ensure_ascii=False, indent=2), encoding="utf-8")
             (ev_path / "meta.json").write_text(json.dumps({"event_id": ev_id, "title": ev_title}, ensure_ascii=False, indent=2), encoding="utf-8")
-            
             print(f"   ✅ تم الحفظ: {len(ev_ayahs)} آية، {len(ev_narrative)} سرد.")
             total_ayahs += len(ev_ayahs)
 
     print("\n" + "=" * 60)
-    print(f"🎉 اكتمل التجميع: {len(events)} حدث، {total_ayahs} آية إجمالاً.")
+    print(f"🎉 اكتمل التجميع: {len(events)} حدث، {total_ayahs} آية.")
     print("=" * 60)
 
 if __name__ == "__main__":
