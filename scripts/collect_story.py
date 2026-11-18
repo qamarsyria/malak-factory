@@ -4,7 +4,7 @@ collect_story.py — المرحلة 1: جمع المصادر الموثقة با
 - يسحب الآيات الحقيقية من المكتبة المحلية أو alquran.cloud.
 - يسحب التفاسير الحقيقية (ابن كثير، السعدي، الميسر، والطبري عند الحاجة) عبر spa5k/tafsir_api.
 - يبحث في صحيح البخاري وصحيح مسلم (محلياً أو عبر fawazahmed0/hadith-api).
-- يضبط thinkingConfig لنماذج Gemini 3.x لمنع البطء وانقطاع JSON، مع حفظ تقدم الخطوات (checkpoint).
+- يستبعد المفاتيح المعطوبة (401/403) فوراً دون إضاعة محاولات الموديلات، ويعالج 503 و thinkingConfig.
 """
 
 import os
@@ -342,7 +342,7 @@ def _thinking_config(model: str) -> dict | None:
 def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | None:
     pool = get_pool()
     breaker = get_breaker()
-    models = discover_and_cache(force=False)[:6]
+    models = discover_and_cache(force=False)[:10]
     if not models:
         return None
 
@@ -351,7 +351,8 @@ def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | N
             continue
 
         use_thinking = True
-        for attempt in range(2):
+        valid_tries = 0
+        while valid_tries < 2:
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -377,7 +378,6 @@ def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | N
                         print(f"   ⚠️ {model}: رد فارغ (finishReason={finish})", flush=True)
                         break
 
-                    # استبعاد أجزاء التفكير (thought=True) وأخذ النص الفعلي
                     text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
                     text = "\n".join(text_parts) if text_parts else parts[-1].get("text", "")
 
@@ -391,6 +391,10 @@ def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | N
                     breaker.record_success(f"model:{model}")
                     return parsed
 
+                elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                    pool.mark_dead(f"HTTP {r.status_code}")
+                    continue
+
                 elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
                     use_thinking = False
                     continue
@@ -398,6 +402,7 @@ def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | N
                 elif r.status_code == 429:
                     print(f"   ⏸️ {model}: 429 Rate Limit", flush=True)
                     pool.mark_failed(75)
+                    valid_tries += 1
                     time.sleep(2)
                     continue
 
@@ -408,14 +413,15 @@ def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | N
 
                 else:
                     print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    valid_tries += 1
                     _advance_pool(pool)
-                    time.sleep(2)
-                    break
+                    time.sleep(4)
+                    continue
 
             except requests.exceptions.Timeout:
                 print(f"   ⏱️ {model}: Timeout ({timeout}s)", flush=True)
                 _advance_pool(pool)
-                break  # انتقل فوراً للموديل التالي بدل الانتظار مرة ثانية
+                break
             except json.JSONDecodeError as je:
                 print(f"   ⚠️ {model}: JSON تالف ({je})", flush=True)
                 break
@@ -496,7 +502,11 @@ def process_timeline_step(
   "hadith_queries": ["كان الله ولم يكن", "أول ما خلق"]
 }}"""
 
-    plan = call_llm(retrieval_prompt, timeout=60, max_tokens=4096) or {}
+    plan = call_llm(retrieval_prompt, timeout=60, max_tokens=4096)
+    if plan is None:
+        print("   ⚠️ فشل تحديد الآيات — إعادة المحاولة...", flush=True)
+        return {}
+
     candidates = parse_ayah_refs(plan.get("candidate_ayahs", []))
 
     if any("الكرسي" in str(x) for x in story.get("sources", [])) and "كرسي" in step_text:
@@ -520,6 +530,10 @@ def process_timeline_step(
         })
 
     hadith_hits = store.search_hadiths(plan.get("hadith_queries", []), limit=4)
+
+    if not retrieved_verses and not hadith_hits:
+        print("   ⚠️ لم تُسحب آيات ولا أحاديث — إعادة المحاولة...", flush=True)
+        return {}
 
     verses_context_parts = []
     for rv in retrieved_verses:
@@ -675,7 +689,6 @@ def main():
         ev_id = f"event_{idx:02d}"
         ev_path = tmp_events_dir / ev_id
 
-        # استئناف من نقطة الحفظ إذا كان الحدث قد اكتمل في محاولة سابقة
         if (ev_path / "meta.json").exists() and (ev_path / "narrative.json").exists() and (ev_path / "ayahs.json").exists():
             meta = json.loads((ev_path / "meta.json").read_text(encoding="utf-8"))
             if meta.get("timeline_step") == step_text:
