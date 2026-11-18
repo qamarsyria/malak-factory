@@ -1,6 +1,7 @@
 """
 story_audio.py — المرحلة 4: بناء الصوت (نسخة Social طبيعية بقراء متعددين + نسخة YT بالحصري)
 - يحافظ على التشكيل السليم للسرد عبر التحقق الحرفي ليظهر بالتشكيل على الشاشة ويُقرأ بدقة.
+- يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و thinkingConfig أثناء التشكيل.
 - ينوّع القراء داخل الحلقة الواحدة في نسخة Social بصوت طبيعي صافٍ دون تشويه المدود.
 - يخزّن surah و ayah و surah_name و reciter داخل كل chunk لمنع انزياح الآيات في الفيديو.
 - يدعم: --mode social | yt | both
@@ -27,7 +28,7 @@ import requests
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utilities import cleanup_dir
+from utilities import cleanup_dir, get_breaker
 from model_discovery import discover_and_cache
 from gemini_tts_pool import get_pool, gemini_tts_with_pool
 
@@ -120,6 +121,15 @@ def _strip_tashkeel(text: str) -> str:
     return re.sub(r"[\u064B-\u065F\u0670\s،؛؟!.:]+", "", text or "")
 
 
+def _thinking_config(model: str) -> dict | None:
+    m = model.lower()
+    if any(x in m for x in ["gemini-3", "gemini-4"]):
+        return {"thinkingLevel": "low"}
+    if "gemini-2.5" in m:
+        return {"thinkingBudget": 256}
+    return None
+
+
 DIACRITIZE_PROMPT = """أضف التشكيل الكامل والدقيق (الحركات والشدة) للنص العربي التالي حسب النحو وسياق الجملة.
 
 قواعد صارمة جداً:
@@ -142,31 +152,61 @@ def smart_diacritize(text: str, cache_file: Path | None = None) -> str:
 
     try:
         pool = get_pool()
-        models = discover_and_cache(force=False)[:3]
+        breaker = get_breaker()
+        models = discover_and_cache(force=False)[:10]
+
         for model in models:
-            for _ in range(2):
-                key = pool.get_current()
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {
-                    "contents": [{"parts": [{"text": DIACRITIZE_PROMPT.format(text=text)}]}],
-                    "generationConfig": {"temperature": 0.05, "maxOutputTokens": 2500},
-                }
-                r = requests.post(url, json=body, timeout=60)
-                if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    if parts:
-                        diac = parts[0].get("text", "").strip()
-                        if _strip_tashkeel(diac) == _strip_tashkeel(text) and len(diac.split()) == len(text.split()):
+            if breaker.is_open(f"model:{model}"):
+                continue
+
+            use_thinking = True
+            valid_tries = 0
+            while valid_tries < 2:
+                try:
+                    key = pool.get_current()
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                    gen_cfg = {"temperature": 0.05, "maxOutputTokens": 4096}
+                    if use_thinking:
+                        tc = _thinking_config(model)
+                        if tc:
+                            gen_cfg["thinkingConfig"] = tc
+
+                    body = {"contents": [{"parts": [{"text": DIACRITIZE_PROMPT.format(text=text)}]}], "generationConfig": gen_cfg}
+                    r = requests.post(url, json=body, timeout=(15, 60))
+
+                    if r.status_code == 200:
+                        parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                        text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
+                        diac = ("\n".join(text_parts) if text_parts else (parts[-1].get("text", "") if parts else "")).strip()
+                        if diac and _strip_tashkeel(diac) == _strip_tashkeel(text) and len(diac.split()) == len(text.split()):
                             pool._advance()
+                            breaker.record_success(f"model:{model}")
                             if cache_file:
                                 cache_file.write_text(diac, encoding="utf-8")
                             return diac
                         print("   ⚠️ التشكيل غيّر أحرفاً في النص — الاحتفاظ بالأصل", flush=True)
                         return text
-                elif r.status_code == 429:
-                    pool.mark_failed(70)
-                    time.sleep(1.5)
-                elif r.status_code in (400, 404):
+                    elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                        pool.mark_dead(f"HTTP {r.status_code}")
+                        continue
+                    elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
+                        use_thinking = False
+                        continue
+                    elif r.status_code == 429:
+                        pool.mark_failed(75)
+                        valid_tries += 1
+                        time.sleep(2)
+                        continue
+                    elif r.status_code in (400, 403, 404):
+                        breaker.record_failure(f"model:{model}")
+                        break
+                    else:
+                        valid_tries += 1
+                        pool._advance()
+                        time.sleep(3)
+                        continue
+                except requests.exceptions.Timeout:
+                    pool._advance()
                     break
     except Exception as e:
         print(f"   ⚠️ تعذر التشكيل: {str(e)[:80]}", flush=True)
@@ -212,7 +252,6 @@ def get_dur(p) -> float:
 
 
 def normalize_wav(input_path: str, output_wav: str, gentle_loudnorm: bool = False) -> bool:
-    """يحول الملف لـ WAV موحد دون تغيير السرعة أو النغمة، مع قص الصمت الطرفي فقط وتلاشي ناعم."""
     try:
         filters = [
             "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB",
@@ -303,7 +342,6 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
     yt_wavs, social_wavs = [], []
     yt_meta, social_meta = [], []
 
-    # تدوير عشوائي للقراء داخل الحلقة في Social بدون تكرار نفس القارئ مرتين متتاليتين
     reciter_bag = RECITER_LIST_SOCIAL.copy()
     random.shuffle(reciter_bag)
     reciter_idx = 0
@@ -326,7 +364,6 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
         for idx, seg in enumerate(segments_list):
             stype = seg.get("type")
 
-            # ═══ السرد والنصوص الملقاة ═══
             if stype in ("narration", "teaser", "cta", "outro", "intro", "summary", "hadith", "fiqh", "adhkar"):
                 raw_text = sanitize_for_tts(seg.get("text", ""))
                 if not raw_text:
@@ -375,7 +412,6 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                     if build_social:
                         social_meta.append(meta_entry)
 
-            # ═══ الآيات القرآنية ═══
             elif stype == "quran":
                 s = int(seg.get("surah") or 0)
                 ayahs = [int(a) for a in (seg.get("ayah_numbers") or []) if str(a).isdigit()]
@@ -384,7 +420,6 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                     continue
                 display = seg.get("display") or (f"{sname}: {ayahs[0]}" if sname else f"{s}:{ayahs[0]}")
 
-                # ─── نسخة YT: الحصري الصافي (للبصمة v4) ───
                 if build_yt:
                     yt_chunks = []
                     for a in ayahs:
@@ -416,19 +451,26 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                             "chunks": yt_chunks,
                         })
 
-                # ─── نسخة Social: قارئ مختلف داخل الحلقة بصوت طبيعي صافٍ ───
                 if build_social:
                     reciter_social = next_social_reciter()
                     print(f"   🎙️ الآيات {s}:{ayahs} → {reciter_social['name']}", flush=True)
                     social_chunks = []
                     for a in ayahs:
-                        raw_mp3 = ep_cache / f"soc_{reciter_social['id']}_{s}_{a}.mp3"
-                        norm_wav = ep_cache / f"soc_{reciter_social['id']}_{s}_{a}_norm.wav"
+                        used_reciter = reciter_social
+                        raw_mp3 = ep_cache / f"soc_{used_reciter['id']}_{s}_{a}.mp3"
+                        norm_wav = ep_cache / f"soc_{used_reciter['id']}_{s}_{a}_norm.wav"
                         if not norm_wav.exists():
-                            if not download_human_ayah(s, a, reciter_social["id"], raw_mp3):
-                                # احتياطي قارئ بديل لو تعذر رابط آية معين
-                                fallback_r = RECITER_LIST_SOCIAL[0]
-                                if not download_human_ayah(s, a, fallback_r["id"], raw_mp3):
+                            if not download_human_ayah(s, a, used_reciter["id"], raw_mp3):
+                                ok_fb = False
+                                for fb in RECITER_LIST_SOCIAL:
+                                    fb_mp3 = ep_cache / f"soc_{fb['id']}_{s}_{a}.mp3"
+                                    if download_human_ayah(s, a, fb["id"], fb_mp3):
+                                        used_reciter = fb
+                                        raw_mp3 = fb_mp3
+                                        norm_wav = ep_cache / f"soc_{fb['id']}_{s}_{a}_norm.wav"
+                                        ok_fb = True
+                                        break
+                                if not ok_fb:
                                     raise RuntimeError(f"❌ فشل تحميل آية {s}:{a}")
                             normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=True)
 
@@ -437,7 +479,7 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                             "surah": s,
                             "ayah": a,
                             "surah_name": sname,
-                            "reciter": reciter_social["name"],
+                            "reciter": used_reciter["name"],
                             "text": f"{display} - آية {a}",
                             "duration": round(get_dur(norm_wav) + SILENCE_DUR, 3),
                         })
