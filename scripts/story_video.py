@@ -1,9 +1,9 @@
 """
-story_video.py — بناء الفيديو (نسختان بنفس المقاس)
-- yt.mp4    : 1080×1920
-- social.mp4: 1080×1920
-يقرأ نص الآيات الحقيقي من مكتبة الآيات ويطبعها كاملة.
-يدعم عرض اسم القارئ بناءً على اختيار story_audio.py.
+story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
+- كشف تلقائي لمحرك RAQM لتجنب تكسير الحروف والتشكيل نهائياً.
+- يقرأ surah و ayah و reciter من كل chunk لمنع انزياح الآيات أو أسماء القراء.
+- يقسّم الآيات أو الفقرات الطويلة تلقائياً على شرائح متتابعة ضمن مدة المقطع.
+- يعالج التزامن بدقة (-t + shortest=1) ويخرج mp4 مضبوط الحجم لتلغرام دون ترميز مزدوج.
 """
 
 import os
@@ -16,8 +16,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, features
 import arabic_reshaper
+
+try:
+    from bidi.algorithm import get_display as bidi_display
+except ImportError:
+    from bidi import get_display as bidi_display
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,46 +31,67 @@ from config import PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR
 from utilities import cleanup_dir
 from filters_loader import is_safe_tag, is_safe_query
 
-# ═══════════════════════════════════════════════════════════
-# الأبعاد
-# ═══════════════════════════════════════════════════════════
+HAS_RAQM = features.check("raqm")
+print(f"🔤 محرك الخط العربي: {'RAQM (مباشر)' if HAS_RAQM else 'Reshaper + Bidi (احتياطي)'}", flush=True)
+
 DIMENSIONS = {
-    "yt":     {"w": 1080, "h": 1920},
-    "social": {"w": 1080, "h": 1920},
+    "yt":     {"w": 720, "h": 1280},
+    "social": {"w": 720, "h": 1280},
 }
 
-# ═══════════════════════════════════════════════════════════
-# مكتبة الآيات (لجلب النص القرآني الحقيقي)
-# ═══════════════════════════════════════════════════════════
 AYAH_LIBRARY = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
-AYAH_LOOKUP = {}
+AYAH_LOOKUP: dict[str, str] = {}
+SURAH_NAME_LOOKUP: dict[int, str] = {}
+
 
 def load_ayahs():
-    global AYAH_LOOKUP
+    global AYAH_LOOKUP, SURAH_NAME_LOOKUP
     if AYAH_LOOKUP or not AYAH_LIBRARY.exists():
         return
     try:
         with gzip.open(AYAH_LIBRARY, "rt", encoding="utf-8") as f:
             ayahs = json.load(f)
         for a in ayahs:
-            s = a.get("surah", a.get("surah_number"))
-            v = a.get("ayah", a.get("ayah_number"))
-            txt = a.get("text", a.get("arabic_text", ""))
+            s = int(a.get("surah") or a.get("surah_number") or 0)
+            v = int(a.get("ayah") or a.get("ayah_number") or 0)
+            txt = a.get("text") or a.get("arabic_text") or ""
+            sname = str(a.get("surah_name", "")).replace("سورة ", "").replace("سُورَةُ ", "").strip()
             if s and v and txt:
                 AYAH_LOOKUP[f"{s}:{v}"] = txt
-        print(f"✅ تم تحميل {len(AYAH_LOOKUP)} آية من المكتبة.")
+                if sname and s not in SURAH_NAME_LOOKUP:
+                    SURAH_NAME_LOOKUP[s] = sname
+        print(f"✅ تم تحميل {len(AYAH_LOOKUP)} آية من المكتبة المحلية.")
     except Exception as e:
-        print(f"⚠️ فشل تحميل مكتبة الآيات: {e}")
+        print(f"⚠️ تعذر تحميل مكتبة الآيات: {e}")
 
-# ═══════════════════════════════════════════════════════════
-# الخط العربي
-# ═══════════════════════════════════════════════════════════
+
+def get_ayah_text_safe(surah: int, ayah: int) -> str:
+    key = f"{surah}:{ayah}"
+    if key in AYAH_LOOKUP:
+        return AYAH_LOOKUP[key]
+    try:
+        r = requests.get(f"https://api.alquran.cloud/v1/surah/{surah}/quran-uthmani", timeout=15)
+        if r.status_code == 200:
+            data = r.json().get("data", {})
+            sname = str(data.get("name", "")).replace("سورة ", "").replace("سُورَةُ ", "").strip()
+            if sname:
+                SURAH_NAME_LOOKUP[surah] = sname
+            for item in data.get("ayahs", []):
+                a_num = int(item.get("numberInSurah", 0))
+                if a_num:
+                    AYAH_LOOKUP[f"{surah}:{a_num}"] = item.get("text", "")
+            return AYAH_LOOKUP.get(key, "")
+    except Exception:
+        pass
+    return ""
+
+
 def find_arabic_font() -> str:
     candidates = [
-        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
         "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -73,368 +99,544 @@ def find_arabic_font() -> str:
     try:
         r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
         files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
+        for f in files:
+            if "Amiri" in f and "Bold" in f:
+                return f
         if files:
             return files[0]
     except Exception:
         pass
     raise RuntimeError("❌ لم يُعثر على أي خط عربي")
 
-try:
-    FONT_PATH = find_arabic_font()
-    print(f"✅ الخط: {FONT_PATH}")
-except Exception as e:
-    print(f"⚠️ {e}")
-    FONT_PATH = None
+
+FONT_PATH = find_arabic_font()
+print(f"✅ الخط: {FONT_PATH}", flush=True)
+
 
 # ═══════════════════════════════════════════════════════════
-# كلمات مفتاحية للبحث البصري
+# مطابقة المشاهد والبحث البصري الآمن
 # ═══════════════════════════════════════════════════════════
-WOMEN_KEYWORDS = ["مريم", "آسية", "خديجة", "عائشة", "فاطمة", "حفصة", "زينب", "المرأة", "النساء", "امرأة", "أم ", "بنت", "زوجة", "ابنة", "حامل", "الحمل", "وضع", "رضيع", "مولود", "ولادة"]
+WOMEN_KEYWORDS = [
+    "مريم", "آسية", "خديجة", "عائشة", "فاطمة", "حفصة", "زينب", "هاجر", "سارة",
+    "المرأة", "النساء", "امرأة", "زوجة", "ابنة", "حامل", "ولادة",
+]
 
-KEYWORD_MAP = {
-    "بحر": ["ocean waves cinematic", "sea sunset calm"], "موج": ["ocean waves", "stormy sea"], "ماء": ["river flowing", "waterfall nature"], "نهر": ["river flowing", "river sunset"], "عين": ["spring water nature", "natural spring"], "بئر": ["ancient well desert", "old stone well"], "مطر": ["rain falling", "rain window"], "سيل": ["flood water"], "طوفان": ["flood water", "massive flood"],
-    "جبل": ["mountain peak misty", "mountain sunset"], "صحراء": ["desert dunes sunset", "sahara desert"], "رمل": ["sand dunes desert", "desert sand wind"], "واد": ["valley mountains", "green valley"],
-    "سماء": ["sky clouds", "sky sunset"], "نجم": ["starry night milky way", "night sky stars"], "قمر": ["moon night sky", "full moon"], "غيم": ["clouds sky", "clouds sunset"],
-    "شجر": ["trees forest", "forest sun rays"], "نخل": ["palm trees", "date palm"], "زهر": ["flower bloom", "rose flower"], "ثمر": ["fruit tree", "orchard"],
-    "طير": ["bird flying", "bird nature"], "فراش": ["butterfly flowers", "butterfly garden"], "خيل": ["horse running", "horse desert"], "نحل": ["bee flower", "bee hive"],
-    "نار": ["fire flames", "campfire"], "بركان": ["volcano eruption", "lava volcano"], "زلزال": ["earthquake crack", "rocky cliff"],
-    "مسجد": ["mosque architecture", "mosque sunset"], "كعبة": ["kaaba mecca", "kaaba aerial"], "قدس": ["al aqsa mosque", "jerusalem mosque"], "شام": ["old damascus", "damascus aerial"], "دمشق": ["old damascus", "damascus city"], "مصر": ["ancient egypt nile", "nile river"],
-    "رؤيا": ["starry night sky", "clouds night"], "حلم": ["foggy morning", "sunrise mystical"], "ملك": ["ancient palace", "royal palace"], "سجن": ["dark stone wall", "cell window"], "عرش": ["ancient throne", "golden throne"],
-}
+KEYWORD_RULES = [
+    (r"\b(?:عرش|كرسي|سماوات|سماء|نجوم|كواكب|كون|فضاء|مصابيح)\b", ["milky way stars", "nebula cosmos", "starry night sky"]),
+    (r"\b(?:قمر|ليل|فجر|شمس|نهار)\b", ["moon night sky", "sunrise clouds", "sunset sky"]),
+    (r"\b(?:بحر|موج|يم|طوفان|نهر|ماء|أمطار|مطر|غيث)\b", ["ocean waves", "river flowing", "rain falling"]),
+    (r"\b(?:جبل|جبال|طور|صخر|حجر|كهف|غار)\b", ["mountain peak misty", "rocky cliff", "dark cave"]),
+    (r"\b(?:صحراء|رمل|رمال|بادية|بيداء|وادي)\b", ["desert dunes sunset", "sahara desert", "valley mountains"]),
+    (r"\b(?:شجر|نخل|بستان|جنة|زهر|ورد)\b", ["forest sun rays", "palm trees oasis", "green valley"]),
+    (r"\b(?:نار|جهنم|بركان|ريح|عاصفة|رعد|برق)\b", ["volcano lava", "storm clouds lightning", "fire flames"]),
+    (r"\b(?:مسجد|كعبة|مكة|المدينة|قدس|أقصى|صلاة|توحيد)\b", ["mosque sunset", "kaaba mecca", "islamic architecture"]),
+]
 
-NIQAB_SCENES = ["woman in niqab", "niqab woman praying", "niqab woman reading quran", "niqab woman walking", "muslim woman niqab"]
-DEFAULT_VISUALS = ["islamic architecture mosque sunset", "starry night desert", "ancient stone ruins", "mountain misty cinematic", "old damascus alley"]
+NIQAB_SCENES = ["woman in niqab", "niqab woman praying", "niqab woman reading quran"]
+DEFAULT_VISUALS = [
+    "starry night milky way",
+    "nebula space cosmos",
+    "islamic architecture mosque",
+    "mountain misty sunset",
+    "clouds sky sunset",
+]
 
-def scene_is_about_woman(text: str) -> bool:
-    return any(kw in text for kw in WOMEN_KEYWORDS)
 
 def suggest_visual_query(scene_text: str) -> str:
-    if scene_is_about_woman(scene_text):
-        return random.choice(NIQAB_SCENES)
-    for kw, queries in KEYWORD_MAP.items():
+    for kw in WOMEN_KEYWORDS:
         if kw in scene_text:
+            return random.choice(NIQAB_SCENES)
+    for pattern, queries in KEYWORD_RULES:
+        if re.search(pattern, scene_text):
             return random.choice(queries)
     return random.choice(DEFAULT_VISUALS)
 
+
 def detect_scenes(segments: list) -> list:
-    scenes = []
-    current = None
-    for seg in segments:
+    scenes, current = [], None
+    for idx, seg in enumerate(segments):
         stype = seg.get("type", "")
-        if stype == "narration" or stype in ("summary", "teaser", "cta"):
-            current = {"scene_id": len(scenes), "segments": [seg], "keywords_text": _extract_text(seg)}
+        text = " ".join(c.get("text", "") for c in seg.get("chunks", []))[:400]
+        if stype in ("narration", "summary", "teaser", "cta", "intro", "outro") or current is None:
+            current = {"scene_id": len(scenes), "seg_indices": [idx], "keywords_text": text}
             scenes.append(current)
         else:
-            if current is None:
-                current = {"scene_id": 0, "segments": [], "keywords_text": ""}
-                scenes.append(current)
-            current["segments"].append(seg)
+            current["seg_indices"].append(idx)
+            if not current["keywords_text"]:
+                current["keywords_text"] = text
     return scenes
 
-def _extract_text(seg: dict) -> str:
-    chunks = seg.get("chunks", [])
-    return " ".join(c.get("text", "") for c in chunks)[:500]
 
-# ═══════════════════════════════════════════════════════════
-# جلب وسائط
-# ═══════════════════════════════════════════════════════════
 def _find_local(query: str) -> str | None:
     slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
     for base in (Path(BG_VIDEOS_DIR), Path(BG_IMAGES_DIR)):
-        if not base.exists(): continue
+        if not base.exists():
+            continue
         for f in base.glob(f"*{slug}*"):
-            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".png") and f.stat().st_size > 10000:
+            if f.suffix.lower() in (".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png") and f.stat().st_size > 10000:
                 return str(f)
     return None
 
-def fetch_media(query: str, work_dir: Path, used_urls: set) -> str | None:
-    if not is_safe_query(query): return None
-    local = _find_local(query)
-    if local: return local
-    if not PIXABAY_KEY: return None
-    try:
-        r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": query, "video_type": "film", "safesearch": "true", "per_page": 30, "min_width": 1080}, timeout=20)
-        if r.status_code != 200: return None
-        hits = r.json().get("hits", [])
-        random.shuffle(hits)
-        for hit in hits:
-            if not is_safe_tag(hit.get("tags", "")): continue
-            url = (hit.get("videos", {}).get("large", {}).get("url") or hit.get("videos", {}).get("medium", {}).get("url"))
-            if not url or url in used_urls: continue
-            slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:30]
-            out = work_dir / f"vid_{slug}_{hit['id']}.mp4"
+
+def _make_islamic_fallback_bg(path: Path, W: int, H: int) -> str:
+    """يولد خلفية إسلامية متدرجة أنيقة عند تعذر جلب وسائط من الإنترنت."""
+    img = Image.new("RGB", (W, H), (10, 28, 38))
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        ratio = y / H
+        r = int(8 + 14 * ratio)
+        g = int(26 + 34 * ratio)
+        b = int(38 + 22 * ratio)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+    rng = random.Random(42)
+    for _ in range(70):
+        x, y = rng.randint(20, W - 20), rng.randint(20, H - 20)
+        sz = rng.randint(1, 2)
+        draw.ellipse([x - sz, y - sz, x + sz, y + sz], fill=(212, 175, 55))
+    draw.rectangle([18, 18, W - 18, H - 18], outline=(180, 145, 55), width=2)
+    img.save(path, "JPEG", quality=92)
+    return str(path)
+
+
+def fetch_media(query: str, work_dir: Path, used_urls: set, W: int, H: int, scene_id: int) -> str:
+    if is_safe_query(query):
+        local = _find_local(query)
+        if local:
+            return local
+
+        if PIXABAY_KEY:
+            # 1. البحث في فيديوهات Pixabay
             try:
-                with open(out, "wb") as f:
-                    for chunk in requests.get(url, timeout=60, stream=True).iter_content(8192):
-                        f.write(chunk)
-                if out.stat().st_size > 50000:
-                    used_urls.add(url)
-                    return str(out)
-            except Exception: pass
-    except Exception: pass
-    return None
+                r = requests.get(
+                    "https://pixabay.com/api/videos/",
+                    params={
+                        "key": PIXABAY_KEY, "q": query, "video_type": "film",
+                        "safesearch": "true", "per_page": 25, "min_width": 720,
+                    },
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    hits = r.json().get("hits", [])
+                    random.shuffle(hits)
+                    for hit in hits:
+                        if not is_safe_tag(hit.get("tags", "")):
+                            continue
+                        vids = hit.get("videos", {})
+                        url = vids.get("medium", {}).get("url") or vids.get("large", {}).get("url")
+                        if not url or url in used_urls:
+                            continue
+                        out = work_dir / f"vid_{scene_id}_{hit['id']}.mp4"
+                        with open(out, "wb") as f:
+                            for ch in requests.get(url, timeout=60, stream=True).iter_content(16384):
+                                f.write(ch)
+                        if out.stat().st_size > 50000:
+                            used_urls.add(url)
+                            return str(out)
+            except Exception:
+                pass
+
+            # 2. احتياطي: صور عمودية عالية الجودة من Pixabay
+            try:
+                r = requests.get(
+                    "https://pixabay.com/api/",
+                    params={
+                        "key": PIXABAY_KEY, "q": query, "image_type": "photo",
+                        "orientation": "vertical", "safesearch": "true", "per_page": 25, "min_width": 720,
+                    },
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    hits = r.json().get("hits", [])
+                    random.shuffle(hits)
+                    for hit in hits:
+                        if not is_safe_tag(hit.get("tags", "")):
+                            continue
+                        url = hit.get("largeImageURL") or hit.get("webformatURL")
+                        if not url or url in used_urls:
+                            continue
+                        out = work_dir / f"img_{scene_id}_{hit['id']}.jpg"
+                        out.write_bytes(requests.get(url, timeout=30).content)
+                        if out.stat().st_size > 20000:
+                            used_urls.add(url)
+                            return str(out)
+            except Exception:
+                pass
+
+    fb = work_dir / f"fallback_{scene_id}.jpg"
+    return _make_islamic_fallback_bg(fb, W, H)
+
 
 # ═══════════════════════════════════════════════════════════
-# رسم النص
+# تشكيل النص العربي وتجهيز الشرائح (بدون أخطاء RAQM)
 # ═══════════════════════════════════════════════════════════
-def _shape(text: str) -> str:
-    return arabic_reshaper.reshape(str(text))
+def _load_font(size: int):
+    if HAS_RAQM:
+        return ImageFont.truetype(FONT_PATH, size, layout_engine=ImageFont.Layout.RAQM)
+    return ImageFont.truetype(FONT_PATH, size)
 
-def _wrap(text: str, font, max_w: int, draw) -> list:
-    words = text.split()
-    lines, current = [], ""
-    for w in words:
-        trial = (current + " " + w).strip() if current else w
-        bbox = draw.textbbox((0, 0), trial, font=font)
-        if bbox[2] - bbox[0] <= max_w:
-            current = trial
-        else:
-            if current: lines.append(current)
-            current = w
-    if current: lines.append(current)
+
+def _prepare_draw_text(line: str) -> str:
+    if HAS_RAQM:
+        return line
+    return bidi_display(arabic_reshaper.reshape(line))
+
+
+def _measure_line(draw, line: str, font) -> tuple[int, int]:
+    txt = _prepare_draw_text(line)
+    if HAS_RAQM:
+        bbox = draw.textbbox((0, 0), txt, font=font, direction="rtl")
+    else:
+        bbox = draw.textbbox((0, 0), txt, font=font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _draw_centered(draw, y: int, line: str, font, fill, stroke_w: int, stroke_fill, W: int):
+    txt = _prepare_draw_text(line)
+    if HAS_RAQM:
+        bbox = draw.textbbox((0, 0), txt, font=font, direction="rtl")
+        x = (W - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y), txt, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill, direction="rtl")
+    else:
+        bbox = draw.textbbox((0, 0), txt, font=font)
+        x = (W - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y), txt, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
+
+
+def _wrap_logical(text: str, font, max_w: int, draw) -> list[str]:
+    lines = []
+    for para in text.splitlines():
+        words = para.split()
+        if not words:
+            continue
+        current = ""
+        for w in words:
+            trial = f"{current} {w}".strip() if current else w
+            tw, _ = _measure_line(draw, trial, font)
+            if tw <= max_w:
+                current = trial
+            else:
+                if current:
+                    lines.append(current)
+                current = w
+        if current:
+            lines.append(current)
     return lines
 
-def _draw_centered(draw, y, text, font, fill, stroke_w, stroke_fill, canvas_w):
-    shaped = _shape(text)
-    bbox = draw.textbbox((0, 0), shaped, font=font)
-    x = (canvas_w - (bbox[2] - bbox[0])) // 2
-    draw.text((x, y), shaped, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
 
-def _fit_text(text, font_path, max_width, max_height, start_size, min_size):
+def _layout_slides(text: str, max_w: int, max_h: int, start_size: int = 48, min_size: int = 34) -> tuple[object, list[list[str]], int]:
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
+
     for size in range(start_size, min_size - 1, -2):
-        try:
-            font = ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
-        except Exception:
-            font = ImageFont.truetype(font_path, size)
-        lines = _wrap(_shape(text), font, max_width, ddraw)
-        if len(lines) * int(size * 1.6) <= max_height:
-            return font, lines, int(size * 1.6)
-    font = ImageFont.truetype(font_path, min_size)
-    return font, _wrap(_shape(text), font, max_width, ddraw), int(min_size * 1.6)
+        font = _load_font(size)
+        lh = int(size * 1.65)
+        lines = _wrap_logical(text, font, max_w, ddraw)
+        if len(lines) * lh <= max_h:
+            return font, [lines], lh
 
-def make_caption_overlay(chunk_text, display_ref, reciter_name, is_quran, ep_title, out_path, W, H, accent_color="#FFD700", show_reciter=True):
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    if not FONT_PATH: raise RuntimeError("لا يمكن رسم النص بدون خط عربي")
+    # إذا كان النص طويلاً جداً (مثل آية طويلة): نقسمه إلى شرائح متوازنة على خط min_size
+    font = _load_font(min_size)
+    lh = int(min_size * 1.65)
+    lines = _wrap_logical(text, font, max_w, ddraw)
+    max_lines_per_slide = max(2, max_h // lh)
+    slides = [lines[i:i + max_lines_per_slide] for i in range(0, len(lines), max_lines_per_slide)]
+    return font, slides, lh
 
-    # عنوان الحلقة
-    if ep_title:
-        ep_title = re.sub(r'[a-zA-Z0-9]', '', ep_title)
-        try: ft = ImageFont.truetype(FONT_PATH, 38, layout_engine=ImageFont.Layout.RAQM)
-        except Exception: ft = ImageFont.truetype(FONT_PATH, 38)
-        _draw_centered(draw, 50, ep_title, ft, "#D4AF37", 5, "black", W)
 
-    # تنظيف النص
-    chunk_text = re.sub(r'[*#@_\[\]\(\)]', '', chunk_text or "")
-    chunk_text = re.sub(r'[a-zA-Z0-9]', '', chunk_text).strip()
-    chunk_text = chunk_text.replace("ﷺ", "صلى الله عليه وسلم")
+def make_caption_slides(
+    chunk_text: str,
+    display_ref: str,
+    reciter_name: str,
+    is_quran: bool,
+    ep_title: str,
+    base_png_path: Path,
+    W: int,
+    H: int,
+    c_dur: float,
+    show_reciter: bool = True,
+) -> list[tuple[Path, float]]:
+    clean_body = re.sub(r"[*#@_\[\]]", "", chunk_text or "")
+    clean_body = re.sub(r"[a-zA-Z]", "", clean_body).strip()
+    clean_body = clean_body.replace("ﷺ", "صلى الله عليه وسلم")
 
-    if display_ref:
-        display_ref = re.sub(r'[a-zA-Z]', '', display_ref).strip()
+    if not clean_body:
+        return []
 
-    if not chunk_text and not is_quran:
-        overlay.save(out_path)
-        return
+    font, slides_lines, lh = _layout_slides(
+        clean_body,
+        max_w=W - 90,
+        max_h=H - 360,
+        start_size=48 if not is_quran else 46,
+        min_size=32,
+    )
 
-    color = accent_color if is_quran else "white"
-    display_text = chunk_text + (f"\n﴿ {display_ref} ﴾" if is_quran and display_ref else "")
+    total_chars = max(1, sum(len(" ".join(sl)) for sl in slides_lines))
+    outputs: list[tuple[Path, float]] = []
 
-    font, lines, lh = _fit_text(display_text, FONT_PATH, W - 120, H - 400, 70, 45)
-    total_h = len(lines) * lh
-    y = max(200, (H - total_h) // 2)
+    title_font = _load_font(26)
+    ref_font = _load_font(28)
+    reciter_font = _load_font(24)
+    wm_font = _load_font(28)
 
-    for i, line in enumerate(lines):
-        line_color = color if i < len(lines) - 1 or not is_quran else "#D4AF37"
-        _draw_centered(draw, y, line, font, line_color, 6 if not is_quran else 8, "black", W)
-        y += lh
+    clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
 
-    # اسم القارئ (بيظهر في النسخة السوشيال فقط)
-    if is_quran and reciter_name and show_reciter:
-        try: rfont = ImageFont.truetype(FONT_PATH, 32, layout_engine=ImageFont.Layout.RAQM)
-        except Exception: rfont = ImageFont.truetype(FONT_PATH, 32)
-        _draw_centered(draw, H - 180, f"بصوت: {reciter_name}", rfont, "#E8D5A0", 4, "black", W)
+    for s_idx, lines in enumerate(slides_lines):
+        slide_chars = max(1, len(" ".join(lines)))
+        slide_dur = max(0.3, c_dur * (slide_chars / total_chars)) if len(slides_lines) > 1 else c_dur
 
-    # watermark
-    try: wm_font = ImageFont.truetype(FONT_PATH, 40, layout_engine=ImageFont.Layout.RAQM)
-    except Exception: wm_font = ImageFont.truetype(FONT_PATH, 40)
-    wm_text = _shape("ملاك المعرفة")
-    wm_bbox = draw.textbbox((0, 0), wm_text, font=wm_font)
-    draw.text((W - (wm_bbox[2] - wm_bbox[0]) - 40, H - 80), wm_text, font=wm_font, fill="#D4AF37", stroke_width=4, stroke_fill="black")
-    overlay.save(out_path)
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # عنوان الحلقة بالأعلى (يحتفظ برقم الحلقة!)
+        if clean_title:
+            _draw_centered(draw, 36, clean_title, title_font, "#D4AF37", 4, "black", W)
+
+        # حساب ارتفاع النص والمرجع في الوسط
+        ref_extra = 55 if (is_quran and display_ref) else 0
+        total_h = len(lines) * lh + ref_extra
+        y = max(140, (H - total_h) // 2)
+
+        text_color = "#FFE066" if is_quran else "#FFFFFF"
+        for line in lines:
+            _draw_centered(draw, y, line, font, text_color, 5, "black", W)
+            y += lh
+
+        if is_quran and display_ref:
+            _draw_centered(draw, y + 12, display_ref, ref_font, "#D4AF37", 4, "black", W)
+
+        if is_quran and reciter_name and show_reciter:
+            _draw_centered(draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", 3, "black", W)
+
+        # العلامة المائية
+        wm_txt = _prepare_draw_text("ملاك المعرفة")
+        if HAS_RAQM:
+            wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
+            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28
+            draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", stroke_width=3, stroke_fill="black", direction="rtl")
+        else:
+            wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font)
+            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28
+            draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", stroke_width=3, stroke_fill="black")
+
+        png_path = base_png_path.with_name(f"{base_png_path.stem}_s{s_idx}.png")
+        overlay.save(png_path)
+        outputs.append((png_path, slide_dur))
+
+    # موازنة مجموع مدد الشرائح ليطابق c_dur بالضبط
+    if len(outputs) > 1:
+        diff = c_dur - sum(d for _, d in outputs)
+        last_p, last_d = outputs[-1]
+        outputs[-1] = (last_p, max(0.3, last_d + diff))
+
+    return outputs
+
 
 # ═══════════════════════════════════════════════════════════
-# معالجة خلفية
+# تجهيز الخلفيات وبناء الفيديو المتزامن
 # ═══════════════════════════════════════════════════════════
 def get_duration(path) -> float:
-    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True)
-    try: return float(r.stdout.strip())
-    except Exception: return 0.0
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
 
 def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Path):
-    is_img = bg_file.endswith(('.jpg', '.jpeg', '.png'))
+    is_img = bg_file.lower().endswith((".jpg", ".jpeg", ".png"))
     input_flags = ["-loop", "1"] if is_img else ["-stream_loop", "-1"]
-    vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30,format=yuv420p,setsar=1")
-    subprocess.run(["ffmpeg", "-y"] + input_flags + ["-i", bg_file, "-t", str(duration), "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(out_path)], check=True, capture_output=True)
+    vf = (
+        f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+        f"crop={W}:{H},fps=30,"
+        f"eq=brightness=-0.12:contrast=1.06,"
+        f"format=yuv420p,setsar=1"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y"] + input_flags + [
+            "-i", bg_file, "-t", f"{duration:.3f}", "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+            str(out_path),
+        ],
+        check=True, capture_output=True,
+    )
 
-# ═══════════════════════════════════════════════════════════
-# بناء فيديو
-# ═══════════════════════════════════════════════════════════
-def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, scene_bg_map: dict, work_dir: Path, show_reciter: bool = True):
-    load_ayahs() # تحميل المكتبة قبل البدء
-    segments = meta["segments"]
-    ep_title = meta.get("title", "")
-    scenes = detect_scenes(segments)
 
-    # إعداد خلفيات
-    scene_bg_videos = {}
-    for scene in scenes:
-        sid = scene["scene_id"]
-        bg = scene_bg_map.get(sid)
-        if not bg: continue
-        scene_duration = sum(c.get("duration", 0) for seg in scene["segments"] for c in seg.get("chunks", []))
-        if scene_duration <= 0: continue
-        bg_video = work_dir / f"bg_scene_{sid}_{W}x{H}.mp4"
-        prep_background(bg, scene_duration, W, H, bg_video)
-        scene_bg_videos[sid] = bg_video
-
-    concat_lines = []
-    for seg_idx, seg in enumerate(segments):
-        seg_duration = sum(c.get("duration", 0) for c in seg.get("chunks", []))
-        if seg_duration <= 0: continue
-
-        scene_id = None
-        for scene in scenes:
-            if seg in scene["segments"]:
-                scene_id = scene["scene_id"]
-                break
-
-        bg_video = scene_bg_videos.get(scene_id)
-        if not bg_video:
-            black = work_dir / "black.jpg"
-            if not black.exists(): Image.new("RGB", (W, H), (10, 10, 10)).save(black)
-            bg_video = work_dir / f"black_scene_{scene_id}.mp4"
-            prep_background(str(black), seg_duration, W, H, bg_video)
-
-        is_quran = seg.get("type") == "quran"
-        reciter = seg.get("reciter", "") # بياخد اسم القارئ من الـ Meta
-        chunks = seg.get("chunks", [])
-
-        text_inputs, text_filters = [], []
-        actual_chunks = 0
-
-        for c_idx, chunk_data in enumerate(chunks):
-            c_text = chunk_data.get("text", "")
-            c_dur = chunk_data.get("duration", 0)
-            display_ref = ""
-            
-            # 🟢 التعديل الجوهري: جلب نص الآية الحقيقي بدل المرجع
-            if is_quran:
-                surah = seg.get("surah")
-                ayahs = seg.get("ayah_numbers", [])
-                # بنجيب رقم الآية اللي بيقراها دلوقتي من قائمة الآيات
-                if c_idx < len(ayahs):
-                    a_num = ayahs[c_idx]
-                    real_text = AYAH_LOOKUP.get(f"{surah}:{a_num}", "")
-                    if real_text:
-                        c_text = f"﴿ {real_text} ﴾"
-                        display_ref = f"{seg.get('surah_name', '')}: {a_num}"
-
-            if not c_text.strip(): continue
-
-            overlay_png = work_dir / f"ov_{seg_idx}_{c_idx}.png"
-            make_caption_overlay(c_text, display_ref, reciter, is_quran, ep_title, overlay_png, W, H, show_reciter=show_reciter)
-            text_inputs.extend(["-loop", "1", "-i", str(overlay_png)])
-            text_filters.append(f"[{actual_chunks}:v]trim=start=0:end={c_dur},setpts=PTS-STARTPTS,format=rgba[t{actual_chunks}]")
-            actual_chunks += 1
-
-        text_video_path = work_dir / f"text_{seg_idx}.mov"
-        if actual_chunks == 0:
-            subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={W}x{H}:d={seg_duration},format=rgba", "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)], check=True, capture_output=True)
-        else:
-            text_filters.append(f"{''.join(f'[t{k}]' for k in range(actual_chunks))}concat=n={actual_chunks}:v=1:a=0[text]")
-            subprocess.run(["ffmpeg", "-y"] + text_inputs + ["-filter_complex", ";".join(text_filters), "-map", "[text]", "-t", str(seg_duration), "-c:v", "qtrle", "-pix_fmt", "rgba", str(text_video_path)], check=True, capture_output=True)
-
-        out_seg = work_dir / f"seg_{seg_idx}.mp4"
-        subprocess.run(["ffmpeg", "-y", "-i", str(bg_video), "-i", str(text_video_path), "-filter_complex", "[0:v][1:v]overlay", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", str(out_seg)], check=True, capture_output=True)
-        concat_lines.append(f"file '{out_seg}'")
-
-    audio_dur = get_duration(audio_path)
-    (work_dir / f"concat_{W}x{H}.txt").write_text("\n".join(concat_lines), encoding="utf-8")
-
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work_dir / f"concat_{W}x{H}.txt"), "-i", audio_path, "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", str(audio_dur), output_mp4], check=True, capture_output=True)
-    size_mb = Path(output_mp4).stat().st_size / 1024 / 1024
-    print(f"✅ {Path(output_mp4).name}: {size_mb:.1f} MB | {audio_dur/60:.1f} دقيقة")
-
-# ═══════════════════════════════════════════════════════════
-# تجهيز الخلفيات
-# ═══════════════════════════════════════════════════════════
-def prepare_scene_backgrounds(meta: dict, work_dir: Path) -> dict:
+def prepare_scene_backgrounds(meta: dict, work_dir: Path, W: int, H: int) -> tuple[list, dict]:
     scenes = detect_scenes(meta["segments"])
     used_urls = set()
     scene_bg_map = {}
-    print(f"🎨 تحضير {len(scenes)} خلفية...")
+    print(f"🎨 تحضير {len(scenes)} خلفية...", flush=True)
     for scene in scenes:
         sid = scene["scene_id"]
         query = suggest_visual_query(scene["keywords_text"])
         label = "🕌 منقبة" if query in NIQAB_SCENES else "🎬"
-        print(f"   {label} Scene {sid}: '{query}'")
-        bg = fetch_media(query, work_dir, used_urls)
-        if bg: scene_bg_map[sid] = bg
-        else: print(f"   ⚠️ Scene {sid}: لا خلفية")
-    return scene_bg_map
+        print(f"   {label} Scene {sid}: '{query}'", flush=True)
+        scene_bg_map[sid] = fetch_media(query, work_dir, used_urls, W, H, sid)
+    return scenes, scene_bg_map
 
-# ═══════════════════════════════════════════════════════════
-# الدوال الرئيسية
-# ═══════════════════════════════════════════════════════════
+
+def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, work_dir: Path, show_reciter: bool = True):
+    load_ayahs()
+    segments = meta["segments"]
+    ep_title = meta.get("title", "")
+    scenes, scene_bg_map = prepare_scene_backgrounds(meta, work_dir, W, H)
+
+    seg_to_scene = {}
+    scene_bg_videos = {}
+    for scene in scenes:
+        sid = scene["scene_id"]
+        for s_idx in scene["seg_indices"]:
+            seg_to_scene[s_idx] = sid
+        scene_dur = sum(
+            c.get("duration", 0)
+            for s_idx in scene["seg_indices"]
+            for c in segments[s_idx].get("chunks", [])
+        )
+        if scene_dur > 0:
+            bg_mp4 = work_dir / f"bg_scene_{sid}_{W}x{H}.mp4"
+            prep_background(scene_bg_map[sid], scene_dur + 0.5, W, H, bg_mp4)
+            scene_bg_videos[sid] = bg_mp4
+
+    scene_offsets = {sc["scene_id"]: 0.0 for sc in scenes}
+    concat_lines = []
+
+    for seg_idx, seg in enumerate(segments):
+        chunks = seg.get("chunks", [])
+        seg_duration = sum(c.get("duration", 0) for c in chunks)
+        if seg_duration <= 0:
+            continue
+
+        sid = seg_to_scene[seg_idx]
+        bg_video = scene_bg_videos[sid]
+        bg_offset = scene_offsets[sid]
+        scene_offsets[sid] += seg_duration
+
+        is_quran = seg.get("type") == "quran"
+        ayahs = seg.get("ayah_numbers", [])
+
+        slide_inputs = []
+        slide_filters = []
+        slide_count = 0
+
+        for c_idx, chunk_data in enumerate(chunks):
+            c_dur = float(chunk_data.get("duration", 0))
+            if c_dur <= 0:
+                continue
+
+            c_text = chunk_data.get("text", "")
+            reciter = chunk_data.get("reciter") or seg.get("reciter", "")
+            display_ref = ""
+
+            if is_quran:
+                surah = int(chunk_data.get("surah") or seg.get("surah") or 0)
+                a_num = int(chunk_data.get("ayah") or (ayahs[c_idx] if c_idx < len(ayahs) else 0))
+                sname = (
+                    chunk_data.get("surah_name")
+                    or seg.get("surah_name")
+                    or SURAH_NAME_LOOKUP.get(surah, "")
+                ).replace("سورة ", "").strip()
+
+                real_text = get_ayah_text_safe(surah, a_num) if (surah and a_num) else ""
+                if real_text:
+                    c_text = f"﴿ {real_text} ﴾"
+                    display_ref = f"[ سورة {sname} : {a_num} ]" if sname else f"[ {surah}:{a_num} ]"
+
+            slides = make_caption_slides(
+                chunk_text=c_text,
+                display_ref=display_ref,
+                reciter_name=reciter,
+                is_quran=is_quran,
+                ep_title=ep_title,
+                base_png_path=work_dir / f"ov_{seg_idx}_{c_idx}.png",
+                W=W,
+                H=H,
+                c_dur=c_dur,
+                show_reciter=show_reciter,
+            )
+
+            for png_path, s_dur in slides:
+                in_idx = slide_count + 1  # 0 مخصص لفيديو الخلفية
+                slide_inputs.extend(["-loop", "1", "-t", f"{s_dur:.3f}", "-i", str(png_path)])
+                slide_filters.append(f"[{in_idx}:v]fps=30,format=rgba[t{slide_count}]")
+                slide_count += 1
+
+        out_seg = work_dir / f"seg_{seg_idx}.mp4"
+        bg_cmd = ["-ss", f"{bg_offset:.3f}", "-t", f"{seg_duration:.3f}", "-i", str(bg_video)]
+
+        if slide_count == 0:
+            subprocess.run(
+                ["ffmpeg", "-y"] + bg_cmd + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p", str(out_seg)],
+                check=True, capture_output=True,
+            )
+        else:
+            concat_txt = "".join(f"[t{k}]" for k in range(slide_count))
+            fc = ";".join(slide_filters) + f";{concat_txt}concat=n={slide_count}:v=1:a=0[txt];[0:v][txt]overlay=shortest=1,format=yuv420p[v]"
+            subprocess.run(
+                ["ffmpeg", "-y"] + bg_cmd + slide_inputs + [
+                    "-filter_complex", fc, "-map", "[v]",
+                    "-t", f"{seg_duration:.3f}",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+                    str(out_seg),
+                ],
+                check=True, capture_output=True,
+            )
+
+        concat_lines.append(f"file '{out_seg.resolve()}'")
+
+    audio_dur = get_duration(audio_path)
+    concat_file = work_dir / f"concat_{W}x{H}.txt"
+    concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
+
+    Path(output_mp4).parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_file),
+            "-i", audio_path,
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-shortest",
+            output_mp4,
+        ],
+        check=True, capture_output=True,
+    )
+    size_mb = Path(output_mp4).stat().st_size / 1024 / 1024
+    print(f"✅ {Path(output_mp4).name}: {size_mb:.1f} MB | {audio_dur/60:.1f} دقيقة", flush=True)
+
+
 def main():
     if len(sys.argv) < 5:
         print("الاستخدام: python story_video.py <meta.json> <audio.mp3> <output.mp4> <yt|social>")
         sys.exit(1)
 
     meta_path, audio_path, output_path, orientation = sys.argv[1:5]
-    if orientation not in DIMENSIONS: sys.exit(1)
+    if orientation not in DIMENSIONS:
+        print(f"❌ وضع غير معروف: {orientation}")
+        sys.exit(1)
 
     dims = DIMENSIONS[orientation]
     meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     work_dir = Path(tempfile.mkdtemp(prefix=f"ep_{orientation}_"))
 
     try:
-        scene_bg_map = prepare_scene_backgrounds(meta, work_dir)
-        show_reciter = (orientation == "social")
-        build_video(meta, audio_path, output_path, dims["w"], dims["h"], scene_bg_map, work_dir, show_reciter=show_reciter)
+        build_video(
+            meta=meta,
+            audio_path=audio_path,
+            output_mp4=output_path,
+            W=dims["w"],
+            H=dims["h"],
+            work_dir=work_dir,
+            show_reciter=(orientation == "social"),
+        )
     finally:
         cleanup_dir(work_dir)
 
-def main_both():
-    if len(sys.argv) < 6:
-        print("الاستخدام: python story_video.py --both <yt_meta> <yt_mp3> <social_meta> <social_mp3>")
-        sys.exit(1)
-
-    yt_meta_path, yt_audio, social_meta_path, social_audio = sys.argv[2:6]
-    yt_meta = json.loads(Path(yt_meta_path).read_text(encoding="utf-8"))
-    social_meta = json.loads(Path(social_meta_path).read_text(encoding="utf-8"))
-    work_dir = Path(tempfile.mkdtemp(prefix="ep_video_both_"))
-
-    try:
-        scene_bg_map = prepare_scene_backgrounds(yt_meta, work_dir)
-
-        print("\n📹 بناء YT (1080×1920)...")
-        yt_out = f"videos/{Path(yt_meta_path).stem.replace('_meta', '')}.mp4"
-        Path(yt_out).parent.mkdir(parents=True, exist_ok=True)
-        build_video(yt_meta, yt_audio, yt_out, 1080, 1920, scene_bg_map, work_dir, show_reciter=False)
-
-        print("\n📱 بناء Social (1080×1920)...")
-        social_out = f"videos/{Path(social_meta_path).stem.replace('_meta', '')}.mp4"
-        build_video(social_meta, social_audio, social_out, 1080, 1920, scene_bg_map, work_dir, show_reciter=True)
-
-        print("\n✅ اكتمل الفيديوان")
-    finally:
-        cleanup_dir(work_dir)
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 2 and sys.argv[1] == "--both":
-        main_both()
-    else:
-        main()
+    main()
