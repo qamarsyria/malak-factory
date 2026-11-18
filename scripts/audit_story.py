@@ -4,7 +4,7 @@ audit_story.py — المرحلة 2: التدقيق الشرعي واللغوي 
 - يدقق كل حدث بالكامل مع منع التكرار مع الأحداث السابقة.
 - يدمج ويزيل التكرار بين الفقرات التي تشرح نفس الآية (anchor_ayah) دون اختصار مخل.
 - يصحح أي ركاكة نحوية أو لغوية أو التباس لفظي عقدي.
-- يضبط thinkingConfig لتسريع الاستجابة ومنع انقطاع JSON.
+- يستبعد المفاتيح المعطوبة (401/403) فوراً ويعالج ضغط 503 و thinkingConfig.
 """
 
 import sys
@@ -73,7 +73,7 @@ def load_collected(story_id: str) -> list[dict]:
 def call_audit_llm(prompt: str) -> dict | None:
     pool = get_pool()
     breaker = get_breaker()
-    models = discover_and_cache(force=False)[:6]
+    models = discover_and_cache(force=False)[:10]
     if not models:
         return None
 
@@ -82,7 +82,8 @@ def call_audit_llm(prompt: str) -> dict | None:
             continue
 
         use_thinking = True
-        for attempt in range(2):
+        valid_tries = 0
+        while valid_tries < 2:
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -117,12 +118,16 @@ def call_audit_llm(prompt: str) -> dict | None:
                     _advance_pool(pool)
                     breaker.record_success(f"model:{model}")
                     return parsed
+                elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                    pool.mark_dead(f"HTTP {r.status_code}")
+                    continue
                 elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
                     use_thinking = False
                     continue
                 elif r.status_code == 429:
                     print(f"   ⏸️ {model}: 429", flush=True)
                     pool.mark_failed(75)
+                    valid_tries += 1
                     time.sleep(2)
                     continue
                 elif r.status_code in (400, 403, 404):
@@ -131,8 +136,10 @@ def call_audit_llm(prompt: str) -> dict | None:
                     break
                 else:
                     print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    valid_tries += 1
                     _advance_pool(pool)
-                    break
+                    time.sleep(4)
+                    continue
             except requests.exceptions.Timeout:
                 print(f"   ⏱️ {model}: Timeout", flush=True)
                 _advance_pool(pool)
