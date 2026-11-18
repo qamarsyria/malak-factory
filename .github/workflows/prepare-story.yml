@@ -1,68 +1,16 @@
-name: 🎬 بناء حلقة قصص
+name: 🧪 تجهيز القصة التالية
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # يومياً منتصف الليل UTC
+    - cron: '0 2 * * *'   # يومياً الساعة 2 فجراً UTC (يخرج فوراً إذا لا حاجة)
   workflow_dispatch:
-    inputs:
-      build_youtube_rvc:
-        description: 'بناء نسخة اليوتيوب (الحصري + البصمة v4.0-clean) مع نسخة السوشيال'
-        type: boolean
-        required: true
-        default: true
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      needs_review: ${{ steps.check.outputs.needs_review }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT }}
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Check review requirement
-        id: check
-        run: |
-          python - <<'EOF'
-          import sys, os
-          sys.path.insert(0, 'scripts')
-          from story_library import load_global, needs_manual_review
-          gstate = load_global()
-          era = gstate.get("current_era", "")
-          needs = needs_manual_review(era)
-          output_file = os.environ.get("GITHUB_OUTPUT", "/tmp/out")
-          with open(output_file, "a") as f:
-              f.write(f"needs_review={'true' if needs else 'false'}\n")
-          print(f"era={era} needs_review={needs}")
-          EOF
-
-  review-gate:
-    needs: prepare
-    if: needs.prepare.outputs.needs_review == 'true'
-    runs-on: ubuntu-latest
-    environment: story-review
-    steps:
-      - run: echo "✅ تمت الموافقة على المراجعة"
-
-  produce:
-    needs: [prepare, review-gate]
-    if: |
-      always() &&
-      needs.prepare.result == 'success' &&
-      (needs.review-gate.result == 'success' || needs.review-gate.result == 'skipped')
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 120
     permissions:
       contents: write
-      models: read
-
-    env:
-      ENABLE_YT_RVC: ${{ github.event_name == 'schedule' && 'true' || (inputs.build_youtube_rvc && 'true' || 'false') }}
 
     steps:
       - name: Checkout
@@ -75,195 +23,131 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
-
-      - name: Install core Python deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+          pip install requests==2.32.3
 
-      - name: Install RVC deps & models (for YouTube v4.0-clean)
-        if: env.ENABLE_YT_RVC == 'true'
+      - name: Check if prep needed
+        id: check
         run: |
-          pip install -q "pip<24.1" "setuptools<81"
-          pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe omegaconf ffmpeg-python
-          pip install -q fairseq==0.12.2
+          STORY=$(python scripts/check_prep_needed.py | tail -n 1 | tr -d '\r' || echo "")
+          if [ -n "$STORY" ]; then
+            echo "story_to_prep=$STORY" >> $GITHUB_OUTPUT
+            echo "🔧 سيُجهّز: $STORY"
+          else
+            echo "story_to_prep=" >> $GITHUB_OUTPUT
+            echo "⏭️ لا حاجة للتجهيز"
+          fi
 
-          git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
-          cd rvc
-          grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
-          mkdir -p assets/hubert assets/rmvpe assets/weights assets/pretrained_v2
-          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt -O assets/hubert/hubert_base.pt
-          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
-          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/my_clean_voice.pth -O assets/weights/clean.pth
-          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/added_my_clean_voice.index -O clean.index
-          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/rough.pth
-          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O rough.index
+      - name: Collect Story Sources
+        id: collect
+        if: steps.check.outputs.story_to_prep != ''
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -u scripts/collect_story.py "${{ steps.check.outputs.story_to_prep }}"
 
-      - name: Verify story is prepared
+      - name: Verify narrative is not empty
         id: verify
+        if: steps.collect.outcome == 'success'
         run: |
-          STORY_ID=$(python -c "import sys; sys.path.insert(0, 'scripts'); from story_library import load_global; print(load_global()['current_story_id'])")
-          AUDITED="data/stories/${STORY_ID}/audited/events"
-          if [ ! -d "$AUDITED" ] || [ -z "$(ls -A "$AUDITED" 2>/dev/null)" ]; then
-            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد!"
+          STORY="${{ steps.check.outputs.story_to_prep }}"
+          NARRATIVE="data/stories/${STORY}/collected/events"
+
+          if [ ! -d "$NARRATIVE" ]; then
+            echo "❌ لم يُنشأ مجلد الأحداث: $NARRATIVE"
             exit 1
           fi
-          echo "✅ القصة '$STORY_ID' مجهزة"
 
-      - name: Generate script
-        id: gen
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python -u scripts/generate_story.py
-          if [ -f out/latest_episode.txt ]; then
-            EP_FILE=$(cat out/latest_episode.txt)
-            EP_NAME=$(basename "$EP_FILE" .json)
-            echo "ep_file=$EP_FILE" >> $GITHUB_OUTPUT
-            echo "ep_name=$EP_NAME" >> $GITHUB_OUTPUT
-            echo "has_episode=true" >> $GITHUB_OUTPUT
-            echo "✅ $EP_NAME"
-          else
-            echo "has_episode=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build audio
-        if: steps.gen.outputs.has_episode == 'true'
-        id: audio
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TTS_ENGINE: '1'
-        run: |
-          mkdir -p out
-          MODE="social"
-          [ "$ENABLE_YT_RVC" = "true" ] && MODE="both"
-          python -u scripts/story_audio.py \
-            "${{ steps.gen.outputs.ep_file }}" \
-            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
-            "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
-            --mode "$MODE"
-
-      - name: Apply v4.0-clean RVC to YouTube Quran
-        if: steps.audio.outcome == 'success' && env.ENABLE_YT_RVC == 'true'
-        id: rvc_audio
-        run: |
-          python -u scripts/apply_rvc_to_quran.py \
-            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
-            "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
-            "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3"
-
-      - name: Build vertical videos (720x1280)
-        if: steps.audio.outcome == 'success'
-        env:
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: |
-          mkdir -p videos
-          python -u scripts/story_video.py \
-            "out/social_${{ steps.gen.outputs.ep_name }}_meta.json" \
-            "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
-            "videos/social_${{ steps.gen.outputs.ep_name }}.mp4" \
-            social
-
-          if [ "$ENABLE_YT_RVC" = "true" ] && [ -f "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" ]; then
-            python -u scripts/story_video.py \
-              "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
-              "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" \
-              "videos/yt_${{ steps.gen.outputs.ep_name }}.mp4" \
-              yt
-          fi
-          ls -lh videos/
-
-      - name: Upload to Telegram (compress only if > 48MB)
-        id: telegram
-        if: steps.gen.outputs.has_episode == 'true'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          UPLOADED=0
-          FAILED=0
-          MAX_BYTES=$((48 * 1024 * 1024))
-
-          for f in videos/*.mp4; do
-            [ -f "$f" ] || continue
-            SIZE_BYTES=$(stat -c%s "$f")
-            echo "📹 $f ($(awk "BEGIN {printf \"%.1f\", $SIZE_BYTES/1048576}") MB)"
-
-            TO_SEND="$f"
-            CLEANUP_COMP=""
-
-            if [ "$SIZE_BYTES" -gt "$MAX_BYTES" ]; then
-              DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f" || echo "0")
-              if [ -z "$DURATION" ] || [ "$(awk "BEGIN {print ($DURATION <= 0)}")" -eq 1 ]; then
-                echo "❌ مدة غير صالحة لـ $f"
-                FAILED=$((FAILED+1))
-                continue
-              fi
-              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 64}")
-              [ "$TARGET_KBPS" -gt 800 ] && TARGET_KBPS=800
-              [ "$TARGET_KBPS" -lt 300 ] && TARGET_KBPS=300
-              COMPRESSED="compressed_$(basename "$f")"
-              ffmpeg -y -i "$f" \
-                -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
-                -preset medium -c:a aac -b:a 64k -movflags +faststart "$COMPRESSED"
-              TO_SEND="$COMPRESSED"
-              CLEANUP_COMP="$COMPRESSED"
+          EMPTY=0
+          for ev_dir in "$NARRATIVE"/event_*; do
+            [ -d "$ev_dir" ] || continue
+            narr_file="$ev_dir/narrative.json"
+            if [ ! -f "$narr_file" ]; then
+              echo "❌ ملف مفقود: $narr_file"
+              EMPTY=$((EMPTY+1))
+              continue
             fi
-
-            LABEL="📱 Social (قراء متعددون)"
-            case "$(basename "$f")" in
-              yt_*) LABEL="📺 YouTube (الحصري + البصمة v4)" ;;
-            esac
-
-            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-              -F "chat_id=${TELEGRAM_CHAT_ID}" \
-              -F "video=@${TO_SEND}" \
-              -F "caption=${LABEL} — $(basename "$f")")
-
-            [ -n "$CLEANUP_COMP" ] && rm -f "$CLEANUP_COMP"
-
-            if echo "$RESPONSE" | grep -q '"ok":true'; then
-              echo "✅ رُفع: $(basename "$f")"
-              UPLOADED=$((UPLOADED+1))
-            else
-              echo "❌ فشل الرفع (تلغرام): $RESPONSE"
-              FAILED=$((FAILED+1))
+            COUNT=$(python -c "import json, sys; print(len(json.load(open(sys.argv[1], encoding='utf-8'))))" "$narr_file")
+            echo "   📄 $(basename "$ev_dir"): $COUNT block"
+            if [ "$COUNT" -eq 0 ]; then
+              EMPTY=$((EMPTY+1))
             fi
           done
 
-          echo "📊 رُفع: $UPLOADED | فشل: $FAILED"
-          if [ "$UPLOADED" -eq 0 ] || [ "$FAILED" -gt 0 ]; then
+          if [ "$EMPTY" -gt 0 ]; then
+            echo "❌ فشل: $EMPTY حدث بسرد فارغ!"
+            exit 1
+          fi
+          echo "✅ كل الأحداث فيها سرد"
+
+      - name: Audit Story
+        id: audit
+        if: steps.verify.outcome == 'success'
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -u scripts/audit_story.py "${{ steps.check.outputs.story_to_prep }}"
+
+      - name: Verify audited narrative
+        id: verify_audited
+        if: steps.audit.outcome == 'success'
+        run: |
+          STORY="${{ steps.check.outputs.story_to_prep }}"
+          AUDITED="data/stories/${STORY}/audited/events"
+
+          if [ ! -d "$AUDITED" ]; then
+            echo "❌ مجلد المدقق غير موجود: $AUDITED"
             exit 1
           fi
 
-      - name: Finalize episode
-        if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
-        run: |
-          python scripts/finalize_episode.py "${{ steps.gen.outputs.ep_file }}"
+          EMPTY=0
+          for ev_dir in "$AUDITED"/event_*; do
+            [ -d "$ev_dir" ] || continue
+            narr_file="$ev_dir/narrative.json"
+            if [ ! -f "$narr_file" ]; then
+              EMPTY=$((EMPTY+1))
+              continue
+            fi
+            COUNT=$(python -c "import json, sys; print(len(json.load(open(sys.argv[1], encoding='utf-8'))))" "$narr_file")
+            echo "   📄 $(basename "$ev_dir"): $COUNT block بعد التدقيق"
+            if [ "$COUNT" -eq 0 ]; then
+              EMPTY=$((EMPTY+1))
+            fi
+          done
 
-      - name: Cleanup
-        if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
-        run: |
-          python scripts/cleanup_old_files.py --episode "${{ steps.gen.outputs.ep_name }}"
+          if [ "$EMPTY" -gt 0 ]; then
+            echo "❌ فشل: سرد فارغ بعد التدقيق!"
+            exit 1
+          fi
+          echo "✅ التدقيق سليم"
 
-      - name: Commit state
-        if: steps.gen.outcome == 'success' && (steps.gen.outputs.has_episode == 'false' || steps.telegram.outcome == 'success')
+      - name: Commit Prepared Data
+        if: success() && steps.check.outputs.story_to_prep != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/ data/stories/*/state.json || true
-          git commit -m "🎬 ${{ steps.gen.outputs.ep_name || 'advance-story-state' }}" || echo "لا تغييرات"
+          git add data/stories/ state/models_cache.json || true
+          git commit -m "🧪 تجهيز قصة: ${{ steps.check.outputs.story_to_prep }}" || echo "لا تغييرات"
           git pull --rebase || true
           git push
 
-      - name: Notify failure
+      - name: Notify Success
+        if: success() && steps.check.outputs.story_to_prep != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=✅ تجهيز القصة جاهز ومراجَع زمنياً: ${{ steps.check.outputs.story_to_prep }}"
+
+      - name: Notify Failure
         if: failure()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -271,4 +155,4 @@ jobs:
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=🚨 فشل بناء حلقة: ${{ steps.gen.outputs.ep_name || 'unknown' }}"
+            --data-urlencode "text=🚨 فشل تجهيز القصة: ${{ steps.check.outputs.story_to_prep || 'unknown' }}"
