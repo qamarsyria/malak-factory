@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 0 * * *'   # يومياً منتصف الليل UTC
   workflow_dispatch:
+    inputs:
+      build_youtube_rvc:
+        description: 'بناء نسخة اليوتيوب (الحصري + البصمة v4.0-clean) مع نسخة السوشيال'
+        type: boolean
+        required: true
+        default: true
 
 jobs:
   prepare:
@@ -50,10 +56,13 @@ jobs:
       needs.prepare.result == 'success' &&
       (needs.review-gate.result == 'success' || needs.review-gate.result == 'skipped')
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 180
     permissions:
       contents: write
       models: read
+
+    env:
+      ENABLE_YT_RVC: ${{ github.event_name == 'schedule' && 'true' || (inputs.build_youtube_rvc && 'true' || 'false') }}
 
     steps:
       - name: Checkout
@@ -65,36 +74,43 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          # أضفنا espeak-ng لـ phonemizer وحزم lxml لـ BeautifulSoup
-          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri espeak-ng libespeak-ng-dev libxml2-dev libxslt1-dev
+          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
 
-      - name: Install Python deps
+      - name: Install core Python deps
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          
-          # تثبيت مكتبات الصوت والفيديو المتقدمة
-          pip install --force-reinstall phonemizer==3.2.1
+          python -m pip install --upgrade pip
+          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+
+      - name: Install RVC deps & models (for YouTube v4.0-clean)
+        if: env.ENABLE_YT_RVC == 'true'
+        run: |
           pip install -q "pip<24.1" "setuptools<81"
           pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe huggingface_hub requests matplotlib omegaconf ffmpeg-python
-          pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped (optional)"
+          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe omegaconf ffmpeg-python
+          pip install -q fairseq==0.12.2
+
+          git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
+          cd rvc
+          grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
+          mkdir -p assets/hubert assets/rmvpe assets/weights assets/pretrained_v2
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt -O assets/hubert/hubert_base.pt
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/my_clean_voice.pth -O assets/weights/clean.pth
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/added_my_clean_voice.index -O clean.index
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/rough.pth
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O rough.index
 
       - name: Verify story is prepared
         id: verify
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           STORY_ID=$(python -c "import sys; sys.path.insert(0, 'scripts'); from story_library import load_global; print(load_global()['current_story_id'])")
           AUDITED="data/stories/${STORY_ID}/audited/events"
-          if [ ! -d "$AUDITED" ] || [ -z "$(ls -A $AUDITED 2>/dev/null)" ]; then
-            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد! (تأكد من تشغيل collect_story.py و audit_story.py أولاً)"
+          if [ ! -d "$AUDITED" ] || [ -z "$(ls -A "$AUDITED" 2>/dev/null)" ]; then
+            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد!"
             exit 1
           fi
           echo "✅ القصة '$STORY_ID' مجهزة"
@@ -118,7 +134,6 @@ jobs:
             echo "has_episode=false" >> $GITHUB_OUTPUT
           fi
 
-      # بناء الصوت
       - name: Build audio
         if: steps.gen.outputs.has_episode == 'true'
         id: audio
@@ -127,28 +142,45 @@ jobs:
           TTS_ENGINE: '1'
         run: |
           mkdir -p out
-          python scripts/story_audio.py \
+          MODE="social"
+          [ "$ENABLE_YT_RVC" = "true" ] && MODE="both"
+          python -u scripts/story_audio.py \
             "${{ steps.gen.outputs.ep_file }}" \
+            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
-            "out/social_${{ steps.gen.outputs.ep_name }}.mp3"
+            --mode "$MODE"
 
-      # بناء الفيديو الطولي (تم إصلاح الترتيب هنا)
-      - name: Build vertical video
+      - name: Apply v4.0-clean RVC to YouTube Quran
+        if: steps.audio.outcome == 'success' && env.ENABLE_YT_RVC == 'true'
+        id: rvc_audio
+        run: |
+          python -u scripts/apply_rvc_to_quran.py \
+            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
+            "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
+            "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3"
+
+      - name: Build vertical videos (720x1280)
         if: steps.audio.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           mkdir -p videos
-          # الترتيب الصح: ميتا، صوت، فيديو ناتج، وضع (سوشيال)
-          python scripts/story_video.py \
+          python -u scripts/story_video.py \
             "out/social_${{ steps.gen.outputs.ep_name }}_meta.json" \
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
             "videos/social_${{ steps.gen.outputs.ep_name }}.mp4" \
             social
+
+          if [ "$ENABLE_YT_RVC" = "true" ] && [ -f "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" ]; then
+            python -u scripts/story_video.py \
+              "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
+              "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" \
+              "videos/yt_${{ steps.gen.outputs.ep_name }}.mp4" \
+              yt
+          fi
           ls -lh videos/
 
-      # الرفع (مع ضغط قوي وفحص استجابة تلغرام)
-      - name: Compress & Upload to Telegram
+      - name: Upload to Telegram (compress only if > 48MB)
         id: telegram
         if: steps.gen.outputs.has_episode == 'true'
         env:
@@ -157,63 +189,57 @@ jobs:
         run: |
           UPLOADED=0
           FAILED=0
+          MAX_BYTES=$((48 * 1024 * 1024))
 
           for f in videos/*.mp4; do
             [ -f "$f" ] || continue
+            SIZE_BYTES=$(stat -c%s "$f")
+            echo "📹 $f ($(awk "BEGIN {printf \"%.1f\", $SIZE_BYTES/1048576}") MB)"
 
-            echo "📹 الأصلي: $(du -h "$f" | cut -f1) — $f"
-            COMPRESSED="compressed_$(basename $f)"
+            TO_SEND="$f"
+            CLEANUP_COMP=""
 
-            # حساب مدة الفيديو
-            DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
-            
-            # حساب البتريت المستهدف (استهداف 42 ميجا كحد أقصى)
-            TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 64}")
-            
-            # تثبيت الحدود
-            [ "$TARGET_KBPS" -gt 800 ] && TARGET_KBPS=800
-            [ "$TARGET_KBPS" -lt 300 ] && TARGET_KBPS=300
-
-            echo "⏱️ ${DURATION}s | ${TARGET_KBPS}kbps | 720p"
-
-            # إصلاح الفلتر: ضمان أبعاد زوجية (حتى لا يفشل H.264) وضغط آمن
-            ffmpeg -y -i "$f" \
-              -vf "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-              -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
-              -preset medium \
-              -c:a aac -b:a 64k \
-              -movflags +faststart \
-              "$COMPRESSED"
-
-            FINAL_SIZE_MB=$(du -m "$COMPRESSED" | cut -f1)
-            echo "✅ بعد الضغط: ${FINAL_SIZE_MB} MB"
-
-            if [ "$FINAL_SIZE_MB" -gt 48 ]; then
-              echo "❌ تجاوز 48 MB — سيتم تخطي الرفع"
-              FAILED=$((FAILED+1))
-              rm "$COMPRESSED"
-              continue
+            if [ "$SIZE_BYTES" -gt "$MAX_BYTES" ]; then
+              DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f" || echo "0")
+              if [ -z "$DURATION" ] || [ "$(awk "BEGIN {print ($DURATION <= 0)}")" -eq 1 ]; then
+                echo "❌ مدة غير صالحة لـ $f"
+                FAILED=$((FAILED+1))
+                continue
+              fi
+              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 64}")
+              [ "$TARGET_KBPS" -gt 800 ] && TARGET_KBPS=800
+              [ "$TARGET_KBPS" -lt 300 ] && TARGET_KBPS=300
+              COMPRESSED="compressed_$(basename "$f")"
+              ffmpeg -y -i "$f" \
+                -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
+                -preset medium -c:a aac -b:a 64k -movflags +faststart "$COMPRESSED"
+              TO_SEND="$COMPRESSED"
+              CLEANUP_COMP="$COMPRESSED"
             fi
 
-            # إصلاح: فحص استجابة تلغرام بدلاً من الاكتفاء بنجاح curl
+            LABEL="📱 Social (قراء متعددون)"
+            case "$(basename "$f")" in
+              yt_*) LABEL="📺 YouTube (الحصري + البصمة v4)" ;;
+            esac
+
             RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-                -F "chat_id=${TELEGRAM_CHAT_ID}" \
-                -F "video=@${COMPRESSED}" \
-                -F "caption=🎬 $(basename $f)")
+              -F "chat_id=${TELEGRAM_CHAT_ID}" \
+              -F "video=@${TO_SEND}" \
+              -F "caption=${LABEL} — $(basename "$f")")
+
+            [ -n "$CLEANUP_COMP" ] && rm -f "$CLEANUP_COMP"
 
             if echo "$RESPONSE" | grep -q '"ok":true'; then
-              echo "✅ رُفع بنجاح"
+              echo "✅ رُفع: $(basename "$f")"
               UPLOADED=$((UPLOADED+1))
             else
               echo "❌ فشل الرفع (تلغرام): $RESPONSE"
               FAILED=$((FAILED+1))
             fi
-            rm "$COMPRESSED"
           done
 
           echo "📊 رُفع: $UPLOADED | فشل: $FAILED"
-          if [ "$UPLOADED" -eq 0 ]; then
-            echo "❌ لم يُرفع أي فيديو — إيقاف"
+          if [ "$UPLOADED" -eq 0 ] || [ "$FAILED" -gt 0 ]; then
             exit 1
           fi
 
@@ -228,13 +254,14 @@ jobs:
           python scripts/cleanup_old_files.py --episode "${{ steps.gen.outputs.ep_name }}"
 
       - name: Commit state
-        if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
+        if: steps.gen.outcome == 'success' && (steps.gen.outputs.has_episode == 'false' || steps.telegram.outcome == 'success')
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add state/ data/stories/*/state.json || true
-          git commit -m "🎬 ${{ steps.gen.outputs.ep_name }}" || echo "لا تغييرات"
-          git push || true
+          git commit -m "🎬 ${{ steps.gen.outputs.ep_name || 'advance-story-state' }}" || echo "لا تغييرات"
+          git pull --rebase || true
+          git push
 
       - name: Notify failure
         if: failure()
@@ -244,4 +271,4 @@ jobs:
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            -d "text=🚨 فشل بناء حلقة: ${{ steps.gen.outputs.ep_name || 'unknown' }}"
+            --data-urlencode "text=🚨 فشل بناء حلقة: ${{ steps.gen.outputs.ep_name || 'unknown' }}"
