@@ -80,11 +80,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
 
-      - name: Install core Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
-
       - name: Install RVC deps & models (for YouTube v4.0-clean)
         if: env.ENABLE_YT_RVC == 'true'
         run: |
@@ -93,6 +88,7 @@ jobs:
           pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe omegaconf ffmpeg-python
           pip install -q fairseq==0.12.2
 
+          rm -rf rvc
           git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
           cd rvc
           grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
@@ -103,6 +99,11 @@ jobs:
           wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/added_my_clean_voice.index -O clean.index
           wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/rough.pth
           wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O rough.index
+          ls -la infer/
+
+      - name: Install core Python deps
+        run: |
+          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
 
       - name: Verify story is prepared
         id: verify
