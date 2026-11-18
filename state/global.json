@@ -5,7 +5,7 @@
   "current_story_index": 0,
   "current_story_phase": "pending",
   "current_era": "creation",
-  "current_era_episodes_published": 3,
+  "current_era_episodes_published": 4,
   "next_story_id": null,
   "next_story_phase": "pending",
   "completed_stories": [],
@@ -13,7 +13,7 @@
     "creation"
   ],
   "reviewed_at_system_version": "1.0",
-  "total_episodes_published": 3,
+  "total_episodes_published": 4,
   "project_cycle": 0,
-  "last_updated": "2026-11-18T05:21:12.933362+00:00"
+  "last_updated": "2026-11-18T12:19:21.919441+00:00"
 }
