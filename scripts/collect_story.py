@@ -4,7 +4,7 @@ collect_story.py — المرحلة 1: جمع المصادر الموثقة با
 - يسحب الآيات الحقيقية من المكتبة المحلية أو alquran.cloud.
 - يسحب التفاسير الحقيقية (ابن كثير، السعدي، الميسر، والطبري عند الحاجة) عبر spa5k/tafsir_api.
 - يبحث في صحيح البخاري وصحيح مسلم (محلياً أو عبر fawazahmed0/hadith-api).
-- يتحقق من مطابقة كل آية للحدث الزمني، ويدمج النصوص بعد إزالة التكرار، ويربط كل فقرة بآيتها المؤكدة.
+- يضبط thinkingConfig لنماذج Gemini 3.x لمنع البطء وانقطاع JSON، مع حفظ تقدم الخطوات (checkpoint).
 """
 
 import os
@@ -24,9 +24,6 @@ from gemini_tts_pool import get_pool
 from model_discovery import discover_and_cache
 from utilities import get_breaker
 
-# ═══════════════════════════════════════════════════════════
-# المسارات والثوابت
-# ═══════════════════════════════════════════════════════════
 STORIES_JSON   = _REPO_ROOT / "data" / "library" / "stories.json"
 STORIES_OUTPUT = _REPO_ROOT / "data" / "stories"
 AYAH_LIB_GZ    = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
@@ -40,9 +37,7 @@ TAFSIR_CDN = "https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir"
 HADITH_CDN = "https://cdn.jsdelivr.net/gh/fawazahmed0/hadith-api@1/editions"
 QURAN_API  = "https://api.alquran.cloud/v1"
 
-# ═══════════════════════════════════════════════════════════
-# تطبيع النص العربي وخريطة السور (114 سورة)
-# ═══════════════════════════════════════════════════════════
+
 def norm_ar(text: str) -> str:
     if not text:
         return ""
@@ -103,9 +98,6 @@ def resolve_story_surahs(sources: list) -> list[int]:
     return surahs
 
 
-# ═══════════════════════════════════════════════════════════
-# طبقة البيانات المرجعية (القرآن + التفاسير + البخاري ومسلم + المنصة)
-# ═══════════════════════════════════════════════════════════
 class ReferenceStore:
     def __init__(self):
         self.quran_by_surah: dict[int, dict[int, str]] = {}
@@ -174,7 +166,6 @@ class ReferenceStore:
             self.tafsir_cache[key] = {int(k): v for k, v in raw.items()}
             return self.tafsir_cache[key]
 
-        # محاولة تحميل السورة كاملة بطلب واحد سريع
         try:
             r = requests.get(f"{TAFSIR_CDN}/{edition}/{surah}.json", timeout=20)
             if r.status_code == 200:
@@ -197,32 +188,27 @@ class ReferenceStore:
 
     def get_ayah_tafsirs(self, surah: int, ayah: int, include_tabari: bool = False) -> dict[str, str]:
         result = {}
-
-        # الميسر (محلي أولاً ثم CDN)
         if (surah, ayah) in self.muyassar_local:
-            result["التفسير الميسر"] = self.muyassar_local[(surah, ayah)]
+            result["التفسير الميسر"] = self.muyassar_local[(surah, ayah)][:400]
         else:
             t_muy = self._get_surah_tafsir("ar-tafsir-muyassar", surah).get(ayah)
             if t_muy:
-                result["التفسير الميسر"] = t_muy
+                result["التفسير الميسر"] = t_muy[:400]
 
-        # تفسير السعدي (مع اسمَي السلسلة المحتملين في spa5k)
         t_sadi = self._get_surah_tafsir("ar-tafseer-al-saddi", surah).get(ayah)
         if not t_sadi:
             t_sadi = self._get_surah_tafsir("ar-tafsir-as-saadi", surah).get(ayah)
         if t_sadi:
-            result["تفسير السعدي"] = t_sadi[:1200]
+            result["تفسير السعدي"] = t_sadi[:700]
 
-        # تفسير ابن كثير
         t_ik = self._get_surah_tafsir("ar-tafsir-ibn-kathir", surah).get(ayah)
         if t_ik:
-            result["تفسير ابن كثير"] = t_ik[:1500]
+            result["تفسير ابن كثير"] = t_ik[:900]
 
-        # تفسير الطبري (في القصص غير المقيدة بـ strict_mode)
         if include_tabari:
             t_tab = self._get_surah_tafsir("ar-tafsir-al-tabari", surah).get(ayah)
             if t_tab:
-                result["تفسير الطبري"] = t_tab[:1200]
+                result["تفسير الطبري"] = t_tab[:700]
 
         return result
 
@@ -231,7 +217,6 @@ class ReferenceStore:
             return
         self.hadiths_loaded = True
 
-        # 1. المكتبة المحلية
         if HADITH_LIB_GZ.exists():
             try:
                 with gzip.open(HADITH_LIB_GZ, "rt", encoding="utf-8") as f:
@@ -251,7 +236,6 @@ class ReferenceStore:
             except Exception as e:
                 print(f"⚠️ تعذر قراءة hadith-library.json.gz: {e}")
 
-        # 2. الاحتياطي: صحيح البخاري ومسلم من CDN
         for edition, label in [("ara-bukhari", "صحيح البخاري"), ("ara-muslim", "صحيح مسلم")]:
             cache_file = CACHE_DIR / f"{edition}.json"
             data = None
@@ -283,7 +267,7 @@ class ReferenceStore:
                     })
         print(f"📚 إجمالي الأحاديث المتاحة للبحث: {len(self.hadiths)}")
 
-    def search_hadiths(self, phrases: list[str], limit: int = 5) -> list[dict]:
+    def search_hadiths(self, phrases: list[str], limit: int = 4) -> list[dict]:
         self._ensure_hadiths()
         if not self.hadiths or not phrases:
             return []
@@ -307,7 +291,6 @@ class ReferenceStore:
                 elif hits >= max(2, len(tokens) - 1):
                     best_score = max(best_score, hits)
             if best_score > 0:
-                # تفضيل الأحاديث متوسطة الطول الواضحة على الأحاديث المبتورة أو الطويلة جداً
                 scored.append((best_score, -abs(len(h["text"]) - 350), h))
 
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -317,7 +300,7 @@ class ReferenceStore:
             if sig in seen_texts:
                 continue
             seen_texts.add(sig)
-            out.append({"book": h["book"], "ref": h["ref"], "text": h["text"][:1000]})
+            out.append({"book": h["book"], "ref": h["ref"], "text": h["text"][:700]})
             if len(out) >= limit:
                 break
         return out
@@ -334,15 +317,12 @@ class ReferenceStore:
                     name_norm = norm_ar(item.get("name", ""))
                     if story_id in sid or (title_norm and title_norm in name_norm):
                         parts = [f"{s.get('h', '')}: {s.get('p') or s.get('text', '')}" for s in item.get("sections", [])]
-                        return "\n".join(parts)[:3000]
+                        return "\n".join(parts)[:2000]
         except Exception:
             pass
         return ""
 
 
-# ═══════════════════════════════════════════════════════════
-# استدعاء LLM الآمن
-# ═══════════════════════════════════════════════════════════
 def _advance_pool(pool):
     if hasattr(pool, "_advance"):
         pool._advance()
@@ -350,58 +330,97 @@ def _advance_pool(pool):
         pool.advance()
 
 
-def call_llm(prompt: str, timeout: int = 180, max_tokens: int = 4096) -> dict | None:
+def _thinking_config(model: str) -> dict | None:
+    m = model.lower()
+    if any(x in m for x in ["gemini-3", "gemini-4"]):
+        return {"thinkingLevel": "low"}
+    if "gemini-2.5" in m:
+        return {"thinkingBudget": 512}
+    return None
+
+
+def call_llm(prompt: str, timeout: int = 90, max_tokens: int = 8192) -> dict | None:
     pool = get_pool()
     breaker = get_breaker()
-    models = discover_and_cache(force=False)[:5]
+    models = discover_and_cache(force=False)[:6]
     if not models:
         return None
 
     for model in models:
         if breaker.is_open(f"model:{model}"):
             continue
+
+        use_thinking = True
         for attempt in range(2):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                body = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.15,
-                        "maxOutputTokens": max_tokens,
-                        "responseMimeType": "application/json",
-                    },
+                gen_cfg = {
+                    "temperature": 0.15,
+                    "maxOutputTokens": max_tokens,
+                    "responseMimeType": "application/json",
                 }
-                r = requests.post(url, json=body, timeout=timeout)
+                if use_thinking:
+                    tc = _thinking_config(model)
+                    if tc:
+                        gen_cfg["thinkingConfig"] = tc
+
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
+                r = requests.post(url, json=body, timeout=(15, timeout))
 
                 if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    resp = r.json()
+                    cand = (resp.get("candidates") or [{}])[0]
+                    finish = cand.get("finishReason", "")
+                    parts = cand.get("content", {}).get("parts", [])
                     if not parts:
+                        print(f"   ⚠️ {model}: رد فارغ (finishReason={finish})", flush=True)
                         break
-                    text = parts[0].get("text", "")
+
+                    # استبعاد أجزاء التفكير (thought=True) وأخذ النص الفعلي
+                    text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
+                    text = "\n".join(text_parts) if text_parts else parts[-1].get("text", "")
+
                     s, e = text.find("{"), text.rfind("}")
                     if s == -1 or e <= s:
+                        print(f"   ⚠️ {model}: JSON ناقص/مقطوع (finish={finish}, len={len(text)})", flush=True)
                         break
+
                     parsed = json.loads(text[s:e + 1])
                     _advance_pool(pool)
                     breaker.record_success(f"model:{model}")
                     return parsed
 
+                elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
+                    use_thinking = False
+                    continue
+
                 elif r.status_code == 429:
-                    print(f"   ⏸️ {model}: Rate Limit (429)", flush=True)
+                    print(f"   ⏸️ {model}: 429 Rate Limit", flush=True)
                     pool.mark_failed(75)
                     time.sleep(2)
-                elif r.status_code in (400, 404):
-                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    continue
+
+                elif r.status_code in (400, 403, 404):
+                    print(f"   ⚠️ {model}: HTTP {r.status_code} - {r.text[:120]}", flush=True)
                     breaker.record_failure(f"model:{model}")
                     break
-                elif r.status_code >= 500:
-                    time.sleep(3)
+
+                else:
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    _advance_pool(pool)
+                    time.sleep(2)
+                    break
+
             except requests.exceptions.Timeout:
-                print(f"   ⏱️ {model}: Timeout", flush=True)
-                time.sleep(3)
+                print(f"   ⏱️ {model}: Timeout ({timeout}s)", flush=True)
+                _advance_pool(pool)
+                break  # انتقل فوراً للموديل التالي بدل الانتظار مرة ثانية
+            except json.JSONDecodeError as je:
+                print(f"   ⚠️ {model}: JSON تالف ({je})", flush=True)
+                break
             except Exception as e:
-                print(f"   ⚠️ {model}: {str(e)[:80]}", flush=True)
+                print(f"   ⚠️ {model}: {str(e)[:100]}", flush=True)
                 break
     return None
 
@@ -428,9 +447,6 @@ def parse_ayah_refs(raw_refs: list) -> list[tuple[int, int]]:
     return out
 
 
-# ═══════════════════════════════════════════════════════════
-# معالجة خطوة واحدة من الـ timeline
-# ═══════════════════════════════════════════════════════════
 def process_timeline_step(
     store: ReferenceStore,
     story: dict,
@@ -446,7 +462,6 @@ def process_timeline_step(
     rules = "\n".join(f"- {r}" for r in guide.get("special_rules", []))
     story_surahs = resolve_story_surahs(story.get("sources", []))
 
-    # تجهيز قائمة الآيات المتاحة من السور المرجعية إن كانت قصيرة، لتقليل التخمين
     surah_hints = []
     for s_num in story_surahs[:6]:
         ayahs_map = store.get_surah_ayahs(s_num)
@@ -460,7 +475,6 @@ def process_timeline_step(
     covered_str = "\n".join(f"- {c}" for c in covered_summary) or "(هذه هي الخطوة الأولى)"
     used_refs_str = ", ".join(sorted(used_ayah_refs)) or "(لا يوجد)"
 
-    # ── المرحلة أ: تحديد الآيات المرشحة وكلمات البحث في الحديث لهذه الخطوة فقط ──
     retrieval_prompt = f"""أنت باحث شرعي متخصص في القرآن والسنة والتاريخ الإسلامي.
 القصة: "{story.get('title')}"
 الخطوة الزمنية الحالية ({step_idx} من {total_steps}): "{step_text}"
@@ -473,9 +487,8 @@ def process_timeline_step(
 {surah_hints_str}
 
 المطلوب لهذه الخطوة الزمنية فقط ("{step_text}"):
-1. اختر من 1 إلى 5 آيات قرآنية (بصيغة "سورة:آية") تثبت أو تصف هذا الحدث تحديداً دون غيره.
-   ⚠️ لا تقترح أي آية من حدث لاحق أو سابق، ولا آية لا تتعلق مباشرة بهذه الخطوة.
-2. اقترح 2 إلى 4 عبارات بحث عربية قصيرة (كلمتين إلى 3 كلمات لكل عبارة) للبحث في صحيح البخاري وصحيح مسلم عن أحاديث تتعلق بهذه الخطوة.
+1. اختر من 1 إلى 4 آيات قرآنية (بصيغة "سورة:آية") تثبت أو تصف هذا الحدث تحديداً دون غيره.
+2. اقترح 2 إلى 3 عبارات بحث عربية قصيرة (كلمتين إلى 3 كلمات) للبحث في صحيح البخاري ومسلم عن أحاديث تتعلق بهذه الخطوة.
 
 أعد JSON فقط:
 {{
@@ -483,17 +496,15 @@ def process_timeline_step(
   "hadith_queries": ["كان الله ولم يكن", "أول ما خلق"]
 }}"""
 
-    plan = call_llm(retrieval_prompt, timeout=90, max_tokens=1024) or {}
+    plan = call_llm(retrieval_prompt, timeout=60, max_tokens=4096) or {}
     candidates = parse_ayah_refs(plan.get("candidate_ayahs", []))
 
-    # لو آية الكرسي في المصادر والخطوة تتعلق بالعرش/الكرسي نضيفها تلقائياً
     if any("الكرسي" in str(x) for x in story.get("sources", [])) and "كرسي" in step_text:
         if (2, 255) not in candidates:
             candidates.insert(0, (2, 255))
 
-    # ── المرحلة ب: سحب النصوص الحقيقية (القرآن + التفاسير + البخاري ومسلم) ──
     retrieved_verses = []
-    for s, a in candidates[:6]:
+    for s, a in candidates[:5]:
         ref_str = f"{s}:{a}"
         ayah_txt = store.get_ayah_text(s, a)
         if not ayah_txt:
@@ -508,39 +519,31 @@ def process_timeline_step(
             "tafsirs": tafsirs,
         })
 
-    hadith_hits = store.search_hadiths(plan.get("hadith_queries", []), limit=5)
+    hadith_hits = store.search_hadiths(plan.get("hadith_queries", []), limit=4)
 
-    # تجهيز حزمة المراجع للدمج والتحقق
     verses_context_parts = []
     for rv in retrieved_verses:
         t_lines = "\n".join(f"   • {k}: {v}" for k, v in rv["tafsirs"].items())
         verses_context_parts.append(
-            f"### مرجع [{rv['ref']}] ({rv['surah_name']}):\n"
-            f"النص القرآني: {rv['text']}\n"
-            f"{t_lines}"
+            f"### مرجع [{rv['ref']}] ({rv['surah_name']}):\nالنص: {rv['text']}\n{t_lines}"
         )
     verses_context = "\n\n".join(verses_context_parts) or "(لم تُسحب آيات مرشحة)"
-
-    hadiths_context = "\n\n".join(
-        f"### {h['ref']}:\n{h['text']}" for h in hadith_hits
-    ) or "(لم يُعثر على حديث مطابق في البحث المباشر)"
+    hadiths_context = "\n\n".join(f"### {h['ref']}:\n{h['text']}" for h in hadith_hits) or "(لم يُعثر على حديث مطابق)"
 
     extra_platform = ""
     if (not strict_mode) and platform_notes:
-        extra_platform = f"\n\n=== معلومات مساعدة من منصة المشروع (تُراجع بميزان الصحة) ===\n{platform_notes[:1800]}"
+        extra_platform = f"\n\n=== معلومات مساعدة من منصة المشروع ===\n{platform_notes[:1200]}"
 
     strict_block = (
         "🔴 وضع الصرامة القصوى (عهد بداية الخلق):\n"
-        "- يُمنع منعاً باتاً التمريض (يُروى، قيل، يُذكر) أو الإسرائيليات أو تشبيه الصفات.\n"
-        "- اعتمد حصراً على ما ورد في الآيات وتفسيرها الصحيح (ابن كثير/السعدي/الميسر) والأحاديث الصحيحة.\n"
+        "- يُمنع التمريض (يُروى، قيل، يُذكر) والإسرائيليات وتشبيه الصفات.\n"
+        "- اعتمد حصراً على ما ورد في الآيات وتفسيرها الصحيح والأحاديث الصحيحة.\n"
     ) if strict_mode else (
         "🟡 القواعد المنهجية:\n"
-        "- اعتمد على المراجع المرفقة (القرآن + التفاسير + الصحيحين).\n"
-        "- يُمنع الإسرائيليات والأحاديث الضعيفة.\n"
+        "- اعتمد على المراجع المرفقة (القرآن + التفاسير + الصحيحين) دون إسرائيليات أو أحاديث ضعيفة.\n"
         "- أي معلومة تفسيرية غير قطعية تُنسب بصيغة التمريض مع (والله أعلم).\n"
     )
 
-    # ── المرحلة ج: التحقق من الآيات + الدمج + إزالة التكرار ──
     synthesis_prompt = f"""أنت مؤرخ إسلامي ومفسّر ومدقّق للمصادر.
 
 القصة: "{story.get('title')}"
@@ -551,7 +554,7 @@ def process_timeline_step(
 {rules}
 {strict_block}
 
-ما تم سرده في الأحداث السابقة (يُمنع تكراره هنا بأي شكل):
+ما تم سرده سابقاً (يُمنع تكراره هنا):
 {covered_str}
 
 === المصادر الحقيقية المسحوبة لهذا الحدث ===
@@ -561,14 +564,12 @@ def process_timeline_step(
 {hadiths_context}
 {extra_platform}
 
-المهام المطلوبة بدقة:
-1. **فلترة الآيات**: انظر إلى النصوص القرآنية وتفاسيرها أعلاه؛ احتفظ في `verified_refs` فقط بالآيات التي تثبت أو تتعلق مباشرة بهذه الخطوة ("{step_text}")، واحذف أي آية بعيدة عن هذا الحدث.
-   ⚠️ إذا لم يكن هناك آية مرفقة مناسبة للخطوة، أبق `verified_refs` فارغة ولا تخترع أرقاماً من خارج القائمة.
-2. **الدمج وإزالة التكرار**: ادمج المعاني من التفاسير والأحاديث للخطوة الحالية في 2 إلى 4 فقرات سرد مترابطة زمنياً:
-   - بدون تكرار للمعلومات بين الفقرات أو مع الأحداث السابقة.
-   - بدون أي معلومة من خارج المراجع الموثقة.
-   - لا تكتب نص الآية القرآنية حرفياً داخل نص الفقرة (اشرح معناها وسياقها)، وضع في حقل `anchor_ayah` رقم الآية التي تؤكد هذه الفقرة (من `verified_refs` إن وُجدت، وإلا `""`).
-3. اكتب `event_title` (عنواناً قصيراً واضحاً للحدث) و`event_summary` (سطر واحد يلخص ما تم سرده).
+المطلوب بدقة:
+1. **فلترة الآيات**: احتفظ في `verified_refs` فقط بالآيات التي تثبت أو تتعلق مباشرة بهذه الخطوة ("{step_text}").
+2. **الدمج وإزالة التكرار**: ادمج المعاني في 2 إلى 4 فقرات سرد مترابطة زمنياً:
+   - بدون تكرار بين الفقرات أو مع الأحداث السابقة، وبدون أي معلومة من خارج المراجع.
+   - لا تكتب نص الآية حرفياً داخل الفقرة، وضع رقم الآية المؤكدة في `anchor_ayah` (من `verified_refs`).
+3. اكتب `event_title` و`event_summary` مختصراً.
 
 أعد JSON فقط:
 {{
@@ -576,21 +577,20 @@ def process_timeline_step(
   "verified_refs": ["112:1"],
   "blocks": [
     {{
-      "text": "فقرة السرد القصصي الموثقة والمدمجة الخالية من التكرار...",
+      "text": "فقرة السرد القصصي الموثقة والمدمجة...",
       "anchor_ayah": "112:1",
       "sources_used": ["تفسير ابن كثير", "تفسير السعدي"]
     }}
   ],
-  "event_summary": "ملخص مختصر لما غُطي في هذا الحدث"
+  "event_summary": "ملخص مختصر للحدث"
 }}"""
 
-    synthesized = call_llm(synthesis_prompt, timeout=180, max_tokens=4096)
+    synthesized = call_llm(synthesis_prompt, timeout=90, max_tokens=8192)
     if not synthesized or not synthesized.get("blocks"):
         return {}
 
     verified_set = set(synthesized.get("verified_refs", []))
-    valid_ayahs = []
-    valid_ref_strings = set()
+    valid_ayahs, valid_ref_strings = [], set()
     for rv in retrieved_verses:
         if rv["ref"] in verified_set:
             valid_ayahs.append({
@@ -629,15 +629,13 @@ def process_timeline_step(
     }
 
 
-# ═══════════════════════════════════════════════════════════
-# الدالة الرئيسية
-# ═══════════════════════════════════════════════════════════
 def main():
     if len(sys.argv) < 2:
-        print("الاستخدام: python collect_story.py <story_id>")
+        print("الاستخدام: python collect_story.py <story_id> [--fresh]")
         sys.exit(1)
 
     story_id = sys.argv[1]
+    fresh = "--fresh" in sys.argv
     print("=" * 65)
     print(f"📚 جمع المصادر الموثقة بالتسلسل الزمني: {story_id}")
     print("=" * 65)
@@ -662,10 +660,9 @@ def main():
     store = ReferenceStore()
     platform_notes = store.get_platform_topic(story_id, story.get("title", ""))
 
-    # بناء الحدث في مجلد مؤقت ثم نقله نظيفاً لتفادي مخلفات قديمة
     story_dir = STORIES_OUTPUT / story_id / "collected"
     tmp_events_dir = story_dir / "_events_tmp"
-    if tmp_events_dir.exists():
+    if fresh and tmp_events_dir.exists():
         shutil.rmtree(tmp_events_dir)
     tmp_events_dir.mkdir(parents=True, exist_ok=True)
 
@@ -676,6 +673,23 @@ def main():
 
     for idx, step_text in enumerate(timeline, 1):
         ev_id = f"event_{idx:02d}"
+        ev_path = tmp_events_dir / ev_id
+
+        # استئناف من نقطة الحفظ إذا كان الحدث قد اكتمل في محاولة سابقة
+        if (ev_path / "meta.json").exists() and (ev_path / "narrative.json").exists() and (ev_path / "ayahs.json").exists():
+            meta = json.loads((ev_path / "meta.json").read_text(encoding="utf-8"))
+            if meta.get("timeline_step") == step_text:
+                prev_ayahs = json.loads((ev_path / "ayahs.json").read_text(encoding="utf-8"))
+                prev_narr = json.loads((ev_path / "narrative.json").read_text(encoding="utf-8"))
+                if prev_narr:
+                    covered_summary.append(f"{ev_id}: {meta.get('summary', step_text)}")
+                    for a in prev_ayahs:
+                        used_ayah_refs.add(a["ref"])
+                    total_ayahs += len(prev_ayahs)
+                    total_blocks += len(prev_narr)
+                    print(f"\n⏭️ [{idx}/{len(timeline)}] {ev_id} محفوظ مسبقاً — تخطي")
+                    continue
+
         print(f"\n🧭 [{idx}/{len(timeline)}] {step_text}")
 
         ev_data = None
@@ -692,15 +706,13 @@ def main():
             )
             if ev_data:
                 break
-            print(f"   🔁 إعادة محاولة الخطوة {idx}...")
+            print(f"   🔁 إعادة محاولة الخطوة {idx}...", flush=True)
             time.sleep(3)
 
         if not ev_data:
             print(f"❌ فشل جمع الخطوة الزمنية {idx}: '{step_text}'")
-            shutil.rmtree(tmp_events_dir, ignore_errors=True)
             sys.exit(1)
 
-        ev_path = tmp_events_dir / ev_id
         ev_path.mkdir(parents=True, exist_ok=True)
         (ev_path / "ayahs.json").write_text(
             json.dumps(ev_data["ayahs"], ensure_ascii=False, indent=2), encoding="utf-8"
@@ -715,6 +727,7 @@ def main():
                     "chron_index": idx,
                     "title": ev_data["title"],
                     "timeline_step": step_text,
+                    "summary": ev_data["summary"],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -729,7 +742,7 @@ def main():
         total_blocks += len(ev_data["narrative"])
 
         print(f"   ✅ {ev_id}: {len(ev_data['narrative'])} فقرة مدمجة | {len(ev_data['ayahs'])} آية محققة")
-        time.sleep(1.5)
+        time.sleep(1)
 
     final_events_dir = story_dir / "events"
     if final_events_dir.exists():
