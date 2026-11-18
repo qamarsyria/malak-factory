@@ -1,0 +1,16 @@
+{
+  "story_id": "creation-pen",
+  "audited_at": "2026-11-18T04:16:46.481108+00:00",
+  "events": {
+    "event_01": {
+      "blocks_total": 5,
+      "blocks_changed": 0,
+      "changes": []
+    },
+    "event_02": {
+      "blocks_total": 5,
+      "blocks_changed": 0,
+      "changes": []
+    }
+  }
+}
