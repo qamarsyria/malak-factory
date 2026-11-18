@@ -1,9 +1,9 @@
 """
-story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
+story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280) بحجم خفيف وجودة عالية
+- ترميز 24fps مع -crf 28 -preset medium -maxrate 450k وصوت AAC أحادي 96k (يخفض حجم الدقيقتين من 18MB إلى ~5-7MB).
 - كشف تلقائي لمحرك RAQM لتجنب تكسير الحروف والتشكيل نهائياً.
 - يقرأ surah و ayah و reciter من كل chunk لمنع انزياح الآيات أو أسماء القراء.
 - يقسّم الآيات أو الفقرات الطويلة تلقائياً على شرائح متتابعة ضمن مدة المقطع.
-- يعالج التزامن بدقة (-t + shortest=1) ويخرج mp4 مضبوط الحجم لتلغرام دون ترميز مزدوج.
 """
 
 import os
@@ -38,6 +38,17 @@ DIMENSIONS = {
     "yt":     {"w": 720, "h": 1280},
     "social": {"w": 720, "h": 1280},
 }
+
+VIDEO_FPS = 24
+ENCODE_ARGS = [
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-crf", "28",
+    "-maxrate", "450k",
+    "-bufsize", "900k",
+    "-profile:v", "main",
+    "-pix_fmt", "yuv420p",
+]
 
 AYAH_LIBRARY = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
 AYAH_LOOKUP: dict[str, str] = {}
@@ -113,9 +124,6 @@ FONT_PATH = find_arabic_font()
 print(f"✅ الخط: {FONT_PATH}", flush=True)
 
 
-# ═══════════════════════════════════════════════════════════
-# مطابقة المشاهد والبحث البصري الآمن
-# ═══════════════════════════════════════════════════════════
 WOMEN_KEYWORDS = [
     "مريم", "آسية", "خديجة", "عائشة", "فاطمة", "حفصة", "زينب", "هاجر", "سارة",
     "المرأة", "النساء", "امرأة", "زوجة", "ابنة", "حامل", "ولادة",
@@ -179,7 +187,6 @@ def _find_local(query: str) -> str | None:
 
 
 def _make_islamic_fallback_bg(path: Path, W: int, H: int) -> str:
-    """يولد خلفية إسلامية متدرجة أنيقة عند تعذر جلب وسائط من الإنترنت."""
     img = Image.new("RGB", (W, H), (10, 28, 38))
     draw = ImageDraw.Draw(img)
     for y in range(H):
@@ -205,7 +212,6 @@ def fetch_media(query: str, work_dir: Path, used_urls: set, W: int, H: int, scen
             return local
 
         if PIXABAY_KEY:
-            # 1. البحث في فيديوهات Pixabay
             try:
                 r = requests.get(
                     "https://pixabay.com/api/videos/",
@@ -235,7 +241,6 @@ def fetch_media(query: str, work_dir: Path, used_urls: set, W: int, H: int, scen
             except Exception:
                 pass
 
-            # 2. احتياطي: صور عمودية عالية الجودة من Pixabay
             try:
                 r = requests.get(
                     "https://pixabay.com/api/",
@@ -266,9 +271,6 @@ def fetch_media(query: str, work_dir: Path, used_urls: set, W: int, H: int, scen
     return _make_islamic_fallback_bg(fb, W, H)
 
 
-# ═══════════════════════════════════════════════════════════
-# تشكيل النص العربي وتجهيز الشرائح (بدون أخطاء RAQM)
-# ═══════════════════════════════════════════════════════════
 def _load_font(size: int):
     if HAS_RAQM:
         return ImageFont.truetype(FONT_PATH, size, layout_engine=ImageFont.Layout.RAQM)
@@ -334,7 +336,6 @@ def _layout_slides(text: str, max_w: int, max_h: int, start_size: int = 48, min_
         if len(lines) * lh <= max_h:
             return font, [lines], lh
 
-    # إذا كان النص طويلاً جداً (مثل آية طويلة): نقسمه إلى شرائح متوازنة على خط min_size
     font = _load_font(min_size)
     lh = int(min_size * 1.65)
     lines = _wrap_logical(text, font, max_w, ddraw)
@@ -387,11 +388,9 @@ def make_caption_slides(
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
-        # عنوان الحلقة بالأعلى (يحتفظ برقم الحلقة!)
         if clean_title:
             _draw_centered(draw, 36, clean_title, title_font, "#D4AF37", 4, "black", W)
 
-        # حساب ارتفاع النص والمرجع في الوسط
         ref_extra = 55 if (is_quran and display_ref) else 0
         total_h = len(lines) * lh + ref_extra
         y = max(140, (H - total_h) // 2)
@@ -407,7 +406,6 @@ def make_caption_slides(
         if is_quran and reciter_name and show_reciter:
             _draw_centered(draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", 3, "black", W)
 
-        # العلامة المائية
         wm_txt = _prepare_draw_text("ملاك المعرفة")
         if HAS_RAQM:
             wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
@@ -422,7 +420,6 @@ def make_caption_slides(
         overlay.save(png_path)
         outputs.append((png_path, slide_dur))
 
-    # موازنة مجموع مدد الشرائح ليطابق c_dur بالضبط
     if len(outputs) > 1:
         diff = c_dur - sum(d for _, d in outputs)
         last_p, last_d = outputs[-1]
@@ -431,9 +428,6 @@ def make_caption_slides(
     return outputs
 
 
-# ═══════════════════════════════════════════════════════════
-# تجهيز الخلفيات وبناء الفيديو المتزامن
-# ═══════════════════════════════════════════════════════════
 def get_duration(path) -> float:
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -451,15 +445,14 @@ def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Pat
     input_flags = ["-loop", "1"] if is_img else ["-stream_loop", "-1"]
     vf = (
         f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-        f"crop={W}:{H},fps=30,"
+        f"crop={W}:{H},fps={VIDEO_FPS},"
         f"eq=brightness=-0.12:contrast=1.06,"
         f"format=yuv420p,setsar=1"
     )
     subprocess.run(
         ["ffmpeg", "-y"] + input_flags + [
             "-i", bg_file, "-t", f"{duration:.3f}", "-vf", vf,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
-            str(out_path),
+            *ENCODE_ARGS, str(out_path),
         ],
         check=True, capture_output=True,
     )
@@ -559,9 +552,9 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             )
 
             for png_path, s_dur in slides:
-                in_idx = slide_count + 1  # 0 مخصص لفيديو الخلفية
+                in_idx = slide_count + 1
                 slide_inputs.extend(["-loop", "1", "-t", f"{s_dur:.3f}", "-i", str(png_path)])
-                slide_filters.append(f"[{in_idx}:v]fps=30,format=rgba[t{slide_count}]")
+                slide_filters.append(f"[{in_idx}:v]fps={VIDEO_FPS},format=rgba[t{slide_count}]")
                 slide_count += 1
 
         out_seg = work_dir / f"seg_{seg_idx}.mp4"
@@ -569,7 +562,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
 
         if slide_count == 0:
             subprocess.run(
-                ["ffmpeg", "-y"] + bg_cmd + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p", str(out_seg)],
+                ["ffmpeg", "-y"] + bg_cmd + [*ENCODE_ARGS, str(out_seg)],
                 check=True, capture_output=True,
             )
         else:
@@ -579,8 +572,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 ["ffmpeg", "-y"] + bg_cmd + slide_inputs + [
                     "-filter_complex", fc, "-map", "[v]",
                     "-t", f"{seg_duration:.3f}",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
-                    str(out_seg),
+                    *ENCODE_ARGS, str(out_seg),
                 ],
                 check=True, capture_output=True,
             )
@@ -599,7 +591,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             "-i", audio_path,
             "-map", "0:v", "-map", "1:a",
             "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "128k",
+            "-c:a", "aac", "-ac", "1", "-b:a", "96k",
             "-movflags", "+faststart",
             "-shortest",
             output_mp4,
