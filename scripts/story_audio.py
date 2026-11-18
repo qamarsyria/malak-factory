@@ -1,13 +1,9 @@
 """
 story_audio.py — المرحلة 4: بناء الصوت (نسخة Social طبيعية بقراء متعددين + نسخة YT بالحصري)
-- يحافظ على التشكيل السليم للسرد عبر التحقق الحرفي ليظهر بالتشكيل على الشاشة ويُقرأ بدقة.
-- يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و thinkingConfig أثناء التشكيل.
+- تشكيل ثنائي المراحل (Two-Pass Morphosyntactic): تحليل المعنى والصرف والنحو أولاً + تدقيق الشدّة والإعراب ثانياً.
+- دمج ذكي كلمة بكلمة (SequenceMatcher) يمنع سقوط التشكيل بسبب تصحيح همزة أو إملاء كلمة واحدة.
 - ينوّع القراء داخل الحلقة الواحدة في نسخة Social بصوت طبيعي صافٍ دون تشويه المدود.
 - يخزّن surah و ayah و surah_name و reciter داخل كل chunk لمنع انزياح الآيات في الفيديو.
-- يدعم: --mode social | yt | both
-
-الاستخدام:
-    python story_audio.py <episode.json> <yt.mp3> <social.mp3> [--mode social|yt|both]
 """
 
 import os
@@ -22,6 +18,7 @@ import hashlib
 import asyncio
 import random
 import argparse
+from difflib import SequenceMatcher
 from pathlib import Path
 import requests
 
@@ -117,28 +114,175 @@ def arabize_numbers(text: str) -> str:
     return re.sub(r"\b(\d{1,6})\b", lambda m: _num_to_arabic(int(m.group(0))), text)
 
 
-def _strip_tashkeel(text: str) -> str:
-    return re.sub(r"[\u064B-\u065F\u0670\s،؛؟!.:]+", "", text or "")
+def _word_skeleton(word: str) -> str:
+    """هيكل الكلمة بدون تشكيل ولا ترقيم، لتسهيل المطابقة والدمج دون إسقاط الفقرة."""
+    w = re.sub(r"[\u064B-\u065F\u0670\u0640]", "", word or "")
+    w = re.sub(r"[^\u0621-\u064A]", "", w)
+    w = w.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ٱ", "ا")
+    w = w.replace("ى", "ي").replace("ة", "ه")
+    return w
+
+
+def _merge_diacritics_safely(original: str, diacritized: str) -> str:
+    """يدمج التشكيل كلمة بكلمة بحيث لا يضيع تشكيل الفقرة إذا اختلف رسم همزة أو كلمة واحدة."""
+    orig_tokens = original.split()
+    diac_tokens = diacritized.split()
+    if not orig_tokens or not diac_tokens:
+        return original
+
+    orig_skels = [_word_skeleton(w) for w in orig_tokens]
+    diac_skels = [_word_skeleton(w) for w in diac_tokens]
+
+    matcher = SequenceMatcher(None, orig_skels, diac_skels, autojunk=False)
+    merged = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for oi, di in zip(range(i1, i2), range(j1, j2)):
+                # الحفاظ على علامات الترقيم الملتصقة بالأصل إن غابت
+                m_trail = re.search(r"([،؛؟!.:]+)$", orig_tokens[oi])
+                d_clean = re.sub(r"[،؛؟!.:]+$", "", diac_tokens[di])
+                merged.append(d_clean + (m_trail.group(1) if m_trail else ""))
+        elif tag == "replace":
+            if (i2 - i1) == (j2 - j1):
+                for oi, di in zip(range(i1, i2), range(j1, j2)):
+                    sim = SequenceMatcher(None, orig_skels[oi], diac_skels[di]).ratio()
+                    if sim >= 0.72:
+                        m_trail = re.search(r"([،؛؟!.:]+)$", orig_tokens[oi])
+                        d_clean = re.sub(r"[،؛؟!.:]+$", "", diac_tokens[di])
+                        merged.append(d_clean + (m_trail.group(1) if m_trail else ""))
+                    else:
+                        merged.append(orig_tokens[oi])
+            else:
+                merged.extend(orig_tokens[i1:i2])
+        elif tag == "delete":
+            merged.extend(orig_tokens[i1:i2])
+        # 'insert' يُتجاهل حتى لا يُدخل أي كلمة جديدة لم تكن في النص المدقق
+
+    return " ".join(merged) if merged else original
+
+
+def _diacritize_models() -> list[str]:
+    """يفضل Pro و Flash الكاملين على lite لأن النحو والصرف يحتاج دقة عالية."""
+    discovered = discover_and_cache(force=False)
+    heavy = [m for m in discovered if "lite" not in m.lower()]
+    lite = [m for m in discovered if "lite" in m.lower()]
+    return (heavy + lite)[:10]
 
 
 def _thinking_config(model: str) -> dict | None:
     m = model.lower()
     if any(x in m for x in ["gemini-3", "gemini-4"]):
-        return {"thinkingLevel": "low"}
+        return {"thinkingLevel": "medium"}
     if "gemini-2.5" in m:
-        return {"thinkingBudget": 256}
+        return {"thinkingBudget": 1024}
     return None
 
 
-DIACRITIZE_PROMPT = """أضف التشكيل الكامل والدقيق (الحركات والشدة) للنص العربي التالي حسب النحو وسياق الجملة.
+def _call_diac_json(prompt: str, timeout: int = 75) -> dict | None:
+    pool = get_pool()
+    breaker = get_breaker()
+    for model in _diacritize_models():
+        if breaker.is_open(f"model:{model}"):
+            continue
 
-قواعد صارمة جداً:
-1. لا تغيّر ولا تحذف ولا تضف أي حرف أو كلمة أو علامة ترقيم.
-2. لا تدمج أي كلمتين ولا تحذف المسافات.
-3. أعد النص المشكول فقط دون أي شرح أو مقدمات.
+        use_thinking = True
+        valid_tries = 0
+        while valid_tries < 2:
+            try:
+                key = pool.get_current()
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                gen_cfg = {
+                    "temperature": 0.05,
+                    "maxOutputTokens": 6144,
+                    "responseMimeType": "application/json",
+                }
+                if use_thinking:
+                    tc = _thinking_config(model)
+                    if tc:
+                        gen_cfg["thinkingConfig"] = tc
+
+                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
+                r = requests.post(url, json=body, timeout=(15, timeout))
+
+                if r.status_code == 200:
+                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
+                    txt = "\n".join(text_parts) if text_parts else (parts[-1].get("text", "") if parts else "")
+                    s, e = txt.find("{"), txt.rfind("}")
+                    if s == -1 or e <= s:
+                        break
+                    parsed = json.loads(txt[s:e + 1])
+                    pool._advance()
+                    breaker.record_success(f"model:{model}")
+                    return parsed
+                elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                    pool.mark_dead(f"HTTP {r.status_code}")
+                    continue
+                elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
+                    use_thinking = False
+                    continue
+                elif r.status_code == 429:
+                    pool.mark_failed(75)
+                    valid_tries += 1
+                    time.sleep(2)
+                    continue
+                elif r.status_code in (400, 403, 404):
+                    breaker.record_failure(f"model:{model}")
+                    break
+                else:
+                    valid_tries += 1
+                    pool._advance()
+                    time.sleep(3)
+                    continue
+            except requests.exceptions.Timeout:
+                pool._advance()
+                break
+            except Exception:
+                break
+    return None
+
+
+PASS1_PROMPT = """أنت أستاذ لغوي متخصص في الصرف والنحو العربي والتشكيل الصوتي الدقيق للقراءة الجهرية (TTS).
+
+المهمة: اضبط النص التالي بالتشكيل الكامل والدقيق (100%) بعد فهم المعنى الكامل للجمل وإعرابها.
+
+قواعد الصرف والنحو والنطق الإلزامية:
+1. افهم معنى كل جملة أولاً لتفرق بدقة بين:
+   - المبني للمعلوم والمبني للمجهول (مثل: خَلَقَ / خُلِقَ، أَنْزَلَ / أُنْزِلَ، قَدَّرَ / قُدِّرَ).
+   - المتشابهات السياقية (مثل: مَلِك / مَلَك / مُلْك، عِلْم / عَلَم / عَلَّمَ، خَلْق / خُلُق).
+2. **الشدّة (`ّ`) ضرورية جداً للنطق السليم**: ضع الشدّة على كل حرف مشدد وعلى الحرف الشمسي بعد (الـ) الشمسية، مثل: (اللَّهُ، الرَّحْمَنِ، السَّمَاوَاتِ، التَّدْبِيرِ، الرُّبُوبِيَّةِ، الأُلُوهِيَّةِ، النَّاسِ، كُلِّ، حَقِّ).
+3. اضبط أواخر الكلمات إعرابياً حسب موقعها (فاعل مرفوع، مفعول منصوب، مجرور بحرف الجر أو الإضافة).
+4. حافظ على جميع الكلمات والمسافات وعلامات الترقيم كما هي تماماً دون حذف أو زيادة كلمة.
 
 النص:
-{text}"""
+{text}
+
+أعد JSON فقط:
+{{
+  "grammar_analysis": "خلاصة سريعة للمواضع الإعرابية والصرفية الحساسة في النص",
+  "diacritized": "النص مضبوطاً بالشكل الكامل..."
+}}"""
+
+
+PASS2_VERIFY_PROMPT = """أنت مدقق صرفي ونحوي صارم تراجع نصاً مشكولاً قبل إرساله لقارئ صوتي آلي.
+
+النص الأصلي:
+{original}
+
+التشكيل المقترح:
+{draft}
+
+راجع التشكيل المقترح كلمةً بكلمة وصحح أي خطأ في:
+1. سقوط الشدّة (خاصة اللام الشمسية، والأفعال المضعفة مثل قَدَّرَ / تَفَرَّدَ / عَظَّمَ، ولفظ الجلالة اللَّهِ).
+2. خطأ ضبط المشتقات أو المبني للمجهول أو الضمائر.
+3. خطأ الإعراب (المضاف إليه مجرور بالكسرة، والاسم بعد حرف الجر مجرور، والفاعل مرفوع).
+4. تأكد من سلامة الحروف دون تغيير أو إضافة كلمات.
+
+أعد JSON فقط:
+{{
+  "final_text": "النص النهائي بعد تصحيح كل الحركات والشدات..."
+}}"""
 
 
 def smart_diacritize(text: str, cache_file: Path | None = None) -> str:
@@ -147,70 +291,35 @@ def smart_diacritize(text: str, cache_file: Path | None = None) -> str:
 
     if cache_file and cache_file.exists():
         cached = cache_file.read_text(encoding="utf-8").strip()
-        if cached and _strip_tashkeel(cached) == _strip_tashkeel(text):
+        if cached:
             return cached
 
     try:
-        pool = get_pool()
-        breaker = get_breaker()
-        models = discover_and_cache(force=False)[:10]
+        # المرحلة 1: التحليل الصرفي والنحوي والتشكيل
+        p1 = _call_diac_json(PASS1_PROMPT.format(text=text))
+        draft = (p1 or {}).get("diacritized", "").strip()
+        if not draft:
+            return text
 
-        for model in models:
-            if breaker.is_open(f"model:{model}"):
-                continue
+        # المرحلة 2: التدقيق الإعرابي وفحص الشدّة للنطق
+        p2 = _call_diac_json(PASS2_VERIFY_PROMPT.format(original=text, draft=draft))
+        verified = (p2 or {}).get("final_text", "").strip() or draft
 
-            use_thinking = True
-            valid_tries = 0
-            while valid_tries < 2:
-                try:
-                    key = pool.get_current()
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                    gen_cfg = {"temperature": 0.05, "maxOutputTokens": 4096}
-                    if use_thinking:
-                        tc = _thinking_config(model)
-                        if tc:
-                            gen_cfg["thinkingConfig"] = tc
+        # الدمج الآمن كلمة بكلمة للحفاظ على التشكيل حتى لو صُححت همزة
+        final_text = _merge_diacritics_safely(text, verified)
 
-                    body = {"contents": [{"parts": [{"text": DIACRITIZE_PROMPT.format(text=text)}]}], "generationConfig": gen_cfg}
-                    r = requests.post(url, json=body, timeout=(15, 60))
+        # نسبة تغطية التشكيل (للتأكد أنه مشكول فعلاً)
+        diac_count = len(re.findall(r"[\u064B-\u0652]", final_text))
+        letter_count = max(1, len(re.findall(r"[\u0621-\u064A]", final_text)))
+        ratio = diac_count / letter_count
+        print(f"   🔤 تشكيل صرفي/نحوي ({diac_count}/{letter_count} = {ratio:.2f} حركة/حرف)", flush=True)
 
-                    if r.status_code == 200:
-                        parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                        text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
-                        diac = ("\n".join(text_parts) if text_parts else (parts[-1].get("text", "") if parts else "")).strip()
-                        if diac and _strip_tashkeel(diac) == _strip_tashkeel(text) and len(diac.split()) == len(text.split()):
-                            pool._advance()
-                            breaker.record_success(f"model:{model}")
-                            if cache_file:
-                                cache_file.write_text(diac, encoding="utf-8")
-                            return diac
-                        print("   ⚠️ التشكيل غيّر أحرفاً في النص — الاحتفاظ بالأصل", flush=True)
-                        return text
-                    elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
-                        pool.mark_dead(f"HTTP {r.status_code}")
-                        continue
-                    elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
-                        use_thinking = False
-                        continue
-                    elif r.status_code == 429:
-                        pool.mark_failed(75)
-                        valid_tries += 1
-                        time.sleep(2)
-                        continue
-                    elif r.status_code in (400, 403, 404):
-                        breaker.record_failure(f"model:{model}")
-                        break
-                    else:
-                        valid_tries += 1
-                        pool._advance()
-                        time.sleep(3)
-                        continue
-                except requests.exceptions.Timeout:
-                    pool._advance()
-                    break
+        if cache_file and ratio >= 0.35:
+            cache_file.write_text(final_text, encoding="utf-8")
+        return final_text
     except Exception as e:
         print(f"   ⚠️ تعذر التشكيل: {str(e)[:80]}", flush=True)
-    return text
+        return text
 
 
 def sanitize_for_tts(t: str) -> str:
@@ -316,7 +425,7 @@ def _export_final_mp3(wav_list: list[Path], out_mp3: str, work: Path):
     )
     Path(out_mp3).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(merged_wav), "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3)],
+        ["ffmpeg", "-y", "-i", str(merged_wav), "-c:a", "libmp3lame", "-b:a", "128k", str(out_mp3)],
         check=True, capture_output=True, timeout=300,
     )
 
@@ -369,7 +478,7 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                 if not raw_text:
                     continue
 
-                diac_cache = ep_cache / f"seg_{idx}_diac.txt"
+                diac_cache = ep_cache / f"seg_{idx}_diac_v2.txt"
                 diac_text = smart_diacritize(raw_text, cache_file=diac_cache)
                 chunks = split_text(diac_text)
                 chunk_timings = []
