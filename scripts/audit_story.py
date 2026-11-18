@@ -1,6 +1,6 @@
 """
-audit_story.py — المرحلة 2: التدقيق (نسخة البلوك الواحد لضمان الرد)
-يقرأ collected/events/*/narrative.json ويدقّق كل block عبر LLM.
+audit_story.py — المرحلة 2: التدقيق 
+يعتمد كلياً على model_discovery.py لجلب الموديلات المتاحة (تحديث تلقائي)
 """
 
 import os, re, sys, json, time
@@ -14,21 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gemini_tts_pool import get_pool
 from model_discovery import discover_and_cache
 from utilities import get_breaker, notify_telegram
-from filters_loader import get_llm_forbidden_rules
 
 # ═══════════════════════════════════════════════════════════
-# المسارات والإعدادات
+# المسارات
 # ═══════════════════════════════════════════════════════════
-STORIES_JSON   = _REPO_ROOT / "data" / "library" / "stories.json"
-STORIES_DIR    = _REPO_ROOT / "data" / "stories"
+STORIES_DIR = _REPO_ROOT / "data" / "stories"
+MIN_BLOCK_LENGTH = 30
 
-BATCH_SIZE = 1              # 🔴 تعديل مهم: بلوك واحد في كل مرة لتجنب الـ Timeout
-MIN_BLOCK_LENGTH = 30       
-MAX_BLOCK_LENGTH = 3000     
-
-# ═══════════════════════════════════════════════════════════
-# prompt التدقيق
-# ═══════════════════════════════════════════════════════════
 AUDIT_PROMPT_TEMPLATE = """أنت مدقّق شرعي متخصص في قصص الأنبياء. مهمتك مراجعة النص التالي (سرد قصصي) وحذف أي مخالفة.
 
 قواعد التدقيق:
@@ -62,19 +54,22 @@ def load_collected(story_id: str) -> dict:
     print(f"📂 {len(events)} حدث محمّل.")
     return events
 
-# ═══════════════════════════════════════════════════════════
-# استدعاء LLM
-# ═══════════════════════════════════════════════════════════
 def audit_single_block(text: str) -> dict:
     prompt = AUDIT_PROMPT_TEMPLATE.format(block_text=text)
     pool = get_pool()
     breaker = get_breaker()
-    models = ["gemini-1.5-flash", "gemini-1.5-pro"] + discover_and_cache(force=False)[:2]
-    models = list(dict.fromkeys(models))
-
+    
+    # ✅ استخدام النظام الذكي بتاعك (بدون أي أسماء ثابتة)
+    models = discover_and_cache(force=False)[:5]
+    
+    if not models:
+        print("      ❌ لم يتم اكتشاف أي موديل متاح!")
+        return {}
+    
     for model in models:
-        if breaker.is_open(f"model:{model}"): continue
-        for attempt in range(3):
+        if breaker.is_open(f"model:{model}"): 
+            continue
+        for attempt in range(2):
             try:
                 key = pool.get_current()
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -82,40 +77,40 @@ def audit_single_block(text: str) -> dict:
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096, "responseMimeType": "application/json"}
                 }
-                r = requests.post(url, json=body, timeout=(20, 120)) # مهلة أقصر عشان منعلقش
+                r = requests.post(url, json=body, timeout=(20, 120))
                 
                 if r.status_code == 200:
                     parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    if not parts: continue
+                    if not parts: 
+                        continue
                     res_text = parts[0].get("text", "")
                     s, e = res_text.find("{"), res_text.rfind("}")
-                    if s == -1: continue
+                    if s == -1: 
+                        continue
                     parsed = json.loads(res_text[s:e+1])
                     pool._advance() if hasattr(pool, '_advance') else pool.advance()
                     breaker.record_success(f"model:{model}")
                     return parsed
+                    
+                elif r.status_code == 404:
+                    print(f"      ❌ {model}: 404 (تعطيل)")
+                    breaker.record_failure(f"model:{model}")
+                    break # جرب الموديل اللي بعده
+                    
                 elif r.status_code == 429:
-                    print(f"      ⚠️ 429 Rate Limit - تدوير المفتاح")
+                    print(f"      ⚠️ {model}: 429 (Rate Limit)")
                     pool.mark_failed(3600)
                     continue
-                else:
-                    print(f"      ⚠️ HTTP {r.status_code}")
                     
             except requests.exceptions.Timeout:
-                print(f"      ⏱️ Timeout (موديل: {model})")
+                print(f"      ⏱️ {model}: Timeout")
                 pool.mark_failed(600)
                 continue
-            except json.JSONDecodeError:
-                print(f"      🧨 الرد ليس JSON صالح")
-                continue
             except Exception as e:
-                print(f"      ⚠️ خطأ: {str(e)[:60]}")
+                print(f"      ⚠️ {model}: {str(e)[:60]}")
                 continue
     return {}
 
-# ═══════════════════════════════════════════════════════════
-# الدالة الرئيسية
-# ═══════════════════════════════════════════════════════════
 def audit_story(story_id: str, force: bool = False):
     print("=" * 60)
     print(f"🔍 تدقيق: {story_id}")
@@ -148,7 +143,7 @@ def audit_story(story_id: str, force: bool = False):
                     if len(clean_txt) > 10:
                         audited_narrative.append({**block, "text": clean_txt, "_audited": True})
                     else:
-                        print(f"      🗑️ تم حذف block {idx+1}")
+                        print(f"      🗑️ حُذف block {idx+1}")
                 else:
                     audited_narrative.append(block)
             else:
@@ -156,7 +151,6 @@ def audit_story(story_id: str, force: bool = False):
                 audited_narrative.append(block)
             time.sleep(1)
 
-        # حفظ الحدث
         ev_dir = audited_dir / "events" / event_id
         ev_dir.mkdir(parents=True, exist_ok=True)
         (ev_dir / "ayahs.json").write_text(json.dumps(ev_ayahs, ensure_ascii=False, indent=2), encoding="utf-8")
