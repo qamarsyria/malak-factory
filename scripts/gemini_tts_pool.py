@@ -38,28 +38,32 @@ class GeminiKeyPool:
             raise RuntimeError("❌ لا مفاتيح Gemini")
         self.current_index = 0
         self.cooldowns: dict[str, float] = {}
+        self.dead_keys: set[str] = set()
         _log(f"🔑 محمّل {len(self.keys)} مفتاح Gemini")
 
     def _available_key(self) -> str | None:
         now = time.time()
         for _ in range(len(self.keys)):
             key = self.keys[self.current_index]
-            if now >= self.cooldowns.get(key, 0):
+            if key not in self.dead_keys and now >= self.cooldowns.get(key, 0):
                 return key
             self.current_index = (self.current_index + 1) % len(self.keys)
         return None
 
     def get_current(self) -> str:
+        if len(self.dead_keys) >= len(self.keys):
+            raise RuntimeError(f"🚫 جميع مفاتيح Gemini ({len(self.keys)}) غير صالحة (401/403)!")
         for _ in range(10):
             key = self._available_key()
             if key:
                 return key
-            if not self.cooldowns:
-                raise RuntimeError("🚫 جميع مفاتيح Gemini مستنفدة أو محظورة.")
-            soonest = min(self.cooldowns.values())
+            live_cooldowns = {k: v for k, v in self.cooldowns.items() if k not in self.dead_keys}
+            if not live_cooldowns:
+                raise RuntimeError("🚫 جميع مفاتيح Gemini الصالحة مستنفدة.")
+            soonest = min(live_cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             if wait > 900:
-                raise RuntimeError("🚫 كل مفاتيح Gemini في فترة تهدئة طويلة أو مستنفدة!")
+                raise RuntimeError("🚫 كل مفاتيح Gemini الصالحة في فترة تهدئة طويلة!")
             _log(f"⏳ انتظار {wait}ث لتوفر مفتاح...")
             time.sleep(min(wait + 1, 70))
         raise RuntimeError("❌ فشل الحصول على مفتاح متاح")
@@ -73,6 +77,16 @@ class GeminiKeyPool:
     def mark_failed(self, cooldown_seconds: int = 65) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
+        self.current_index = (self.current_index + 1) % len(self.keys)
+
+    def mark_dead(self, reason: str = "401") -> None:
+        key = self.keys[self.current_index]
+        idx = self.current_index + 1
+        self.dead_keys.add(key)
+        alive = len(self.keys) - len(self.dead_keys)
+        _log(f"🗑️ استبعاد مفتاح معطوب #{idx}/{len(self.keys)} ({reason}) — المفاتيح السليمة المتبقية: {alive}")
+        if alive <= 0:
+            raise RuntimeError(f"🚫 جميع مفاتيح Gemini ({len(self.keys)}) غير صالحة!")
         self.current_index = (self.current_index + 1) % len(self.keys)
 
 
@@ -118,23 +132,29 @@ def discover_tts_models(prefer_lite: bool = False) -> list[str]:
         "gemini-2.5-flash-preview-tts",
     ]
     try:
-        key = get_pool().get_current()
-        r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=20)
-        if r.status_code == 200:
-            tts_models = []
-            for m in r.json().get("models", []):
-                name = m.get("name", "").replace("models/", "")
-                methods = m.get("supportedGenerationMethods", [])
-                if "generateContent" in methods and "tts" in name.lower():
-                    tts_models.append(name)
-            if tts_models:
-                tts_models.sort(key=_tts_rank)
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(
-                    json.dumps({"models": tts_models, "timestamp": time.time()}, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                return tts_models
+        pool = get_pool()
+        for _ in range(len(pool.keys)):
+            key = pool.get_current()
+            r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=20)
+            if r.status_code == 401:
+                pool.mark_dead("401")
+                continue
+            if r.status_code == 200:
+                tts_models = []
+                for m in r.json().get("models", []):
+                    name = m.get("name", "").replace("models/", "")
+                    methods = m.get("supportedGenerationMethods", [])
+                    if "generateContent" in methods and "tts" in name.lower():
+                        tts_models.append(name)
+                if tts_models:
+                    tts_models.sort(key=_tts_rank)
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(
+                        json.dumps({"models": tts_models, "timestamp": time.time()}, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    return tts_models
+            break
     except Exception:
         pass
     return fallback
@@ -177,7 +197,6 @@ def _split_text(text: str, max_chars: int = 360) -> list[str]:
 
 
 def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
-    """يزيل الصمت الزائد في البداية والنهاية دون بتر آخر كلمة، مع تلاشي خفيف لمنع الطقطقة."""
     try:
         af = (
             "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,"
@@ -237,7 +256,6 @@ def _save_audio_bytes(raw: bytes, out_wav: Path) -> None:
 
 
 def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
-    # الحفاظ على الحروف والتشكيل وعلامات الترقيم للوقفات الطبيعية
     clean_text = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\s،؛؟!.:]", "", text)
     clean_text = re.sub(r"\s+", " ", clean_text).strip()
     if not clean_text:
@@ -257,6 +275,8 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
         try:
             _wait_for_rate_limit()
             r = requests.post(url, json=body, timeout=60)
+            if r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                return "INVALID_KEY"
             if r.status_code == 429:
                 return "RATE_LIMIT"
             if r.status_code in (400, 404):
@@ -310,9 +330,12 @@ def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
             wav_path = work_dir / f"part_{idx:03d}.wav"
             success = False
 
-            for _ in range(max(len(pool.keys) * 2, 4)):
-                key = pool.get_current()  # يرمي خطأ واضحاً لو نفدت الحصة تماماً
+            for _ in range(max(len(pool.keys) * 2, 6)):
+                key = pool.get_current()
                 result = _tts_single(chunk, wav_path, voice, key)
+                if result == "INVALID_KEY":
+                    pool.mark_dead("401/403")
+                    continue
                 if result == "RATE_LIMIT":
                     pool.mark_failed(70)
                     continue
