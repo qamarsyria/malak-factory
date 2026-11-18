@@ -1,5 +1,5 @@
 """
-apply_rvc_to_quran.py — تطبيق البصمة الصوتية (v4.0-clean + v3.1-myvoice) على آيات الحصري فقط
+apply_rvc_to_quran.py — تطبيق البصمة الصوتية (v4.0-clean + v3.1-myvoice) عبر infer/cli.py الرسمي
 الإعدادات المطابقة لـ sudais_reverb.yml:
   - clean (v4.0-clean)  : 87.5%  | pitch = -6
   - rough (v3.1-myvoice): 12.5%  | pitch = -4
@@ -17,14 +17,13 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from scipy.io import wavfile
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR  = _REPO_ROOT / "out" / "audio_cache"
 
 RVC_LAYERS = [
-    {"name": "clean", "weight_file": "clean.pth", "index": "clean.index", "pitch": -6, "weight": 0.875},
-    {"name": "rough", "weight_file": "rough.pth", "index": "rough.index", "pitch": -4, "weight": 0.125},
+    {"name": "clean", "path": "assets/weights/clean.pth", "index": "clean.index", "pitch": "-6", "weight": 0.875},
+    {"name": "rough", "path": "assets/weights/rough.pth", "index": "rough.index", "pitch": "-4", "weight": 0.125},
 ]
 
 ECHO_FILTER = "aecho=0.8:0.9:150|300|450:0.3|0.15|0.075"
@@ -44,85 +43,25 @@ def get_dur(path) -> float:
         return 0.0
 
 
-def init_rvc_engine(rvc_dir: Path):
-    """تهيئة محرك RVC مرة واحدة فقط مع ضمان عدم تعارض حزمة infer."""
-    target_mod = rvc_dir / "infer" / "modules" / "vc" / "modules.py"
-    if not target_mod.exists():
-        contents = [p.name for p in rvc_dir.iterdir()] if rvc_dir.exists() else []
-        raise RuntimeError(f"❌ ملفات RVC غير مكتملة في {rvc_dir} — المحتويات: {contents}")
-
-    # تحويل مجلدات RVC لحزم بايثون صريحة لتجنب أي تعارض مع site-packages
-    for sub in ("infer", "infer/modules", "infer/modules/vc", "infer/lib", "infer/lib/infer_pack", "configs"):
-        p = rvc_dir / sub
-        if p.is_dir():
-            init_file = p / "__init__.py"
-            if not init_file.exists():
-                init_file.touch()
-
-    for mod_name in list(sys.modules.keys()):
-        if mod_name == "infer" or mod_name.startswith("infer.") or mod_name == "configs" or mod_name.startswith("configs."):
-            del sys.modules[mod_name]
-
-    os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
-    os.environ["weight_root"] = str(rvc_dir / "assets" / "weights")
-    os.environ["index_root"] = str(rvc_dir)
-    os.environ["rmvpe_root"] = str(rvc_dir / "assets" / "rmvpe")
-
-    rvc_str = str(rvc_dir)
-    sys.path = [rvc_str] + [p for p in sys.path if p != rvc_str]
-
-    old_cwd = os.getcwd()
-    old_argv = sys.argv
-    os.chdir(rvc_dir)
-    sys.argv = [sys.argv[0]]
-    try:
-        from configs.config import Config
-        from infer.modules.vc.modules import VC
-
-        config = Config()
-        config.device = "cpu"
-        config.is_half = False
-        vc = VC(config)
-        return vc, old_cwd
-    finally:
-        sys.argv = old_argv
-
-
-def run_layer_batch(vc, layer: dict, ayah_items: list[dict], rvc_dir: Path, temp_dir: Path) -> dict[str, Path]:
-    """يحوّل قائمة آيات كاملة بموديل واحد دون إعادة تحميل الموديل."""
-    print(f"🎙️ تحميل موديل {layer['name']} (pitch={layer['pitch']}, weight={layer['weight']})...", flush=True)
-    vc.get_vc(layer["weight_file"])
-
-    idx_path = str(rvc_dir / layer["index"])
-    if not os.path.exists(idx_path):
-        idx_path = ""
-
-    outputs = {}
-    for item in ayah_items:
-        key = item["key"]
-        in_48k = item["in_48k"]
-        out_wav = temp_dir / f"{layer['name']}_{key}.wav"
-
-        info, (tgt_sr, audio_opt) = vc.vc_single(
-            sid=0,
-            input_audio_path=str(in_48k),
-            f0_up_key=int(layer["pitch"]),
-            f0_file=None,
-            f0_method="rmvpe",
-            file_index=idx_path,
-            file_index2="",
-            index_rate=0.4,
-            filter_radius=3,
-            resample_sr=0,
-            rms_mix_rate=0.7,
-            protect=0.45,
+def run_rvc_cli(in_48k: Path, out_wav: Path, layer: dict, rvc_dir: Path, env: dict):
+    cmd = [
+        sys.executable, "infer/cli.py",
+        "--model", layer["path"],
+        "--input", str(in_48k.resolve()),
+        "--output", str(out_wav.resolve()),
+        "--index", layer["index"],
+        "--f0-method", "rmvpe",
+        "--pitch", layer["pitch"],
+        "--protect", "0.45",
+        "--index-rate", "0.4",
+        "--rms-mix-rate", "0.8",
+    ]
+    res = subprocess.run(cmd, cwd=str(rvc_dir), env=env, capture_output=True, text=True, timeout=600)
+    if res.returncode != 0 or not out_wav.exists() or out_wav.stat().st_size < 1000:
+        raise RuntimeError(
+            f"فشل infer/cli.py ({layer['name']}): code={res.returncode}\n"
+            f"STDOUT: {res.stdout[-400:]}\nSTDERR: {res.stderr[-400:]}"
         )
-        if audio_opt is None:
-            raise RuntimeError(f"فشل RVC ({layer['name']}) على {key}: {info}")
-        wavfile.write(str(out_wav), tgt_sr, audio_opt)
-        outputs[key] = out_wav
-        print(f"   ✅ {layer['name']}: {key}", flush=True)
-    return outputs
 
 
 def mix_and_echo(clean_wav: Path, rough_wav: Path, out_wav: Path):
@@ -161,8 +100,12 @@ def main():
         print("❌ ملف الصوت أو الميتاداتا غير موجود")
         sys.exit(1)
 
+    if not (rvc_dir / "infer" / "cli.py").exists():
+        print(f"❌ infer/cli.py غير موجود في {rvc_dir}")
+        sys.exit(1)
+
     for layer in RVC_LAYERS:
-        w_path = rvc_dir / "assets" / "weights" / layer["weight_file"]
+        w_path = rvc_dir / layer["path"]
         if not w_path.exists():
             print(f"❌ وزن الموديل مفقود: {w_path}")
             sys.exit(1)
@@ -228,30 +171,29 @@ def main():
                 timeline_entries.append({"is_quran": False, "file": narr_wav, "chunk": chunk})
             current_time += dur
 
-    ayah_list = list(unique_ayahs.values())
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(rvc_dir)
+    env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
     final_ayah_wavs: dict[str, Path] = {}
+    for item in unique_ayahs.values():
+        k = item["key"]
+        in_48k = item["in_48k"]
+        print(f"🎵 معالجة الآية {k} بالبصمة v4.0-clean + v3.1-myvoice...", flush=True)
 
-    if ayah_list:
-        vc, old_cwd = init_rvc_engine(rvc_dir)
-        try:
-            clean_out = run_layer_batch(vc, RVC_LAYERS[0], ayah_list, rvc_dir, temp_dir)
-            rough_out = run_layer_batch(vc, RVC_LAYERS[1], ayah_list, rvc_dir, temp_dir)
-        finally:
-            os.chdir(old_cwd)
+        clean_wav = temp_dir / f"clean_{k}.wav"
+        rough_wav = temp_dir / f"rough_{k}.wav"
+        run_rvc_cli(in_48k, clean_wav, RVC_LAYERS[0], rvc_dir, env)
+        run_rvc_cli(in_48k, rough_wav, RVC_LAYERS[1], rvc_dir, env)
 
-        print("🔬 مزج الطبقتين وتطبيق الصدى...", flush=True)
-        for item in ayah_list:
-            k = item["key"]
-            out_wav = temp_dir / f"final_ayah_{k}.wav"
-            mix_and_echo(clean_out[k], rough_out[k], out_wav)
-            final_ayah_wavs[k] = out_wav
+        out_wav = temp_dir / f"final_ayah_{k}.wav"
+        mix_and_echo(clean_wav, rough_wav, out_wav)
+        final_ayah_wavs[k] = out_wav
+        print(f"   ✅ جاهز: {k}", flush=True)
 
     concat_files = []
     for entry in timeline_entries:
-        if entry["is_quran"]:
-            wav_p = final_ayah_wavs[entry["key"]]
-        else:
-            wav_p = entry["file"]
+        wav_p = final_ayah_wavs[entry["key"]] if entry["is_quran"] else entry["file"]
         entry["chunk"]["duration"] = round(get_dur(wav_p) + SILENCE_DUR, 3)
         concat_files.extend([wav_p, silence_wav])
 
