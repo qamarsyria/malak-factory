@@ -1,15 +1,10 @@
 """
-apply_rvc_to_quran.py — تطبيق RVC على آيات YT فقط
-يقرأ _yt.mp3 + _yt_meta.json، يستخرج مقاطع الآيات، يطبق RVC blend، ويعيد الدمج.
-
-Blend (جديد):
-  - clean.pth  : 90%  pitch -8
-  - rough.pth  :  4%  pitch -4
-  - malak.pth  :  6%  pitch +6
-الصدى: aecho=0.8:0.85:100|200:0.15|0.08
-التسريع: 1.20 للحصري، 1.05 لياسر
-
-⚠️ السرد (Gemini TTS) لا يُلمس — فقط آيات القارئ البشري (الحصري) تُعالج.
+apply_rvc_to_quran.py — تطبيق البصمة الصوتية (v4.0-clean + v3.1-myvoice) على آيات الحصري فقط
+الإعدادات المطابقة لـ sudais_reverb.yml:
+  - clean (v4.0-clean)  : 87.5%  | pitch = -6
+  - rough (v3.1-myvoice): 12.5%  | pitch = -4
+  - الصدى: aecho=0.8:0.9:150|300|450:0.3|0.15|0.075 (مع ذيل صمت 0.6s لمنع البتر)
+  - السرد (Gemini TTS) يبقى كما هو دون لمس.
 
 الاستخدام:
     python apply_rvc_to_quran.py <yt.mp3> <yt_meta.json> <output.mp3>
@@ -21,28 +16,26 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from scipy.io import wavfile
 
-# ═══════════════════════════════════════════════════════════
-# إعدادات RVC
-# ═══════════════════════════════════════════════════════════
-RVC_MODELS = [
-    {"name": "clean", "path": "assets/weights/clean.pth", "index": "clean.index", "pitch": "-8", "weight": 0.90},
-    {"name": "rough", "path": "assets/weights/rough.pth", "index": "rough.index", "pitch": "-4", "weight": 0.04},
-    {"name": "malak", "path": "assets/weights/malak.pth", "index": "malak.index", "pitch": "+6", "weight": 0.06},
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+CACHE_DIR  = _REPO_ROOT / "out" / "audio_cache"
+
+RVC_LAYERS = [
+    {"name": "clean", "weight_file": "clean.pth", "index": "clean.index", "pitch": -6, "weight": 0.875},
+    {"name": "rough", "weight_file": "rough.pth", "index": "rough.index", "pitch": -4, "weight": 0.125},
 ]
 
-ECHO_FILTER = "aecho=0.8:0.85:100|200:0.15|0.08"
-TARGET_AR = "48000"
-TEMP_DIR = "temp_chunks"
+ECHO_FILTER = "aecho=0.8:0.9:150|300|450:0.3|0.15|0.075"
+TARGET_SR = "24000"
+SILENCE_DUR = 0.20
 
-# ═══════════════════════════════════════════════════════════
-# دوال مساعدة
-# ═══════════════════════════════════════════════════════════
+
 def get_dur(path) -> float:
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        capture_output=True, text=True
+        capture_output=True, text=True,
     )
     try:
         return round(float(r.stdout.strip()), 3)
@@ -50,232 +43,223 @@ def get_dur(path) -> float:
         return 0.0
 
 
-def get_tempo(reciter: str) -> tuple[float, str]:
-    """سرعة التسريع حسب القارئ."""
-    if "Yasser" in reciter or "ياسر" in reciter:
-        return 1.05, "5% (ياسر)"
-    if "Husary" in reciter or "الحصري" in reciter:
-        return 1.20, "20% (الحصري)"
-    return 1.10, "10% (افتراضي)"
+def init_rvc_engine(rvc_dir: Path):
+    """تهيئة محرك RVC مرة واحدة فقط بدلاً من إعادة تحميله لكل آية."""
+    os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+    os.environ["weight_root"] = str(rvc_dir / "assets" / "weights")
+    os.environ["index_root"] = str(rvc_dir)
+    os.environ["rmvpe_root"] = str(rvc_dir / "assets" / "rmvpe")
 
-
-# ═══════════════════════════════════════════════════════════
-# RVC على مقطع واحد
-# ═══════════════════════════════════════════════════════════
-def rvc_chunk(input_wav: Path, base_name: str, tempo: float, rvc_dir: str, env: dict, temp_dir: Path) -> Path | None:
-    """
-    يطبق RVC blend على مقطع واحد.
-    يعيد مسار الملف النهائي (مع الصدى) أو None لو فشل.
-    """
+    sys.path.insert(0, str(rvc_dir))
+    old_cwd = os.getcwd()
+    old_argv = sys.argv
+    os.chdir(rvc_dir)
+    sys.argv = [sys.argv[0]]
     try:
-        # 1. RVC (3 موديلات)
-        for m in RVC_MODELS:
-            out_wav = temp_dir / f"rvc_{base_name}_{m['name']}.wav"
-            subprocess.run(
-                [sys.executable, "infer/cli.py",
-                 "--model", m["path"],
-                 "--input", str(input_wav),
-                 "--output", str(out_wav.absolute()),
-                 "--index", m["index"],
-                 "--f0-method", "rmvpe",
-                 "--pitch", m["pitch"],
-                 "--protect", "0.4",
-                 "--index-rate", "0.4",
-                 "--rms-mix-rate", "0.8"],
-                cwd=rvc_dir, env=env,
-                check=True, capture_output=True, timeout=600
-            )
-            if not out_wav.exists() or out_wav.stat().st_size < 1000:
-                raise RuntimeError(f"RVC {m['name']} أنتج ملفاً صغيراً")
+        from configs.config import Config
+        from infer.modules.vc.modules import VC
 
-        # 2. المزج بالأوزان الجديدة (90/4/6)
-        mix_inputs = []
-        for m in RVC_MODELS:
-            mix_inputs.extend(["-i", str((temp_dir / f"rvc_{base_name}_{m['name']}.wav").absolute())])
+        config = Config()
+        config.device = "cpu"
+        config.is_half = False
+        vc = VC(config)
+        return vc, old_cwd
+    finally:
+        sys.argv = old_argv
 
-        filter_parts = []
-        for i, m in enumerate(RVC_MODELS):
-            filter_parts.append(f"[{i}:a]volume={m['weight']}[a{i}]")
-        mix_filter = "; ".join(filter_parts) + "; " + \
-                     "".join(f"[a{i}]" for i in range(len(RVC_MODELS))) + \
-                     f"amix=inputs={len(RVC_MODELS)}:normalize=0,alimiter"
 
-        mixed_wav = temp_dir / f"mix_{base_name}.wav"
-        subprocess.run(
-            ["ffmpeg", "-y"] + mix_inputs +
-            ["-filter_complex", mix_filter, str(mixed_wav.absolute())],
-            check=True, capture_output=True, timeout=120
+def run_layer_batch(vc, layer: dict, ayah_items: list[dict], rvc_dir: Path, temp_dir: Path) -> dict[str, Path]:
+    """يحوّل قائمة آيات كاملة بموديل واحد دون إعادة تحميل الموديل."""
+    print(f"🎙️ تحميل موديل {layer['name']} (pitch={layer['pitch']}, weight={layer['weight']})...", flush=True)
+    vc.get_vc(layer["weight_file"])
+
+    idx_path = str(rvc_dir / layer["index"])
+    if not os.path.exists(idx_path):
+        idx_path = ""
+
+    outputs = {}
+    for item in ayah_items:
+        key = item["key"]
+        in_48k = item["in_48k"]
+        out_wav = temp_dir / f"{layer['name']}_{key}.wav"
+
+        info, (tgt_sr, audio_opt) = vc.vc_single(
+            sid=0,
+            input_audio_path=str(in_48k),
+            f0_up_key=int(layer["pitch"]),
+            f0_file=None,
+            f0_method="rmvpe",
+            file_index=idx_path,
+            file_index2="",
+            index_rate=0.4,
+            filter_radius=3,
+            resample_sr=0,
+            rms_mix_rate=0.7,
+            protect=0.45,
         )
-
-        # 3. التسريع + الصدى
-        echo_wav = temp_dir / f"final_{base_name}.wav"
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(mixed_wav.absolute()),
-             "-af", f"atempo={tempo},{ECHO_FILTER}",
-             "-ar", TARGET_AR, "-ac", "1",
-             str(echo_wav.absolute())],
-            check=True, capture_output=True, timeout=120
-        )
-
-        if not echo_wav.exists() or echo_wav.stat().st_size < 1000:
-            raise RuntimeError("الصدى أنتج ملفاً صغيراً")
-
-        return echo_wav
-
-    except subprocess.CalledProcessError as e:
-        print(f"      ❌ RVC subprocess فشل: {str(e.stderr)[:150]}")
-        return None
-    except Exception as e:
-        print(f"      ❌ {type(e).__name__}: {str(e)[:150]}")
-        return None
+        if audio_opt is None:
+            raise RuntimeError(f"فشل RVC ({layer['name']}) على {key}: {info}")
+        wavfile.write(str(out_wav), tgt_sr, audio_opt)
+        outputs[key] = out_wav
+        print(f"   ✅ {layer['name']}: {key}", flush=True)
+    return outputs
 
 
-# ═══════════════════════════════════════════════════════════
-# الدالة الرئيسية
-# ═══════════════════════════════════════════════════════════
+def mix_and_echo(clean_wav: Path, rough_wav: Path, out_wav: Path):
+    """يمزج الطبقتين (87.5% / 12.5%) ويضيف الصدى مع ذيل صمت يمنع البتر."""
+    filter_complex = (
+        f"[0:a]volume={RVC_LAYERS[0]['weight']}[a0];"
+        f"[1:a]volume={RVC_LAYERS[1]['weight']}[a1];"
+        f"[a0][a1]amix=inputs=2:normalize=0,alimiter,"
+        f"apad=pad_dur=0.6,{ECHO_FILTER},"
+        f"areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-50dB,areverse"
+    )
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", str(clean_wav),
+            "-i", str(rough_wav),
+            "-filter_complex", filter_complex,
+            "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le",
+            str(out_wav),
+        ],
+        check=True, capture_output=True, timeout=120,
+    )
+
+
 def main():
     if len(sys.argv) < 4:
         print("الاستخدام: python apply_rvc_to_quran.py <yt.mp3> <yt_meta.json> <output.mp3>")
         sys.exit(1)
 
-    yt_mp3 = os.path.abspath(sys.argv[1])
-    meta_json = os.path.abspath(sys.argv[2])
-    output_mp3 = os.path.abspath(sys.argv[3])
+    yt_mp3 = Path(sys.argv[1]).resolve()
+    meta_json = Path(sys.argv[2]).resolve()
+    output_mp3 = Path(sys.argv[3]).resolve()
+    rvc_dir = (_REPO_ROOT / "rvc").resolve()
 
-    if not os.path.exists(yt_mp3):
-        print(f"❌ الملف غير موجود: {yt_mp3}")
-        sys.exit(1)
-    if not os.path.exists(meta_json):
-        print(f"❌ الميتاداتا غير موجودة: {meta_json}")
+    if not yt_mp3.exists() or not meta_json.exists():
+        print("❌ ملف الصوت أو الميتاداتا غير موجود")
         sys.exit(1)
 
-    print("=" * 60)
-    print("🎙️ تطبيق RVC على الآيات")
-    print("=" * 60)
-
-    # 1. تحقق من الموديلات
-    rvc_dir = os.path.abspath("rvc")
-    for m in RVC_MODELS:
-        model_path = os.path.join(rvc_dir, m["path"])
-        if not os.path.exists(model_path):
-            print(f"❌ موديل مفقود: {m['path']}")
+    for layer in RVC_LAYERS:
+        w_path = rvc_dir / "assets" / "weights" / layer["weight_file"]
+        if not w_path.exists():
+            print(f"❌ وزن الموديل مفقود: {w_path}")
             sys.exit(1)
-    print(f"✅ 3 موديلات RVC جاهزة")
 
-    # 2. تجهيز temp
-    temp_dir = Path(TEMP_DIR)
+    meta = json.loads(meta_json.read_text(encoding="utf-8"))
+    ep_name = meta_json.stem.replace("_meta", "").replace("yt_", "")
+    ep_cache = CACHE_DIR / ep_name
+
+    temp_dir = (_REPO_ROOT / "temp_rvc_work").resolve()
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
-    temp_dir.mkdir()
+    temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. قراءة الميتاداتا
-    meta = json.loads(Path(meta_json).read_text(encoding="utf-8"))
-    segments = meta["segments"]
-
-    # 4. استخراج المقاطع
-    print("\n🔪 فصل المقاطع...")
-    current_time = 0.0
-    chunk_info = []
-
-    for seg_idx, seg in enumerate(segments):
-        is_quran = (seg["type"] == "quran")
-        reciter = seg.get("reciter", "الشيخ محمود خليل الحصري")
-        for c_idx, chunk in enumerate(seg["chunks"]):
-            dur = chunk["duration"]
-            chunk_file = temp_dir / f"seg_{seg_idx}_c{c_idx}.wav"
-            subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(current_time), "-t", str(dur),
-                 "-i", yt_mp3, "-ar", TARGET_AR, "-ac", "1", str(chunk_file)],
-                capture_output=True
-            )
-            current_time += dur
-            chunk_info.append({
-                "file": str(chunk_file.absolute()),
-                "is_quran": is_quran,
-                "duration": dur,
-                "reciter": reciter,
-            })
-
-    print(f"   {len(chunk_info)} مقطع مستخرج")
-
-    # 5. تطبيق RVC على الآيات
-    print("\n🎙️ RVC على الآيات...")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = rvc_dir
-
-    processed = 0
-    failed = 0
-    for item in chunk_info:
-        if not item["is_quran"]:
-            continue  # السرد يُترك كما هو
-
-        input_wav = Path(item["file"])
-        base_name = input_wav.stem
-        tempo, tempo_label = get_tempo(item["reciter"])
-
-        print(f"   🎵 {base_name} - {tempo_label}")
-
-        final_wav = rvc_chunk(input_wav, base_name, tempo, rvc_dir, env, temp_dir)
-
-        if final_wav:
-            item["file"] = str(final_wav)
-            item["duration"] = get_dur(final_wav)
-            processed += 1
-            # تنظيف الملفات الوسيطة لهذا المقطع
-            for m in RVC_MODELS:
-                p = temp_dir / f"rvc_{base_name}_{m['name']}.wav"
-                if p.exists():
-                    p.unlink()
-            mp = temp_dir / f"mix_{base_name}.wav"
-            if mp.exists():
-                mp.unlink()
-            if input_wav.exists():
-                input_wav.unlink()
-        else:
-            print(f"      ⚠️ فشل — استخدام الصوت الأصلي")
-            failed += 1
-
-    print(f"\n📊 نجح: {processed} | فشل: {failed}")
-
-    # 6. الدمج النهائي
-    print("\n🔗 الدمج...")
-    concat_file = temp_dir / "final_concat.txt"
-    concat_file.write_text(
-        "\n".join(f"file '{item['file']}'" for item in chunk_info),
-        encoding="utf-8"
-    )
+    silence_wav = temp_dir / "silence.wav"
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", str(concat_file),
-         "-c:a", "libmp3lame", "-b:a", "192k",
-         output_mp3],
-        check=True, capture_output=True, timeout=600
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono",
+         "-t", str(SILENCE_DUR), "-c:a", "pcm_s16le", str(silence_wav)],
+        check=True, capture_output=True,
     )
 
-    # 7. تحديث الميتاداتا (المدد الجديدة)
-    flat_idx = 0
-    for seg in meta["segments"]:
-        for chunk in seg.get("chunks", []):
-            if flat_idx < len(chunk_info):
-                chunk["duration"] = chunk_info[flat_idx]["duration"]
-            flat_idx += 1
+    print("=" * 65)
+    print("🎙️ تطبيق البصمة v4.0-clean + v3.1-myvoice على آيات الحصري")
+    print("=" * 65)
 
-    meta["total_duration"] = sum(
-        c["duration"] for seg in meta["segments"] for c in seg.get("chunks", [])
+    # 1. تجهيز قائمة المقاطع والآيات (استخدام كاش WAV المباشر عند توفره)
+    current_time = 0.0
+    timeline_entries = []
+    unique_ayahs: dict[str, dict] = {}
+
+    for seg_idx, seg in enumerate(meta.get("segments", [])):
+        is_quran = seg.get("type") == "quran"
+        for c_idx, chunk in enumerate(seg.get("chunks", [])):
+            dur = float(chunk.get("duration", 0))
+            if is_quran:
+                s = int(chunk.get("surah") or seg.get("surah") or 0)
+                a = int(chunk.get("ayah") or 0)
+                key = f"{s}_{a}" if (s and a) else f"seg{seg_idx}_{c_idx}"
+                if key not in unique_ayahs:
+                    cached_norm = ep_cache / f"yt_husary_{s}_{a}_norm.wav"
+                    in_48k = temp_dir / f"in48_{key}.wav"
+                    if cached_norm.exists():
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-i", str(cached_norm), "-ar", "48000", "-ac", "1", str(in_48k)],
+                            check=True, capture_output=True,
+                        )
+                    else:
+                        extract_dur = max(0.2, dur - SILENCE_DUR)
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-ss", f"{current_time:.3f}", "-t", f"{extract_dur:.3f}",
+                             "-i", str(yt_mp3), "-ar", "48000", "-ac", "1", str(in_48k)],
+                            check=True, capture_output=True,
+                        )
+                    unique_ayahs[key] = {"key": key, "in_48k": in_48k}
+                timeline_entries.append({"is_quran": True, "key": key, "chunk": chunk})
+            else:
+                narr_wav = temp_dir / f"narr_{seg_idx}_{c_idx}.wav"
+                extract_dur = max(0.1, dur - SILENCE_DUR)
+                subprocess.run(
+                    ["ffmpeg", "-y", "-ss", f"{current_time:.3f}", "-t", f"{extract_dur:.3f}",
+                     "-i", str(yt_mp3), "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le", str(narr_wav)],
+                    check=True, capture_output=True,
+                )
+                timeline_entries.append({"is_quran": False, "file": narr_wav, "chunk": chunk})
+            current_time += dur
+
+    # 2. تشغيل طبقتي RVC على الآيات فقط
+    ayah_list = list(unique_ayahs.values())
+    final_ayah_wavs: dict[str, Path] = {}
+
+    if ayah_list:
+        vc, old_cwd = init_rvc_engine(rvc_dir)
+        try:
+            clean_out = run_layer_batch(vc, RVC_LAYERS[0], ayah_list, rvc_dir, temp_dir)
+            rough_out = run_layer_batch(vc, RVC_LAYERS[1], ayah_list, rvc_dir, temp_dir)
+        finally:
+            os.chdir(old_cwd)
+
+        print("🔬 مزج الطبقتين وتطبيق الصدى...", flush=True)
+        for item in ayah_list:
+            k = item["key"]
+            out_wav = temp_dir / f"final_ayah_{k}.wav"
+            mix_and_echo(clean_out[k], rough_out[k], out_wav)
+            final_ayah_wavs[k] = out_wav
+
+    # 3. إعادة تجميع الملف الصوتي وتحديث مدد الميتاداتا بدقة
+    concat_files = []
+    for entry in timeline_entries:
+        if entry["is_quran"]:
+            wav_p = final_ayah_wavs[entry["key"]]
+        else:
+            wav_p = entry["file"]
+        entry["chunk"]["duration"] = round(get_dur(wav_p) + SILENCE_DUR, 3)
+        concat_files.extend([wav_p, silence_wav])
+
+    concat_txt = temp_dir / "concat.txt"
+    concat_txt.write_text("\n".join(f"file '{p.resolve()}'" for p in concat_files), encoding="utf-8")
+
+    merged_wav = temp_dir / "merged.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+         "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le", str(merged_wav)],
+        check=True, capture_output=True, timeout=300,
     )
+
+    output_mp3.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(merged_wav), "-c:a", "libmp3lame", "-b:a", "192k", str(output_mp3)],
+        check=True, capture_output=True, timeout=300,
+    )
+
+    meta["total_duration"] = round(get_dur(output_mp3), 3)
     meta["rvc_applied"] = True
-    meta["rvc_blend"] = "90% clean (-8) | 4% rough (-4) | 6% malak (+6)"
-    Path(meta_json).write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    meta["rvc_blend"] = "87.5% v4.0-clean (-6) | 12.5% v3.1-myvoice (-4)"
+    meta_json.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 8. تنظيف
     shutil.rmtree(temp_dir, ignore_errors=True)
-
-    dur = get_dur(output_mp3)
-    print(f"\n✅ اكتمل: {output_mp3}")
-    print(f"   المدة: {dur/60:.1f} دقيقة | {processed} مقطع RVC")
+    print(f"✅ اكتمل الصوت النهائي لليوتيوب: {output_mp3.name} ({meta['total_duration']/60:.1f} دقيقة)", flush=True)
 
 
 if __name__ == "__main__":
