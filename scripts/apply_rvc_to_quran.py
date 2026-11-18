@@ -11,6 +11,7 @@ apply_rvc_to_quran.py — تطبيق البصمة الصوتية (v4.0-clean + v
 """
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -44,13 +45,32 @@ def get_dur(path) -> float:
 
 
 def init_rvc_engine(rvc_dir: Path):
-    """تهيئة محرك RVC مرة واحدة فقط بدلاً من إعادة تحميله لكل آية."""
+    """تهيئة محرك RVC مرة واحدة فقط مع ضمان عدم تعارض حزمة infer."""
+    target_mod = rvc_dir / "infer" / "modules" / "vc" / "modules.py"
+    if not target_mod.exists():
+        contents = [p.name for p in rvc_dir.iterdir()] if rvc_dir.exists() else []
+        raise RuntimeError(f"❌ ملفات RVC غير مكتملة في {rvc_dir} — المحتويات: {contents}")
+
+    # تحويل مجلدات RVC لحزم بايثون صريحة لتجنب أي تعارض مع site-packages
+    for sub in ("infer", "infer/modules", "infer/modules/vc", "infer/lib", "infer/lib/infer_pack", "configs"):
+        p = rvc_dir / sub
+        if p.is_dir():
+            init_file = p / "__init__.py"
+            if not init_file.exists():
+                init_file.touch()
+
+    for mod_name in list(sys.modules.keys()):
+        if mod_name == "infer" or mod_name.startswith("infer.") or mod_name == "configs" or mod_name.startswith("configs."):
+            del sys.modules[mod_name]
+
     os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
     os.environ["weight_root"] = str(rvc_dir / "assets" / "weights")
     os.environ["index_root"] = str(rvc_dir)
     os.environ["rmvpe_root"] = str(rvc_dir / "assets" / "rmvpe")
 
-    sys.path.insert(0, str(rvc_dir))
+    rvc_str = str(rvc_dir)
+    sys.path = [rvc_str] + [p for p in sys.path if p != rvc_str]
+
     old_cwd = os.getcwd()
     old_argv = sys.argv
     os.chdir(rvc_dir)
@@ -148,7 +168,8 @@ def main():
             sys.exit(1)
 
     meta = json.loads(meta_json.read_text(encoding="utf-8"))
-    ep_name = meta_json.stem.replace("_meta", "").replace("yt_", "")
+    ep_stem = meta_json.stem[:-5] if meta_json.stem.endswith("_meta") else meta_json.stem
+    ep_name = re.sub(r"^yt_", "", ep_stem)
     ep_cache = CACHE_DIR / ep_name
 
     temp_dir = (_REPO_ROOT / "temp_rvc_work").resolve()
@@ -167,7 +188,6 @@ def main():
     print("🎙️ تطبيق البصمة v4.0-clean + v3.1-myvoice على آيات الحصري")
     print("=" * 65)
 
-    # 1. تجهيز قائمة المقاطع والآيات (استخدام كاش WAV المباشر عند توفره)
     current_time = 0.0
     timeline_entries = []
     unique_ayahs: dict[str, dict] = {}
@@ -208,7 +228,6 @@ def main():
                 timeline_entries.append({"is_quran": False, "file": narr_wav, "chunk": chunk})
             current_time += dur
 
-    # 2. تشغيل طبقتي RVC على الآيات فقط
     ayah_list = list(unique_ayahs.values())
     final_ayah_wavs: dict[str, Path] = {}
 
@@ -227,7 +246,6 @@ def main():
             mix_and_echo(clean_out[k], rough_out[k], out_wav)
             final_ayah_wavs[k] = out_wav
 
-    # 3. إعادة تجميع الملف الصوتي وتحديث مدد الميتاداتا بدقة
     concat_files = []
     for entry in timeline_entries:
         if entry["is_quran"]:
