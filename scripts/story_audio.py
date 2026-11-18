@@ -2,8 +2,8 @@
 story_audio.py — المرحلة 4: بناء الصوت (نسخة Social طبيعية بقراء متعددين + نسخة YT بالحصري)
 - تشكيل ثنائي المراحل (Two-Pass Morphosyntactic): تحليل المعنى والصرف والنحو أولاً + تدقيق الشدّة والإعراب ثانياً.
 - دمج ذكي كلمة بكلمة (SequenceMatcher) يمنع سقوط التشكيل بسبب تصحيح همزة أو إملاء كلمة واحدة.
+- رفع مستوى صوت القارئ في النسختين بنسبة +30% مع محدد قمم (alimiter) لمنع التشويش.
 - ينوّع القراء داخل الحلقة الواحدة في نسخة Social بصوت طبيعي صافٍ دون تشويه المدود.
-- يخزّن surah و ayah و surah_name و reciter داخل كل chunk لمنع انزياح الآيات في الفيديو.
 """
 
 import os
@@ -73,6 +73,7 @@ RECITER_LIST_SOCIAL = [
 QURAN_BASE_URL = "https://everyayah.com/data"
 TARGET_SR = "24000"
 SILENCE_DUR = 0.20
+RECITER_VOLUME_MULT = 1.30  # رفع صوت القارئ بنسبة +30% مقارنة بالسرد
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
 
 _ARABIC_UNITS    = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"]
@@ -115,7 +116,6 @@ def arabize_numbers(text: str) -> str:
 
 
 def _word_skeleton(word: str) -> str:
-    """هيكل الكلمة بدون تشكيل ولا ترقيم، لتسهيل المطابقة والدمج دون إسقاط الفقرة."""
     w = re.sub(r"[\u064B-\u065F\u0670\u0640]", "", word or "")
     w = re.sub(r"[^\u0621-\u064A]", "", w)
     w = w.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ٱ", "ا")
@@ -124,7 +124,6 @@ def _word_skeleton(word: str) -> str:
 
 
 def _merge_diacritics_safely(original: str, diacritized: str) -> str:
-    """يدمج التشكيل كلمة بكلمة بحيث لا يضيع تشكيل الفقرة إذا اختلف رسم همزة أو كلمة واحدة."""
     orig_tokens = original.split()
     diac_tokens = diacritized.split()
     if not orig_tokens or not diac_tokens:
@@ -139,7 +138,6 @@ def _merge_diacritics_safely(original: str, diacritized: str) -> str:
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for oi, di in zip(range(i1, i2), range(j1, j2)):
-                # الحفاظ على علامات الترقيم الملتصقة بالأصل إن غابت
                 m_trail = re.search(r"([،؛؟!.:]+)$", orig_tokens[oi])
                 d_clean = re.sub(r"[،؛؟!.:]+$", "", diac_tokens[di])
                 merged.append(d_clean + (m_trail.group(1) if m_trail else ""))
@@ -157,13 +155,11 @@ def _merge_diacritics_safely(original: str, diacritized: str) -> str:
                 merged.extend(orig_tokens[i1:i2])
         elif tag == "delete":
             merged.extend(orig_tokens[i1:i2])
-        # 'insert' يُتجاهل حتى لا يُدخل أي كلمة جديدة لم تكن في النص المدقق
 
     return " ".join(merged) if merged else original
 
 
 def _diacritize_models() -> list[str]:
-    """يفضل Pro و Flash الكاملين على lite لأن النحو والصرف يحتاج دقة عالية."""
     discovered = discover_and_cache(force=False)
     heavy = [m for m in discovered if "lite" not in m.lower()]
     lite = [m for m in discovered if "lite" in m.lower()]
@@ -295,20 +291,16 @@ def smart_diacritize(text: str, cache_file: Path | None = None) -> str:
             return cached
 
     try:
-        # المرحلة 1: التحليل الصرفي والنحوي والتشكيل
         p1 = _call_diac_json(PASS1_PROMPT.format(text=text))
         draft = (p1 or {}).get("diacritized", "").strip()
         if not draft:
             return text
 
-        # المرحلة 2: التدقيق الإعرابي وفحص الشدّة للنطق
         p2 = _call_diac_json(PASS2_VERIFY_PROMPT.format(original=text, draft=draft))
         verified = (p2 or {}).get("final_text", "").strip() or draft
 
-        # الدمج الآمن كلمة بكلمة للحفاظ على التشكيل حتى لو صُححت همزة
         final_text = _merge_diacritics_safely(text, verified)
 
-        # نسبة تغطية التشكيل (للتأكد أنه مشكول فعلاً)
         diac_count = len(re.findall(r"[\u064B-\u0652]", final_text))
         letter_count = max(1, len(re.findall(r"[\u0621-\u064A]", final_text)))
         ratio = diac_count / letter_count
@@ -360,7 +352,7 @@ def get_dur(p) -> float:
         return 0.0
 
 
-def normalize_wav(input_path: str, output_wav: str, gentle_loudnorm: bool = False) -> bool:
+def normalize_wav(input_path: str, output_wav: str, gentle_loudnorm: bool = False, volume_mult: float = 1.0) -> bool:
     try:
         filters = [
             "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB",
@@ -370,6 +362,8 @@ def normalize_wav(input_path: str, output_wav: str, gentle_loudnorm: bool = Fals
         ]
         if gentle_loudnorm:
             filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+        if volume_mult != 1.0:
+            filters.append(f"volume={volume_mult:.2f},alimiter=limit=0.95")
         filters.append("afade=t=in:st=0:d=0.015")
 
         subprocess.run(
@@ -494,7 +488,7 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                         temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
                         if not generate_audio(chunk, str(temp_mp3)):
                             raise RuntimeError(f"❌ فشل توليد صوت السرد للمقطع {idx}:{c_idx}")
-                        normalize_wav(str(temp_mp3), str(cached_wav), gentle_loudnorm=True)
+                        normalize_wav(str(temp_mp3), str(cached_wav), gentle_loudnorm=True, volume_mult=1.0)
                         time.sleep(0.5)
 
                     dur = get_dur(cached_wav)
@@ -537,7 +531,7 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                         if not norm_wav.exists():
                             if not download_human_ayah(s, a, RECITER_YT["id"], raw_mp3):
                                 raise RuntimeError(f"❌ فشل تحميل آية الحصري {s}:{a}")
-                            normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=False)
+                            normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=True, volume_mult=RECITER_VOLUME_MULT)
 
                         yt_wavs.extend([norm_wav, silence_path])
                         yt_chunks.append({
@@ -581,7 +575,7 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                                         break
                                 if not ok_fb:
                                     raise RuntimeError(f"❌ فشل تحميل آية {s}:{a}")
-                            normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=True)
+                            normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=True, volume_mult=RECITER_VOLUME_MULT)
 
                         social_wavs.extend([norm_wav, silence_path])
                         social_chunks.append({
