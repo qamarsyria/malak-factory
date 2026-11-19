@@ -17,7 +17,7 @@ on:
           - modest_love
           - trinity_names
       speaker:
-        description: 'الصوت'
+        description: 'المتحدث'
         required: false
         default: 'auto'
         type: choice
@@ -26,19 +26,43 @@ on:
           - he
           - she
           - duet
+      voice_mode:
+        description: 'التحكم ببصمات الصوت (أو إلغاؤها فوراً بدون تعديل الكود)'
+        required: false
+        default: 'rvc_both'
+        type: choice
+        options:
+          - rvc_both
+          - rvc_he_only
+          - rvc_she_only
+          - no_rvc
+      he_pitch:
+        description: 'درجة Pitch صوتك (الافتراضي -7)'
+        required: false
+        default: '-7'
+        type: string
       she_pitch:
-        description: 'درجة Pitch بصمة ملك (الافتراضي 6)'
+        description: 'درجة Pitch صوت ملك (الافتراضي 6)'
         required: false
         default: '6'
         type: string
+      she_index_rate:
+        description: 'نسبة Index لصوت ملك (0 لأنعم صوت)'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '0.25'
+          - '0.60'
       base_voice_she:
         description: 'صوت القاعدة قبل بصمة ملك'
         required: false
-        default: 'Aoede'
+        default: 'Charon'
         type: choice
         options:
-          - Aoede
           - Charon
+          - Aoede
           - Leda
           - Kore
 
@@ -55,6 +79,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
+
+      - name: Resolve Run Settings
+        id: cfg
+        run: |
+          VM="${{ github.event.inputs.voice_mode }}"
+          if [ -z "$VM" ]; then
+            VM="${{ vars.VOICE_MODE }}"
+          fi
+          if [ -z "$VM" ]; then
+            VM="rvc_both"
+          fi
+          echo "voice_mode=$VM" >> $GITHUB_OUTPUT
+          echo "🎛️ وضع البصمات المعتمد: $VM"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -102,12 +139,14 @@ jobs:
           pip install omegaconf==2.0.5
 
       - name: Install RVC Dependencies
+        if: steps.cfg.outputs.voice_mode != 'no_rvc'
         run: |
           pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
           pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth "transformers>=4.49,<4.50" av onnxruntime pyworld torchcrepe
 
       - name: Cache RVC Engine & Base Models
         id: rvc-cache
+        if: steps.cfg.outputs.voice_mode != 'no_rvc'
         uses: actions/cache@v4
         with:
           path: |
@@ -115,7 +154,7 @@ jobs:
           key: rvc-engine-v3
 
       - name: Download RVC Engine & Prepare Models
-        if: steps.rvc-cache.outputs.cache-hit != 'true'
+        if: steps.cfg.outputs.voice_mode != 'no_rvc' && steps.rvc-cache.outputs.cache-hit != 'true'
         run: |
           wget -q --timeout=60 -O main.zip https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/archive/refs/heads/main.zip
           python -m zipfile -e main.zip .
@@ -133,24 +172,41 @@ jobs:
           wget -q --timeout=90 -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
           cp assets/rmvpe/rmvpe.pt rmvpe.pt
 
-      - name: Download Voice Models (He + Malak)
+      - name: Download Voice Models (He v4.0-clean + v3.1-myvoice & Malak v1.0)
+        if: steps.cfg.outputs.voice_mode != 'no_rvc'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p rvc/assets/weights
+          mkdir -p rvc/assets/weights /tmp/v40 /tmp/v31 /tmp/v10
 
-          wget -q --timeout=60 -O rvc/assets/weights/malak_voice.pth \
-            https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
-          wget -q --timeout=60 -O rvc/assets/weights/added_malak_voice.index \
-            https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
+          # 1) بصمتك الصافية (v4.0-clean)
+          gh release download v4.0-clean -R "${{ github.repository }}" -p "*.pth" -p "*.index" -D /tmp/v40 --clobber || true
+          python - << 'EOF'
+          import pathlib, shutil
+          w = pathlib.Path("rvc/assets/weights")
+          pths = sorted([p for p in pathlib.Path("/tmp/v40").glob("*.pth") if not p.name.startswith(("D_", "G_"))], key=lambda x: x.stat().st_size)
+          idxs = list(pathlib.Path("/tmp/v40").glob("*.index"))
+          if pths: shutil.copy2(pths[0], w / "clean.pth")
+          if idxs: shutil.copy2(idxs[0], w / "clean.index")
+          EOF
 
-          # أضف روابط صوتك هنا لو كان في Release آخر:
-          # wget -q --timeout=60 -O rvc/assets/weights/clean.pth "YOUR_URL/clean.pth"
-          # wget -q --timeout=60 -O rvc/assets/weights/clean.index "YOUR_URL/clean.index"
-          # wget -q --timeout=60 -O rvc/assets/weights/rough.pth "YOUR_URL/rough.pth"
-          # wget -q --timeout=60 -O rvc/assets/weights/rough.index "YOUR_URL/rough.index"
+          # 2) طبقة صوتك المساعدة (v3.1-myvoice)
+          gh release download v3.1-myvoice -R "${{ github.repository }}" -p "*.pth" -p "*.index" -D /tmp/v31 --clobber || true
+          python - << 'EOF'
+          import pathlib, shutil
+          w = pathlib.Path("rvc/assets/weights")
+          pths = sorted([p for p in pathlib.Path("/tmp/v31").glob("*.pth") if not p.name.startswith(("D_", "G_"))], key=lambda x: x.stat().st_size)
+          idxs = list(pathlib.Path("/tmp/v31").glob("*.index"))
+          if pths: shutil.copy2(pths[0], w / "rough.pth")
+          if idxs: shutil.copy2(idxs[0], w / "rough.index")
+          EOF
 
-          if [ -d assets/weights ]; then
-            cp -n assets/weights/* rvc/assets/weights/ 2>/dev/null || true
-          fi
+          # 3) بصمة ملك (v1.0)
+          gh release download v1.0 -R "${{ github.repository }}" -p "malak_voice.pth" -p "added_malak_voice.index" -D /tmp/v10 --clobber || true
+          [ -f /tmp/v10/malak_voice.pth ] && cp /tmp/v10/malak_voice.pth rvc/assets/weights/malak_voice.pth
+          [ -f /tmp/v10/added_malak_voice.index ] && cp /tmp/v10/added_malak_voice.index rvc/assets/weights/added_malak_voice.index
+
+          rm -rf /tmp/v40 /tmp/v31 /tmp/v10
           ls -lh rvc/assets/weights/
 
       - name: Generate Whisper (Poetry + Grammar & I'rab Gate)
@@ -184,8 +240,9 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
+          VOICE_MODE: ${{ steps.cfg.outputs.voice_mode }}
           BASE_VOICE_HE: Charon
-          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Aoede' }}
+          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Charon' }}
         run: |
           python -u scripts/whispers_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -200,10 +257,12 @@ jobs:
         id: convert
         if: steps.aud.outcome == 'success'
         env:
-          HE_PITCH_CLEAN: '-6'
-          HE_PITCH_ROUGH: '-4'
+          VOICE_MODE: ${{ steps.cfg.outputs.voice_mode }}
+          HE_PITCH_CLEAN: ${{ github.event.inputs.he_pitch || '-7' }}
+          HE_PITCH_ROUGH: ${{ github.event.inputs.he_pitch || '-6' }}
+          HE_INDEX_RATE: '0.40'
           SHE_PITCH: ${{ github.event.inputs.she_pitch || '6' }}
-          SHE_INDEX_RATE: '0.60'
+          SHE_INDEX_RATE: ${{ github.event.inputs.she_index_rate || '0' }}
         run: |
           python -u malak_converter.py \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
