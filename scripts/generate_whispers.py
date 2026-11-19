@@ -3,8 +3,9 @@
 scripts/generate_whispers.py
 ============================
 المحرّك الأدبي واللغوي لمشروع «همسات ملك» (حالات واتساب 35-45 ثانية).
-- أسلوب هادئ، رصين، صادق، وبعيد عن المبالغة التمثيلية.
-- بوابة نحو وصرف وإعراب ثلاثية المراحل + عرض «ملك» بلا تشكيل ونطق مَلَكْ بالصوت.
+- أولوية ذكية للنماذج المجانية الفعّالة (gemini-4-hydrogen, gemini-3.5-flash-lite, gemini-3.8-flash).
+- استبعاد تلقائي للنماذج المدفوعة فقط (argon / carbon / neon / pro).
+- أسلوب هادئ رصين + بوابة نحو وصرف وإعراب + قفل عرض «ملك» بلا تشكيل.
 """
 
 from __future__ import annotations
@@ -103,6 +104,9 @@ class GeminiKeyPool:
         self.dead: set[str] = set()
         print(f"🔑 [Pool] تم تحميل {len(self.keys)} مفتاح Gemini.", flush=True)
 
+    def alive_count(self) -> int:
+        return len(self.keys) - len(self.dead)
+
     def current(self) -> str:
         now = time.time()
         for _ in range(len(self.keys)):
@@ -115,8 +119,8 @@ class GeminiKeyPool:
         if not alive:
             raise RuntimeError("❌ جميع مفاتيح Gemini انتهت صلاحيتها.")
         soonest = min(alive, key=lambda k: self.cooldown_until.get(k, 0))
-        wait_s = min(65.0, max(1.0, self.cooldown_until.get(soonest, 0) - now))
-        print(f"   ⏳ جميع المفاتيح في هدنة، انتظار {wait_s:.1f} ث...", flush=True)
+        wait_s = min(20.0, max(1.0, self.cooldown_until.get(soonest, 0) - now))
+        print(f"   ⏳ انتظار سريع {wait_s:.1f} ث...", flush=True)
         time.sleep(wait_s)
         self.idx = self.keys.index(soonest)
         return soonest
@@ -124,15 +128,15 @@ class GeminiKeyPool:
     def advance(self):
         self.idx = (self.idx + 1) % len(self.keys)
 
-    def mark_cooldown(self, seconds: float = 65.0):
+    def mark_cooldown(self, seconds: float = 18.0):
         k = self.keys[self.idx % len(self.keys)]
         self.cooldown_until[k] = time.time() + seconds
         self.advance()
 
     def mark_dead(self, reason: str = ""):
         k = self.keys[self.idx % len(self.keys)]
-        print(f"   ⚠️ استبعاد مفتاح منتهي ({reason[:40]})", flush=True)
         self.dead.add(k)
+        print(f"   ⚠️ استبعاد مفتاح منتهي ({reason[:30]}) — السليمة: {self.alive_count()}", flush=True)
         self.advance()
 
 
@@ -144,46 +148,54 @@ def discover_text_models(pool: GeminiKeyPool) -> list[str]:
     if _DISCOVERED_MODELS_CACHE:
         return _DISCOVERED_MODELS_CACHE
 
-    fallback = [
+    # القائمة المجانية الموثوقة مرتبة حسب الأداء والاستقرار
+    safe_defaults = [
+        "gemini-4-hydrogen",
+        "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
         "gemini-3.6-flash",
-        "gemini-3-flash-preview",
-        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
     ]
+    # استبعاد النماذج المدفوعة فقط والنماذج غير النصية
     excluded = (
+        "argon", "carbon", "neon", "ultra", "pro",
         "tts", "image", "banana", "imagen", "veo", "lyria", "embedding",
         "robotics", "live", "transcribe", "translate", "audio", "computer-use",
-        "deep-research", "1.5", "2.0", "pro",
+        "deep-research", "1.5", "2.0", "gemma",
     )
     try:
-        key = pool.current()
-        r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
-        if r.status_code == 200:
-            found = []
-            for m in r.json().get("models", []):
-                name = m.get("name", "").replace("models/", "")
-                methods = m.get("supportedGenerationMethods", [])
-                nl = name.lower()
-                if "generateContent" in methods and "gemini" in nl and not any(bad in nl for bad in excluded):
-                    found.append(name)
+        for _ in range(min(4, max(1, pool.alive_count()))):
+            key = pool.current()
+            r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
+            if r.status_code in (401, 403):
+                pool.mark_dead(f"HTTP {r.status_code}")
+                continue
+            if r.status_code == 200:
+                available = set()
+                for m in r.json().get("models", []):
+                    name = m.get("name", "").replace("models/", "")
+                    methods = m.get("supportedGenerationMethods", [])
+                    nl = name.lower()
+                    if "generateContent" in methods and "gemini" in nl and not any(bad in nl for bad in excluded):
+                        available.add(name)
 
-            def _rank(n: str) -> tuple:
-                nl = n.lower()
-                m = re.search(r"gemini-(\d+(?:\.\d+)?)", nl)
-                ver = float(m.group(1)) if m else 0.0
-                return (-ver, 1 if "lite" in nl else 0, 1 if ("preview" in nl or "exp" in nl) else 0, nl)
-
-            if found:
-                found.sort(key=_rank)
-                _DISCOVERED_MODELS_CACHE = found[:8]
-                print(f"🧠 [Models] المكتشفة: {_DISCOVERED_MODELS_CACHE[:4]}", flush=True)
-                return _DISCOVERED_MODELS_CACHE
+                ordered = [m for m in safe_defaults if m in available]
+                for m in sorted(available):
+                    if m not in ordered:
+                        ordered.append(m)
+                if ordered:
+                    _DISCOVERED_MODELS_CACHE = ordered[:10]
+                    print(f"🧠 [Models] المجانية المختارة: {_DISCOVERED_MODELS_CACHE[:6]}", flush=True)
+                    return _DISCOVERED_MODELS_CACHE
+            break
     except Exception:
         pass
 
-    _DISCOVERED_MODELS_CACHE = fallback
-    return fallback
+    _DISCOVERED_MODELS_CACHE = safe_defaults
+    return safe_defaults
 
 
 def _is_gemini_3_or_newer(model: str) -> bool:
@@ -204,14 +216,15 @@ def _build_gen_config(model: str, use_thinking: bool = True, max_tokens: int = 8
     return cfg
 
 
-def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 90) -> dict:
+def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 45) -> dict:
     models = discover_text_models(pool)
     last_err = ""
 
     for model in models:
         use_thinking = True
         tries = 0
-        while tries < 3:
+        max_tries = min(3, max(2, pool.alive_count()))
+        while tries < max_tries and pool.alive_count() > 0:
             key = pool.current()
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             body = {
@@ -219,7 +232,7 @@ def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 90) -> dic
                 "generationConfig": _build_gen_config(model, use_thinking=use_thinking),
             }
             try:
-                r = requests.post(url, json=body, timeout=(15, timeout))
+                r = requests.post(url, json=body, timeout=(12, timeout))
                 if r.status_code == 200:
                     cands = r.json().get("candidates", [])
                     parts = cands[0].get("content", {}).get("parts", []) if cands else []
@@ -229,27 +242,45 @@ def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 90) -> dic
                     if s != -1 and e > s:
                         parsed = json.loads(raw_txt[s : e + 1])
                         pool.advance()
+                        print(f"   ✅ [LLM] {model}", flush=True)
                         return parsed
                     last_err = f"{model}: JSON غير صالح"
                     tries += 1
                     continue
+
                 if r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
                     pool.mark_dead(f"HTTP {r.status_code}")
                     continue
+
                 if r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
                     use_thinking = False
                     continue
+
                 if r.status_code == 429:
-                    pool.mark_cooldown(65.0)
+                    txt_low = r.text.lower()
+                    if "limit: 0" in txt_low or '"limit":0' in txt_low:
+                        last_err = f"{model}: غير متاح على المجاني (limit=0)"
+                        break
+                    pool.mark_cooldown(18.0)
                     tries += 1
                     continue
+
+                if r.status_code == 503:
+                    last_err = f"{model}: HTTP 503"
+                    print(f"   ⚠️ {model} مشغول (503)، تجربة المفتاح/النموذج التالي...", flush=True)
+                    pool.advance()
+                    tries += 1
+                    time.sleep(1.5)
+                    continue
+
                 if r.status_code in (400, 403, 404):
                     last_err = f"{model}: HTTP {r.status_code}"
                     break
+
                 last_err = f"{model}: HTTP {r.status_code}"
                 pool.advance()
                 tries += 1
-                time.sleep(2)
+                time.sleep(1.5)
             except requests.exceptions.Timeout:
                 last_err = f"{model}: Timeout"
                 pool.advance()
@@ -383,7 +414,7 @@ def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str]
 
     if speaker_mode == "duet":
         speaker_rule = (
-            "الوضع: ثنائي (duet). وزّع الحلقات على 3 أو 4 مقاطع قصيرة متبادلة بين \"he\" و\"she\"، على أن يبدأ \"he\" ويختم \"he\"."
+            "الوضع: ثنائي (duet). وزّع الحلقات على 3 مقاطع قصيرة متبادلة بين \"he\" و\"she\"، على أن يبدأ \"he\" ويختم \"he\"."
         )
     elif speaker_mode == "she":
         speaker_rule = "الوضع: بصوتها (she). اجعل المقاطع بلسانها في مناجاة هادئة ودعاء رقيق (2 أو 3 مقاطع)."
@@ -409,10 +440,9 @@ def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str]
 
 قواعد إلزامية:
 1. مجموع الكلمات الكلي بين 38 و65 كلمة فقط.
-2. التزم بالهدوء والرزانة والصدق العاطفي؛ **ابتعد تماماً عن المبالغة الدرامية والتمثيل العاطفي المتكلف**.
+2. التزم بالهدوء والرزانة والصدق العاطفي؛ **ابتعد تماماً عن المبالغة الدرامية والتمثيل المتكلف**.
 3. يُمنع استخدام كلمات (مَلِك / مُلْك / مَلَكَ بمعنى الحكم أو الامتلاك)؛ كلمة «ملك» تُستخدم حصراً كاسمها الشخصي.
 4. ضع علامات الترقيم العربية الطبيعية فقط (، . … ؟) بدون أي وسوم إنجليزية داخل `raw_text`.
-5. اجعل حقل `style` دائماً نبرة هادئة متزنة (مثلاً: "calm, natural, warm, poised conversational reading, understated sincerity, no theatrics") واجعل `tag_before` فارغاً "".
 
 أعد JSON فقط:
 {{
@@ -421,8 +451,6 @@ def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str]
   "segments": [
     {{
       "speaker": "he أو she",
-      "style": "calm, natural, warm, poised conversational reading, understated sincerity, no theatrics",
-      "tag_before": "",
       "pause_after_ms": 450,
       "raw_text": "النص العربي النقي",
       "is_climax": false
@@ -465,6 +493,33 @@ def _build_pass2_grammar_prompt(draft: dict) -> str:
 }}"""
 
 
+def _fallback_from_bank(theme: dict, speaker_mode: str) -> dict:
+    """احتياط طوارئ من البنك المنقح إذا تعطلت خوادم Gemini تماماً."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from whispers_bank import WHISPERS_BANK
+        all_items = [item for lst in WHISPERS_BANK.values() for item in lst]
+        chosen = random.choice(all_items)
+    except Exception:
+        chosen = {
+            "display_text": "اَللَّهُمَّ إِنِّي أَسْتَوْدِعُكَ قَلْبَ ملك، وَأَسْأَلُكَ سَكِينَةً تَحُفُّ مَرْيَمَ، وَفَرَحًا لَا يُفَارِقُ مَلَاكَ.",
+            "tts_text": "اَللَّهُمَّ إِنِّي أَسْتَوْدِعُكَ قَلْبَ مَلَكْ، وَأَسْأَلُكَ سَكِينَةً تَحُفُّ مَرْيَمْ، وَفَرَحًا لَا يُفَارِقُ مَلَاكْ.",
+        }
+    spk = "she" if speaker_mode == "she" else "he"
+    return {
+        "title": "همسة لروحها",
+        "poetic_hook": "calm spiritual night",
+        "segments": [{
+            "speaker": spk,
+            "pause_after_ms": 450,
+            "raw_text": chosen.get("display_text", ""),
+            "diacritized_override": chosen.get("tts_text") or chosen.get("display_text", ""),
+            "is_climax": True,
+        }],
+    }
+
+
 def _load_history() -> dict:
     if HISTORY_FILE.exists():
         try:
@@ -488,9 +543,7 @@ def _select_theme(history: dict, forced_theme: str | None) -> dict:
 
 
 def generate_episode(theme_override: str | None = None, speaker_override: str | None = None) -> Path:
-    pool = GeminiKeyPool()
     history = _load_history()
-
     theme = _select_theme(history, theme_override)
     speaker_mode = speaker_override or theme["default_speaker_mode"]
     if not speaker_override and theme["id"] in ("prayer_niqab", "modest_love"):
@@ -504,16 +557,28 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
     recent_titles = [r.get("title", "") for r in recent]
     recent_openings = [r.get("opening", "") for r in recent]
 
-    print(f"🌙 [1/3] تأليف حلقة هادئة | المحور: {theme['label']} | الصوت: {speaker_mode}", flush=True)
-    draft = call_gemini_json(pool, _build_pass1_prompt(theme, speaker_mode, recent_titles, recent_openings))
+    draft = None
+    aud_map = {}
+
+    try:
+        pool = GeminiKeyPool()
+        print(f"🌙 [1/3] تأليف حلقة هادئة | المحور: {theme['label']} | الصوت: {speaker_mode}", flush=True)
+        draft = call_gemini_json(pool, _build_pass1_prompt(theme, speaker_mode, recent_titles, recent_openings))
+        raw_segs = draft.get("segments") or []
+        if not raw_segs:
+            raise RuntimeError("فارغ")
+
+        print("📚 [2/3] التدقيق النحوي والصرفي والإعرابي...", flush=True)
+        try:
+            audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft))
+            aud_map = {int(a.get("index", i)): a for i, a in enumerate(audit.get("segments_audit") or [])}
+        except Exception as e:
+            print(f"   ⚠️ تعذر التدقيق الثاني ({str(e)[:60]})، متابعة بالمتاح.", flush=True)
+    except Exception as e:
+        print(f"⚠️ تعذر التوليد عبر Gemini ({str(e)[:90]}) — تفعيل البنك المنقح كاحتياط!", flush=True)
+        draft = _fallback_from_bank(theme, speaker_mode)
+
     raw_segs = draft.get("segments") or []
-    if not raw_segs:
-        raise RuntimeError("❌ فشل التوليد: لم يُرجع النموذج أي مقاطع.")
-
-    print("📚 [2/3] التدقيق النحوي والصرفي والإعرابي...", flush=True)
-    audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft))
-    aud_map = {int(a.get("index", i)): a for i, a in enumerate(audit.get("segments_audit") or [])}
-
     print("🔒 [3/3] الدمج الآمن + قفل اسم «ملك»...", flush=True)
     final_segments = []
     all_names_found = set()
@@ -524,16 +589,9 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             continue
 
         aud = aud_map.get(idx, {})
-        diac_cand = re.sub(r"\s+", " ", (aud.get("diacritized_text") or raw_text).strip())
+        diac_cand = re.sub(r"\s+", " ", (aud.get("diacritized_text") or seg.get("diacritized_override") or raw_text).strip())
         merged_diac = _merge_diacritics_safely(raw_text, diac_cand)
-
         ratio = _diacritic_ratio(merged_diac)
-        if ratio < 0.40:
-            retry_aud = call_gemini_json(pool, _build_pass2_grammar_prompt({"segments": [{"raw_text": raw_text}]}))
-            r_list = retry_aud.get("segments_audit") or []
-            if r_list and r_list[0].get("diacritized_text"):
-                merged_diac = _merge_diacritics_safely(raw_text, r_list[0]["diacritized_text"].strip())
-                ratio = _diacritic_ratio(merged_diac)
 
         display_text = _strip_malak_for_display(merged_diac)
         tts_text = _lock_names_for_tts(merged_diac)
