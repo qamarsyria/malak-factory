@@ -4,10 +4,12 @@
   "current_story_index": 0,
   "current_story_phase": "collecting",
   "current_era": "creation",
-  "current_era_episodes_published": 2,
-  "reviewed_eras": [],
+  "current_era_episodes_published": 3,
+  "reviewed_eras": [
+    "creation"
+  ],
   "completed_stories": [],
-  "total_episodes_published": 2,
+  "total_episodes_published": 3,
   "project_cycle": 1,
-  "last_updated": "2026-11-19T06:02:56.354884+00:00"
+  "last_updated": "2026-11-19T08:13:37.411312+00:00"
 }
