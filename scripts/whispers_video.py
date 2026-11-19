@@ -3,9 +3,9 @@
 scripts/whispers_video.py
 =========================
 المخرج السينمائي لمشروع «همسات ملك» (9:16 WhatsApp Status):
-- مشاهد أنيميشن محتشم وفانتازيا (محلية من assets/scenes/ أو Pixabay مفلتر أو مجرّة مرسومة).
-- طبقات سحرية متحركة: جنّيات ضوئية بأجنحة رقيقة، فراشات متوهجة، وبوكيه ذهبي.
-- خط عربي أصيل (Amiri عبر libass/HarfBuzz) متزامن بالملّي ثانية مع الصوت + توهج ذهبي للأسماء الثلاثة.
+- مشاهد أنيميشن محتشم وفانتازيا + طبقات جنيات ضوئية وفراشات وبوكيه.
+- خط عربي كبير وواضح جداً (Amiri Bold 112px) متزامن مع الصوت + تظليل ناعم للقراءة
+  + مساحات آمنة بعيداً عن شريط الواتساب العلوي والسفلي.
 """
 
 from __future__ import annotations
@@ -33,13 +33,9 @@ NUM_SCENES = 4
 CROSSFADE = 1.0
 
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
-
 _HARAKAT_RE = re.compile(r"[\u064B-\u065F\u0670\u0640]")
 
 
-# ==============================================================================
-# 🎨 1) اختيار وتأمين المشاهد (محلي أولاً ثم Pixabay آمن ثم مجرّة مرسومة)
-# ==============================================================================
 def _get_local_scenes(category: str) -> list[Path]:
     exts = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}
     cat_dir = SCENES_ROOT / category
@@ -106,13 +102,7 @@ def _fetch_pixabay_video(query: str, vtype: str, category: str, work_dir: Path, 
     try:
         r = requests.get(
             "https://pixabay.com/api/videos/",
-            params={
-                "key": PIXABAY_KEY,
-                "q": query,
-                "video_type": vtype,
-                "per_page": 40,
-                "safesearch": "true",
-            },
+            params={"key": PIXABAY_KEY, "q": query, "video_type": vtype, "per_page": 40, "safesearch": "true"},
             timeout=20,
         )
         if r.status_code != 200:
@@ -138,7 +128,6 @@ def _fetch_pixabay_video(query: str, vtype: str, category: str, work_dir: Path, 
 
 
 def _make_celestial_fallback(out_jpg: Path, category: str, seed_idx: int = 0) -> Path:
-    """يرسم لوحة سماء ليلية/فجرية حالمة بالهلال والنجوم وأزهار الضوء عند غياب الصور."""
     img = Image.new("RGB", (VIDEO_W, VIDEO_H))
     draw = ImageDraw.Draw(img, "RGBA")
 
@@ -162,7 +151,6 @@ def _make_celestial_fallback(out_jpg: Path, category: str, seed_idx: int = 0) ->
             b = int(c2[2] + (c3[2] - c2[2]) * k)
         draw.line([(0, y), (VIDEO_W, y)], fill=(r, g, b))
 
-    # هالة سديمية ناعمة
     glow = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
     for _ in range(5):
@@ -174,7 +162,6 @@ def _make_celestial_fallback(out_jpg: Path, category: str, seed_idx: int = 0) ->
     glow = glow.filter(ImageFilter.GaussianBlur(radius=90))
     img.paste(glow, (0, 0), glow)
 
-    # نجوم متلألئة
     stars = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(stars)
     for _ in range(180):
@@ -183,12 +170,8 @@ def _make_celestial_fallback(out_jpg: Path, category: str, seed_idx: int = 0) ->
         sa = random.randint(100, 245)
         sd.ellipse([sx - sr, sy - sr, sx + sr, sy + sr], fill=(255, 250, 230, sa))
 
-    # هلال ناعم في الأعلى
     if seed_idx % 2 == 0:
         mx, my, mr = int(VIDEO_W * 0.75), 320, 75
-        sd.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(255, 240, 195, 210))
-        sd.ellipse([mx - mr + 28, my - mr - 14, mx + mr + 28, my + mr - 14], fill=(0, 0, 0, 0))
-        # قناع قطع الهلال
         moon_mask = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
         md = ImageDraw.Draw(moon_mask)
         md.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(255, 242, 200, 220))
@@ -201,36 +184,28 @@ def _make_celestial_fallback(out_jpg: Path, category: str, seed_idx: int = 0) ->
     return out_jpg
 
 
-# ==============================================================================
-# ✨ 2) طبقات الفانتازيا (جنيات ضوئية + فراشات مضيئة + بوكيه حالم)
-# ==============================================================================
 def _create_fairies_layer(out_png: Path):
-    """يرسم جنيات ضوئية صغيرة لطيفة (كرات نور بأجنحة فراشة مضيئة رقيقة) وغبار سحري."""
     W, H = VIDEO_W + 400, VIDEO_H + 400
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # غبار النجوم
     for _ in range(130):
         x, y = random.randint(0, W), random.randint(0, H)
         r = random.randint(2, 4)
         col = random.choice([(255, 248, 210, 220), (190, 245, 255, 200), (255, 210, 240, 190)])
         draw.ellipse([x - r, y - r, x + r, y + r], fill=col)
 
-    # 12 جنية ضوئية صغيرة
     for _ in range(12):
         cx = random.randint(150, W - 150)
         cy = random.randint(150, H - 250)
         sz = random.randint(16, 28)
         tint = random.choice([(255, 232, 160), (170, 242, 255), (255, 195, 235)])
 
-        # أجنحة رقيقة
         draw.polygon([(cx, cy), (cx - sz, cy - sz // 2), (cx - int(sz * 0.7), cy - int(sz * 1.1))], fill=(*tint, 95))
         draw.polygon([(cx, cy), (cx + sz, cy - sz // 2), (cx + int(sz * 0.7), cy - int(sz * 1.1))], fill=(*tint, 95))
         draw.polygon([(cx, cy), (cx - int(sz * 0.7), cy + sz // 2), (cx - sz // 3, cy + sz)], fill=(*tint, 70))
         draw.polygon([(cx, cy), (cx + int(sz * 0.7), cy + sz // 2), (cx + sz // 3, cy + sz)], fill=(*tint, 70))
 
-        # هالة ضوئية دافئة
         hr = int(sz * 1.1)
         draw.ellipse([cx - hr, cy - hr, cx + hr, cy + hr], fill=(*tint, 55))
         cr = max(4, sz // 4)
@@ -241,7 +216,6 @@ def _create_fairies_layer(out_png: Path):
 
 
 def _create_butterflies_layer(out_png: Path):
-    """يرسم فراشات مضيئة شبه شفافة بأحجام مختلفة."""
     W, H = VIDEO_W + 400, VIDEO_H + 400
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -252,17 +226,16 @@ def _create_butterflies_layer(out_png: Path):
         s = random.randint(20, 44)
         angle = random.uniform(-0.45, 0.45)
         col = random.choice([
-            (255, 222, 130, 155),  # ذهبي
-            (180, 238, 255, 145),  # فيروزي كريستال
-            (255, 196, 222, 145),  # وردي ناعم
-            (255, 248, 232, 165),  # لؤلؤي
+            (255, 222, 130, 155),
+            (180, 238, 255, 145),
+            (255, 196, 222, 145),
+            (255, 248, 232, 165),
         ])
 
         def rot(px, py):
             ca, sa = math.cos(angle), math.sin(angle)
             return (cx + px * ca - py * sa, cy + px * sa + py * ca)
 
-        # جناح علوي أيسر وأيمن + جناح سفلي
         left_top = [rot(0, 0), rot(-s * 1.1, -s * 0.9), rot(-s * 1.25, -s * 0.1), rot(-s * 0.35, s * 0.15)]
         right_top = [rot(0, 0), rot(s * 1.1, -s * 0.9), rot(s * 1.25, -s * 0.1), rot(s * 0.35, s * 0.15)]
         left_bot = [rot(0, 0), rot(-s * 0.85, s * 0.2), rot(-s * 0.65, s * 0.85), rot(-s * 0.1, s * 0.45)]
@@ -292,9 +265,18 @@ def _create_bokeh_layer(out_png: Path):
     img.save(out_png)
 
 
-# ==============================================================================
-# ✍️ 3) توليد ملف الترجمة الفخمة ASS (HarfBuzz + توهج الأسماء الثلاثة)
-# ==============================================================================
+def _create_text_scrim(out_png: Path):
+    img = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    start_y = int(VIDEO_H * 0.48)
+    for y in range(start_y, VIDEO_H):
+        t = (y - start_y) / (VIDEO_H - start_y)
+        bell = math.sin(min(1.0, t * 1.15) * math.pi)
+        alpha = int(125 * (0.45 * t + 0.55 * bell))
+        draw.line([(0, y), (VIDEO_W, y)], fill=(6, 4, 14, min(145, alpha)))
+    img.save(out_png)
+
+
 def _ass_time(sec: float) -> str:
     sec = max(0.0, sec)
     h = int(sec // 3600)
@@ -307,8 +289,7 @@ def _ass_time(sec: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def _wrap_arabic_lines(text: str, max_chars_per_line: int = 34) -> str:
-    """توزيع أنيق للسطر حتى لا يمتد لأطراف الشاشة."""
+def _wrap_arabic_lines(text: str, max_chars_per_line: int = 20) -> str:
     words = text.split()
     lines, cur = [], []
     cur_len = 0
@@ -327,7 +308,6 @@ def _wrap_arabic_lines(text: str, max_chars_per_line: int = 34) -> str:
 
 
 def _highlight_names_ass(wrapped_text: str) -> str:
-    """يُلبّس أسماءها الثلاثة (ملك، مريم، ملاك) توهجاً ذهنياً ذهبياً لطيفاً داخل الجملة."""
     out_lines = []
     for line in wrapped_text.split(r"\N"):
         tokens = line.split(" ")
@@ -336,8 +316,11 @@ def _highlight_names_ass(wrapped_text: str) -> str:
             skel = _HARAKAT_RE.sub("", tok)
             skel_clean = re.sub(r"[^\u0621-\u064A]", "", skel)
             if skel_clean in ("ملك", "مريم", "ملاك"):
-                # ذهبي متوهج #FFD86B -> ASS BGR = &H006BD8FF&
-                new_toks.append(r"{\c&H006BD8FF&\3c&H60103855&\blur2}" + tok + r"{\r}")
+                new_toks.append(
+                    r"{\1c&H006BD8FF&\3c&H50103855&\blur2}"
+                    + tok
+                    + r"{\1c&H00FAF7F2&\3c&H250A0514&\blur0}"
+                )
             else:
                 new_toks.append(tok)
         out_lines.append(" ".join(new_toks))
@@ -346,7 +329,6 @@ def _highlight_names_ass(wrapped_text: str) -> str:
 
 def _write_ass_subtitles(ep: dict, meta: dict | None, total_dur: float, out_ass: Path):
     title = (ep.get("title") or "همسة لروحها").strip()
-    # إزالة التشكيل عن «ملك» إن وردت في العنوان
     title = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ك[\u064B-\u065F]*", "ملك", title)
 
     header = f"""[Script Info]
@@ -359,24 +341,22 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TitleTop,Amiri,46,&H209CE0FF,&H000000FF,&H90100818,&H80000000,0,0,0,0,100,100,0,0,1,2.5,2,8,70,70,150,1
-Style: WhisperLine,Amiri,64,&H00F8F5EE,&H000000FF,&H70120A1E,&H80000000,0,0,0,0,100,100,0,0,1,3.5,3,2,75,75,330,1
-Style: NameHalo,Amiri,94,&H006BD8FF,&H000000FF,&H500C2B42,&H80000000,1,0,0,0,100,100,0,0,1,4.5,4,2,60,60,540,1
+Style: TitleTop,Amiri,76,&H159CE0FF,&H000000FF,&H400C0618,&H9006030C,-1,0,0,0,100,100,0,0,1,4.0,3,8,60,60,210,1
+Style: WhisperLine,Amiri,112,&H00FAF7F2,&H000000FF,&H250A0514,&H9505020C,-1,0,0,0,100,100,0,0,1,5.0,4,2,65,65,360,1
+Style: NameHalo,Amiri,148,&H006BD8FF,&H000000FF,&H350C2B42,&H9505020C,-1,0,0,0,100,100,0,0,1,6.0,5,2,50,50,980,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = []
 
-    # 1) عنوان لطيف في الأعلى خلال أول 3.5 ثوانٍ
-    t_end_title = min(total_dur, 3.8)
+    t_end_title = min(total_dur, 4.0)
     events.append(
         f"Dialogue: 0,{_ass_time(0.2)},{_ass_time(t_end_title)},TitleTop,,0,0,0,,"
         + r"{\fad(500,600)}"
         + f"🌙 {title}"
     )
 
-    # 2) المقاطع المتزامنة بالملّي ثانية
     segs = (meta or {}).get("segments") or ep.get("segments") or []
     if segs and all("start_sec" in s and "end_sec" in s for s in segs):
         for s in segs:
@@ -385,13 +365,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             disp = (s.get("display_text") or s.get("text") or "").strip()
             if not disp:
                 continue
-            wrapped = _highlight_names_ass(_wrap_arabic_lines(disp))
+            wrapped = _highlight_names_ass(_wrap_arabic_lines(disp, max_chars_per_line=20))
             events.append(
                 f"Dialogue: 1,{_ass_time(st)},{_ass_time(en)},WhisperLine,,0,0,0,,"
                 + r"{\fad(350,300)}"
                 + wrapped
             )
-            # في جملة الذروة، عرض هالة للأسماء المذكورة بنعومة فوق السطر
             if s.get("is_climax") and s.get("featured_names"):
                 names_str = "  •  ".join(s["featured_names"])
                 events.append(
@@ -400,7 +379,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     + f"✦ {names_str} ✦"
                 )
     else:
-        # احتياط تقسيم متساوٍ لو لم يوجد _meta.json
         n = max(1, len(segs))
         chunk_d = total_dur / n
         for i, s in enumerate(segs):
@@ -408,7 +386,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             disp = (s.get("display_text") or s.get("text") or "").strip()
             if not disp:
                 continue
-            wrapped = _highlight_names_ass(_wrap_arabic_lines(disp))
+            wrapped = _highlight_names_ass(_wrap_arabic_lines(disp, max_chars_per_line=20))
             events.append(
                 f"Dialogue: 1,{_ass_time(st)},{_ass_time(en)},WhisperLine,,0,0,0,,"
                 + r"{\fad(350,300)}"
@@ -418,9 +396,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     out_ass.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
 
 
-# ==============================================================================
-# 🎬 4) المخرج الرئيسي للفيديو
-# ==============================================================================
 def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
     audio_p = Path(audio_path).resolve()
     ep_p = Path(json_path).resolve()
@@ -453,7 +428,6 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
 
     work = Path(tempfile.mkdtemp(prefix="whisper_vid_"))
     try:
-        # 1) تجميع المشاهد
         scenes = _get_local_scenes(category)
         used_urls: set[str] = set()
         if len(scenes) < NUM_SCENES and PIXABAY_KEY:
@@ -475,14 +449,12 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
         frames_per_scene = max(30, int(round(scene_dur * FPS)))
         print(f"🎬 تجهيز {len(scenes)} مشاهد × {scene_dur:.1f} ث...", flush=True)
 
-        # 2) معالجة كل مشهد (توحيد المقاس والتلوين السينمائي)
         processed: list[Path] = []
         for i, sp in enumerate(scenes):
             sc_out = work / f"scene_{i:02d}.mp4"
             is_img = sp.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
 
             if is_img:
-                # حركة Ken Burns حريرية للصور بدون تكرار فك التشفير
                 zoom_dir = "min(zoom+0.0007,1.12)" if i % 2 == 0 else "max(1.12-0.0007*on,1.0)"
                 vf = (
                     f"scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
@@ -514,7 +486,6 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
             processed.append(sc_out)
 
-        # 3) انتقال ناعم بين المشاهد (Crossfade)
         bg_vid = work / "bg_merged.mp4"
         if len(processed) == 1:
             shutil.copy2(processed[0], bg_vid)
@@ -537,28 +508,30 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 check=True, capture_output=True, timeout=240,
             )
 
-        # 4) توليد طبقات السحر (جنيات، فراشات، بوكيه) + ملف الترجمة ASS
         fairies_png = work / "fairies.png"
         butterflies_png = work / "butterflies.png"
         bokeh_png = work / "bokeh.png"
+        scrim_png = work / "scrim.png"
         ass_file = work / "subtitles.ass"
 
         _create_fairies_layer(fairies_png)
         _create_butterflies_layer(butterflies_png)
         _create_bokeh_layer(bokeh_png)
+        _create_text_scrim(scrim_png)
         _write_ass_subtitles(ep, meta, total_dur, ass_file)
 
-        # 5) التركيب النهائي + دمج الصوت + ضغط واتساب الذكي
-        print("✨ دمج الجنيات الضوئية والفراشات والخط العربي المتزامن...", flush=True)
+        print("✨ دمج الجنيات والفراشات والتظليل والخط العربي الكبير...", flush=True)
         ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
         fc_final = (
             "[1:v]format=rgba,colorchannelmixer=aa=0.85[fr];"
             "[2:v]format=rgba,colorchannelmixer=aa=0.78[bf];"
             "[3:v]format=rgba,colorchannelmixer=aa=0.38[bk];"
+            "[4:v]format=rgba[sc];"
             "[0:v][bk]overlay=x='-200+70*cos(t/9)':y='-200+55*sin(t/11)':shortest=1[v1];"
             "[v1][fr]overlay=x='-200+90*sin(t/5)':y='-200+70*cos(t/6)':shortest=1[v2];"
             "[v2][bf]overlay=x='-200+80*cos(t/7)':y='-200+85*sin(t/8)':shortest=1[v3];"
-            f"[v3]ass='{ass_escaped}':fontsdir=/usr/share/fonts,format=yuv420p[vout]"
+            "[v3][sc]overlay=0:0:shortest=1[v4];"
+            f"[v4]ass='{ass_escaped}':fontsdir=/usr/share/fonts,format=yuv420p[vout]"
         )
 
         subprocess.run(
@@ -568,9 +541,10 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 "-loop", "1", "-i", str(fairies_png),
                 "-loop", "1", "-i", str(butterflies_png),
                 "-loop", "1", "-i", str(bokeh_png),
+                "-loop", "1", "-i", str(scrim_png),
                 "-i", str(audio_p),
                 "-filter_complex", fc_final,
-                "-map", "[vout]", "-map", "4:a",
+                "-map", "[vout]", "-map", "5:a",
                 "-t", f"{total_dur:.3f}",
                 "-c:v", "libx264", "-preset", "medium", "-crf", "23",
                 "-maxrate", "3.2M", "-bufsize", "6.4M",
@@ -583,7 +557,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
         )
 
         size_mb = out_p.stat().st_size / (1024 * 1024)
-        print(f"✅ تم إخراج التحفة الفنية: {out_p.name} ({size_mb:.2f} MB)", flush=True)
+        print(f"✅ تم إخراج الفيديو: {out_p.name} ({size_mb:.2f} MB)", flush=True)
         return True
     finally:
         shutil.rmtree(work, ignore_errors=True)
