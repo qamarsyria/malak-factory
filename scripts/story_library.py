@@ -172,6 +172,13 @@ def advance_to_next_story() -> str:
         # إعادة تعيين المراجعة
         gstate["reviewed_eras"] = []
         gstate["reviewed_at_system_version"] = gstate.get("system_version", "1.0")
+        # تصفير مؤشرات الأحداث لكل القصص حتى لا تتوقف الدورة الجديدة (مع إبقاء total_episodes_generated لتجنب تكرار أسماء الملفات)
+        for s in stories:
+            st = load_story_state(s["id"])
+            st["current_event_index"] = 0
+            st["current_sub_episode"] = 0
+            st["completed"] = False
+            save_story_state(s["id"], st)
         next_idx = 0
     else:
         gstate["current_story_index"] = next_idx
