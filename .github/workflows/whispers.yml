@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       theme:
-        description: 'محور الحلقة (اتركه auto للتناوب التلقائي)'
+        description: 'محور الحلقة'
         required: false
         default: 'auto'
         type: choice
@@ -17,7 +17,7 @@ on:
           - modest_love
           - trinity_names
       speaker:
-        description: 'الصوت (auto للتنويع)'
+        description: 'الصوت'
         required: false
         default: 'auto'
         type: choice
@@ -26,6 +26,21 @@ on:
           - he
           - she
           - duet
+      she_pitch:
+        description: 'درجة Pitch بصمة ملك (الافتراضي 6)'
+        required: false
+        default: '6'
+        type: string
+      base_voice_she:
+        description: 'صوت القاعدة قبل بصمة ملك'
+        required: false
+        default: 'Aoede'
+        type: choice
+        options:
+          - Aoede
+          - Charon
+          - Leda
+          - Kore
 
 jobs:
   whispers:
@@ -50,7 +65,6 @@ jobs:
       - name: Install System Dependencies (Fast & Mirror-Safe)
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1 || ! ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass "; then
-            echo "⬇️ تحميل FFmpeg الثابت مع دعم libass مباشرة من GitHub..."
             wget -q --timeout=45 -O /tmp/ffmpeg.tar.xz \
               https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
               || true
@@ -66,7 +80,6 @@ jobs:
             fi
           fi
 
-          echo "⬇️ تثبيت خط الأميري مباشرة من GitHub..."
           sudo mkdir -p /usr/share/fonts/amiri
           wget -q --timeout=30 -O /tmp/Amiri-1.000.zip \
             https://github.com/aliftype/amiri/releases/download/1.000/Amiri-1.000.zip
@@ -81,8 +94,6 @@ jobs:
           EOF
           rm -rf /tmp/Amiri-1.000.zip /tmp/amiri_ext
           command -v fc-cache >/dev/null 2>&1 && sudo fc-cache -f /usr/share/fonts/amiri || true
-          ffmpeg -version | head -n 2
-          ls -la /usr/share/fonts/amiri
 
       - name: Install Project Requirements
         run: |
@@ -126,19 +137,17 @@ jobs:
         run: |
           mkdir -p rvc/assets/weights
 
-          # صوتها (ملك)
           wget -q --timeout=60 -O rvc/assets/weights/malak_voice.pth \
             https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
           wget -q --timeout=60 -O rvc/assets/weights/added_malak_voice.index \
             https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
 
-          # صوتك (clean + rough) — أضف روابط التنزيل هنا إذا كانت في Release آخر:
+          # أضف روابط صوتك هنا لو كان في Release آخر:
           # wget -q --timeout=60 -O rvc/assets/weights/clean.pth "YOUR_URL/clean.pth"
           # wget -q --timeout=60 -O rvc/assets/weights/clean.index "YOUR_URL/clean.index"
           # wget -q --timeout=60 -O rvc/assets/weights/rough.pth "YOUR_URL/rough.pth"
           # wget -q --timeout=60 -O rvc/assets/weights/rough.index "YOUR_URL/rough.index"
 
-          # نسخ الأوزان الموجودة مسبقاً داخل المستودع (إن وجدت في assets/weights)
           if [ -d assets/weights ]; then
             cp -n assets/weights/* rvc/assets/weights/ 2>/dev/null || true
           fi
@@ -175,6 +184,8 @@ jobs:
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
+          BASE_VOICE_HE: Charon
+          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Aoede' }}
         run: |
           python -u scripts/whispers_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -191,7 +202,8 @@ jobs:
         env:
           HE_PITCH_CLEAN: '-6'
           HE_PITCH_ROUGH: '-4'
-          SHE_PITCH: '0'
+          SHE_PITCH: ${{ github.event.inputs.she_pitch || '6' }}
+          SHE_INDEX_RATE: '0.60'
         run: |
           python -u malak_converter.py \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
