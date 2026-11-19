@@ -4,7 +4,7 @@ scripts/gemini_tts_pool.py
 ==========================
 محرّك توليد الصوت العاطفي لمشروع «همسات ملك»:
 - تدوير مفاتيح GEMINI_API_KEYS + كشف نماذج TTS تلقائياً.
-- دعم الأداء التمثيلي (speechMetadata.style) وعلامات <sigh> و <short pause> في Gemini 3.8 TTS.
+- دعم الأداء التمثيلي في Gemini 3.8 TTS + طباعة واضحة للنموذج المستخدم.
 - قص ذيل التشويش الصغير في نهاية كل مقطع وتصدير WAV نقي 24kHz قبل RVC.
 - خطة بديلة تلقائية بـ edge-tts عند نفاد الحصة المجانية تماماً.
 """
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import os
 import re
@@ -177,7 +176,6 @@ def discover_tts_models() -> list[str]:
 
 
 def _sanitize_tts_text(text: str, allow_tags: bool) -> str:
-    # الاحتفاظ مؤقتاً بالوسوم المدعومة في Gemini 3.8 TTS فقط
     placeholders = {}
     if allow_tags:
         for i, tag in enumerate(["<sigh>", "<short pause>", "<long pause>", "<breath>"]):
@@ -189,7 +187,6 @@ def _sanitize_tts_text(text: str, allow_tags: bool) -> str:
         text = re.sub(r"<[^>]+>", " ", text)
 
     clean = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\w\s،؛؟!.:…]", " ", text)
-    # إزالة أي كلمات إنجليزية غير الوسوم المحمية
     clean = re.sub(r"\b(?!__TAG_\d+__)[A-Za-z]+\b", " ", clean)
     for token, tag in placeholders.items():
         clean = clean.replace(token, tag)
@@ -234,7 +231,6 @@ def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
         )
         dur = float(probe.stdout.strip() or 0)
         if dur > 0.20:
-            # إزالة أي فرقعة طفيفة في آخر 40ms
             tmp_fade = output_wav.with_name(output_wav.stem + "_f.wav")
             st = max(0.0, dur - 0.04)
             subprocess.run(
@@ -251,7 +247,7 @@ def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
 
 def _tts_single(text: str, out_wav: Path, voice: str, key: str, style: str = "") -> bool | str:
     for model in discover_tts_models():
-        is_v38 = "3.8" in model or "3.5" in model or "4." in model
+        is_v38 = "3.8" in model or "4." in model
         cleaned = _sanitize_tts_text(text, allow_tags=is_v38)
         if not cleaned:
             return False
@@ -260,7 +256,6 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, style: str = "")
         if is_v38 and style:
             part["speechMetadata"] = {"style": style}
 
-        # بعض النسخ تستخدم prebuiltVoiceConfig وبعضها voice مباشرة — نجرب القياسي أولاً
         voice_variants = [
             {"prebuiltVoiceConfig": {"voiceName": voice}},
             {"voice": voice},
@@ -282,11 +277,11 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, style: str = "")
                     return "INVALID_KEY"
                 if r.status_code == 429:
                     return "RATE_LIMIT"
-                if r.status_code == 400 and "speechMetadata" in r.text and "speechMetadata" in part:
+                if r.status_code == 400 and "speechMetadata" in part:
                     part = {"text": _sanitize_tts_text(text, allow_tags=False)}
                     continue
                 if r.status_code == 400:
-                    _log(f"⚠️ {model} (400): {r.text[:120]}")
+                    _log(f"⚠️ {model} (400): {r.text[:140]}")
                     continue
                 if r.status_code == 404:
                     break
@@ -315,6 +310,7 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, style: str = "")
                 if float(probe.stdout.strip() or 0) < 0.25:
                     out_wav.unlink(missing_ok=True)
                     break
+                _log(f"✅ [Gemini TTS] model={model} | voice={voice}")
                 return True
             except Exception as ex:
                 _log(f"⚠️ {model} استثناء: {str(ex)[:80]}")
@@ -327,10 +323,11 @@ def _edge_fallback(text: str, out_wav: Path, voice_gender: str = "male") -> bool
         import edge_tts
         clean = _sanitize_tts_text(text, allow_tags=False)
         edge_voice = "ar-SA-ZariyahNeural" if voice_gender == "female" else "ar-SA-HamedNeural"
+        _log(f"⚠️ [FALLBACK] استخدام Edge TTS البديل ({edge_voice})...")
         tmp_mp3 = out_wav.with_suffix(".edge.mp3")
 
         async def _run():
-            comm = edge_tts.Communicate(clean, edge_voice, rate="-10%", pitch="-2Hz")
+            comm = edge_tts.Communicate(clean, edge_voice, rate="-8%", pitch="-2Hz")
             await comm.save(str(tmp_mp3))
 
         asyncio.run(_run())
@@ -350,12 +347,9 @@ def gemini_tts_with_pool(
     text: str,
     out_path: str,
     voice: str = "Charon",
-    style: str = "warm, tender, deeply affectionate, reverent, slow intimate pace",
+    style: str = "clear, warm, tender, calm natural speaking voice, clean articulation",
     gender_hint: str = "male",
 ) -> str:
-    """
-    يولّد WAV (أو MP3 حسب لاحقة out_path) لصوت نقي عاطفي جاهز للتحويل عبر RVC.
-    """
     out_p = Path(out_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
     work_dir = out_p.parent / f"_tts_{int(time.time() * 1000)}"
