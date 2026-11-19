@@ -1,4 +1,17 @@
+#!/usr/bin/env python3
+"""
+scripts/gemini_tts_pool.py
+==========================
+محرّك توليد الصوت العاطفي لمشروع «همسات ملك»:
+- تدوير مفاتيح GEMINI_API_KEYS + كشف نماذج TTS تلقائياً.
+- دعم الأداء التمثيلي (speechMetadata.style) وعلامات <sigh> و <short pause> في Gemini 3.8 TTS.
+- قص ذيل التشويش الصغير في نهاية كل مقطع وتصدير WAV نقي 24kHz قبل RVC.
+- خطة بديلة تلقائية بـ edge-tts عند نفاد الحصة المجانية تماماً.
+"""
+
 from __future__ import annotations
+
+import asyncio
 import base64
 import io
 import json
@@ -13,16 +26,15 @@ import requests
 
 MODEL_CACHE_FILE = "out/tts_models_cache.json"
 MODEL_CACHE_TTL = 12 * 3600
-
 _last_request_time = 0.0
 
 
-def _wait_for_rate_limit():
+def _wait_for_rate_limit(min_gap: float = 2.5):
     global _last_request_time
     now = time.time()
     elapsed = now - _last_request_time
-    if elapsed < 2.5:
-        time.sleep(2.5 - elapsed)
+    if elapsed < min_gap:
+        time.sleep(min_gap - elapsed)
     _last_request_time = time.time()
 
 
@@ -32,10 +44,15 @@ def _log(msg: str) -> None:
 
 class GeminiKeyPool:
     def __init__(self) -> None:
-        raw = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
-        self.keys = [k.strip() for k in raw.split(",") if k.strip()]
+        raw = (
+            os.getenv("GEMINI_API_KEYS", "").strip()
+            or os.getenv("GEMINI_API_KEY", "").strip()
+            or os.getenv("GOOGLE_API_KEY", "").strip()
+        )
+        keys = [k.strip() for k in re.split(r"[\s,;]+", raw) if len(k.strip()) > 20]
+        self.keys = list(dict.fromkeys(keys))
         if not self.keys:
-            raise RuntimeError("❌ لا مفاتيح Gemini")
+            raise RuntimeError("❌ لا مفاتيح GEMINI_API_KEYS صالحة.")
         self.current_index = 0
         self.cooldowns: dict[str, float] = {}
         self.dead_keys: set[str] = set()
@@ -52,7 +69,7 @@ class GeminiKeyPool:
 
     def get_current(self) -> str:
         if len(self.dead_keys) >= len(self.keys):
-            raise RuntimeError(f"🚫 جميع مفاتيح Gemini ({len(self.keys)}) غير صالحة (401/403)!")
+            raise RuntimeError("🚫 جميع مفاتيح Gemini غير صالحة!")
         for _ in range(10):
             key = self._available_key()
             if key:
@@ -63,31 +80,30 @@ class GeminiKeyPool:
             soonest = min(live_cooldowns.values())
             wait = max(1, int(soonest - time.time()))
             if wait > 900:
-                raise RuntimeError("🚫 كل مفاتيح Gemini الصالحة في فترة تهدئة طويلة!")
+                raise RuntimeError("🚫 كل مفاتيح Gemini في تهدئة طويلة.")
             _log(f"⏳ انتظار {wait}ث لتوفر مفتاح...")
             time.sleep(min(wait + 1, 70))
-        raise RuntimeError("❌ فشل الحصول على مفتاح متاح")
-
-    def _advance(self) -> None:
-        self.current_index = (self.current_index + 1) % len(self.keys)
+        raise RuntimeError("❌ تعذر الحصول على مفتاح متاح")
 
     def advance(self) -> None:
-        self._advance()
+        self.current_index = (self.current_index + 1) % len(self.keys)
+
+    def _advance(self) -> None:
+        self.advance()
 
     def mark_failed(self, cooldown_seconds: int = 65) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
-        self.current_index = (self.current_index + 1) % len(self.keys)
+        self.advance()
 
     def mark_dead(self, reason: str = "401") -> None:
         key = self.keys[self.current_index]
-        idx = self.current_index + 1
         self.dead_keys.add(key)
         alive = len(self.keys) - len(self.dead_keys)
-        _log(f"🗑️ استبعاد مفتاح معطوب #{idx}/{len(self.keys)} ({reason}) — المفاتيح السليمة المتبقية: {alive}")
+        _log(f"🗑️ استبعاد مفتاح معطوب ({reason}) — المتبقي: {alive}")
         if alive <= 0:
-            raise RuntimeError(f"🚫 جميع مفاتيح Gemini ({len(self.keys)}) غير صالحة!")
-        self.current_index = (self.current_index + 1) % len(self.keys)
+            raise RuntimeError("🚫 جميع مفاتيح Gemini معطوبة!")
+        self.advance()
 
 
 _pool: GeminiKeyPool | None = None
@@ -116,7 +132,7 @@ def _tts_rank(name: str) -> tuple:
     return (-ver, is_preview, kind, n)
 
 
-def discover_tts_models(prefer_lite: bool = False) -> list[str]:
+def discover_tts_models() -> list[str]:
     cache_path = Path(MODEL_CACHE_FILE)
     if cache_path.exists():
         try:
@@ -136,8 +152,8 @@ def discover_tts_models(prefer_lite: bool = False) -> list[str]:
         for _ in range(len(pool.keys)):
             key = pool.get_current()
             r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=20)
-            if r.status_code == 401:
-                pool.mark_dead("401")
+            if r.status_code in (401, 403):
+                pool.mark_dead(str(r.status_code))
                 continue
             if r.status_code == 200:
                 tts_models = []
@@ -160,88 +176,30 @@ def discover_tts_models(prefer_lite: bool = False) -> list[str]:
     return fallback
 
 
-def _split_text(text: str, max_chars: int = 360) -> list[str]:
-    text = text.strip()
-    if not text:
-        return []
-    parts = re.split(r"(?<=[.!؟])\s+", text)
-    chunks, buf = [], ""
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        if len(part) > max_chars:
-            if buf:
-                chunks.append(buf)
-                buf = ""
-            sub_parts = re.split(r"(?<=[،؛,:])\s+", part)
-            sub_buf = ""
-            for sp in sub_parts:
-                if len(sub_buf) + len(sp) + 1 <= max_chars:
-                    sub_buf = f"{sub_buf} {sp}".strip()
-                else:
-                    if sub_buf:
-                        chunks.append(sub_buf)
-                    sub_buf = sp
-            if sub_buf:
-                chunks.append(sub_buf)
-        elif len(buf) + len(part) + 1 <= max_chars:
-            buf = f"{buf} {part}".strip()
-        else:
-            if buf:
-                chunks.append(buf)
-            buf = part
-    if buf:
-        chunks.append(buf)
-    return chunks
+def _sanitize_tts_text(text: str, allow_tags: bool) -> str:
+    # الاحتفاظ مؤقتاً بالوسوم المدعومة في Gemini 3.8 TTS فقط
+    placeholders = {}
+    if allow_tags:
+        for i, tag in enumerate(["<sigh>", "<short pause>", "<long pause>", "<breath>"]):
+            token = f"__TAG_{i}__"
+            if tag in text:
+                placeholders[token] = tag
+                text = text.replace(tag, f" {token} ")
+    else:
+        text = re.sub(r"<[^>]+>", " ", text)
 
-
-def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
-    try:
-        af = (
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,"
-            "areverse,"
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,"
-            "areverse,"
-            "afade=t=in:st=0:d=0.015"
-        )
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(input_wav), "-af", af, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(output_wav)],
-            check=True, capture_output=True, timeout=60,
-        )
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(output_wav)],
-            capture_output=True, text=True, timeout=10,
-        )
-        dur = float(probe.stdout.strip() or 0)
-        if dur > 0.15:
-            tmp_fade = output_wav.with_name(output_wav.stem + "_f.wav")
-            st = max(0.0, dur - 0.025)
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", str(output_wav), "-af", f"afade=t=out:st={st:.3f}:d=0.025",
-                 "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(tmp_fade)],
-                check=True, capture_output=True, timeout=60,
-            )
-            tmp_fade.replace(output_wav)
-        return output_wav.exists() and output_wav.stat().st_size > 1000
-    except Exception:
-        return False
+    clean = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\w\s،؛؟!.:…]", " ", text)
+    # إزالة أي كلمات إنجليزية غير الوسوم المحمية
+    clean = re.sub(r"\b(?!__TAG_\d+__)[A-Za-z]+\b", " ", clean)
+    for token, tag in placeholders.items():
+        clean = clean.replace(token, tag)
+    return re.sub(r"\s+", " ", clean).strip()
 
 
 def _save_audio_bytes(raw: bytes, out_wav: Path) -> None:
     if raw[:4] == b"RIFF":
-        with wave.open(io.BytesIO(raw), "rb") as w_in:
-            sr = w_in.getframerate()
-            nch = w_in.getnchannels()
-            sw = w_in.getsampwidth()
-            frames = w_in.readframes(w_in.getnframes())
-        tmp = out_wav.with_suffix(".tmp.wav")
-        with wave.open(str(tmp), "wb") as w_out:
-            w_out.setnchannels(nch)
-            w_out.setsampwidth(sw)
-            w_out.setframerate(sr)
-            w_out.writeframes(frames)
+        tmp = out_wav.with_suffix(".raw_in.wav")
+        tmp.write_bytes(raw)
         subprocess.run(
             ["ffmpeg", "-y", "-i", str(tmp), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
             check=True, capture_output=True, timeout=30,
@@ -255,115 +213,191 @@ def _save_audio_bytes(raw: bytes, out_wav: Path) -> None:
             wf.writeframes(raw)
 
 
-def _tts_single(text: str, out_wav: Path, voice: str, key: str) -> bool | str:
-    clean_text = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\s،؛؟!.:]", "", text)
-    clean_text = re.sub(r"\s+", " ", clean_text).strip()
-    if not clean_text:
+def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
+    try:
+        af = (
+            "silenceremove=start_periods=1:start_duration=0:start_threshold=-46dB,"
+            "areverse,"
+            "silenceremove=start_periods=1:start_duration=0:start_threshold=-46dB,"
+            "areverse,"
+            "afade=t=in:st=0:d=0.015"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(input_wav), "-af", af,
+             "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(output_wav)],
+            check=True, capture_output=True, timeout=60,
+        )
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(output_wav)],
+            capture_output=True, text=True, timeout=10,
+        )
+        dur = float(probe.stdout.strip() or 0)
+        if dur > 0.20:
+            # إزالة أي فرقعة طفيفة في آخر 40ms
+            tmp_fade = output_wav.with_name(output_wav.stem + "_f.wav")
+            st = max(0.0, dur - 0.04)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(output_wav),
+                 "-af", f"afade=t=out:st={st:.3f}:d=0.04",
+                 "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(tmp_fade)],
+                check=True, capture_output=True, timeout=60,
+            )
+            tmp_fade.replace(output_wav)
+        return output_wav.exists() and output_wav.stat().st_size > 1000
+    except Exception:
         return False
 
+
+def _tts_single(text: str, out_wav: Path, voice: str, key: str, style: str = "") -> bool | str:
     for model in discover_tts_models():
+        is_v38 = "3.8" in model or "3.5" in model or "4." in model
+        cleaned = _sanitize_tts_text(text, allow_tags=is_v38)
+        if not cleaned:
+            return False
+
+        part: dict = {"text": cleaned}
+        if is_v38 and style:
+            part["speechMetadata"] = {"style": style}
+
+        # بعض النسخ تستخدم prebuiltVoiceConfig وبعضها voice مباشرة — نجرب القياسي أولاً
+        voice_variants = [
+            {"prebuiltVoiceConfig": {"voiceName": voice}},
+            {"voice": voice},
+        ]
+
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        body = {
-            "contents": [{"parts": [{"text": clean_text}]}],
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}},
+        for vc in voice_variants:
+            body = {
+                "contents": [{"role": "user", "parts": [part]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {"voiceConfig": vc},
                 },
-            },
-        }
-        try:
-            _wait_for_rate_limit()
-            r = requests.post(url, json=body, timeout=60)
-            if r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
-                return "INVALID_KEY"
-            if r.status_code == 429:
-                return "RATE_LIMIT"
-            if r.status_code in (400, 404):
-                _log(f"⚠️ {model}: HTTP {r.status_code} - {r.text[:120]}")
-                continue
-            if r.status_code != 200:
-                _log(f"⚠️ {model}: HTTP {r.status_code}")
-                continue
+            }
+            try:
+                _wait_for_rate_limit()
+                r = requests.post(url, json=body, timeout=60)
+                if r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                    return "INVALID_KEY"
+                if r.status_code == 429:
+                    return "RATE_LIMIT"
+                if r.status_code == 400 and "speechMetadata" in r.text and "speechMetadata" in part:
+                    part = {"text": _sanitize_tts_text(text, allow_tags=False)}
+                    continue
+                if r.status_code == 400:
+                    _log(f"⚠️ {model} (400): {r.text[:120]}")
+                    continue
+                if r.status_code == 404:
+                    break
+                if r.status_code != 200:
+                    _log(f"⚠️ {model}: HTTP {r.status_code}")
+                    break
 
-            data = r.json()
-            cands = data.get("candidates") or []
-            if not cands:
-                continue
-            parts = (cands[0].get("content") or {}).get("parts") or []
-            if not parts:
-                continue
-            inline = parts[0].get("inlineData") or {}
-            audio_b64 = inline.get("data")
-            if not audio_b64:
-                continue
+                data = r.json()
+                cands = data.get("candidates") or []
+                parts = (cands[0].get("content") or {}).get("parts") or [] if cands else []
+                audio_b64 = None
+                for p in parts:
+                    inline = p.get("inlineData") or {}
+                    if inline.get("data"):
+                        audio_b64 = inline["data"]
+                        break
+                if not audio_b64:
+                    break
 
-            raw = base64.b64decode(audio_b64)
-            _save_audio_bytes(raw, out_wav)
-
-            probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", str(out_wav)],
-                capture_output=True, text=True, timeout=10,
-            )
-            if float(probe.stdout.strip() or 0) < 0.25:
-                out_wav.unlink(missing_ok=True)
-                continue
-            return True
-        except Exception:
-            continue
+                _save_audio_bytes(base64.b64decode(audio_b64), out_wav)
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", str(out_wav)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if float(probe.stdout.strip() or 0) < 0.25:
+                    out_wav.unlink(missing_ok=True)
+                    break
+                return True
+            except Exception as ex:
+                _log(f"⚠️ {model} استثناء: {str(ex)[:80]}")
+                break
     return False
 
 
-def gemini_tts_with_pool(text: str, out_mp3: str, voice: str = "Charon") -> str:
-    out_mp3_path = Path(out_mp3)
-    out_mp3_path.parent.mkdir(parents=True, exist_ok=True)
-    work_dir = out_mp3_path.parent / f"_tts_{int(time.time())}"
+def _edge_fallback(text: str, out_wav: Path, voice_gender: str = "male") -> bool:
+    try:
+        import edge_tts
+        clean = _sanitize_tts_text(text, allow_tags=False)
+        edge_voice = "ar-SA-ZariyahNeural" if voice_gender == "female" else "ar-SA-HamedNeural"
+        tmp_mp3 = out_wav.with_suffix(".edge.mp3")
+
+        async def _run():
+            comm = edge_tts.Communicate(clean, edge_voice, rate="-10%", pitch="-2Hz")
+            await comm.save(str(tmp_mp3))
+
+        asyncio.run(_run())
+        if tmp_mp3.exists() and tmp_mp3.stat().st_size > 1000:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+                check=True, capture_output=True, timeout=30,
+            )
+            tmp_mp3.unlink(missing_ok=True)
+            return out_wav.exists()
+    except Exception as e:
+        _log(f"⚠️ فشل احتياط Edge TTS: {e}")
+    return False
+
+
+def gemini_tts_with_pool(
+    text: str,
+    out_path: str,
+    voice: str = "Charon",
+    style: str = "warm, tender, deeply affectionate, reverent, slow intimate pace",
+    gender_hint: str = "male",
+) -> str:
+    """
+    يولّد WAV (أو MP3 حسب لاحقة out_path) لصوت نقي عاطفي جاهز للتحويل عبر RVC.
+    """
+    out_p = Path(out_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = out_p.parent / f"_tts_{int(time.time() * 1000)}"
     work_dir.mkdir(exist_ok=True)
 
     try:
-        chunks = _split_text(text)
-        pool = get_pool()
-        wav_parts: list[Path] = []
+        raw_wav = work_dir / "raw.wav"
+        clean_wav = work_dir / "clean.wav"
+        success = False
 
-        for idx, chunk in enumerate(chunks):
-            wav_path = work_dir / f"part_{idx:03d}.wav"
-            success = False
-
-            for _ in range(max(len(pool.keys) * 2, 6)):
+        try:
+            pool = get_pool()
+            for _ in range(max(len(pool.keys) * 2, 4)):
                 key = pool.get_current()
-                result = _tts_single(chunk, wav_path, voice, key)
-                if result == "INVALID_KEY":
+                res = _tts_single(text, raw_wav, voice, key, style=style)
+                if res == "INVALID_KEY":
                     pool.mark_dead("401/403")
                     continue
-                if result == "RATE_LIMIT":
+                if res == "RATE_LIMIT":
                     pool.mark_failed(70)
                     continue
-                if result is True:
-                    pool._advance()
+                if res is True:
+                    pool.advance()
                     success = True
                     break
-                pool.mark_failed(45)
+                pool.mark_failed(40)
+        except Exception as e:
+            _log(f"⚠️ تعذر Gemini TTS ({str(e)[:80]})، الانتقال إلى Edge TTS كبديل طارئ...")
 
-            if not success:
-                raise RuntimeError(f"❌ فشل توليد المقطع الصوتي {idx + 1}")
+        if not success:
+            if not _edge_fallback(text, raw_wav, voice_gender=gender_hint):
+                raise RuntimeError("❌ فشل Gemini TTS واحتياط Edge TTS معاً.")
 
-            cleaned_path = work_dir / f"part_{idx:03d}_clean.wav"
-            wav_parts.append(cleaned_path if _clean_chunk(wav_path, cleaned_path) else wav_path)
+        target_wav = clean_wav if _clean_chunk(raw_wav, clean_wav) else raw_wav
 
-        merged_wav = work_dir / "merged.wav"
-        with wave.open(str(merged_wav), "wb") as out:
-            out.setnchannels(1)
-            out.setsampwidth(2)
-            out.setframerate(24000)
-            for part in wav_parts:
-                with wave.open(str(part), "rb") as inp:
-                    out.writeframes(inp.readframes(inp.getnframes()))
-
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(merged_wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(out_mp3_path)],
-            check=True, capture_output=True, timeout=180,
-        )
-        return str(out_mp3_path)
+        if out_p.suffix.lower() == ".wav":
+            shutil.copy2(target_wav, out_p)
+        else:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(target_wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(out_p)],
+                check=True, capture_output=True, timeout=60,
+            )
+        return str(out_p)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
