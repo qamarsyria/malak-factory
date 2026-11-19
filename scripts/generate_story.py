@@ -2,9 +2,9 @@
 generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد الحلقات
 - يقرأ audited/events/ بالترتيب الزمني الدقيق.
 - يبني كل حلقة بنمط: [فقرة سرد موثقة ← الآية المؤكدة لها مباشرة].
-- يمنع إقحام آيات من خارج الحدث أو تسرب نص الآية حرفياً داخل السرد.
+- يمنع إقحام آيات من خارج الحدث أو تسرب نص الآية حرفياً داخل السرد (دون حظر الكلمات المفردة).
 - يعتمد حداً أدنى مرناً للكلمات حسب حجم المادة المدققة لمنع الحشو والاختلاق.
-- يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و thinkingConfig.
+- يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و Timeout و thinkingConfig.
 - يستخدم story_library لتحديث العصر والقصة التالية بشكل صحيح.
 """
 
@@ -40,6 +40,13 @@ LATEST_EPISODE = _REPO_ROOT / "out" / "latest_episode.txt"
 SPLIT_THRESHOLD_AYAHS = 6
 SPLIT_THRESHOLD_WORDS = 950
 TARGET_WORDS_CAP      = 850
+
+# أسماء مهملة تحولها Google تلقائياً إلى النماذج الأحدث وتسبب تكرار المحاولات بلا فائدة
+_DEPRECATED_MODEL_ALIASES = {
+    "gemini-3.7-flash": "gemini-3.8-flash",
+    "gemini-3.5-flash": "gemini-3.6-flash",
+}
+_MODEL_PENALTIES: dict[str, int] = {}
 
 _SURAH_NAMES = {
     1: "الفاتحة", 2: "البقرة", 3: "آل عمران", 4: "النساء", 5: "المائدة",
@@ -116,7 +123,7 @@ def clean_narration(text: str) -> str:
 
 
 def _norm_ar(text: str) -> str:
-    text = re.sub(r"[\u064B-\u065F\u0670\u06D6-\u06ED]", "", text or "")
+    text = re.sub(r"[\u0640\u064B-\u065F\u0670\u06D6-\u06ED]", "", text or "")
     text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ٱ", "ا")
     text = text.replace("ى", "ي").replace("ة", "ه")
     return re.sub(r"[^\u0621-\u064A\s]", " ", text).strip()
@@ -138,10 +145,27 @@ def _thinking_config(model: str) -> dict | None:
     return None
 
 
-def call_llm(prompt: str, is_json: bool = True, timeout: int = 120, max_tokens: int = 8192):
+def _prepare_models(raw_models: list[str]) -> list[str]:
+    cleaned = []
+    seen = set()
+    for m in raw_models:
+        base = m.removeprefix("models/").strip()
+        canonical = _DEPRECATED_MODEL_ALIASES.get(base, base)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            cleaned.append(canonical)
+    if "gemini-3.5-flash-lite" not in seen:
+        cleaned.append("gemini-3.5-flash-lite")
+    # تأخير النماذج التي تعرّضت لـ Timeout أو ضغط متكرر في المحاولات السابقة
+    cleaned.sort(key=lambda m: _MODEL_PENALTIES.get(m, 0))
+    return cleaned
+
+
+def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: int = 8192):
     pool = get_pool()
     breaker = get_breaker()
-    models = discover_and_cache(force=False)[:10]
+    raw_models = discover_and_cache(force=False)[:10]
+    models = _prepare_models(raw_models) if raw_models else []
     if not models:
         return None
 
@@ -150,12 +174,18 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 120, max_tokens: 
             continue
 
         use_thinking = True
+        use_temperature = True
         valid_tries = 0
+        dead_skips = 0
         while valid_tries < 2:
             try:
                 key = pool.get_current()
+                if not key:
+                    return None
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                gen_cfg = {"temperature": 0.25, "maxOutputTokens": max_tokens}
+                gen_cfg = {"maxOutputTokens": max_tokens}
+                if use_temperature:
+                    gen_cfg["temperature"] = 0.25
                 if is_json:
                     gen_cfg["responseMimeType"] = "application/json"
                 if use_thinking:
@@ -189,14 +219,23 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 120, max_tokens: 
 
                     _advance_pool(pool)
                     breaker.record_success(f"model:{model}")
+                    _MODEL_PENALTIES[model] = 0
                     return parsed
 
                 elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
                     pool.mark_dead(f"HTTP {r.status_code}")
+                    dead_skips += 1
+                    if dead_skips >= 25:
+                        print(f"   ❌ {model}: تعذر العثور على مفتاح سليم", flush=True)
+                        break
                     continue
 
                 elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
                     use_thinking = False
+                    continue
+
+                elif r.status_code == 400 and use_temperature and "temperature" in r.text.lower():
+                    use_temperature = False
                     continue
 
                 elif r.status_code == 429:
@@ -215,11 +254,12 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 120, max_tokens: 
                     print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
                     valid_tries += 1
                     _advance_pool(pool)
-                    time.sleep(4)
+                    time.sleep(3)
                     continue
 
             except requests.exceptions.Timeout:
                 print(f"   ⏱️ {model}: Timeout", flush=True)
+                _MODEL_PENALTIES[model] = _MODEL_PENALTIES.get(model, 0) + 2
                 _advance_pool(pool)
                 break
             except json.JSONDecodeError as je:
@@ -228,6 +268,9 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 120, max_tokens: 
             except Exception as e:
                 print(f"   ⚠️ {model}: {str(e)[:80]}", flush=True)
                 break
+
+        if valid_tries >= 2:
+            _MODEL_PENALTIES[model] = _MODEL_PENALTIES.get(model, 0) + 1
     return None
 
 
@@ -266,7 +309,7 @@ def llm_split_event(event_title: str, ayahs: list, narrative: list) -> dict:
   "reason": "سبب التقسيم"
 }}"""
 
-    result = call_llm(prompt, is_json=True, timeout=120, max_tokens=4096)
+    result = call_llm(prompt, is_json=True, timeout=75, max_tokens=4096)
     valid_refs = {a["ref"] for a in ayahs}
     n_len = len(narrative)
 
@@ -372,12 +415,13 @@ SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزا
 
 ⚠️ قواعد صارمة:
 1️⃣ **لا إضافة من الخارج**: التزم بالمعلومات الموثقة أعلاه فقط. لا تخترع أحداثاً ولا تستورد آيات غير موجودة في القائمة.
-2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً داخل نص `"narration"`. اشرح معناها وسياقها، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
+2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً أو اقتباس جملة قرآنية كاملة داخل نص `"narration"`. اشرح معناها وسياقها بكلمات وصفية، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
 3️⃣ **لا حشو**: ممنوع الجمل الإنشائية الفارغة ("في خضم الأحداث"، "مما لا شك فيه"، "ومن الجدير بالذكر").
 4️⃣ **اللغة**: فصحى سليمة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد.
 5️⃣ **الطول المستهدف للسرد**: {min_words} إلى {max_words} كلمة (بقدر المادة الموثقة دون مطّ).
 
 {forbidden_rules}
+{retry_feedback}
 
 أعد JSON فقط:
 {{
@@ -389,7 +433,7 @@ SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزا
 }}"""
 
 
-def generate_episode_script(story_title, ep_title, event_title, ayahs, narrative, min_words, max_words):
+def generate_episode_script(story_title, ep_title, event_title, ayahs, narrative, min_words, max_words, retry_feedback=""):
     ayahs_block = "\n".join(
         f"[{a['ref']}] ({a.get('surah_name', '')}): {a['text']}"
         for a in ayahs
@@ -409,8 +453,9 @@ def generate_episode_script(story_title, ep_title, event_title, ayahs, narrative
         min_words=min_words,
         max_words=max_words,
         forbidden_rules=get_llm_forbidden_rules(),
+        retry_feedback=retry_feedback,
     )
-    return call_llm(prompt, is_json=True, timeout=120, max_tokens=8192)
+    return call_llm(prompt, is_json=True, timeout=60, max_tokens=8192)
 
 
 def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: int, max_words: int) -> tuple[bool, list[str]]:
@@ -446,16 +491,48 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
     if segments[0].get("type") == "quran":
         issues.append("starts_with_quran_without_narration")
 
-    norm_expected = [(_norm_ar(a["text"]), a["ref"]) for a in expected_ayahs if len(_norm_ar(a["text"]).split()) >= 5]
+    # فحص تسرّب الآيات الكاملة أو المقاطع القرآنية الطويلة داخل السرد (دون منع الكلمات المفردة أو أسماء الله الحسنى)
+    norm_expected = [
+        (_norm_ar(a["text"]).split(), a["ref"])
+        for a in expected_ayahs
+        if len(_norm_ar(a["text"]).split()) >= 5
+    ]
     for s in segments:
-        if s.get("type") == "narration":
-            n_joined = " ".join(_norm_ar(s.get("text", "")).split())
-            for ayah_norm, ref in norm_expected:
-                a_words = ayah_norm.split()
-                for i in range(len(a_words) - 4):
-                    if " ".join(a_words[i:i + 5]) in n_joined:
-                        issues.append(f"quran_leaked_in_narration ({ref})")
-                        break
+        if s.get("type") != "narration":
+            continue
+        raw_text = s.get("text", "")
+        n_words = _norm_ar(raw_text).split()
+        if not n_words:
+            continue
+
+        # منع وضع نص قرآني بين أقواس التلاوة ﴿...﴾ داخل السرد
+        for qb in re.findall(r"﴿([^﴾]+)﴾", raw_text):
+            if len(_norm_ar(qb).split()) >= 4:
+                if "quran_quoted_with_brackets_in_narration" not in issues:
+                    issues.append("quran_quoted_with_brackets_in_narration")
+                break
+
+        for a_words, ref in norm_expected:
+            a_len = len(a_words)
+            if a_len == 5:
+                # آية قصيرة من 5 كلمات: لا تُرفض إلا إذا نُقلت كاملة حرفياً
+                min_match = 5
+            elif a_len <= 8:
+                min_match = a_len - 1
+            else:
+                # آية طويلة (9+ كلمات): تطابق 8 إلى 11 كلمة متتالية على الأقل
+                min_match = max(8, min(11, int(a_len * 0.55)))
+
+            if len(n_words) < min_match:
+                continue
+
+            ayah_ngrams = {tuple(a_words[i:i + min_match]) for i in range(a_len - min_match + 1)}
+            for j in range(len(n_words) - min_match + 1):
+                if tuple(n_words[j:j + min_match]) in ayah_ngrams:
+                    tag = f"quran_leaked_in_narration ({ref})"
+                    if tag not in issues:
+                        issues.append(tag)
+                    break
 
     narration_words = sum(len(s.get("text", "").split()) for s in segments if s.get("type") == "narration")
     if narration_words < min_words:
@@ -471,6 +548,31 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
     return (len(issues) == 0), issues
 
 
+def _build_retry_feedback(issues: list[str], ayahs_ep: list) -> str:
+    ayah_map = {a["ref"]: a["text"] for a in ayahs_ep}
+    notes = []
+    for iss in issues:
+        if iss.startswith("quran_leaked_in_narration"):
+            m = re.search(r"\(([^)]+)\)", iss)
+            ref = m.group(1) if m else ""
+            txt = ayah_map.get(ref, "")
+            if txt:
+                notes.append(
+                    f"- تسرّب نص الآية [{ref}] ({txt}) داخل فقرة narration. "
+                    f"اشرح معناها بعبارات وصفية مختلفة تماماً دون كتابة عبارات الآية حرفياً داخل السرد."
+                )
+            else:
+                notes.append(f"- {iss}: أعد الصياغة دون نقل عبارات الآية داخل السرد.")
+        elif iss == "quran_quoted_with_brackets_in_narration":
+            notes.append("- يُمنع وضع أقواس ﴿...﴾ أو نص الآية داخل narration؛ ضع الآية في كتلة quran فقط.")
+        else:
+            notes.append(f"- {iss}")
+    return (
+        "\n⚠️ تنبيه تصحيح إلزامي (المحاولة السابقة رُفضت بسبب الأخطاء التالية — عالجها تماماً):\n"
+        + "\n".join(notes)
+    )
+
+
 def generate_summary(story_title, ep_title, segments):
     narration_text = " ".join(s.get("text", "") for s in segments if s.get("type") == "narration")[:3000]
     prompt = f"""القصة: {story_title} — {ep_title}
@@ -481,7 +583,7 @@ def generate_summary(story_title, ep_title, segments):
 - عبرة مركزة دون تكرار للسرد.
 - فصحى سليمة بدون مقدمات ("وفي الختام" ممنوعة).
 أعد النص فقط."""
-    res = call_llm(prompt, is_json=False, timeout=60, max_tokens=400)
+    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=400)
     return clean_narration(res) if isinstance(res, str) else ""
 
 
@@ -492,7 +594,7 @@ def generate_teaser(story_title, next_ep_title):
 - ابدأ بسؤال درامي وقور.
 - جملة واحدة فقط.
 أعد الجملة فقط."""
-    res = call_llm(prompt, is_json=False, timeout=60, max_tokens=200)
+    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=200)
     teaser = clean_narration(res) if isinstance(res, str) else ""
     if len(teaser) < 15:
         teaser = "فماذا جاء بعد ذلك في هذه السلسلة المباركة؟"
@@ -593,8 +695,9 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         return
 
     script = None
+    retry_feedback = ""
     for attempt in range(3):
-        print(f"   ✍️ محاولة توليد {attempt + 1}/3...")
+        print(f"   ✍️ محاولة توليد {attempt + 1}/3...", flush=True)
         candidate = generate_episode_script(
             story_title=story["title"],
             ep_title=ev_title,
@@ -603,6 +706,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
             narrative=narrative_ep,
             min_words=min_words,
             max_words=max_words,
+            retry_feedback=retry_feedback,
         )
         if candidate:
             ok, issues = enrich_and_validate_script(candidate, ayahs_ep, min_words, max_words)
@@ -611,6 +715,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
                 print("   ✅ سكريبت صالح ومتطابق 100%")
                 break
             print(f"   ⚠️ رفض المسودة: {issues}")
+            retry_feedback = _build_retry_feedback(issues, ayahs_ep)
         time.sleep(2)
 
     if not script:
