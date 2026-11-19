@@ -112,9 +112,10 @@ jobs:
         id: verify
         run: |
           STORY_ID=$(python -c "import sys; sys.path.insert(0, 'scripts'); from story_library import load_global; print(load_global()['current_story_id'])")
+          echo "story_id=$STORY_ID" >> $GITHUB_OUTPUT
           AUDITED="data/stories/${STORY_ID}/audited/events"
           if [ ! -d "$AUDITED" ] || [ -z "$(ls -A "$AUDITED" 2>/dev/null)" ]; then
-            echo "❌ القصة '$STORY_ID' لم تُجهّز بعد!"
+            echo "::error::القصة '$STORY_ID' لم تُجهّز بعد (المجلد $AUDITED غير موجود أو فارغ)"
             exit 1
           fi
           echo "✅ القصة '$STORY_ID' مجهزة"
@@ -164,6 +165,7 @@ jobs:
             "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3"
 
       - name: Build vertical videos (720x1280)
+        id: video
         if: steps.audio.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -262,9 +264,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/ data/stories/*/state.json || true
+          git add state/ data/stories/*/state.json data/stories/*/audited/events/*/split.json || true
           git commit -m "🎬 ${{ steps.gen.outputs.ep_name || 'advance-story-state' }}" || echo "لا تغييرات"
-          git pull --rebase || true
+          git pull --rebase --autostash origin main || git pull --rebase --autostash || true
           git push
 
       - name: Notify failure
@@ -273,6 +275,22 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          STORY_ID="${{ steps.verify.outputs.story_id || 'غير محدد' }}"
+          EP_NAME="${{ steps.gen.outputs.ep_name || steps.verify.outputs.story_id || 'غير محدد' }}"
+          EP_NUM="${{ steps.gen.outputs.ep_num || '?' }}"
+          GLOBAL_EP="${{ steps.gen.outputs.global_ep_num || '?' }}"
+          EV_NAME="${{ steps.gen.outputs.event_name || '?' }}"
+          REASON="${{ steps.gen.outputs.fail_reason }}"
+          if [ "${{ steps.verify.outcome }}" = "failure" ]; then
+            REASON="القصة '${STORY_ID}' غير مجهزة بعد (audited/events فارغ)"
+          elif [ -z "$REASON" ]; then
+            REASON="فشل في إحدى مراحل الصوت/الفيديو/الرفع/الإنهاء (راجع سجل الخطوة الفاشلة)"
+          fi
+          MSG=$(printf "🚨 فشل بناء الحلقة #%s (العامة #%s)\n📌 الكود: %s | الحدث: %s\n❌ السبب: %s\n📊 الحالات: verify=%s | gen=%s | audio=%s | rvc=%s | video=%s | tg=%s\n🔗 %s/%s/actions/runs/%s" \
+            "$EP_NUM" "$GLOBAL_EP" "$EP_NAME" "$EV_NAME" "$REASON" \
+            "${{ steps.verify.outcome }}" "${{ steps.gen.outcome }}" "${{ steps.audio.outcome }}" \
+            "${{ steps.rvc_audio.outcome }}" "${{ steps.video.outcome }}" "${{ steps.telegram.outcome }}" \
+            "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=🚨 فشل بناء حلقة: ${{ steps.gen.outputs.ep_name || 'unknown' }}"
+            --data-urlencode "text=${MSG}"
