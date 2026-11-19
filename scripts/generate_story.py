@@ -42,6 +42,8 @@ SPLIT_THRESHOLD_AYAHS = 6
 SPLIT_THRESHOLD_WORDS = 950
 TARGET_WORDS_CAP      = 850
 
+_LAST_LLM_ERROR = ""
+
 # أسماء مهملة تحولها Google تلقائياً إلى النماذج الأحدث وتسبب تكرار المحاولات بلا فائدة
 _DEPRECATED_MODEL_ALIASES = {
     "gemini-3.7-flash": "gemini-3.8-flash",
@@ -80,6 +82,24 @@ _ARABIC_TEENS    = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة 
                     "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"]
 _ARABIC_TENS     = ["", "عشرة", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون", "تسعون"]
 _ARABIC_HUNDREDS = ["", "مئة", "مئتان", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة"]
+
+
+def _gh_output(**kwargs):
+    out_file = os.environ.get("GITHUB_OUTPUT")
+    if not out_file:
+        return
+    with open(out_file, "a", encoding="utf-8") as f:
+        for k, v in kwargs.items():
+            val = str(v).replace("\n", " ").replace("\r", " ")
+            f.write(f"{k}={val}\n")
+
+
+def _gh_summary(markdown_text: str):
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    with open(summary_file, "a", encoding="utf-8") as f:
+        f.write(markdown_text.rstrip() + "\n\n")
 
 
 def num_to_arabic(n: int) -> str:
@@ -163,15 +183,21 @@ def _prepare_models(raw_models: list[str]) -> list[str]:
 
 
 def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: int = 8192):
+    global _LAST_LLM_ERROR
+    _LAST_LLM_ERROR = ""
+
     pool = get_pool()
     breaker = get_breaker()
     raw_models = discover_and_cache(force=False)[:10]
     models = _prepare_models(raw_models) if raw_models else []
     if not models:
+        _LAST_LLM_ERROR = "لا توجد موديلات Gemini متاحة من discover_and_cache"
+        print(f"   ❌ {_LAST_LLM_ERROR}", flush=True)
         return None
 
     for model in models:
         if breaker.is_open(f"model:{model}"):
+            _LAST_LLM_ERROR = f"{model}: circuit breaker مفتوح"
             continue
 
         use_thinking = True
@@ -182,6 +208,8 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
             try:
                 key = pool.get_current()
                 if not key:
+                    _LAST_LLM_ERROR = "لا يوجد مفتاح Gemini سليم متاح في pool"
+                    print(f"   ❌ {_LAST_LLM_ERROR}", flush=True)
                     return None
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 gen_cfg = {"maxOutputTokens": max_tokens}
@@ -203,7 +231,8 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     finish = cand.get("finishReason", "")
                     parts = cand.get("content", {}).get("parts", [])
                     if not parts:
-                        print(f"   ⚠️ {model}: رد فارغ (finish={finish})", flush=True)
+                        _LAST_LLM_ERROR = f"{model}: رد فارغ (finish={finish})"
+                        print(f"   ⚠️ {_LAST_LLM_ERROR}", flush=True)
                         break
 
                     text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
@@ -212,7 +241,8 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     if is_json:
                         s, e = text.find("{"), text.rfind("}")
                         if s == -1 or e <= s:
-                            print(f"   ⚠️ {model}: JSON ناقص (finish={finish})", flush=True)
+                            _LAST_LLM_ERROR = f"{model}: JSON ناقص (finish={finish})"
+                            print(f"   ⚠️ {_LAST_LLM_ERROR}", flush=True)
                             break
                         parsed = json.loads(text[s:e + 1])
                     else:
@@ -221,13 +251,16 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     _advance_pool(pool)
                     breaker.record_success(f"model:{model}")
                     _MODEL_PENALTIES[model] = 0
+                    _LAST_LLM_ERROR = ""
                     return parsed
 
                 elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                    _LAST_LLM_ERROR = f"{model}: مفتاح مرفوض (HTTP {r.status_code})"
                     pool.mark_dead(f"HTTP {r.status_code}")
                     dead_skips += 1
                     if dead_skips >= 25:
-                        print(f"   ❌ {model}: تعذر العثور على مفتاح سليم", flush=True)
+                        _LAST_LLM_ERROR = f"{model}: تعذر العثور على مفتاح سليم بعد {dead_skips} محاولة"
+                        print(f"   ❌ {_LAST_LLM_ERROR}", flush=True)
                         break
                     continue
 
@@ -240,6 +273,7 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     continue
 
                 elif r.status_code == 429:
+                    _LAST_LLM_ERROR = f"{model}: حد الطلبات 429 (Rate Limit)"
                     print(f"   ⏸️ {model}: 429", flush=True)
                     pool.mark_failed(75)
                     valid_tries += 1
@@ -247,11 +281,13 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     continue
 
                 elif r.status_code in (400, 403, 404):
+                    _LAST_LLM_ERROR = f"{model}: HTTP {r.status_code}"
                     print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
                     breaker.record_failure(f"model:{model}")
                     break
 
                 else:
+                    _LAST_LLM_ERROR = f"{model}: HTTP {r.status_code}"
                     print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
                     valid_tries += 1
                     _advance_pool(pool)
@@ -259,19 +295,25 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     continue
 
             except requests.exceptions.Timeout:
+                _LAST_LLM_ERROR = f"{model}: Timeout"
                 print(f"   ⏱️ {model}: Timeout", flush=True)
                 _MODEL_PENALTIES[model] = _MODEL_PENALTIES.get(model, 0) + 2
                 _advance_pool(pool)
                 break
             except json.JSONDecodeError as je:
-                print(f"   ⚠️ {model}: JSON تالف ({je})", flush=True)
+                _LAST_LLM_ERROR = f"{model}: JSON تالف ({je})"
+                print(f"   ⚠️ {_LAST_LLM_ERROR}", flush=True)
                 break
             except Exception as e:
-                print(f"   ⚠️ {model}: {str(e)[:80]}", flush=True)
+                _LAST_LLM_ERROR = f"{model}: {str(e)[:80]}"
+                print(f"   ⚠️ {_LAST_LLM_ERROR}", flush=True)
                 break
 
         if valid_tries >= 2:
             _MODEL_PENALTIES[model] = _MODEL_PENALTIES.get(model, 0) + 1
+
+    if not _LAST_LLM_ERROR:
+        _LAST_LLM_ERROR = "فشل كل الموديلات المتاحة"
     return None
 
 
@@ -670,13 +712,19 @@ def main(clear_latest: bool = True, _visited: set | None = None):
     gstate = load_global()
     story_id = gstate["current_story_id"]
     if story_id in _visited:
-        print("⚠️ تم فحص كل القصص المتاحة دون أحداث متبقية.")
-        return
+        msg = "تم فحص كل القصص المتاحة في المكتبة ولا توجد أحداث متبقية."
+        print(f"::error::{msg}", flush=True)
+        _gh_output(fail_reason=msg)
+        _gh_summary(f"### ❌ توقف التوليد\n- **السبب:** {msg}\n- **القصص المفحوصة:** `{sorted(_visited)}`")
+        sys.exit(1)
     _visited.add(story_id)
 
     story = get_story_by_id(story_id)
     if not story:
-        print(f"❌ القصة '{story_id}' غير موجودة")
+        msg = f"القصة '{story_id}' غير موجودة في stories.json"
+        print(f"::error::{msg}", flush=True)
+        _gh_output(story_id=story_id, fail_reason=msg)
+        _gh_summary(f"### ❌ فشل التوليد\n- **السبب:** {msg}")
         sys.exit(1)
 
     print(f"📖 {story['title']} (العهد: {story['era']})")
@@ -689,8 +737,24 @@ def main(clear_latest: bool = True, _visited: set | None = None):
     ev_idx = sstate["current_event_index"]
     sub_idx = sstate["current_sub_episode"]
 
+    # التقدم عبر الأحداث داخل نفس القصة في حلقة واحدة بدون إعادة الدخول في _visited
+    while ev_idx < len(ev_dirs):
+        ev_dir = ev_dirs[ev_idx]
+        split = json.loads((ev_dir / "split.json").read_text(encoding="utf-8"))
+        episodes_in_event = split["episodes"]
+
+        if sub_idx < len(episodes_in_event):
+            break
+
+        print(f"⏭️ الحدث {ev_dir.name} مكتمل ({sub_idx}/{len(episodes_in_event)}) — انتقال للحدث التالي...")
+        ev_idx += 1
+        sub_idx = 0
+        sstate["current_event_index"] = ev_idx
+        sstate["current_sub_episode"] = 0
+        save_story_state(story_id, sstate)
+
     if ev_idx >= len(ev_dirs):
-        print(f"\n🎉 القصة '{story['title']}' مكتملة!")
+        print(f"\n🎉 القصة '{story['title']}' مكتملة! ({len(ev_dirs)}/{len(ev_dirs)} حدث)")
         mark_story_complete(story_id)
         next_story_id = advance_to_next_story()
         next_story = get_story_by_id(next_story_id)
@@ -702,19 +766,17 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         if next_audited.exists() and list(next_audited.glob("event_*")):
             print(f"⏭️ القصة التالية '{next_story_id}' جاهزة — بدء حلقتها الأولى...")
             return main(clear_latest=False, _visited=_visited)
-        print(f"ℹ️ القصة التالية '{next_story_id}' بانتظار التجهيز من Workflow التجهيز.")
+
+        msg = f"اكتملت '{story_id}'؛ القصة التالية '{next_story_id}' ({next_title}) بانتظار التجهيز من Workflow التجهيز."
+        print(f"::notice::{msg}", flush=True)
+        _gh_output(story_id=next_story_id, fail_reason=msg)
+        _gh_summary(f"### ℹ️ انتظار التجهيز\n- **السبب:** {msg}")
+        notify_telegram(f"ℹ️ {msg}", level="info")
         return
 
     ev_dir = ev_dirs[ev_idx]
     split = json.loads((ev_dir / "split.json").read_text(encoding="utf-8"))
     episodes_in_event = split["episodes"]
-
-    if sub_idx >= len(episodes_in_event):
-        sstate["current_event_index"] += 1
-        sstate["current_sub_episode"] = 0
-        save_story_state(story_id, sstate)
-        print("⏭️ انتقال للحدث التالي...")
-        return main(clear_latest=False, _visited=_visited)
 
     ep_spec = episodes_in_event[sub_idx]
     meta = json.loads((ev_dir / "meta.json").read_text(encoding="utf-8")) if (ev_dir / "meta.json").exists() else {}
@@ -728,27 +790,45 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         narrative_all[i] for i in ep_spec["narrative_indices"] if i < len(narrative_all)
     ]
 
-    ep_num = sstate["total_episodes_generated"] + 1
+    ep_num = sstate.get("total_episodes_generated", 0) + 1
+    global_ep_num = gstate.get("total_episodes_published", 0) + 1
+    ep_code = f"{story_id}-{ep_num:02d}"
     ev_title = ep_spec.get("sub_title") or meta.get("title") or ev_dir.name
 
     source_words = sum(len(b.get("text", "").split()) for b in narrative_ep)
     min_words = max(50, min(350, int(source_words * 0.65)))
     max_words = min(TARGET_WORDS_CAP, max(350, int(source_words * 1.40)))
 
-    print(f"\n🎬 حلقة {ep_num}: {ev_title}")
+    print(f"\n🎬 حلقة القصة #{ep_num} (الحلقة العامة #{global_ep_num}) | الكود: {ep_code}")
+    print(f"   📌 الحدث: {ev_dir.name} ({ev_idx + 1}/{len(ev_dirs)}) | الجزء: {sub_idx + 1}/{len(episodes_in_event)} | {ev_title}")
     print(f"   📖 {len(ayahs_ep)} آية | 📝 {len(narrative_ep)} فقرة ({source_words} كلمة) | الهدف: {min_words}-{max_words}")
+
+    _gh_output(
+        story_id=story_id,
+        ep_num=ep_num,
+        global_ep_num=global_ep_num,
+        ep_name=ep_code,
+        event_name=f"{ev_dir.name} ({ev_idx + 1}/{len(ev_dirs)})",
+    )
 
     generated_dir = STORIES_DIR / story_id / "generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
-    output_path = generated_dir / f"{story_id}-{ep_num:02d}.json"
+    output_path = generated_dir / f"{ep_code}.json"
 
     if output_path.exists():
         print(f"\n♻️ الحلقة {ep_num} موجودة سابقاً — إعادة استخدام: {output_path}")
         LATEST_EPISODE.write_text(str(output_path), encoding="utf-8")
+        _gh_summary(
+            f"### ♻️ إعادة استخدام الحلقة #{ep_num} (العامة #{global_ep_num})\n"
+            f"- **القصة:** `{story_id}` ({story['title']})\n"
+            f"- **الحدث:** `{ev_dir.name}` (`{ev_idx + 1}/{len(ev_dirs)}`)\n"
+            f"- **الملف:** `{output_path.name}`"
+        )
         return
 
     script = None
     retry_feedback = ""
+    last_issues = []
     for attempt in range(3):
         print(f"   ✍️ محاولة توليد {attempt + 1}/3...", flush=True)
         candidate = generate_episode_script(
@@ -767,12 +847,25 @@ def main(clear_latest: bool = True, _visited: set | None = None):
                 script = candidate
                 print("   ✅ سكريبت صالح ومتطابق 100%")
                 break
+            last_issues = issues
             print(f"   ⚠️ رفض المسودة: {issues}")
             retry_feedback = _build_retry_feedback(issues, ayahs_ep)
+        else:
+            err = _LAST_LLM_ERROR or "LLM لم يُرجع استجابة"
+            last_issues = [f"llm_error: {err}"]
+            print(f"   ⚠️ فشل LLM في المحاولة {attempt + 1}: {err}", flush=True)
         time.sleep(2)
 
     if not script:
-        print("❌ فشل توليد سكريبت مطابق للقواعد بعد 3 محاولات")
+        fail_msg = f"فشل توليد السكريبت للحلقة #{ep_num} ({ep_code}) بعد 3 محاولات — السبب: {last_issues}"
+        print(f"::error::{fail_msg}", flush=True)
+        _gh_output(fail_reason=fail_msg)
+        _gh_summary(
+            f"### ❌ فشل توليد الحلقة #{ep_num} (العامة #{global_ep_num})\n"
+            f"- **القصة:** `{story_id}` ({story['title']})\n"
+            f"- **الحدث:** `{ev_dir.name}` (`{ev_idx + 1}/{len(ev_dirs)}`) | الجزء `{sub_idx + 1}/{len(episodes_in_event)}`\n"
+            f"- **آخر سبب فشل:** `{last_issues}`"
+        )
         sys.exit(1)
 
     print("   📝 خلاصة...")
@@ -810,6 +903,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
 
     ep_data = {
         "episode_number": ep_num,
+        "global_episode_number": global_ep_num,
         "story_id": story_id,
         "story_title": story["title"],
         "title": f"{story['title']} — الحلقة {ep_num} — {script.get('title', ev_title)}",
@@ -819,18 +913,32 @@ def main(clear_latest: bool = True, _visited: set | None = None):
     output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
     LATEST_EPISODE.write_text(str(output_path), encoding="utf-8")
 
+    _gh_summary(
+        f"### 🎬 الحلقة #{ep_num} (العامة #{global_ep_num}): `{ep_code}`\n"
+        f"- **القصة:** {story['title']} (`{story_id}`)\n"
+        f"- **الحدث:** `{ev_dir.name}` (`{ev_idx + 1}/{len(ev_dirs)}`) | الجزء `{sub_idx + 1}/{len(episodes_in_event)}`\n"
+        f"- **العنوان:** {script.get('title', ev_title)}"
+    )
+
     notify_telegram(
-        f"✍️ حلقة جاهزة للبناء: {story['title']} — {ep_num}\n📖 {script.get('title', ev_title)}",
+        f"✍️ حلقة جاهزة للبناء: #{ep_num} (العامة #{global_ep_num})\n"
+        f"📖 {story['title']} — {ep_code}\n"
+        f"📌 {ev_dir.name}: {script.get('title', ev_title)}",
         level="info",
     )
-    print(f"\n🎉 اكتملت الحلقة {ep_num}: {output_path.name}")
+    print(f"\n🎉 اكتملت الحلقة {ep_num} (العامة #{global_ep_num}): {output_path.name}")
 
 
 if __name__ == "__main__":
     try:
         main()
+    except SystemExit:
+        raise
     except Exception as e:
-        print(f"❌ خطأ فادح: {e}")
+        err_msg = f"خطأ غير متوقع في generate_story.py: {type(e).__name__}: {e}"
+        print(f"::error::{err_msg}", flush=True)
+        _gh_output(fail_reason=err_msg)
+        _gh_summary(f"### ❌ خطأ فادح أثناء التوليد\n```\n{err_msg}\n```")
         import traceback
         traceback.print_exc()
         sys.exit(1)
