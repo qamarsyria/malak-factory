@@ -2,8 +2,8 @@
 """
 scripts/whispers_audio.py
 =========================
-يبني الصوت البشري الجاف بنبرة هادئة متزنة بعيدة عن التمثيل المبالغ فيه،
-ويبدّل صوت «هي» تلقائياً إلى صوت أنثوي طبيعي عند إيقاف RVC عنها عبر VOICE_MODE.
+يستخدم صوت قاعدة صافي رنّان بدون خشخشة Charon (Orus لـ RVC)،
+ومع style="" فارغ حسب توصية Gemini 3.8 TTS لأقصى ثبات نغمي قبل RVC.
 """
 
 import json
@@ -21,17 +21,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gemini_tts_pool import gemini_tts_with_pool
 
 VOICE_MODE = os.environ.get("VOICE_MODE", "rvc_both").strip().lower()
-BASE_VOICE_HE = os.environ.get("BASE_VOICE_HE", "Charon").strip()
-BASE_VOICE_SHE = os.environ.get("BASE_VOICE_SHE", "Charon").strip()
+BASE_VOICE_HE = os.environ.get("BASE_VOICE_HE", "Orus").strip()
+BASE_VOICE_SHE = os.environ.get("BASE_VOICE_SHE", "Orus").strip()
 
-# إذا أوقفت RVC عن صوت «هي»، نحول صوتها تلقائياً لصوت أنثوي ناعم (Leda) بدل Charon
-if VOICE_MODE in ("no_rvc", "rvc_he_only") and BASE_VOICE_SHE == "Charon":
-    BASE_VOICE_SHE = "Leda"
+if VOICE_MODE in ("no_rvc", "rvc_he_only") and BASE_VOICE_SHE in ("Orus", "Charon"):
+    BASE_VOICE_SHE = "Sulafat"
 
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "").strip()
-
-CALM_STYLE_HE = "calm, natural, poised, gentle conversational reading, understated warmth, steady relaxed pace, no theatrics, no melodrama"
-CALM_STYLE_SHE = "calm, natural, gentle, poised soft speaking voice, relaxed steady pace, understated warmth, no theatrics"
 
 
 def _get_dur(p: Path) -> float:
@@ -170,17 +166,15 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
             speaker = "he"
 
         voice = BASE_VOICE_SHE if speaker == "she" else BASE_VOICE_HE
-        gender_hint = "female" if (speaker == "she" and voice != "Charon") else "male"
+        gender_hint = "female" if (speaker == "she" and voice not in ("Orus", "Charon")) else "male"
 
-        # إزالة أي وسوم درامية/تنهيدات حتى يقرأ الموديل بنبرة هادئة متزنة بلا مبالغة
         calm_tts = re.sub(r"<[^>]+>", " ، ", tts_text)
         calm_tts = re.sub(r"\s+", " ", calm_tts).strip()
-        style = CALM_STYLE_SHE if speaker == "she" else CALM_STYLE_HE
         pause_ms = int(seg.get("pause_after_ms") or 450)
 
         seg_wav = work_dir / f"dry_seg_{i:03d}_{speaker}.wav"
         print(f"🎙️ [{i+1}/{len(segments)}] ({speaker} | {voice}): {display_text[:55]}...", flush=True)
-        gemini_tts_with_pool(calm_tts, str(seg_wav), voice=voice, style=style, gender_hint=gender_hint)
+        gemini_tts_with_pool(calm_tts, str(seg_wav), voice=voice, style="", gender_hint=gender_hint)
 
         dur = _get_dur(seg_wav)
         dry_concat_list.append((seg_wav, pause_ms))
@@ -206,7 +200,7 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
         if idx < len(dry_concat_list) - 1 and pause_ms > 0:
             sil_p = work_dir / f"sil_{idx:03d}.wav"
             subprocess.run(
-                ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
                  "-t", f"{pause_ms / 1000.0:.3f}", "-c:a", "pcm_s16le", str(sil_p)],
                 check=True, capture_output=True,
             )
