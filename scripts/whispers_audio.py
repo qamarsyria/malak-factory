@@ -2,7 +2,7 @@
 """
 scripts/whispers_audio.py
 =========================
-يبني الصوت البشري الجاف (بدون موسيقى حتى لا يتشوش RVC!) لكل مقطع مع التوجيه التمثيلي،
+يبني الصوت البشري الجاف (بدون موسيقى وبدون تنهيد هوائي يربك RVC) لكل مقطع،
 ويجهّز مسار الموسيقى الخلفية وملف الميتاداتا الدقيق `out/<ep>_meta.json`.
 """
 
@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gemini_tts_pool import gemini_tts_with_pool
 
-# أصوات القاعدة المناسبة قبل RVC (واضحة النبرة وعاطفية)
-BASE_VOICE_HE = os.environ.get("BASE_VOICE_HE", "Charon")   # صوت رجولي دافئ وقور
-BASE_VOICE_SHE = os.environ.get("BASE_VOICE_SHE", "Aoede")   # صوت أنثوي دافئ رقيق
+# أصوات القاعدة المناسبة قبل RVC (واضحة النبرة وعاطفية بدون تشويش)
+BASE_VOICE_HE = os.environ.get("BASE_VOICE_HE", "Charon").strip()
+BASE_VOICE_SHE = os.environ.get("BASE_VOICE_SHE", "Aoede").strip()
 
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "").strip()
 
@@ -39,7 +39,6 @@ def _get_dur(p: Path) -> float:
 
 
 def _pick_local_music(music_mood: str) -> Path | None:
-    """يفحص مجلد assets/music/<mood_or_all> إن وضع المستخدم موسيقى مفضلة."""
     music_root = REPO_ROOT / "assets" / "music"
     if not music_root.exists():
         return None
@@ -88,11 +87,6 @@ def _download_freesound(queries: list[str], out_path: Path) -> bool:
 
 
 def _generate_procedural_pad(out_wav: Path, duration: float = 90.0, mood: str = "romantic_strings") -> Path:
-    """
-    احتياط هندسي ذكي: يولّد خلفية موسيقية حالمة ناعمة (Warm Harmonic Drone + Soft Night Rain)
-    عبر FFmpeg عندما لا يتوفر ملف محلي أو Freesound.
-    """
-    # ترددات وتر دافئ ناعم (D minor / Fmaj9 هادئ)
     if mood == "spiritual_warm":
         expr = "0.08*sin(2*PI*146.83*t)+0.06*sin(2*PI*220.0*t)+0.04*sin(2*PI*293.66*t)"
     else:
@@ -101,13 +95,13 @@ def _generate_procedural_pad(out_wav: Path, duration: float = 90.0, mood: str = 
     subprocess.run(
         [
             "ffmpeg", "-y",
-            "-f", "lavfi", "-i", f"aevalsrc='{expr}':s=24000:d={duration:.1f}",
-            "-f", "lavfi", "-i", f"anoisesrc=c=pink:r=24000:a=0.012:d={duration:.1f}",
+            "-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d={duration:.1f}",
+            "-f", "lavfi", "-i", f"anoisesrc=c=pink:r=44100:a=0.012:d={duration:.1f}",
             "-filter_complex",
             "[0:a]lowpass=f=650,tremolo=f=0.25:d=0.35[pad];"
             "[1:a]bandpass=f=850:width_type=h:w=900[rain];"
             "[pad][rain]amix=inputs=2:normalize=0,afade=t=in:st=0:d=2.5",
-            "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav),
+            "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav),
         ],
         check=True, capture_output=True, timeout=60,
     )
@@ -122,7 +116,7 @@ def prepare_bg_music(ep: dict, work_dir: Path) -> Path:
     if local:
         print(f"🎵 [Local Music] استخدام: {local.name}", flush=True)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(local), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(bg_wav)],
+            ["ffmpeg", "-y", "-i", str(local), "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le", str(bg_wav)],
             check=True, capture_output=True, timeout=60,
         )
         return bg_wav
@@ -135,12 +129,12 @@ def prepare_bg_music(ep: dict, work_dir: Path) -> Path:
     )
     if _download_freesound(queries, dl_mp3):
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(dl_mp3), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(bg_wav)],
+            ["ffmpeg", "-y", "-i", str(dl_mp3), "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le", str(bg_wav)],
             check=True, capture_output=True, timeout=60,
         )
         return bg_wav
 
-    print("🎼 [Ambient Pad] توليد خلفية هادئة ناعمة عبر FFmpeg (لا حاجة لمفاتيح خارجية)...", flush=True)
+    print("🎼 [Ambient Pad] توليد خلفية هادئة ناعمة عبر FFmpeg...", flush=True)
     return _generate_procedural_pad(bg_wav, duration=90.0, mood=music_mood)
 
 
@@ -154,7 +148,6 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
     work_dir = out_mp3_p.parent / "audio_work" / ep_stem
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # دعم الهيكل الجديد أو الهيكل القديم إن وُجد
     segments = ep.get("segments") or []
     if not segments:
         raise RuntimeError("❌ لا توجد مقاطع نصية في ملف الحلقة.")
@@ -173,19 +166,27 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
             speaker = "he"
 
         voice = BASE_VOICE_SHE if speaker == "she" else BASE_VOICE_HE
-        gender_hint = "female" if speaker == "she" else "male"
-        style = seg.get("style", "warm, tender, deeply affectionate, reverent, slow intimate pace")
+        gender_hint = "female" if (speaker == "she" and voice != "Charon") else "male"
+
+        # إزالة التنهيد الهوائي قبل RVC مع إبقاء الوقفات ليبقى التردد نقياً وطبيعياً
+        rvc_safe_tts = tts_text.replace("<sigh>", "<short pause>")
+        style = (
+            "clear, warm, gentle, calm natural speaking voice, smooth melodic flow, clean articulation"
+            if speaker == "she"
+            else seg.get("style", "warm, tender, deeply affectionate, calm natural speaking voice")
+        )
         pause_ms = int(seg.get("pause_after_ms") or 450)
 
         seg_wav = work_dir / f"dry_seg_{i:03d}_{speaker}.wav"
         print(f"🎙️ [{i+1}/{len(segments)}] توليد صوت ({speaker} | {voice}): {display_text[:55]}...", flush=True)
-        gemini_tts_with_pool(tts_text, str(seg_wav), voice=voice, style=style, gender_hint=gender_hint)
+        gemini_tts_with_pool(rvc_safe_tts, str(seg_wav), voice=voice, style=style, gender_hint=gender_hint)
 
         dur = _get_dur(seg_wav)
         dry_concat_list.append((seg_wav, pause_ms))
         meta_segments.append({
             "index": i,
             "speaker": speaker,
+            "base_voice": voice,
             "display_text": display_text,
             "tts_text": tts_text,
             "featured_names": seg.get("featured_names", []),
@@ -198,7 +199,6 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
     if not meta_segments:
         raise RuntimeError("❌ لم يتم توليد أي مقاطع صوتية.")
 
-    # حفظ الصوت الجاف المجمع مؤقتاً كـ out/<ep>.mp3 للتوافق التام مع الـ Workflow
     concat_inputs = []
     for idx, (wav_p, pause_ms) in enumerate(dry_concat_list):
         concat_inputs.append(wav_p)
