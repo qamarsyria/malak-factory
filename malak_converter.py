@@ -4,9 +4,9 @@ malak_converter.py
 ==================
 محوّل الصوت الثنائي ومهندس الاستوديو لمشروع «همسات ملك»:
 - مقاطع "he"  -> 87.5% clean.pth + 12.5% rough.pth
-- مقاطع "she" -> malak_voice.pth (+ added_malak_voice.index) بإعدادات الكلام الطبيعي
-  (protect=0.33, rms-mix-rate=0.25, index-rate=0.60, 44100Hz, De-metallic EQ)
-  للقضاء على أي رنين معدني أو روبوتي.
+- مقاطع "she" -> malak_voice.pth (+ added_malak_voice.index) مع SHE_PITCH=6 افتراضياً
+  وإعدادات الكلام الطبيعي (protect=0.33, rms-mix-rate=0.25, index-rate=0.60, 44100Hz)
+  + De-metallic EQ وماسترنغ ناعم + Sidechain Ducking مع الموسيقى.
 """
 
 import json
@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 HE_PITCH_CLEAN = os.environ.get("HE_PITCH_CLEAN", "-6").strip()
 HE_PITCH_ROUGH = os.environ.get("HE_PITCH_ROUGH", "-4").strip()
-SHE_PITCH = os.environ.get("SHE_PITCH", "0").strip()
+SHE_PITCH = os.environ.get("SHE_PITCH", "6").strip()
 SHE_INDEX_RATE = os.environ.get("SHE_INDEX_RATE", "0.60").strip()
 
 TARGET_SR = "44100"
@@ -86,7 +86,6 @@ def _run_rvc_cli(
 
 
 def _prep_48k_for_rvc(src: Path, dst_48k: Path):
-    """تنظيف ترددات القاعدة وموازنتها قبل RVC لتجنب ارتجاف متتبّع النبرة."""
     af = "highpass=f=85,lowpass=f=11000,loudnorm=I=-18:TP=-2.0:LRA=9"
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(src), "-af", af,
@@ -96,13 +95,6 @@ def _prep_48k_for_rvc(src: Path, dst_48k: Path):
 
 
 def _master_voice_segment(raw_wav: Path, out_wav: Path, is_dua: bool = False):
-    """
-    ماسترنغ استوديو مضاد للروبوتية:
-    - دفء حول 190Hz
-    - إزالة الترددات المعدنية القاسية لـ RVC عند 2.4kHz و 4.2kHz
-    - تنعيم الترددات العليا فوق 9.5kHz
-    - صدى غرفة ناعم جداً لإضفاء حميمية طبيعية
-    """
     reverb = "aecho=0.8:0.88:85|170:0.20|0.09" if is_dua else "aecho=0.8:0.88:48|98:0.15|0.06"
     af = (
         "highpass=f=80,"
@@ -180,7 +172,7 @@ def convert_episode(in_mp3: str, out_mp3: str):
 
     print(f"🔎 RVC Dir: {rvc_dir or 'غير موجود'}", flush=True)
     print(f"   • صوتك (clean/rough): {'✅' if clean_pth else '⚠️ مفقود'} | {'✅' if rough_pth else '⚠️ مفقود'}", flush=True)
-    print(f"   • صوتها (malak_voice): {'✅' if malak_pth else '⚠️ مفقود'} | index={SHE_INDEX_RATE} | pitch={SHE_PITCH}", flush=True)
+    print(f"   • صوتها (malak_voice): {'✅' if malak_pth else '⚠️ مفقود'} | pitch={SHE_PITCH} | index={SHE_INDEX_RATE}", flush=True)
 
     env = os.environ.copy()
     if rvc_dir:
