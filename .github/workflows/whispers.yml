@@ -47,10 +47,42 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install System Dependencies
+      - name: Install System Dependencies (Fast & Mirror-Safe)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass "; then
+            echo "⬇️ تحميل FFmpeg الثابت مع دعم libass مباشرة من GitHub..."
+            wget -q --timeout=45 -O /tmp/ffmpeg.tar.xz \
+              https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+              || true
+            if [ -s /tmp/ffmpeg.tar.xz ]; then
+              mkdir -p /tmp/ffmpeg_ext
+              tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg_ext --strip-components=1
+              sudo install -m 755 /tmp/ffmpeg_ext/bin/ffmpeg /usr/local/bin/ffmpeg
+              sudo install -m 755 /tmp/ffmpeg_ext/bin/ffprobe /usr/local/bin/ffprobe
+              rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg_ext
+            else
+              sudo apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15
+              sudo apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15 -o Acquire::Retries=3 ffmpeg
+            fi
+          fi
+
+          echo "⬇️ تثبيت خط الأميري مباشرة من GitHub..."
+          sudo mkdir -p /usr/share/fonts/amiri
+          wget -q --timeout=30 -O /tmp/Amiri-1.000.zip \
+            https://github.com/aliftype/amiri/releases/download/1.000/Amiri-1.000.zip
+          python - << 'EOF'
+          import zipfile, pathlib, shutil
+          tmp = pathlib.Path("/tmp/amiri_ext")
+          tmp.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile("/tmp/Amiri-1.000.zip", "r") as zf:
+              zf.extractall(tmp)
+          for ttf in tmp.rglob("*.ttf"):
+              shutil.copy2(ttf, pathlib.Path("/usr/share/fonts/amiri") / ttf.name)
+          EOF
+          rm -rf /tmp/Amiri-1.000.zip /tmp/amiri_ext
+          command -v fc-cache >/dev/null 2>&1 && sudo fc-cache -f /usr/share/fonts/amiri || true
+          ffmpeg -version | head -n 2
+          ls -la /usr/share/fonts/amiri
 
       - name: Install Project Requirements
         run: |
@@ -61,7 +93,7 @@ jobs:
       - name: Install RVC Dependencies
         run: |
           pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth transformers==4.39.3 av onnxruntime pyworld torchcrepe
+          pip install numpy==1.26.4 scipy librosa==0.10.2 soundfile ffmpeg-python fairseq==0.12.2 faiss-cpu praat-parselmouth "transformers>=4.49,<4.50" av onnxruntime pyworld torchcrepe
 
       - name: Cache RVC Engine & Base Models
         id: rvc-cache
@@ -69,13 +101,14 @@ jobs:
         with:
           path: |
             rvc
-          key: rvc-engine-v2
+          key: rvc-engine-v3
 
       - name: Download RVC Engine & Prepare Models
         if: steps.rvc-cache.outputs.cache-hit != 'true'
         run: |
-          wget -q https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/archive/refs/heads/main.zip -O main.zip
-          unzip -q main.zip
+          wget -q --timeout=60 -O main.zip https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/archive/refs/heads/main.zip
+          python -m zipfile -e main.zip .
+          rm -rf rvc
           mv Retrieval-based-Voice-Conversion-WebUI-main rvc
           rm -f main.zip
 
@@ -83,23 +116,33 @@ jobs:
           mkdir -p infer infer/modules infer/modules/vc assets/hubert_base assets/rmvpe assets/weights
           touch infer/__init__.py infer/modules/__init__.py infer/modules/vc/__init__.py
 
-          wget -q -O assets/hubert_base/pytorch_model.bin https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin
-          wget -q -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
-          wget -q -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
+          wget -q --timeout=90 -O assets/hubert_base/pytorch_model.bin https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin
+          wget -q --timeout=30 -O assets/hubert_base/config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
+          wget -q --timeout=30 -O assets/hubert_base/preprocessor_config.json https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/preprocessor_config.json || true
+          wget -q --timeout=90 -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
+          cp assets/rmvpe/rmvpe.pt rmvpe.pt
 
       - name: Download Voice Models (He + Malak)
         run: |
           mkdir -p rvc/assets/weights
-          # صوتها (ملك)
-          wget -q -O rvc/assets/weights/malak_voice.pth https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
-          wget -q -O rvc/assets/weights/added_malak_voice.index https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
 
-          # 👇 ضع هنا روابط تنزيل صوتك (clean.pth / clean.index / rough.pth / rough.index)
-          # مثال:
-          # wget -q -O rvc/assets/weights/clean.pth "YOUR_RELEASE_URL/clean.pth"
-          # wget -q -O rvc/assets/weights/clean.index "YOUR_RELEASE_URL/clean.index"
-          # wget -q -O rvc/assets/weights/rough.pth "YOUR_RELEASE_URL/rough.pth"
-          # wget -q -O rvc/assets/weights/rough.index "YOUR_RELEASE_URL/rough.index"
+          # صوتها (ملك)
+          wget -q --timeout=60 -O rvc/assets/weights/malak_voice.pth \
+            https://github.com/qamarsyria/malak-factory/releases/download/v1.0/malak_voice.pth
+          wget -q --timeout=60 -O rvc/assets/weights/added_malak_voice.index \
+            https://github.com/qamarsyria/malak-factory/releases/download/v1.0/added_malak_voice.index
+
+          # صوتك (clean + rough) — أضف روابط التنزيل هنا إذا كانت في Release آخر:
+          # wget -q --timeout=60 -O rvc/assets/weights/clean.pth "YOUR_URL/clean.pth"
+          # wget -q --timeout=60 -O rvc/assets/weights/clean.index "YOUR_URL/clean.index"
+          # wget -q --timeout=60 -O rvc/assets/weights/rough.pth "YOUR_URL/rough.pth"
+          # wget -q --timeout=60 -O rvc/assets/weights/rough.index "YOUR_URL/rough.index"
+
+          # نسخ الأوزان الموجودة مسبقاً داخل المستودع (إن وجدت في assets/weights)
+          if [ -d assets/weights ]; then
+            cp -n assets/weights/* rvc/assets/weights/ 2>/dev/null || true
+          fi
+          ls -lh rvc/assets/weights/
 
       - name: Generate Whisper (Poetry + Grammar & I'rab Gate)
         id: gen
@@ -107,6 +150,7 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           MALAK_LAM_MODE: fatha
         run: |
+          mkdir -p out videos
           ARGS=""
           if [ "${{ github.event.inputs.theme }}" != "" ] && [ "${{ github.event.inputs.theme }}" != "auto" ]; then
             ARGS="$ARGS --theme ${{ github.event.inputs.theme }}"
