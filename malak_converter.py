@@ -3,10 +3,10 @@
 malak_converter.py
 ==================
 محوّل الصوت الثنائي ومهندس الاستوديو لمشروع «همسات ملك»:
-- مقاطع "he"  -> 87.5% clean.pth (v4.0-clean) + 12.5% rough.pth (v3.1-myvoice)
-- مقاطع "she" -> malak_voice.pth (+ added_malak_voice.index)
-- ثم استوديو ماسترنغ (Warm EQ + Intimate Reverb + Sidechain Ducking مع الموسيقى)
-  وحفظ التوقيت النهائي الدقيق في out/<ep>_meta.json لتزامن النص في الفيديو.
+- مقاطع "he"  -> 87.5% clean.pth + 12.5% rough.pth
+- مقاطع "she" -> malak_voice.pth (+ added_malak_voice.index) بإعدادات الكلام الطبيعي
+  (protect=0.33, rms-mix-rate=0.25, index-rate=0.60, 44100Hz, De-metallic EQ)
+  للقضاء على أي رنين معدني أو روبوتي.
 """
 
 import json
@@ -18,14 +18,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-# ⚙️ درجات التحويل (اضبطها من هنا عند الحاجة بعد أول تجربة استماع!)
-# ملاحظة: في apply_rvc_to_quran.py كان المصدر الحصري مع pitch -6 و -4؛
-# مع Charon (صوت عميق أصلاً) قد تجد -2/0 أو -6/-4 أنسب حسب طبقة تدريب الموديل.
 HE_PITCH_CLEAN = os.environ.get("HE_PITCH_CLEAN", "-6").strip()
 HE_PITCH_ROUGH = os.environ.get("HE_PITCH_ROUGH", "-4").strip()
 SHE_PITCH = os.environ.get("SHE_PITCH", "0").strip()
+SHE_INDEX_RATE = os.environ.get("SHE_INDEX_RATE", "0.60").strip()
 
-TARGET_SR = "24000"
+TARGET_SR = "44100"
 
 
 def _find_rvc_dir() -> Path | None:
@@ -60,6 +58,7 @@ def _run_rvc_cli(
     model_path: Path,
     index_path: Path | None,
     pitch: str,
+    index_rate: str,
     rvc_dir: Path,
     env: dict,
 ):
@@ -70,11 +69,11 @@ def _run_rvc_cli(
         "--output", str(out_wav.resolve()),
         "--f0-method", "rmvpe",
         "--pitch", str(pitch),
-        "--protect", "0.45",
-        "--rms-mix-rate", "0.8",
+        "--protect", "0.33",
+        "--rms-mix-rate", "0.25",
     ]
-    if index_path and index_path.exists():
-        cmd.extend(["--index", str(index_path), "--index-rate", "0.40"])
+    if index_path and index_path.exists() and float(index_rate) > 0:
+        cmd.extend(["--index", str(index_path), "--index-rate", str(index_rate)])
     else:
         cmd.extend(["--index-rate", "0"])
 
@@ -86,31 +85,36 @@ def _run_rvc_cli(
         )
 
 
-def _to_48k(src: Path, dst_48k: Path):
+def _prep_48k_for_rvc(src: Path, dst_48k: Path):
+    """تنظيف ترددات القاعدة وموازنتها قبل RVC لتجنب ارتجاف متتبّع النبرة."""
+    af = "highpass=f=85,lowpass=f=11000,loudnorm=I=-18:TP=-2.0:LRA=9"
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(src), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(dst_48k)],
+        ["ffmpeg", "-y", "-i", str(src), "-af", af,
+         "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(dst_48k)],
         check=True, capture_output=True, timeout=60,
     )
 
 
 def _master_voice_segment(raw_wav: Path, out_wav: Path, is_dua: bool = False):
     """
-    ماسترنغ دافئ وحميمي للصوت:
-    - إزالة الترددات الموحلة (<75Hz)
-    - تعزيز الدفء حول 180Hz وتنعيم الحدة حول 3.2kHz و 6.5kHz
-    - لمسة صدى رقيق (أوسع قليلاً في الأدعية)
-    - موازنة مستويات الصوت بدقة
+    ماسترنغ استوديو مضاد للروبوتية:
+    - دفء حول 190Hz
+    - إزالة الترددات المعدنية القاسية لـ RVC عند 2.4kHz و 4.2kHz
+    - تنعيم الترددات العليا فوق 9.5kHz
+    - صدى غرفة ناعم جداً لإضفاء حميمية طبيعية
     """
-    reverb = "aecho=0.8:0.88:90|180:0.22|0.10" if is_dua else "aecho=0.8:0.88:50|105:0.16|0.07"
+    reverb = "aecho=0.8:0.88:85|170:0.20|0.09" if is_dua else "aecho=0.8:0.88:48|98:0.15|0.06"
     af = (
-        "highpass=f=75,"
-        "equalizer=f=180:width_type=o:width=1.2:g=2.4,"
-        "equalizer=f=3200:width_type=o:width=1.5:g=-1.6,"
-        "equalizer=f=6500:width_type=o:width=1.2:g=-2.0,"
-        "acompressor=threshold=-20dB:ratio=2.5:attack=15:release=180,"
+        "highpass=f=80,"
+        "lowpass=f=9500,"
+        "equalizer=f=190:width_type=o:width=1.2:g=2.5,"
+        "equalizer=f=2400:width_type=o:width=0.9:g=-2.6,"
+        "equalizer=f=4200:width_type=o:width=0.9:g=-2.5,"
+        "equalizer=f=6800:width_type=o:width=1.1:g=-2.0,"
+        "acompressor=threshold=-20dB:ratio=2.3:attack=18:release=200,"
         f"apad=pad_dur=0.25,{reverb},"
         "areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-50dB,areverse,"
-        f"loudnorm=I=-15:TP=-1.5:LRA=9,alimiter=limit=0.95"
+        "loudnorm=I=-15:TP=-1.5:LRA=9,alimiter=limit=0.95"
     )
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(raw_wav), "-af", af,
@@ -120,12 +124,11 @@ def _master_voice_segment(raw_wav: Path, out_wav: Path, is_dua: bool = False):
 
 
 def _mix_with_sidechain(voice_wav: Path, bg_wav: Path, out_mp3: Path, total_dur: float):
-    """يمزج الموسيقى أسفل الصوت مع Sidechain Ducking (تنخفض الموسيقى مع كل همسة)."""
     fade_out_st = max(0.5, total_dur - 2.5)
     fc = (
         f"[0:a]apad=pad_dur=1.2[v_pad];"
         f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.2:.2f},"
-        f"lowpass=f=4500,volume=0.26,afade=t=in:st=0:d=1.8,"
+        f"aresample={TARGET_SR},lowpass=f=4500,volume=0.26,afade=t=in:st=0:d=1.8,"
         f"afade=t=out:st={fade_out_st:.2f}:d=2.2[bg];"
         f"[v_pad]asplit=2[v_main][v_sc];"
         f"[bg][v_sc]sidechaincompress=threshold=0.025:ratio=4.5:attack=25:release=450[bg_ducked];"
@@ -137,20 +140,19 @@ def _mix_with_sidechain(voice_wav: Path, bg_wav: Path, out_mp3: Path, total_dur:
                 "ffmpeg", "-y",
                 "-i", str(voice_wav), "-i", str(bg_wav),
                 "-filter_complex", fc, "-map", "[out]",
-                "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3),
+                "-ar", TARGET_SR, "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3),
             ],
             check=True, capture_output=True, timeout=180,
         )
     except Exception:
-        # احتياط amix بسيط
         subprocess.run(
             [
                 "ffmpeg", "-y",
                 "-i", str(voice_wav), "-i", str(bg_wav),
                 "-filter_complex",
-                f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.0:.2f},volume=0.16[bg];"
+                f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.0:.2f},aresample={TARGET_SR},volume=0.16[bg];"
                 "[0:a][bg]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95",
-                "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3),
+                "-ar", TARGET_SR, "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3),
             ],
             check=True, capture_output=True, timeout=180,
         )
@@ -164,7 +166,6 @@ def convert_episode(in_mp3: str, out_mp3: str):
     meta_path = in_p.with_name(f"{in_p.stem}_meta.json")
     rvc_dir = _find_rvc_dir()
 
-    # البحث المرن عن أوزان الصوتين سواء في الجذر أو داخل rvc/assets/weights
     search_roots = [REPO_ROOT]
     if rvc_dir:
         search_roots.extend([rvc_dir, rvc_dir / "assets" / "weights", rvc_dir / "assets" / "indices"])
@@ -177,24 +178,23 @@ def convert_episode(in_mp3: str, out_mp3: str):
     malak_pth = _find_first_existing([d / "malak_voice.pth" for d in search_roots])
     malak_idx = _find_first_existing([d / "added_malak_voice.index" for d in search_roots])
 
-    print(f"🔎 RVC Dir: {rvc_dir or 'غير موجود (سيتم الاكتفاء بالماسترنغ)'}", flush=True)
+    print(f"🔎 RVC Dir: {rvc_dir or 'غير موجود'}", flush=True)
     print(f"   • صوتك (clean/rough): {'✅' if clean_pth else '⚠️ مفقود'} | {'✅' if rough_pth else '⚠️ مفقود'}", flush=True)
-    print(f"   • صوتها (malak_voice): {'✅' if malak_pth else '⚠️ مفقود'}", flush=True)
+    print(f"   • صوتها (malak_voice): {'✅' if malak_pth else '⚠️ مفقود'} | index={SHE_INDEX_RATE} | pitch={SHE_PITCH}", flush=True)
 
     env = os.environ.copy()
     if rvc_dir:
         env["PYTHONPATH"] = str(rvc_dir)
         env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 
-    # وضع التوافق البسيط إذا لم يوجد ملف الميتاداتا
     if not meta_path.exists():
         work = out_p.parent / f"_conv_fallback_{in_p.stem}"
         work.mkdir(parents=True, exist_ok=True)
         in48 = work / "in48.wav"
-        _to_48k(in_p, in48)
+        _prep_48k_for_rvc(in_p, in48)
         conv = work / "conv.wav"
         if rvc_dir and malak_pth:
-            _run_rvc_cli(in48, conv, malak_pth, malak_idx, SHE_PITCH, rvc_dir, env)
+            _run_rvc_cli(in48, conv, malak_pth, malak_idx, SHE_PITCH, SHE_INDEX_RATE, rvc_dir, env)
         else:
             shutil.copy2(in48, conv)
         mastered = work / "mastered.wav"
@@ -222,18 +222,16 @@ def convert_episode(in_mp3: str, out_mp3: str):
         pause_ms = int(seg.get("pause_after_ms") or 450)
 
         in48 = work_dir / f"seg_{idx:03d}_48k.wav"
-        _to_48k(dry_wav, in48)
-
+        _prep_48k_for_rvc(dry_wav, in48)
         raw_conv = work_dir / f"seg_{idx:03d}_rvc.wav"
 
         if rvc_dir and speaker == "he" and clean_pth:
             print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصوتك (87.5% clean + 12.5% rough)...", flush=True)
             c_wav = work_dir / f"seg_{idx:03d}_clean.wav"
-            _run_rvc_cli(in48, c_wav, clean_pth, clean_idx, HE_PITCH_CLEAN, rvc_dir, env)
-
+            _run_rvc_cli(in48, c_wav, clean_pth, clean_idx, HE_PITCH_CLEAN, "0.45", rvc_dir, env)
             if rough_pth:
                 r_wav = work_dir / f"seg_{idx:03d}_rough.wav"
-                _run_rvc_cli(in48, r_wav, rough_pth, rough_idx, HE_PITCH_ROUGH, rvc_dir, env)
+                _run_rvc_cli(in48, r_wav, rough_pth, rough_idx, HE_PITCH_ROUGH, "0.45", rvc_dir, env)
                 subprocess.run(
                     [
                         "ffmpeg", "-y", "-i", str(c_wav), "-i", str(r_wav),
@@ -246,11 +244,11 @@ def convert_episode(in_mp3: str, out_mp3: str):
                 shutil.copy2(c_wav, raw_conv)
 
         elif rvc_dir and speaker == "she" and malak_pth:
-            print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصوت ملك (malak_voice)...", flush=True)
-            _run_rvc_cli(in48, raw_conv, malak_pth, malak_idx, SHE_PITCH, rvc_dir, env)
+            print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصوت ملك (malak_voice | pitch={SHE_PITCH})...", flush=True)
+            _run_rvc_cli(in48, raw_conv, malak_pth, malak_idx, SHE_PITCH, SHE_INDEX_RATE, rvc_dir, env)
 
         else:
-            print(f"   ⚠️ تخطي RVC للمقطع {idx+1} ({speaker}) لعدم توفر الوزن — استخدام الماسترنغ المباشر.", flush=True)
+            print(f"   ⚠️ تخطي RVC للمقطع {idx+1} ({speaker}) — استخدام الماسترنغ المباشر.", flush=True)
             shutil.copy2(in48, raw_conv)
 
         mastered_seg = work_dir / f"seg_{idx:03d}_master.wav"
@@ -281,7 +279,6 @@ def convert_episode(in_mp3: str, out_mp3: str):
             converted_wavs.append(sil_p)
             timeline_cursor += sil_s
 
-    # دمج مقاطع الصوت النهائية
     concat_txt = work_dir / "final_concat.txt"
     concat_txt.write_text("\n".join(f"file '{p.resolve()}'" for p in converted_wavs), encoding="utf-8")
     voice_master_wav = work_dir / "voice_master_all.wav"
@@ -307,7 +304,6 @@ def convert_episode(in_mp3: str, out_mp3: str):
     meta["total_duration"] = final_total
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # أيضاً كتابة نسخة ميتاداتا مرتبطة باسم ملف الإخراج النهائي لسهولة وصول whispers_video.py
     out_meta = out_p.with_name(f"{out_p.stem}_meta.json")
     out_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
