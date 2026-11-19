@@ -3,6 +3,7 @@ generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد �
 - يقرأ audited/events/ بالترتيب الزمني الدقيق.
 - يبني كل حلقة بنمط: [فقرة سرد موثقة ← الآية المؤكدة لها مباشرة].
 - يمنع إقحام آيات من خارج الحدث أو تسرب نص الآية حرفياً داخل السرد (دون حظر الكلمات المفردة).
+- يمنع تتابع آيتين مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام لتجنب الفهم الخاطئ.
 - يعتمد حداً أدنى مرناً للكلمات حسب حجم المادة المدققة لمنع الحشو والاختلاق.
 - يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و Timeout و thinkingConfig.
 - يستخدم story_library لتحديث العصر والقصة التالية بشكل صحيح.
@@ -411,14 +412,15 @@ SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزا
 🎯 الهيكل الإلزامي للسكريبت:
 يجب أن تتكوّن الحلقة من كتل متسلسلة بالترتيب الزمني نفسه، على النمط التالي:
 - كتلة `"narration"`: تشرح الفكرة أو الحدث استناداً فقط للمادة المدققة أعلاه (بلغة سردية جذابة خالية من الحشو ومن أي نص قرآني حرفي).
-- تتلوها مباشرة كتلة `"quran"`: الآية (أو الآيات المتتابعة من نفس السورة) التي **تؤكد وتثبت ما ذُكر في فقرة السرد التي سبقتها مباشرة**.
+- تتلوها مباشرة كتلة `"quran"`: الآية (أو الآيات المتتابعة المتتالية أرقاماً من نفس السورة) التي **تؤكد وتثبت ما ذُكر في فقرة السرد التي سبقتها مباشرة**.
 
 ⚠️ قواعد صارمة:
 1️⃣ **لا إضافة من الخارج**: التزم بالمعلومات الموثقة أعلاه فقط. لا تخترع أحداثاً ولا تستورد آيات غير موجودة في القائمة.
 2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً أو اقتباس جملة قرآنية كاملة داخل نص `"narration"`. اشرح معناها وسياقها بكلمات وصفية، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
-3️⃣ **لا حشو**: ممنوع الجمل الإنشائية الفارغة ("في خضم الأحداث"، "مما لا شك فيه"، "ومن الجدير بالذكر").
-4️⃣ **اللغة**: فصحى سليمة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد.
-5️⃣ **الطول المستهدف للسرد**: {min_words} إلى {max_words} كلمة (بقدر المادة الموثقة دون مطّ).
+3️⃣ **منع تتابع آيتين غير متسلسلتين**: يُمنع منعاً باتاً وضع كتلتَي `"quran"` متتاليتين مباشرةً دون فقرة `"narration"` فاصلة بينهما، **إلا** إذا كانتا من **نفس السورة ومتتاليتين تماماً بالأرقام** (مثل آية 22 ثم 23). وكذلك لا تجمع داخل كتلة `"quran"` واحدة أرقاماً غير متتالية؛ إذا تباعدت الآيات أو اختلفت السور فاجعل قبل كل آية فقرة `"narration"` تمهد لها.
+4️⃣ **لا حشو**: ممنوع الجمل الإنشائية الفارغة ("في خضم الأحداث"، "مما لا شك فيه"، "ومن الجدير بالذكر").
+5️⃣ **اللغة**: فصحى سليمة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد.
+6️⃣ **الطول المستهدف للسرد**: {min_words} إلى {max_words} كلمة (بقدر المادة الموثقة دون مطّ).
 
 {forbidden_rules}
 {retry_feedback}
@@ -466,10 +468,19 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
 
     expected_refs = {a["ref"] for a in expected_ayahs}
     actual_refs = set()
+    meaningful_segments = []
 
     for s in segments:
-        if s.get("type") == "quran":
-            surah = int(s.get("surah") or 0)
+        stype = s.get("type")
+        if stype == "narration":
+            if not (s.get("text") or "").strip():
+                if "empty_narration_segment" not in issues:
+                    issues.append("empty_narration_segment")
+                continue
+            meaningful_segments.append(s)
+        elif stype == "quran":
+            raw_surah = str(s.get("surah") or "").strip()
+            surah = int(raw_surah) if raw_surah.isdigit() else 0
             nums = [int(n) for n in (s.get("ayah_numbers") or []) if str(n).isdigit()]
             s["surah"] = surah
             s["ayah_numbers"] = nums
@@ -477,8 +488,17 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
             s["surah_name"] = sname
             if nums:
                 s["display"] = f"{sname}: {nums[0]}" if len(nums) == 1 else f"{sname}: {nums[0]}-{nums[-1]}"
+            else:
+                s["display"] = sname
+
+            if surah <= 0 or not nums:
+                issues.append(f"invalid_quran_segment ({s.get('display', 'unknown')})")
+            elif any(nums[k + 1] != nums[k] + 1 for k in range(len(nums) - 1)):
+                issues.append(f"non_consecutive_ayahs_in_block ({s['display']}: {nums})")
+
             for n in nums:
                 actual_refs.add(f"{surah}:{n}")
+            meaningful_segments.append(s)
 
     missing = sorted(expected_refs - actual_refs)
     if missing:
@@ -488,8 +508,29 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
     if extra:
         issues.append(f"unexpected_ayahs: {extra}")
 
-    if segments[0].get("type") == "quran":
+    if not meaningful_segments or meaningful_segments[0].get("type") == "quran":
         issues.append("starts_with_quran_without_narration")
+
+    # حماية مهمة: منع وجود آيتين وراء بعض مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام
+    for idx in range(len(meaningful_segments) - 1):
+        prev_s = meaningful_segments[idx]
+        curr_s = meaningful_segments[idx + 1]
+        if prev_s.get("type") == "quran" and curr_s.get("type") == "quran":
+            p_surah = prev_s.get("surah", 0)
+            c_surah = curr_s.get("surah", 0)
+            p_nums = prev_s.get("ayah_numbers") or []
+            c_nums = curr_s.get("ayah_numbers") or []
+            is_consecutive_same_surah = (
+                p_surah > 0
+                and p_surah == c_surah
+                and bool(p_nums)
+                and bool(c_nums)
+                and c_nums[0] == p_nums[-1] + 1
+            )
+            if not is_consecutive_same_surah:
+                p_disp = prev_s.get("display") or f"{p_surah}:{p_nums}"
+                c_disp = curr_s.get("display") or f"{c_surah}:{c_nums}"
+                issues.append(f"consecutive_unrelated_quran_segments ({p_disp} -> {c_disp})")
 
     # فحص تسرّب الآيات الكاملة أو المقاطع القرآنية الطويلة داخل السرد (دون منع الكلمات المفردة أو أسماء الله الحسنى)
     norm_expected = [
@@ -497,7 +538,7 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
         for a in expected_ayahs
         if len(_norm_ar(a["text"]).split()) >= 5
     ]
-    for s in segments:
+    for s in meaningful_segments:
         if s.get("type") != "narration":
             continue
         raw_text = s.get("text", "")
@@ -534,13 +575,13 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
                         issues.append(tag)
                     break
 
-    narration_words = sum(len(s.get("text", "").split()) for s in segments if s.get("type") == "narration")
+    narration_words = sum(len(s.get("text", "").split()) for s in meaningful_segments if s.get("type") == "narration")
     if narration_words < min_words:
         issues.append(f"too_short: {narration_words} < {min_words}")
     elif narration_words > max_words + 150:
         issues.append(f"too_long: {narration_words} > {max_words}")
 
-    for s in segments:
+    for s in meaningful_segments:
         if s.get("type") == "narration" and re.search(r"[a-zA-Z]", s.get("text", "")):
             issues.append("english_in_narration")
             break
@@ -565,6 +606,18 @@ def _build_retry_feedback(issues: list[str], ayahs_ep: list) -> str:
                 notes.append(f"- {iss}: أعد الصياغة دون نقل عبارات الآية داخل السرد.")
         elif iss == "quran_quoted_with_brackets_in_narration":
             notes.append("- يُمنع وضع أقواس ﴿...﴾ أو نص الآية داخل narration؛ ضع الآية في كتلة quran فقط.")
+        elif iss.startswith("consecutive_unrelated_quran_segments"):
+            notes.append(
+                f"- خطأ تتابع آيات ({iss}): يُمنع وضع آيتين وراء بعضهما مباشرة دون فقرة narration بينهما "
+                f"إلا إذا كانتا من نفس السورة ومتتاليتين تماماً في الأرقام. أضف فقرة شرح (narration) قبل الآية الثانية."
+            )
+        elif iss.startswith("non_consecutive_ayahs_in_block"):
+            notes.append(
+                f"- خطأ أرقام غير متتالية ({iss}): لا تضع أرقام آيات متباعدة في كتلة quran واحدة؛ "
+                f"اجعل لكل آية (أو آيات متتالية فقط) كتلتها المسبوقة بفقرة narration."
+            )
+        elif iss == "empty_narration_segment":
+            notes.append("- توجد فقرة narration فارغة؛ اكتب فيها شرحاً مناسباً أو احذفها.")
         else:
             notes.append(f"- {iss}")
     return (
