@@ -3,11 +3,9 @@
 malak_converter.py
 ==================
 محوّل الصوت الثنائي ومهندس الاستوديو لمشروع «همسات ملك»:
-- يتحكم في تفعيل/إلغاء البصمات عبر VOICE_MODE بدون أي تعديل بالكود:
-    * rvc_both     : صوتك (clean + rough بـ -7) + صوت ملك (malak_voice بـ +6)
-    * rvc_he_only  : صوتك فقط بـ RVC + صوتها طبيعي صافي
-    * rvc_she_only : صوت ملك فقط بـ RVC + صوته طبيعي صافي
-    * no_rvc       : إلغاء جميع البصمات (الأصوات الطبيعية + الماسترنغ والموسيقى فقط)
+- يحذف الفلاتر المدمرة للـ F0 قبل RVC (تحويل نقي لـ 48kHz فقط!).
+- يطبق إعدادات apply_rvc_to_quran.py المجربة والناجحة:
+  protect=0.45 | rms-mix-rate=0.80 | index-rate=0.40 + صدى لطيف دافئ بعد RVC.
 """
 
 import json
@@ -25,7 +23,7 @@ HE_PITCH_ROUGH = os.environ.get("HE_PITCH_ROUGH", "-6").strip()
 HE_INDEX_RATE = os.environ.get("HE_INDEX_RATE", "0.40").strip()
 
 SHE_PITCH = os.environ.get("SHE_PITCH", "6").strip()
-SHE_INDEX_RATE = os.environ.get("SHE_INDEX_RATE", "0").strip()
+SHE_INDEX_RATE = os.environ.get("SHE_INDEX_RATE", "0.40").strip()
 
 TARGET_SR = "44100"
 
@@ -73,8 +71,8 @@ def _run_rvc_cli(
         "--output", str(out_wav.resolve()),
         "--f0-method", "rmvpe",
         "--pitch", str(pitch),
-        "--protect", "0.33",
-        "--rms-mix-rate", "0.25",
+        "--protect", "0.45",
+        "--rms-mix-rate", "0.80",
     ]
     if index_path and index_path.exists() and float(index_rate) > 0:
         cmd.extend(["--index", str(index_path), "--index-rate", str(index_rate)])
@@ -90,27 +88,24 @@ def _run_rvc_cli(
 
 
 def _prep_48k_for_rvc(src: Path, dst_48k: Path):
-    af = "highpass=f=85,lowpass=f=11000,loudnorm=I=-18:TP=-2.0:LRA=9"
+    """إعادة تحزيم نقية إلى 48kHz فقط بدون highpass أو loudnorm قبل RVC."""
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(src), "-af", af,
+        ["ffmpeg", "-y", "-i", str(src),
          "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(dst_48k)],
         check=True, capture_output=True, timeout=60,
     )
 
 
 def _master_voice_segment(raw_wav: Path, out_wav: Path, is_dua: bool = False):
-    reverb = "aecho=0.8:0.88:85|170:0.18|0.08" if is_dua else "aecho=0.8:0.88:45|90:0.13|0.05"
+    echo = (
+        "aecho=0.8:0.9:120|240|360:0.22|0.11|0.05"
+        if is_dua
+        else "aecho=0.8:0.88:75|150:0.15|0.07"
+    )
     af = (
-        "highpass=f=80,"
-        "lowpass=f=9500,"
-        "equalizer=f=190:width_type=o:width=1.2:g=2.2,"
-        "equalizer=f=2400:width_type=o:width=0.9:g=-2.4,"
-        "equalizer=f=4200:width_type=o:width=0.9:g=-2.4,"
-        "equalizer=f=6800:width_type=o:width=1.1:g=-1.8,"
-        "acompressor=threshold=-20dB:ratio=2.2:attack=18:release=200,"
-        f"apad=pad_dur=0.25,{reverb},"
+        f"apad=pad_dur=0.45,{echo},"
         "areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-50dB,areverse,"
-        "loudnorm=I=-15:TP=-1.5:LRA=9,alimiter=limit=0.95"
+        "loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95"
     )
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(raw_wav), "-af", af,
@@ -124,7 +119,7 @@ def _mix_with_sidechain(voice_wav: Path, bg_wav: Path, out_mp3: Path, total_dur:
     fc = (
         f"[0:a]apad=pad_dur=1.2[v_pad];"
         f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.2:.2f},"
-        f"aresample={TARGET_SR},lowpass=f=4500,volume=0.24,afade=t=in:st=0:d=1.8,"
+        f"aresample={TARGET_SR},lowpass=f=4500,volume=0.22,afade=t=in:st=0:d=1.8,"
         f"afade=t=out:st={fade_out_st:.2f}:d=2.2[bg];"
         f"[v_pad]asplit=2[v_main][v_sc];"
         f"[bg][v_sc]sidechaincompress=threshold=0.025:ratio=4.5:attack=25:release=450[bg_ducked];"
@@ -146,7 +141,7 @@ def _mix_with_sidechain(voice_wav: Path, bg_wav: Path, out_mp3: Path, total_dur:
                 "ffmpeg", "-y",
                 "-i", str(voice_wav), "-i", str(bg_wav),
                 "-filter_complex",
-                f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.0:.2f},aresample={TARGET_SR},volume=0.15[bg];"
+                f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.0:.2f},aresample={TARGET_SR},volume=0.14[bg];"
                 "[0:a][bg]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95",
                 "-ar", TARGET_SR, "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3),
             ],
