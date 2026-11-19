@@ -2,13 +2,14 @@
 """
 scripts/whispers_audio.py
 =========================
-يبني الصوت البشري الجاف (بدون موسيقى وبدون تنهيد هوائي يربك RVC) لكل مقطع،
-ويجهّز مسار الموسيقى الخلفية وملف الميتاداتا الدقيق `out/<ep>_meta.json`.
+يبني الصوت البشري الجاف بنبرة هادئة متزنة بعيدة عن التمثيل المبالغ فيه،
+ويبدّل صوت «هي» تلقائياً إلى صوت أنثوي طبيعي عند إيقاف RVC عنها عبر VOICE_MODE.
 """
 
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,11 +20,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gemini_tts_pool import gemini_tts_with_pool
 
-# أصوات القاعدة المناسبة قبل RVC (واضحة النبرة وعاطفية بدون تشويش)
+VOICE_MODE = os.environ.get("VOICE_MODE", "rvc_both").strip().lower()
 BASE_VOICE_HE = os.environ.get("BASE_VOICE_HE", "Charon").strip()
-BASE_VOICE_SHE = os.environ.get("BASE_VOICE_SHE", "Aoede").strip()
+BASE_VOICE_SHE = os.environ.get("BASE_VOICE_SHE", "Charon").strip()
+
+# إذا أوقفت RVC عن صوت «هي»، نحول صوتها تلقائياً لصوت أنثوي ناعم (Leda) بدل Charon
+if VOICE_MODE in ("no_rvc", "rvc_he_only") and BASE_VOICE_SHE == "Charon":
+    BASE_VOICE_SHE = "Leda"
 
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "").strip()
+
+CALM_STYLE_HE = "calm, natural, poised, gentle conversational reading, understated warmth, steady relaxed pace, no theatrics, no melodrama"
+CALM_STYLE_SHE = "calm, natural, gentle, poised soft speaking voice, relaxed steady pace, understated warmth, no theatrics"
 
 
 def _get_dur(p: Path) -> float:
@@ -58,13 +66,7 @@ def _download_freesound(queries: list[str], out_path: Path) -> bool:
         try:
             r = requests.get(
                 "https://freesound.org/apiv2/search/text/",
-                params={
-                    "query": q,
-                    "token": FREESOUND_API_KEY,
-                    "fields": "id,name,duration,previews",
-                    "filter": "duration:[25 TO 240]",
-                    "page_size": 10,
-                },
+                params={"query": q, "token": FREESOUND_API_KEY, "fields": "id,name,duration,previews", "filter": "duration:[25 TO 240]", "page_size": 10},
                 timeout=20,
             )
             if r.status_code != 200:
@@ -155,6 +157,8 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
     meta_segments = []
     dry_concat_list = []
 
+    print(f"🎛️ [Audio] VOICE_MODE={VOICE_MODE} | he={BASE_VOICE_HE} | she={BASE_VOICE_SHE}", flush=True)
+
     for i, seg in enumerate(segments):
         tts_text = (seg.get("tts_text") or seg.get("text") or "").strip()
         display_text = (seg.get("display_text") or seg.get("text") or tts_text).strip()
@@ -168,18 +172,15 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
         voice = BASE_VOICE_SHE if speaker == "she" else BASE_VOICE_HE
         gender_hint = "female" if (speaker == "she" and voice != "Charon") else "male"
 
-        # إزالة التنهيد الهوائي قبل RVC مع إبقاء الوقفات ليبقى التردد نقياً وطبيعياً
-        rvc_safe_tts = tts_text.replace("<sigh>", "<short pause>")
-        style = (
-            "clear, warm, gentle, calm natural speaking voice, smooth melodic flow, clean articulation"
-            if speaker == "she"
-            else seg.get("style", "warm, tender, deeply affectionate, calm natural speaking voice")
-        )
+        # إزالة أي وسوم درامية/تنهيدات حتى يقرأ الموديل بنبرة هادئة متزنة بلا مبالغة
+        calm_tts = re.sub(r"<[^>]+>", " ، ", tts_text)
+        calm_tts = re.sub(r"\s+", " ", calm_tts).strip()
+        style = CALM_STYLE_SHE if speaker == "she" else CALM_STYLE_HE
         pause_ms = int(seg.get("pause_after_ms") or 450)
 
         seg_wav = work_dir / f"dry_seg_{i:03d}_{speaker}.wav"
-        print(f"🎙️ [{i+1}/{len(segments)}] توليد صوت ({speaker} | {voice}): {display_text[:55]}...", flush=True)
-        gemini_tts_with_pool(rvc_safe_tts, str(seg_wav), voice=voice, style=style, gender_hint=gender_hint)
+        print(f"🎙️ [{i+1}/{len(segments)}] ({speaker} | {voice}): {display_text[:55]}...", flush=True)
+        gemini_tts_with_pool(calm_tts, str(seg_wav), voice=voice, style=style, gender_hint=gender_hint)
 
         dur = _get_dur(seg_wav)
         dry_concat_list.append((seg_wav, pause_ms))
@@ -188,7 +189,7 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
             "speaker": speaker,
             "base_voice": voice,
             "display_text": display_text,
-            "tts_text": tts_text,
+            "tts_text": calm_tts,
             "featured_names": seg.get("featured_names", []),
             "is_climax": bool(seg.get("is_climax", False)),
             "pause_after_ms": pause_ms,
@@ -234,7 +235,7 @@ def build_whisper_audio(json_path: str, out_mp3: str) -> bool:
     }
     meta_path = out_mp3_p.with_name(f"{ep_stem}_meta.json")
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"✅ تم توليد الصوت الجاف والميتاداتا: {out_mp3_p} + {meta_path.name}", flush=True)
+    print(f"✅ تم توليد الصوت الجاف والميتاداتا: {out_mp3_p}", flush=True)
     return True
 
 
