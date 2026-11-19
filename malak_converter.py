@@ -3,10 +3,11 @@
 malak_converter.py
 ==================
 محوّل الصوت الثنائي ومهندس الاستوديو لمشروع «همسات ملك»:
-- مقاطع "he"  -> 87.5% clean.pth + 12.5% rough.pth
-- مقاطع "she" -> malak_voice.pth (+ added_malak_voice.index) مع SHE_PITCH=6 افتراضياً
-  وإعدادات الكلام الطبيعي (protect=0.33, rms-mix-rate=0.25, index-rate=0.60, 44100Hz)
-  + De-metallic EQ وماسترنغ ناعم + Sidechain Ducking مع الموسيقى.
+- يتحكم في تفعيل/إلغاء البصمات عبر VOICE_MODE بدون أي تعديل بالكود:
+    * rvc_both     : صوتك (clean + rough بـ -7) + صوت ملك (malak_voice بـ +6)
+    * rvc_he_only  : صوتك فقط بـ RVC + صوتها طبيعي صافي
+    * rvc_she_only : صوت ملك فقط بـ RVC + صوته طبيعي صافي
+    * no_rvc       : إلغاء جميع البصمات (الأصوات الطبيعية + الماسترنغ والموسيقى فقط)
 """
 
 import json
@@ -18,10 +19,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-HE_PITCH_CLEAN = os.environ.get("HE_PITCH_CLEAN", "-6").strip()
-HE_PITCH_ROUGH = os.environ.get("HE_PITCH_ROUGH", "-4").strip()
+VOICE_MODE = os.environ.get("VOICE_MODE", "rvc_both").strip().lower()
+HE_PITCH_CLEAN = os.environ.get("HE_PITCH_CLEAN", "-7").strip()
+HE_PITCH_ROUGH = os.environ.get("HE_PITCH_ROUGH", "-6").strip()
+HE_INDEX_RATE = os.environ.get("HE_INDEX_RATE", "0.40").strip()
+
 SHE_PITCH = os.environ.get("SHE_PITCH", "6").strip()
-SHE_INDEX_RATE = os.environ.get("SHE_INDEX_RATE", "0.60").strip()
+SHE_INDEX_RATE = os.environ.get("SHE_INDEX_RATE", "0").strip()
 
 TARGET_SR = "44100"
 
@@ -95,15 +99,15 @@ def _prep_48k_for_rvc(src: Path, dst_48k: Path):
 
 
 def _master_voice_segment(raw_wav: Path, out_wav: Path, is_dua: bool = False):
-    reverb = "aecho=0.8:0.88:85|170:0.20|0.09" if is_dua else "aecho=0.8:0.88:48|98:0.15|0.06"
+    reverb = "aecho=0.8:0.88:85|170:0.18|0.08" if is_dua else "aecho=0.8:0.88:45|90:0.13|0.05"
     af = (
         "highpass=f=80,"
         "lowpass=f=9500,"
-        "equalizer=f=190:width_type=o:width=1.2:g=2.5,"
-        "equalizer=f=2400:width_type=o:width=0.9:g=-2.6,"
-        "equalizer=f=4200:width_type=o:width=0.9:g=-2.5,"
-        "equalizer=f=6800:width_type=o:width=1.1:g=-2.0,"
-        "acompressor=threshold=-20dB:ratio=2.3:attack=18:release=200,"
+        "equalizer=f=190:width_type=o:width=1.2:g=2.2,"
+        "equalizer=f=2400:width_type=o:width=0.9:g=-2.4,"
+        "equalizer=f=4200:width_type=o:width=0.9:g=-2.4,"
+        "equalizer=f=6800:width_type=o:width=1.1:g=-1.8,"
+        "acompressor=threshold=-20dB:ratio=2.2:attack=18:release=200,"
         f"apad=pad_dur=0.25,{reverb},"
         "areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-50dB,areverse,"
         "loudnorm=I=-15:TP=-1.5:LRA=9,alimiter=limit=0.95"
@@ -120,7 +124,7 @@ def _mix_with_sidechain(voice_wav: Path, bg_wav: Path, out_mp3: Path, total_dur:
     fc = (
         f"[0:a]apad=pad_dur=1.2[v_pad];"
         f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.2:.2f},"
-        f"aresample={TARGET_SR},lowpass=f=4500,volume=0.26,afade=t=in:st=0:d=1.8,"
+        f"aresample={TARGET_SR},lowpass=f=4500,volume=0.24,afade=t=in:st=0:d=1.8,"
         f"afade=t=out:st={fade_out_st:.2f}:d=2.2[bg];"
         f"[v_pad]asplit=2[v_main][v_sc];"
         f"[bg][v_sc]sidechaincompress=threshold=0.025:ratio=4.5:attack=25:release=450[bg_ducked];"
@@ -142,7 +146,7 @@ def _mix_with_sidechain(voice_wav: Path, bg_wav: Path, out_mp3: Path, total_dur:
                 "ffmpeg", "-y",
                 "-i", str(voice_wav), "-i", str(bg_wav),
                 "-filter_complex",
-                f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.0:.2f},aresample={TARGET_SR},volume=0.16[bg];"
+                f"[1:a]aloop=loop=-1:size=2e+09,atrim=0:{total_dur + 1.0:.2f},aresample={TARGET_SR},volume=0.15[bg];"
                 "[0:a][bg]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95",
                 "-ar", TARGET_SR, "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3),
             ],
@@ -155,24 +159,27 @@ def convert_episode(in_mp3: str, out_mp3: str):
     out_p = Path(out_mp3).resolve()
     out_p.parent.mkdir(parents=True, exist_ok=True)
 
+    use_he_rvc = VOICE_MODE in ("rvc_both", "rvc_he_only")
+    use_she_rvc = VOICE_MODE in ("rvc_both", "rvc_she_only")
+
     meta_path = in_p.with_name(f"{in_p.stem}_meta.json")
-    rvc_dir = _find_rvc_dir()
+    rvc_dir = _find_rvc_dir() if (use_he_rvc or use_she_rvc) else None
 
     search_roots = [REPO_ROOT]
     if rvc_dir:
         search_roots.extend([rvc_dir, rvc_dir / "assets" / "weights", rvc_dir / "assets" / "indices"])
 
-    clean_pth = _find_first_existing([d / "clean.pth" for d in search_roots])
-    clean_idx = _find_first_existing([d / "clean.index" for d in search_roots])
+    clean_pth = _find_first_existing([d / "clean.pth" for d in search_roots] + [d / "my_clean_voice.pth" for d in search_roots])
+    clean_idx = _find_first_existing([d / "clean.index" for d in search_roots] + [d / "added_my_clean_voice.index" for d in search_roots])
     rough_pth = _find_first_existing([d / "rough.pth" for d in search_roots])
     rough_idx = _find_first_existing([d / "rough.index" for d in search_roots])
 
     malak_pth = _find_first_existing([d / "malak_voice.pth" for d in search_roots])
     malak_idx = _find_first_existing([d / "added_malak_voice.index" for d in search_roots])
 
-    print(f"🔎 RVC Dir: {rvc_dir or 'غير موجود'}", flush=True)
-    print(f"   • صوتك (clean/rough): {'✅' if clean_pth else '⚠️ مفقود'} | {'✅' if rough_pth else '⚠️ مفقود'}", flush=True)
-    print(f"   • صوتها (malak_voice): {'✅' if malak_pth else '⚠️ مفقود'} | pitch={SHE_PITCH} | index={SHE_INDEX_RATE}", flush=True)
+    print(f"🎛️ VOICE_MODE={VOICE_MODE} | RVC={'مفعّل' if rvc_dir else 'معطّل'}", flush=True)
+    print(f"   • بصمتك (he={use_he_rvc}): clean={'✅' if clean_pth else '—'} | rough={'✅' if rough_pth else '—'} | pitch={HE_PITCH_CLEAN}", flush=True)
+    print(f"   • بصمتها (she={use_she_rvc}): malak={'✅' if malak_pth else '—'} | pitch={SHE_PITCH} | index={SHE_INDEX_RATE}", flush=True)
 
     env = os.environ.copy()
     if rvc_dir:
@@ -185,7 +192,7 @@ def convert_episode(in_mp3: str, out_mp3: str):
         in48 = work / "in48.wav"
         _prep_48k_for_rvc(in_p, in48)
         conv = work / "conv.wav"
-        if rvc_dir and malak_pth:
+        if rvc_dir and use_she_rvc and malak_pth:
             _run_rvc_cli(in48, conv, malak_pth, malak_idx, SHE_PITCH, SHE_INDEX_RATE, rvc_dir, env)
         else:
             shutil.copy2(in48, conv)
@@ -217,13 +224,13 @@ def convert_episode(in_mp3: str, out_mp3: str):
         _prep_48k_for_rvc(dry_wav, in48)
         raw_conv = work_dir / f"seg_{idx:03d}_rvc.wav"
 
-        if rvc_dir and speaker == "he" and clean_pth:
-            print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصوتك (87.5% clean + 12.5% rough)...", flush=True)
+        if rvc_dir and speaker == "he" and use_he_rvc and clean_pth:
+            print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصمتك (pitch={HE_PITCH_CLEAN})...", flush=True)
             c_wav = work_dir / f"seg_{idx:03d}_clean.wav"
-            _run_rvc_cli(in48, c_wav, clean_pth, clean_idx, HE_PITCH_CLEAN, "0.45", rvc_dir, env)
+            _run_rvc_cli(in48, c_wav, clean_pth, clean_idx, HE_PITCH_CLEAN, HE_INDEX_RATE, rvc_dir, env)
             if rough_pth:
                 r_wav = work_dir / f"seg_{idx:03d}_rough.wav"
-                _run_rvc_cli(in48, r_wav, rough_pth, rough_idx, HE_PITCH_ROUGH, "0.45", rvc_dir, env)
+                _run_rvc_cli(in48, r_wav, rough_pth, rough_idx, HE_PITCH_ROUGH, HE_INDEX_RATE, rvc_dir, env)
                 subprocess.run(
                     [
                         "ffmpeg", "-y", "-i", str(c_wav), "-i", str(r_wav),
@@ -235,12 +242,12 @@ def convert_episode(in_mp3: str, out_mp3: str):
             else:
                 shutil.copy2(c_wav, raw_conv)
 
-        elif rvc_dir and speaker == "she" and malak_pth:
-            print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصوت ملك (malak_voice | pitch={SHE_PITCH})...", flush=True)
+        elif rvc_dir and speaker == "she" and use_she_rvc and malak_pth:
+            print(f"🎙️ [{idx+1}/{len(segs)}] تحويل بصمة ملك (pitch={SHE_PITCH} | index={SHE_INDEX_RATE})...", flush=True)
             _run_rvc_cli(in48, raw_conv, malak_pth, malak_idx, SHE_PITCH, SHE_INDEX_RATE, rvc_dir, env)
 
         else:
-            print(f"   ⚠️ تخطي RVC للمقطع {idx+1} ({speaker}) — استخدام الماسترنغ المباشر.", flush=True)
+            print(f"✨ [{idx+1}/{len(segs)}] الصوت الطبيعي الصافي + الماسترنغ ({speaker})", flush=True)
             shutil.copy2(in48, raw_conv)
 
         mastered_seg = work_dir / f"seg_{idx:03d}_master.wav"
