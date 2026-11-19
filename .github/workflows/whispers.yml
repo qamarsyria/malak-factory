@@ -27,7 +27,7 @@ on:
           - she
           - duet
       voice_mode:
-        description: 'التحكم ببصمات الصوت (أو إلغاؤها فوراً بدون تعديل الكود)'
+        description: 'التحكم ببصمات الصوت (أو إلغاؤها بدون تعديل الكود)'
         required: false
         default: 'rvc_both'
         type: choice
@@ -47,24 +47,27 @@ on:
         default: '6'
         type: string
       she_index_rate:
-        description: 'نسبة Index لصوت ملك (0 لأنعم صوت)'
+        description: 'نسبة Index لصوت ملك (0.40 مطابق للقرآن أو 0 لأنعم)'
         required: false
-        default: '0'
+        default: '0.40'
         type: choice
         options:
+          - '0.40'
           - '0'
           - '0.25'
           - '0.60'
       base_voice_she:
         description: 'صوت القاعدة قبل بصمة ملك'
         required: false
-        default: 'Charon'
+        default: 'Orus'
         type: choice
         options:
-          - Charon
+          - Orus
+          - Kore
+          - Sulafat
           - Aoede
           - Leda
-          - Kore
+          - Charon
 
 jobs:
   whispers:
@@ -241,8 +244,8 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
           VOICE_MODE: ${{ steps.cfg.outputs.voice_mode }}
-          BASE_VOICE_HE: Charon
-          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Charon' }}
+          BASE_VOICE_HE: Orus
+          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Orus' }}
         run: |
           python -u scripts/whispers_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -259,10 +262,10 @@ jobs:
         env:
           VOICE_MODE: ${{ steps.cfg.outputs.voice_mode }}
           HE_PITCH_CLEAN: ${{ github.event.inputs.he_pitch || '-7' }}
-          HE_PITCH_ROUGH: ${{ github.event.inputs.he_pitch || '-6' }}
+          HE_PITCH_ROUGH: '-6'
           HE_INDEX_RATE: '0.40'
           SHE_PITCH: ${{ github.event.inputs.she_pitch || '6' }}
-          SHE_INDEX_RATE: ${{ github.event.inputs.she_index_rate || '0' }}
+          SHE_INDEX_RATE: ${{ github.event.inputs.she_index_rate || '0.40' }}
         run: |
           python -u malak_converter.py \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
