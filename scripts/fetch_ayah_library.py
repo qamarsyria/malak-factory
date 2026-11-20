@@ -1,7 +1,7 @@
-import os
+import gzip
 import json
 import sys
-import gzip
+import time
 from pathlib import Path
 import requests
 
@@ -9,63 +9,63 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = _REPO_ROOT / "data" / "libraries"
 OUTPUT_FILE = OUTPUT_DIR / "ayah-library.json.gz"
 
+
+def fetch_json_with_retry(url: str, retries: int = 3) -> dict:
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, timeout=40)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            if attempt == retries:
+                raise e
+            time.sleep(2 * attempt)
+    return {}
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print("⬇️ جاري تحميل القرآن الكريم كاملاً + التفسير الميسر...")
-    
+    print("⬇️ جاري تحميل القرآن الكريم (الرسم العثماني) + التفسير الميسر...")
+
     try:
-        print("📖 جاري تحميل النص العثماني...")
-        url_quran = "https://api.alquran.cloud/v1/quran/quran-uthmani"
-        r_quran = requests.get(url_quran, timeout=30)
-        if r_quran.status_code != 200:
-            print(f"❌ فشل تحميل النص: HTTP {r_quran.status_code}")
-            sys.exit(1)
-        quran_data = r_quran.json()["data"]["surahs"]
-        
-        print("📚 جاري تحميل التفسير الميسر...")
-        url_tafsir = "https://api.alquran.cloud/v1/quran/ar.muyassar"
-        r_tafsir = requests.get(url_tafsir, timeout=30)
-        if r_tafsir.status_code != 200:
-            print(f"❌ فشل تحميل التفسير: HTTP {r_tafsir.status_code}")
-            sys.exit(1)
-        tafsir_data = r_tafsir.json()["data"]["surahs"]
-        
-        print("🔗 جاري دمج الآيات مع التفسير...")
+        quran_data = fetch_json_with_retry("https://api.alquran.cloud/v1/quran/quran-uthmani")["data"]["surahs"]
+        tafsir_data = fetch_json_with_retry("https://api.alquran.cloud/v1/quran/ar.muyassar")["data"]["surahs"]
+
+        tafsir_map: dict[tuple[int, int], str] = {}
+        for surah in tafsir_data:
+            s_num = int(surah["number"])
+            for ayah in surah["ayahs"]:
+                tafsir_map[(s_num, int(ayah["numberInSurah"]))] = (ayah.get("text") or "").strip()
+
         ayah_library = []
-        
-        # دمج السور والآيات
-        for surah_idx, surah in enumerate(quran_data):
-            surah_name = surah["name"]
-            surah_number = surah["number"]
-            tafsir_surah = tafsir_data[surah_idx]
-            
-            for ayah_idx, ayah in enumerate(surah["ayahs"]):
-                ayah_number = ayah["numberInSurah"]
-                text = ayah["text"]
-                tafsir = tafsir_surah["ayahs"][ayah_idx]["text"]
-                
+        for surah in quran_data:
+            s_num = int(surah["number"])
+            s_name = surah["name"]
+            for ayah in surah["ayahs"]:
+                a_num = int(ayah["numberInSurah"])
                 ayah_library.append({
-                    "id": f"ayah-{surah_number:03d}-{ayah_number:03d}",
-                    "surah_number": surah_number,
-                    "surah_name": surah_name,
-                    "ayah_number": ayah_number,
-                    "text": text,
-                    "tafsir": tafsir,
-                    "type": "quran"
+                    "id": f"ayah-{s_num:03d}-{a_num:03d}",
+                    "surah_number": s_num,
+                    "surah_name": s_name,
+                    "ayah_number": a_num,
+                    "text": (ayah.get("text") or "").strip(),
+                    "tafsir": tafsir_map.get((s_num, a_num), ""),
+                    "type": "quran",
                 })
-                
-        print(f"📝 تم تجميع {len(ayah_library)} آية مع تفسيرها.")
-        
-        print("🗜️ جاري ضغط الملف...")
+
+        if len(ayah_library) < 6000:
+            raise RuntimeError(f"عدد الآيات غير مكتمل: {len(ayah_library)}")
+
         with gzip.open(OUTPUT_FILE, "wt", encoding="utf-8") as f:
             json.dump(ayah_library, f, ensure_ascii=False)
-            
+
         size_mb = OUTPUT_FILE.stat().st_size / (1024 * 1024)
-        print(f"✅ تم حفظ مكتبة الآيات بنجاح في: {OUTPUT_FILE} (الحجم: {size_mb:.1f} ميجابايت)")
-        
+        print(f"✅ تم حفظ {len(ayah_library)} آية مع التفسير الميسر في: {OUTPUT_FILE} ({size_mb:.1f} MB)")
+
     except Exception as e:
-        print(f"❌ حدث خطأ: {e}")
+        print(f"❌ فشل تحميل مكتبة الآيات: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
