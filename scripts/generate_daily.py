@@ -28,10 +28,6 @@ SALAF_SYSTEM_PROMPT = """أنت عالم ومُحرر محتوى دعوي متخ
    - اجعل العنوان (title) مختصراً جداً (لا يتجاوز 45 حرفاً بدون أي أقواس أو إيموجي) حتى لا يخرج عن عرض شاشة الفيديو.
 4. أعد JSON فقط بالبنية المطلوبة دون أي كلام قبله أو بعده."""
 
-
-# ═══════════════════════════════════════════════════════════════
-# أدوات التنظيف والتوافق مع story_audio.py و story_video.py
-# ═══════════════════════════════════════════════════════════════
 _DIGIT_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
 
@@ -58,6 +54,23 @@ def make_title_safe(title: str, fallback: str) -> str:
         words = t[:46].rsplit(" ", 1)[0].strip()
         return words if words else t[:46]
     return t
+
+
+def format_repeat_ar(rep: int) -> str:
+    mapping = {
+        1: "",
+        2: "مرتين",
+        3: "ثلاث مرات",
+        4: "أربع مرات",
+        5: "خمس مرات",
+        7: "سبع مرات",
+        10: "عشر مرات",
+        33: "ثلاثاً وثلاثين مرة",
+        100: "مئة مرة",
+    }
+    if rep in mapping:
+        return mapping[rep]
+    return f"{rep} مرة"
 
 
 def load_library(filename: str) -> list:
@@ -87,9 +100,6 @@ def pick_unused(items: list, used_ids: list[str], predicate=None) -> tuple[dict 
     return picked, used_ids
 
 
-# ═══════════════════════════════════════════════════════════════
-# محرك الذكاء الاصطناعي (GitHub Models + احتياط Gemini)
-# ═══════════════════════════════════════════════════════════════
 def _extract_json(raw_text: str) -> dict | None:
     if not raw_text:
         return None
@@ -139,7 +149,6 @@ def call_llm_json(user_prompt: str) -> dict | None:
             except Exception as e:
                 print(f"   ⚠️ خطأ GitHub Models ({model}): {e}", flush=True)
 
-    # احتياط Gemini
     raw_keys = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
     keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
     for key in keys[:4]:
@@ -171,14 +180,13 @@ def call_llm_json(user_prompt: str) -> dict | None:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 1) الفقه الإسلامي (سؤال وجواب وشرح مبسط على النهج السلفي)
+# 1) الفقه الإسلامي
 # ═══════════════════════════════════════════════════════════════
 def build_fiqh_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]]:
     lib = load_library("fiqh-library.json.gz")
     if not lib:
         raise RuntimeError("❌ مكتبة الفقه فارغة.")
 
-    # موازنة الاختيار بين فتاوى ابن باز وكتب ابن عثيمين والسلف
     prefer_uthaymeen = (len(used_ids) % 3 == 2)
     subset_pred = (lambda x: x.get("id", "").startswith("salaf-")) if prefer_uthaymeen else (lambda x: x.get("id", "").startswith("binbaz-"))
     item, used_ids = pick_unused(lib, used_ids, predicate=subset_pred)
@@ -230,10 +238,13 @@ def build_fiqh_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]]
 
 
 # ═══════════════════════════════════════════════════════════════
-# 2) الحديث الشريف وشرحه (من موسوعة الأحاديث النبوية)
+# 2) الحديث الشريف وشرحه
 # ═══════════════════════════════════════════════════════════════
-def _enrich_hadith_from_henc(item: dict) -> dict:
-    if item.get("explanation") or not item.get("henc_id"):
+def _enrich_hadith_from_henc(item: dict) -> dict | None:
+    if not item.get("henc_id") or item.get("explanation"):
+        grade = (item.get("grade") or "").strip()
+        if grade and not any(g in grade for g in ("صحيح", "حسن", "متفق عليه")):
+            return None
         return item
     try:
         r = requests.get(
@@ -245,7 +256,7 @@ def _enrich_hadith_from_henc(item: dict) -> dict:
             d = r.json()
             grade = (d.get("grade") or "").strip()
             if grade and not any(g in grade for g in ("صحيح", "حسن", "متفق عليه")):
-                return item
+                return None
             item["text"] = (d.get("hadeeth") or item.get("text", "")).strip()
             item["attribution"] = (d.get("attribution") or "").strip()
             item["grade"] = grade or "صحيح"
@@ -262,19 +273,18 @@ def build_hadith_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str
     if not lib:
         raise RuntimeError("❌ مكتبة الحديث فارغة.")
 
-    # تفضيل الأحاديث ذات الشرح الجاهز أو جلب شرحها حياً من HadeethEnc
     item = None
-    for _ in range(5):
+    for _ in range(8):
         cand, used_ids = pick_unused(lib, used_ids)
         if not cand:
             break
-        cand = _enrich_hadith_from_henc(cand)
-        if cand.get("text") and len(cand.get("text", "")) <= 1200:
-            item = cand
+        enriched = _enrich_hadith_from_henc(cand)
+        if enriched and enriched.get("text") and len(enriched.get("text", "")) <= 1200:
+            item = enriched
             break
 
     if not item:
-        raise RuntimeError("❌ لم يتم العثور على حديث مناسب.")
+        raise RuntimeError("❌ لم يتم العثور على حديث صحيح مناسب.")
 
     matn = item.get("text", "")
     attribution = item.get("attribution", "")
@@ -336,7 +346,7 @@ def build_hadith_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str
 
 
 # ═══════════════════════════════════════════════════════════════
-# 3) آية وحكاية (آية عشوائية يومياً مع التفسير الميسر والسعدي وابن كثير)
+# 3) آية وحكاية
 # ═══════════════════════════════════════════════════════════════
 def _fetch_extra_tafsir(edition: str, surah: int, ayah: int) -> str:
     url = f"https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir/{edition}/{surah}/{ayah}.json"
@@ -355,7 +365,6 @@ def build_quran_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]
     if not lib:
         raise RuntimeError("❌ مكتبة الآيات فارغة.")
 
-    # اختيار آيات ذات معنى مكتمل وتفسير واضح
     item, used_ids = pick_unused(
         lib,
         used_ids,
@@ -370,7 +379,6 @@ def build_quran_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]
     ayah_text = item["text"]
     muyassar = item["tafsir"]
 
-    # إثراء التفسير بتفسير السعدي وابن كثير
     saadi = _fetch_extra_tafsir("ar-tafseer-al-saddi", s_num, a_num)
     ibn_kathir = _fetch_extra_tafsir("ar-tafsir-ibn-kathir", s_num, a_num)
 
@@ -425,7 +433,7 @@ def build_quran_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]
 
 
 # ═══════════════════════════════════════════════════════════════
-# 4) أذكار الصباح والمساء وقبل النوم (بالتناوب من حصن المسلم)
+# 4) أذكار الصباح والمساء وقبل النوم
 # ═══════════════════════════════════════════════════════════════
 def build_adhkar_episode(used_ids: list[str], state: dict) -> tuple[str, list[dict], list[str]]:
     lib = load_library("adhkar-library.json.gz")
@@ -498,9 +506,10 @@ def build_adhkar_episode(used_ids: list[str], state: dict) -> tuple[str, list[di
         title = make_title_safe(f"{slot_label} المباركة", slot_label)
         segments.append({"type": "intro", "text": f"في هذا المقطع نستذكر باقة مباركة من {slot_label} الثابتة عن النبي صلى الله عليه وسلم."})
         for x in picked_list:
-            rep = x.get("repeat", 1)
+            rep = int(x.get("repeat", 1) or 1)
+            rep_txt = format_repeat_ar(rep)
             bless = x.get("bless", "")
-            lead = f"يُقال هذا الذكر {rep} مرة. {bless}" if rep > 1 else bless
+            lead = f"يُقال هذا الذكر {rep_txt}. {bless}".strip() if rep_txt else bless
             if lead.strip():
                 segments.append({"type": "narration", "text": make_tts_safe(lead)})
             segments.append({"type": "adhkar", "text": make_tts_safe(x["text"])})
