@@ -17,6 +17,10 @@ on:
           - quran
           - adhkar
 
+env:
+  # غيّرها إلى "true" بعد الاطمئنان لتجارب التلاوة على تيليجرام لتفعيل النشر التلقائي
+  AUTO_PUBLISH: "false"
+
 jobs:
   produce:
     runs-on: ubuntu-latest
@@ -72,6 +76,7 @@ jobs:
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TTS_ENGINE: "1"
         run: |
           python -u scripts/story_audio.py \
@@ -145,6 +150,32 @@ jobs:
 
           upload_tg "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4" "yt" "نسخة اليوتيوب"
           upload_tg "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4" "social" "نسخة فيسبوك/تيك توك"
+
+      - name: Publish to YouTube
+        if: steps.vid_yt.outcome == 'success' && env.AUTO_PUBLISH == 'true'
+        continue-on-error: true
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: |
+          if [ -f scripts/publish_youtube.py ]; then
+            python -u scripts/publish_youtube.py \
+              "videos/${{ steps.gen.outputs.EP_NAME }}_yt.mp4" \
+              "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json"
+          fi
+
+      - name: Publish to Facebook & TikTok (Zernio)
+        if: steps.vid_soc.outcome == 'success' && env.AUTO_PUBLISH == 'true'
+        continue-on-error: true
+        env:
+          ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+        run: |
+          if [ -f scripts/publish_zernio.py ]; then
+            python -u scripts/publish_zernio.py \
+              "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4" \
+              "out/${{ steps.gen.outputs.EP_NAME }}_social_meta.json"
+          fi
 
       - name: Cleanup and Save State
         if: steps.tg.outcome == 'success'
