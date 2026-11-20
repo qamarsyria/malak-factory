@@ -1,10 +1,10 @@
 """
 story_audio.py — المرحلة 4: بناء الصوت
-- تعدد نبرات الصوت في الفقه والمحتوى اليومي: نبرة للسؤال، نبرة للفتوى/الحديث، ونبرة رصينة للشرح.
+- تعدد نبرات الصوت في الفقه والمحتوى اليومي: نبرة للسؤال (Puck)، نبرة للفتوى/الحديث (Orus)، نبرة رصينة للشرح (Charon).
 - نسختان للقرآن الكريم:
   * Social: تلاوة بشرية من القراء (العفاسي، السديس، الغامدي، الدوسري، القطامي).
   * YouTube: قراءة Gemini لنص (quran-simple) الإملائي المشكول مع صدى وجو مسجد هادئ جداً للآية فقط.
-- تشكيل ثنائي المراحل + تهجي صوتي احتياطي عند تفعيل Edge TTS.
+- تشكيل ثنائي المراحل + احتياط GitHub Models + تهجي صوتي عند تفعيل Edge TTS.
 """
 
 import os
@@ -33,7 +33,6 @@ from gemini_tts_pool import get_pool, gemini_tts_with_pool
 
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
 
-# خريطة النبرات الصوتية حسب الدور في الحلقة
 VOICE_BY_TYPE = {
     "intro":     "Puck",        # نبرة حيوية واضحة لطرح السؤال والمقدمة
     "teaser":    "Puck",
@@ -287,7 +286,6 @@ def _call_diac_json(prompt: str, timeout: int = 75) -> dict | None:
     except Exception:
         pass
 
-    # احتياط التشكيل عبر GitHub Models لو تعطلت مفاتيح Gemini
     gh_token = os.getenv("GITHUB_TOKEN", "").strip()
     if gh_token:
         for gh_model in ("openai/gpt-4o-mini", "openai/gpt-4o"):
@@ -398,9 +396,6 @@ def sanitize_for_tts(t: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-# ═══════════════════════════════════════════════════════════
-# تجهيز الآية القرآنية لنطق سليم لـ Gemini (quran-simple) + صدى المسجد
-# ═══════════════════════════════════════════════════════════
 def _load_local_uthmani_cache():
     if QURAN_LOCAL_CACHE or not AYAH_LIBRARY.exists():
         return
@@ -437,27 +432,15 @@ def get_simple_ayah_text(surah: int, ayah: int) -> str:
 
 
 def prepare_quran_for_gemini_tts(text: str) -> str:
-    """تحويل أي رموز عثمانية إلى إملاء قياسي مشكول يفهمه Gemini بدقة."""
+    """تحويل أي رموز عثمانية وألفات خنجرية إلى إملاء قياسي مشكول يفهمه Gemini بدقة."""
     if not text:
         return ""
-    # إزالة علامات الوقف والسجدات والأحزاب
     t = re.sub(r"[\u06D6-\u06ED۞۩]", "", text)
-    # تحويل همزة الوصل والسكون العثماني
-    t = t.replace("ٱ", "ا").replace("\u06E1", "\u0652").replace("ٰ", "ا")
-    # تصحيح رسم بعض الكلمات العثمانية الشهيرة
-    word_fixes = {
-        "الرَّحْمَان": "الرَّحْمَان",
-        "الصَّلَوة": "الصَّلَاة",
-        "الصَّلَاة": "الصَّلَاة",
-        "الزَّكَوة": "الزَّكَاة",
-        "الْحَيَوة": "الْحَيَاة",
-        "الْمِشْكَوة": "الْمِشْكَاة",
-        "الغَدَوة": "الْغَدَاة",
-    }
-    for k, v in word_fixes.items():
-        t = t.replace(k, v)
+    t = t.replace("ٱ", "ا").replace("\u06E1", "\u0652")
+    # معالجة الواو والياء متبوعة بألف خنجرية قبل الاستبدال العام (مثل الصلوٰة -> الصلاة، علىٰ -> على)
+    t = t.replace("وٰ", "ا").replace("ىٰ", "ى")
+    t = t.replace("ٰ", "ا")
 
-    # فك الحروف المقطعة إن وردت في الآية
     muqattaat = {
         "الم": "أَلِفْ لَامْ مِيمْ",
         "المص": "أَلِفْ لَامْ مِيمْ صَادْ",
@@ -473,9 +456,8 @@ def prepare_quran_for_gemini_tts(text: str) -> str:
         "ق": "قَافْ",
         "ن": "نُونْ",
     }
-    tokens = t.split()
     out_tokens = []
-    for tok in tokens:
+    for tok in t.split():
         skel = re.sub(r"[\u064B-\u065F\u0670]", "", tok)
         if skel in muqattaat:
             out_tokens.append(muqattaat[skel])
@@ -710,7 +692,6 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                     continue
                 display = seg.get("display") or (f"{sname}: {ayahs[0]}" if sname else f"{s}:{ayahs[0]}")
 
-                # ── نسخة اليوتيوب: قراءة Gemini لنص quran-simple + صدى المسجد الهادئ ──
                 if build_yt:
                     print(f"   🕌 آيات اليوتيوب {s}:{ayahs} → Gemini ({YT_QURAN_VOICE}) + صدى مسجد هادئ", flush=True)
                     yt_chunks = []
@@ -754,7 +735,6 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                             "chunks": yt_chunks,
                         })
 
-                # ── نسخة السوشيال: تلاوة القراء البشريين من EveryAyah ──
                 if build_social:
                     reciter_social = next_social_reciter()
                     print(f"   🎙️ آيات السوشيال {s}:{ayahs} → {reciter_social['name']}", flush=True)
