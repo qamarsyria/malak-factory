@@ -62,7 +62,7 @@ def main():
             "type": "adhkar",
         })
 
-    # 1) أذكار الصباح وأذكار المساء المفصولة بدقة (أصبحنا / أمسينا)
+    # 1) أذكار الصباح وأذكار المساء المفصولة (أصبحنا / أمسينا)
     sabah_data = fetch_json("https://raw.githubusercontent.com/ahegazy/muslimKit/master/docs/json/azkar_sabah.json")
     if isinstance(sabah_data, dict):
         for item in sabah_data.get("content", []):
@@ -73,7 +73,7 @@ def main():
         for item in massa_data.get("content", []):
             add_zekr("masaa", item.get("zekr", ""), item.get("repeat", 1), item.get("bless", ""), "حصن المسلم — أذكار المساء", "أذكار المساء")
 
-    # 2) osamayy/azkar-db (يحتوي الصباح، المساء، وأذكار النوم مع الفضل والتخريج)
+    # 2) osamayy/azkar-db (الصباح + المساء + النوم مع الفضل والتخريج)
     azkar_db = fetch_json("https://raw.githubusercontent.com/osamayy/azkar-db/master/azkar.json")
     if isinstance(azkar_db, list):
         for item in azkar_db:
@@ -89,7 +89,7 @@ def main():
             if "النوم" in cat and "استيقاظ" not in cat and "فزع" not in cat and "تقلب" not in cat:
                 add_zekr("sleep", zekr, cnt, desc, ref, "أذكار قبل النوم")
 
-    # 3) rn0x/Adhkar-json (كتاب حصن المسلم للشيخ سعيد القحطاني رحمه الله)
+    # 3) rn0x/Adhkar-json (حصن المسلم للشيخ سعيد القحطاني رحمه الله)
     hisn_data = fetch_json("https://raw.githubusercontent.com/rn0x/Adhkar-json/main/adhkar.json")
     if isinstance(hisn_data, list):
         for section in hisn_data:
