@@ -2,10 +2,10 @@
 """
 scripts/generate_whispers.py
 ============================
-المحرّك الأدبي واللغوي لمشروع «همسات ملك» (حالات واتساب 35-45 ثانية).
-- أولوية ذكية للنماذج المجانية الفعّالة (gemini-4-hydrogen, gemini-3.5-flash-lite, gemini-3.8-flash).
-- استبعاد تلقائي للنماذج المدفوعة فقط (argon / carbon / neon / pro).
-- أسلوب هادئ رصين + بوابة نحو وصرف وإعراب + قفل عرض «ملك» بلا تشكيل.
+المحرّك الأدبي واللغوي لمشروع «همسات ملك»:
+- المرحلة 1 تكتب النص مشكولاً أصلاً؛ والمرحلة 2 تدققه نحوياً وصرفياً وإعرابياً.
+- بوابة تحقق برمجية تمنع أي نص غير مشكّل (<45% حركات) من الوصول للشاشة.
+- عرض «ملك» بدون أي تشكيل نهائياً على الشاشة، مع تأكيد نطقها في الصوت.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ THEMES = [
         "music_mood": "spiritual_warm",
         "ambient_mood": "spiritual_calm",
         "default_speaker_mode": "he",
-        "visual_brief": "أنيميشن محتشم دافئ: فتاة منقبة بوقار وسط ورود متفتحة، فراشات ذهبية مضيئة، وقطط هادئة تحت ضوء القمر أو الفجر.",
         "writing_guide": (
             "اكتب دعاءً صادقاً هادئاً خاشعاً بنكهة إيمانية راقية، تستودع فيه الله قلبها وسكينتها، "
             "وتدعو أن يجمع الله بينكما في خيرٍ وطُهرٍ وبركة."
@@ -50,7 +49,6 @@ THEMES = [
         "music_mood": "dreamy_piano",
         "ambient_mood": "starlight_magic",
         "default_speaker_mode": "duet",
-        "visual_brief": "عالم فانتازيا خيالي مضيء: غابات ساحرة بأزهار متوهجة، بحيرة نجوم، فراشات كريستال، وجنّيات ضوئية لطيفة.",
         "writing_guide": (
             "اكتب نصاً شعرياً أو نثراً عفيفاً هادئ الإيقاع، يمزج بين صور النجوم والفراشات والغابات المضيئة "
             "والحنين الصادق بوقار ورقي."
@@ -63,7 +61,6 @@ THEMES = [
         "music_mood": "romantic_strings",
         "ambient_mood": "night_rain",
         "default_speaker_mode": "he",
-        "visual_brief": "مشاهد أنيميشن رومانسية محترمة: نافذة دافئة على المطر مع قطة تراقب السماء، أو ممر زهور مضيء بفوانيس.",
         "writing_guide": (
             "اكتب غزلاً عفيفاً هادئاً يتغزل بعفّتها ووقارها وهدوء روحها وجمال حيائها، "
             "بعبارات رقيقة صادقة بلا تكلف."
@@ -76,7 +73,6 @@ THEMES = [
         "music_mood": "romantic_strings",
         "ambient_mood": "starlight_magic",
         "default_speaker_mode": "duet",
-        "visual_brief": "ذروة خيالية تجمع هالة القمر والفراشات الذهبية وأزهار الجنة المضيئة.",
         "writing_guide": (
             "اكتب مقطعاً رقيقاً يدمج بين الرومانسية الهادئة والدعاء، وينتهي بخاتمة صادقة مؤثرة "
             "تجمع أسماءها الثلاثة (ملك، ومريم، وملاك) في جملة مترابطة عذبة."
@@ -148,7 +144,6 @@ def discover_text_models(pool: GeminiKeyPool) -> list[str]:
     if _DISCOVERED_MODELS_CACHE:
         return _DISCOVERED_MODELS_CACHE
 
-    # القائمة المجانية الموثوقة مرتبة حسب الأداء والاستقرار
     safe_defaults = [
         "gemini-4-hydrogen",
         "gemini-3.5-flash-lite",
@@ -159,7 +154,6 @@ def discover_text_models(pool: GeminiKeyPool) -> list[str]:
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
     ]
-    # استبعاد النماذج المدفوعة فقط والنماذج غير النصية
     excluded = (
         "argon", "carbon", "neon", "ultra", "pro",
         "tts", "image", "banana", "imagen", "veo", "lyria", "embedding",
@@ -188,7 +182,7 @@ def discover_text_models(pool: GeminiKeyPool) -> list[str]:
                         ordered.append(m)
                 if ordered:
                     _DISCOVERED_MODELS_CACHE = ordered[:10]
-                    print(f"🧠 [Models] المجانية المختارة: {_DISCOVERED_MODELS_CACHE[:6]}", flush=True)
+                    print(f"🧠 [Models] المختارة: {_DISCOVERED_MODELS_CACHE[:6]}", flush=True)
                     return _DISCOVERED_MODELS_CACHE
             break
     except Exception:
@@ -259,7 +253,7 @@ def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 45) -> dic
                 if r.status_code == 429:
                     txt_low = r.text.lower()
                     if "limit: 0" in txt_low or '"limit":0' in txt_low:
-                        last_err = f"{model}: غير متاح على المجاني (limit=0)"
+                        last_err = f"{model}: limit=0"
                         break
                     pool.mark_cooldown(18.0)
                     tries += 1
@@ -267,7 +261,6 @@ def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 45) -> dic
 
                 if r.status_code == 503:
                     last_err = f"{model}: HTTP 503"
-                    print(f"   ⚠️ {model} مشغول (503)، تجربة المفتاح/النموذج التالي...", flush=True)
                     pool.advance()
                     tries += 1
                     time.sleep(1.5)
@@ -413,9 +406,7 @@ def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str]
         )
 
     if speaker_mode == "duet":
-        speaker_rule = (
-            "الوضع: ثنائي (duet). وزّع الحلقات على 3 مقاطع قصيرة متبادلة بين \"he\" و\"she\"، على أن يبدأ \"he\" ويختم \"he\"."
-        )
+        speaker_rule = "الوضع: ثنائي (duet). وزّع الحلقات على 3 مقاطع قصيرة متبادلة بين \"he\" و\"she\"، على أن يبدأ \"he\" ويختم \"he\"."
     elif speaker_mode == "she":
         speaker_rule = "الوضع: بصوتها (she). اجعل المقاطع بلسانها في مناجاة هادئة ودعاء رقيق (2 أو 3 مقاطع)."
     else:
@@ -440,9 +431,10 @@ def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str]
 
 قواعد إلزامية:
 1. مجموع الكلمات الكلي بين 38 و65 كلمة فقط.
-2. التزم بالهدوء والرزانة والصدق العاطفي؛ **ابتعد تماماً عن المبالغة الدرامية والتمثيل المتكلف**.
-3. يُمنع استخدام كلمات (مَلِك / مُلْك / مَلَكَ بمعنى الحكم أو الامتلاك)؛ كلمة «ملك» تُستخدم حصراً كاسمها الشخصي.
-4. ضع علامات الترقيم العربية الطبيعية فقط (، . … ؟) بدون أي وسوم إنجليزية داخل `raw_text`.
+2. **اكتب `raw_text` مشكولاً تشكيلاً كاملاً بالحركات والشدّة منذ البداية**، مع مراعاة النحو والصرف والممنوع من الصرف للأسماء الثلاثة.
+3. التزم بالهدوء والرزانة والصدق العاطفي؛ ابتعد عن المبالغة الدرامية.
+4. يُمنع استخدام كلمات (مَلِك / مُلْك / مَلَكَ بمعنى الحكم أو الامتلاك)؛ كلمة «ملك» تُستخدم حصراً كاسمها الشخصي.
+5. ضع علامات الترقيم العربية الطبيعية فقط (، . … ؟) بدون أي وسوم إنجليزية.
 
 أعد JSON فقط:
 {{
@@ -452,7 +444,7 @@ def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str]
     {{
       "speaker": "he أو she",
       "pause_after_ms": 450,
-      "raw_text": "النص العربي النقي",
+      "raw_text": "النص العربي المشكول بالكامل",
       "is_climax": false
     }}
   ]
@@ -494,7 +486,6 @@ def _build_pass2_grammar_prompt(draft: dict) -> str:
 
 
 def _fallback_from_bank(theme: dict, speaker_mode: str) -> dict:
-    """احتياط طوارئ من البنك المنقح إذا تعطلت خوادم Gemini تماماً."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
@@ -562,7 +553,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
 
     try:
         pool = GeminiKeyPool()
-        print(f"🌙 [1/3] تأليف حلقة هادئة | المحور: {theme['label']} | الصوت: {speaker_mode}", flush=True)
+        print(f"🌙 [1/3] تأليف حلقة مشكولة | المحور: {theme['label']} | الصوت: {speaker_mode}", flush=True)
         draft = call_gemini_json(pool, _build_pass1_prompt(theme, speaker_mode, recent_titles, recent_openings))
         raw_segs = draft.get("segments") or []
         if not raw_segs:
@@ -573,13 +564,13 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft))
             aud_map = {int(a.get("index", i)): a for i, a in enumerate(audit.get("segments_audit") or [])}
         except Exception as e:
-            print(f"   ⚠️ تعذر التدقيق الثاني ({str(e)[:60]})، متابعة بالمتاح.", flush=True)
+            print(f"   ⚠️ تعذر التدقيق الثاني ({str(e)[:60]})، التحقق من تشكيل المرحلة الأولى...", flush=True)
     except Exception as e:
         print(f"⚠️ تعذر التوليد عبر Gemini ({str(e)[:90]}) — تفعيل البنك المنقح كاحتياط!", flush=True)
         draft = _fallback_from_bank(theme, speaker_mode)
 
     raw_segs = draft.get("segments") or []
-    print("🔒 [3/3] الدمج الآمن + قفل اسم «ملك»...", flush=True)
+    print("🔒 [3/3] فحص كثافة التشكيل + قفل اسم «ملك»...", flush=True)
     final_segments = []
     all_names_found = set()
 
@@ -592,6 +583,26 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         diac_cand = re.sub(r"\s+", " ", (aud.get("diacritized_text") or seg.get("diacritized_override") or raw_text).strip())
         merged_diac = _merge_diacritics_safely(raw_text, diac_cand)
         ratio = _diacritic_ratio(merged_diac)
+
+        # إذا فشل التشكيل وبقي النص شبه عارٍ (<0.42)، أعد المحاولة قبل اعتماده!
+        if ratio < 0.42:
+            print(f"   ⚠️ كثافة التشكيل منخفضة بالمقطع {idx} ({ratio:.2f})، إعادة التشكيل قسرياً...", flush=True)
+            try:
+                pool_retry = GeminiKeyPool()
+                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"raw_text": raw_text}]}))
+                cand2 = (r2.get("segments_audit") or [{}])[0].get("diacritized_text", "").strip()
+                if cand2:
+                    merged_diac = _merge_diacritics_safely(raw_text, cand2)
+                    ratio = _diacritic_ratio(merged_diac)
+            except Exception:
+                pass
+
+        # إن بقي غير مشكّل إطلاقاً (<0.30)، استبدله بالبنك المنقح حتى لا يظهر نص عارٍ على الشاشة
+        if ratio < 0.30:
+            print(f"   🚨 تعذر تشكيل المقطع {idx}، استخدام بديل مشكّل من البنك المنقح.", flush=True)
+            fb = _fallback_from_bank(theme, seg.get("speaker", "he"))["segments"][0]
+            merged_diac = fb["diacritized_override"]
+            ratio = _diacritic_ratio(merged_diac)
 
         display_text = _strip_malak_for_display(merged_diac)
         tts_text = _lock_names_for_tts(merged_diac)
@@ -612,7 +623,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         final_segments.append({
             "index": idx,
             "speaker": spk,
-            "style": "calm, natural, warm, poised conversational reading, understated sincerity, no theatrics",
+            "style": "warm and unhurried, gentle natural reading",
             "tag_before": "",
             "pause_after_ms": int(seg.get("pause_after_ms") or 450),
             "raw_text": raw_text,
