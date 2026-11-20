@@ -1,7 +1,7 @@
-import os
+import gzip
 import json
 import sys
-import gzip
+import time
 from pathlib import Path
 import requests
 
@@ -9,54 +9,179 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = _REPO_ROOT / "data" / "libraries"
 OUTPUT_FILE = OUTPUT_DIR / "hadith-library.json.gz"
 
-# روابط مباشرة لملفات JSON من Hugging Face
-URLS = {
-    "bukhari": "https://huggingface.co/datasets/meeAtif/hadith_datasets/resolve/main/Sahih%20al-Bukhari.json",
-    "muslim": "https://huggingface.co/datasets/meeAtif/hadith_datasets/resolve/main/Sahih%20Muslim.json"
-}
+HADEETHENC_BASE = "https://hadeethenc.com/api/v1"
+ALLOWED_GRADES = ("صحيح", "حسن", "متفق عليه")
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print("⬇️ جاري تحميل مكتبة الحديث (صحيح البخاري وصحيح مسلم)...")
-    
-    all_hadiths = []
-    
-    for book_name, url in URLS.items():
-        print(f"📥 تحميل {book_name}...")
+
+def fetch_from_hadeethenc() -> list[dict]:
+    print("⬇️ جاري تحميل موسوعة الأحاديث النبوية وشروحها (HadeethEnc.com)...")
+    session = requests.Session()
+    session.headers.update({"User-Agent": "MalakAlMarifaBot/1.0"})
+
+    try:
+        r_cats = session.get(f"{HADEETHENC_BASE}/categories/list/?language=ar", timeout=20)
+        r_cats.raise_for_status()
+        categories = r_cats.json()
+    except Exception as e:
+        print(f"   ⚠️ تعذر جلب أقسام HadeethEnc: {e}")
+        return []
+
+    # جمع معرّفات الأحاديث من الأقسام الرئيسية والفرعية
+    stubs: dict[str, dict] = {}
+    for cat in categories:
+        cat_id = cat.get("id")
+        cat_title = cat.get("title", "")
+        if not cat_id:
+            continue
+        for page in (1, 2):
+            try:
+                r_list = session.get(
+                    f"{HADEETHENC_BASE}/hadeeths/list/",
+                    params={"language": "ar", "category_id": cat_id, "page": page, "per_page": 50},
+                    timeout=20,
+                )
+                if r_list.status_code != 200:
+                    break
+                payload = r_list.json()
+                data = payload.get("data", [])
+                if not data:
+                    break
+                for row in data:
+                    hid = str(row.get("id", "")).strip()
+                    if hid and hid not in stubs:
+                        stubs[hid] = {
+                            "id": f"henc-{hid}",
+                            "henc_id": hid,
+                            "title": (row.get("title") or "").strip(),
+                            "category": cat_title,
+                        }
+                if len(stubs) >= 1200:
+                    break
+                meta = payload.get("meta", {})
+                if int(meta.get("current_page", 1)) >= int(meta.get("last_page", 1)):
+                    break
+            except Exception:
+                break
+        if len(stubs) >= 1200:
+            break
+
+    print(f"   📚 تم حصر {len(stubs)} حديث، جاري تحميل التفاصيل والشروح لأول 250 حديثاً...")
+    all_ids = list(stubs.keys())
+    detailed_map: dict[str, dict] = {}
+
+    # جلب الشروح والتخريجات بدفعات من 25 حديثاً
+    for i in range(0, min(len(all_ids), 250), 25):
+        batch = all_ids[i : i + 25]
+        try:
+            r_mul = session.get(
+                f"{HADEETHENC_BASE}/hadeeths/multiple/",
+                params={"language": "ar", "ids": ",".join(batch)},
+                timeout=25,
+            )
+            if r_mul.status_code == 200:
+                rows = r_mul.json()
+                if isinstance(rows, list):
+                    for item in rows:
+                        hid = str(item.get("id", "")).strip()
+                        grade = (item.get("grade") or "").strip()
+                        if grade and not any(g in grade for g in ALLOWED_GRADES):
+                            continue
+                        if hid and item.get("hadeeth") and item.get("explanation"):
+                            detailed_map[hid] = item
+            time.sleep(0.25)
+        except Exception:
+            continue
+
+    results = []
+    for hid, stub in stubs.items():
+        if hid in detailed_map:
+            d = detailed_map[hid]
+            results.append({
+                "id": stub["id"],
+                "henc_id": hid,
+                "title": d.get("title") or stub["title"],
+                "category": stub["category"],
+                "text": (d.get("hadeeth") or "").strip(),
+                "attribution": (d.get("attribution") or "").strip(),
+                "grade": (d.get("grade") or "صحيح").strip(),
+                "explanation": (d.get("explanation") or "").strip(),
+                "hints": d.get("hints") or [],
+                "words_meanings": d.get("words_meanings") or [],
+                "source": "موسوعة الأحاديث النبوية HadeethEnc.com",
+                "type": "hadith",
+            })
+        else:
+            # يحتفظ بالمعرّف ليتم جلب شرحه عند اختياره في generate_daily.py
+            results.append({
+                "id": stub["id"],
+                "henc_id": hid,
+                "title": stub["title"],
+                "category": stub["category"],
+                "text": stub["title"],
+                "attribution": "",
+                "grade": "صحيح",
+                "explanation": "",
+                "hints": [],
+                "words_meanings": [],
+                "source": "موسوعة الأحاديث النبوية HadeethEnc.com",
+                "type": "hadith",
+            })
+
+    print(f"   ✅ جاهز: {len(results)} حديث ({len(detailed_map)} منها مخزنة بشرحها الكامل محلياً).")
+    return results
+
+
+def fetch_bukhari_muslim_backup() -> list[dict]:
+    print("⬇️ تحميل النسخة الاحتياطية (صحيح البخاري وصحيح مسلم)...")
+    urls = {
+        "صحيح البخاري": "https://huggingface.co/datasets/meeAtif/hadith_datasets/resolve/main/Sahih%20al-Bukhari.json",
+        "صحيح مسلم": "https://huggingface.co/datasets/meeAtif/hadith_datasets/resolve/main/Sahih%20Muslim.json",
+    }
+    items = []
+    for book_name, url in urls.items():
         try:
             r = requests.get(url, timeout=60)
             if r.status_code != 200:
-                print(f"❌ فشل تحميل {book_name}: HTTP {r.status_code}")
                 continue
-                
-            data = r.json()
-            for idx, item in enumerate(data):
-                # استخراج النص العربي والإسناد
-                text = item.get("Arabic_Text", "").strip()
-                if not text: continue
-                
-                all_hadiths.append({
-                    "id": f"{book_name}-{idx+1:05d}",
+            for idx, item in enumerate(r.json()):
+                text = (item.get("Arabic_Text") or "").strip()
+                if not text or len(text) > 1500:
+                    continue
+                items.append({
+                    "id": f"sahih-{book_name}-{idx+1:05d}",
+                    "henc_id": "",
+                    "title": item.get("Chapter_Title_Arabic") or book_name,
+                    "category": book_name,
                     "text": text,
-                    "book": item.get("Book", book_name),
-                    "chapter": item.get("Chapter_Title_Arabic", ""),
-                    "grade": item.get("Grade", "صحيح"),
-                    "reference": item.get("Reference", ""),
-                    "type": "hadith"
+                    "attribution": book_name,
+                    "grade": item.get("Grade") or "صحيح",
+                    "explanation": "",
+                    "hints": [],
+                    "words_meanings": [],
+                    "source": book_name,
+                    "type": "hadith",
                 })
-            print(f"✅ تم تحميل {book_name} ({len(data)} حديث).")
         except Exception as e:
-            print(f"❌ خطأ في تحميل {book_name}: {e}")
-    
-    print(f"📝 إجمالي الأحاديث التي تم تجميعها: {len(all_hadiths)}")
-    
-    # حفظ الملف مضغوطاً
-    print("🗜️ جاري ضغط الملف...")
+            print(f"   ⚠️ خطأ في {book_name}: {e}")
+    return items
+
+
+def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    hadiths = fetch_from_hadeethenc()
+    if not hadiths:
+        hadiths = fetch_bukhari_muslim_backup()
+
+    if not hadiths:
+        print("❌ فشل تحميل مكتبة الحديث.")
+        sys.exit(1)
+
     with gzip.open(OUTPUT_FILE, "wt", encoding="utf-8") as f:
-        json.dump(all_hadiths, f, ensure_ascii=False)
-        
+        json.dump(hadiths, f, ensure_ascii=False)
+
     size_mb = OUTPUT_FILE.stat().st_size / (1024 * 1024)
-    print(f"✅ تم حفظ مكتبة الحديث بنجاح في: {OUTPUT_FILE} (الحجم: {size_mb:.1f} ميجابايت)")
+    print(f"✅ تم حفظ مكتبة الحديث بنجاح: {OUTPUT_FILE} ({size_mb:.1f} MB)")
+
 
 if __name__ == "__main__":
     main()
