@@ -36,7 +36,6 @@ def make_tts_safe(text: str) -> str:
         return ""
     text = text.translate(_DIGIT_MAP)
     text = text.replace("ﷺ", " صلى الله عليه وسلم ")
-    # إزالة الأقواس مع إبقاء الكلام داخلها حتى لا يحذفه story_audio.py
     text = re.sub(r"[()\[\]﴿﴾«»\"'`]", " ", text)
     text = re.sub(r"[*#@_•/\\|~=+]", " ", text)
     text = re.sub(r"[a-zA-Z]", " ", text)
@@ -179,9 +178,6 @@ def call_llm_json(user_prompt: str) -> dict | None:
     return None
 
 
-# ═══════════════════════════════════════════════════════════════
-# 1) الفقه الإسلامي
-# ═══════════════════════════════════════════════════════════════
 def build_fiqh_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]]:
     lib = load_library("fiqh-library.json.gz")
     if not lib:
@@ -210,7 +206,7 @@ def build_fiqh_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]]
 أعد JSON بالضبط بهذه الحقول:
 {{
   "title": "عنوان مختصر جداً أقل من 45 حرفاً يبدأ بـ فقه وفتوى:",
-  "hook_question": "تمهيد جذاب يطرح سؤال المسألة أو موضوعها بوضوح في جملتين.",
+  "hook_question": "تمهيد جذاب يطرح سؤال المسألة بصيغة سؤال مباشر وواضح في جملتين.",
   "ruling_summary": "الحكم الشرعي والفتوى الموثقة بوضوح ودقة مستخلصة من كلام العالم في 3 إلى 4 جمل.",
   "simple_explanation": "الشرح المبسط مع الدليل من الكتاب والسنة وفهم السلف الوارد في النص، والفائدة العملية في حياة المسلم في 4 إلى 6 جمل.",
   "source_credit": "إشارة قصيرة وجميلة في جملة واحدة إلى اسم العالم والمصدر مثل: مستفاد من فتاوى سماحة الشيخ ابن باز رحمه الله."
@@ -220,26 +216,23 @@ def build_fiqh_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]]
     if res and res.get("hook_question") and res.get("ruling_summary"):
         title = make_title_safe(res.get("title", ""), "فقه وفتوى على منهج السلف")
         segments = [
-            {"type": "intro", "text": make_tts_safe(res["hook_question"])},
-            {"type": "fiqh", "text": make_tts_safe(res["ruling_summary"])},
-            {"type": "narration", "text": make_tts_safe(res.get("simple_explanation", ""))},
-            {"type": "summary", "text": make_tts_safe(res.get("source_credit", f"مستفاد من {scholar}"))},
+            {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(res["hook_question"])},
+            {"type": "fiqh",      "voice": "Orus",       "text": make_tts_safe(res["ruling_summary"])},
+            {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res.get("simple_explanation", ""))},
+            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("source_credit", f"مستفاد من {scholar}"))},
         ]
     else:
         title = make_title_safe(f"فقه: {item.get('title', '')}", "فقه وفتوى على منهج السلف")
         segments = [
-            {"type": "intro", "text": make_tts_safe(f"نتوقف اليوم مع مسألة مهمة يكثر السؤال عنها. {question[:220]}")},
-            {"type": "fiqh", "text": make_tts_safe(answer[:950])},
-            {"type": "summary", "text": make_tts_safe(f"هذه الفائدة مستفادة من {scholar} في {source}.")},
+            {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(f"نتوقف اليوم مع مسألة مهمة يكثر السؤال عنها. {question[:220]}")},
+            {"type": "fiqh",      "voice": "Orus",       "text": make_tts_safe(answer[:950])},
+            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(f"هذه الفائدة مستفادة من {scholar} في {source}.")},
         ]
 
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
 
 
-# ═══════════════════════════════════════════════════════════════
-# 2) الحديث الشريف وشرحه
-# ═══════════════════════════════════════════════════════════════
 def _enrich_hadith_from_henc(item: dict) -> dict | None:
     if not item.get("henc_id") or item.get("explanation"):
         grade = (item.get("grade") or "").strip()
@@ -327,27 +320,24 @@ def build_hadith_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str
     if res and res.get("sharh_and_benefits"):
         title = make_title_safe(res.get("title", ""), "حديث شريف وشرحه")
         segments = [
-            {"type": "intro", "text": make_tts_safe(res.get("intro", "نتوقف اليوم مع هدي النبي صلى الله عليه وسلم."))},
-            {"type": "hadith", "text": make_tts_safe(matn)},
-            {"type": "narration", "text": make_tts_safe(res["sharh_and_benefits"])},
-            {"type": "summary", "text": make_tts_safe(res.get("takhrij_credit", f"التخريج: {attribution}، {grade}، عن موسوعة الأحاديث النبوية."))},
+            {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(res.get("intro", "نتوقف اليوم مع هدي النبي صلى الله عليه وسلم."))},
+            {"type": "hadith",    "voice": "Orus",       "text": make_tts_safe(matn)},
+            {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res["sharh_and_benefits"])},
+            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("takhrij_credit", f"التخريج: {attribution}، {grade}، عن موسوعة الأحاديث النبوية."))},
         ]
     else:
         title = make_title_safe(f"حديث: {item.get('title', '')}", "حديث شريف وشرحه")
         segments = [
-            {"type": "intro", "text": "في هذا المقطع نتدبر حديثاً نبوياً صحيحاً يضيء لنا طريق الهداية."},
-            {"type": "hadith", "text": make_tts_safe(matn)},
-            {"type": "narration", "text": make_tts_safe(explanation[:1000] if explanation else f"حديث عظيم من هدي نبينا صلى الله عليه وسلم، {hints_text}")},
-            {"type": "summary", "text": make_tts_safe(f"{attribution}، ودرجته {grade}، من موسوعة الأحاديث النبوية.")},
+            {"type": "intro",     "voice": "Puck",       "text": "في هذا المقطع نتدبر حديثاً نبوياً صحيحاً يضيء لنا طريق الهداية."},
+            {"type": "hadith",    "voice": "Orus",       "text": make_tts_safe(matn)},
+            {"type": "narration", "voice": "Charon",     "text": make_tts_safe(explanation[:1000] if explanation else f"حديث عظيم من هدي نبينا صلى الله عليه وسلم، {hints_text}")},
+            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(f"{attribution}، ودرجته {grade}، من موسوعة الأحاديث النبوية.")},
         ]
 
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
 
 
-# ═══════════════════════════════════════════════════════════════
-# 3) آية وحكاية
-# ═══════════════════════════════════════════════════════════════
 def _fetch_extra_tafsir(edition: str, surah: int, ayah: int) -> str:
     url = f"https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir/{edition}/{surah}/{ayah}.json"
     try:
@@ -365,10 +355,11 @@ def build_quran_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]
     if not lib:
         raise RuntimeError("❌ مكتبة الآيات فارغة.")
 
+    # طول مثالي للآية (45-340 حرفاً) حتى لا تتقطع أثناء القراءة عبر Gemini في نسخة اليوتيوب
     item, used_ids = pick_unused(
         lib,
         used_ids,
-        predicate=lambda i: len(i.get("text", "")) >= 45 and len(i.get("tafsir", "")) >= 80,
+        predicate=lambda i: 45 <= len(i.get("text", "")) <= 340 and len(i.get("tafsir", "")) >= 80,
     )
     if not item:
         raise RuntimeError("❌ لم يتم العثور على آية صالحة.")
@@ -418,7 +409,7 @@ def build_quran_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]
         takeaway_txt = "فلنتدبر كتاب الله ونعمل بهداياته في حياتنا اليومية."
 
     segments = [
-        {"type": "intro", "text": intro_txt},
+        {"type": "intro", "voice": "Puck", "text": intro_txt},
         {
             "type": "quran",
             "surah": s_num,
@@ -426,15 +417,12 @@ def build_quran_episode(used_ids: list[str]) -> tuple[str, list[dict], list[str]
             "ayah_numbers": [a_num],
             "display": f"{s_name}: {a_num}",
         },
-        {"type": "narration", "text": tafsir_txt},
-        {"type": "summary", "text": takeaway_txt},
+        {"type": "narration", "voice": "Charon",     "text": tafsir_txt},
+        {"type": "summary",   "voice": "Rasalgethi", "text": takeaway_txt},
     ]
     return title, segments, used_ids
 
 
-# ═══════════════════════════════════════════════════════════════
-# 4) أذكار الصباح والمساء وقبل النوم
-# ═══════════════════════════════════════════════════════════════
 def build_adhkar_episode(used_ids: list[str], state: dict) -> tuple[str, list[dict], list[str]]:
     lib = load_library("adhkar-library.json.gz")
     if not lib:
@@ -491,29 +479,29 @@ def build_adhkar_episode(used_ids: list[str], state: dict) -> tuple[str, list[di
     segments = []
     if res and isinstance(res.get("items"), list) and len(res["items"]) > 0:
         title = make_title_safe(res.get("title", ""), f"{slot_label} من السنة الصحيحة")
-        segments.append({"type": "intro", "text": make_tts_safe(res.get("intro", f"حافظ على {slot_label} فهي حصن المسلم."))})
+        segments.append({"type": "intro", "voice": "Puck", "text": make_tts_safe(res.get("intro", f"حافظ على {slot_label} فهي حصن المسلم."))})
         for idx, gen_item in enumerate(res["items"][:3]):
             src_item = picked_list[idx] if idx < len(picked_list) else picked_list[-1]
             lead = make_tts_safe(gen_item.get("lead_in", ""))
             if lead:
-                segments.append({"type": "narration", "text": lead})
-            segments.append({"type": "adhkar", "text": make_tts_safe(src_item["text"])})
+                segments.append({"type": "narration", "voice": "Charon", "text": lead})
+            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(src_item["text"])})
             note = make_tts_safe(gen_item.get("meaning_note", ""))
             if note:
-                segments.append({"type": "narration", "text": note})
-        segments.append({"type": "summary", "text": make_tts_safe(res.get("closing", f"تلك باقة من {slot_label} الثابتة في السنة الصحيحة وحصن المسلم."))})
+                segments.append({"type": "narration", "voice": "Charon", "text": note})
+        segments.append({"type": "summary", "voice": "Rasalgethi", "text": make_tts_safe(res.get("closing", f"تلك باقة من {slot_label} الثابتة في السنة الصحيحة وحصن المسلم."))})
     else:
         title = make_title_safe(f"{slot_label} المباركة", slot_label)
-        segments.append({"type": "intro", "text": f"في هذا المقطع نستذكر باقة مباركة من {slot_label} الثابتة عن النبي صلى الله عليه وسلم."})
+        segments.append({"type": "intro", "voice": "Puck", "text": f"في هذا المقطع نستذكر باقة مباركة من {slot_label} الثابتة عن النبي صلى الله عليه وسلم."})
         for x in picked_list:
             rep = int(x.get("repeat", 1) or 1)
             rep_txt = format_repeat_ar(rep)
             bless = x.get("bless", "")
             lead = f"يُقال هذا الذكر {rep_txt}. {bless}".strip() if rep_txt else bless
             if lead.strip():
-                segments.append({"type": "narration", "text": make_tts_safe(lead)})
-            segments.append({"type": "adhkar", "text": make_tts_safe(x["text"])})
-        segments.append({"type": "summary", "text": f"حافظ على {slot_label} يومياً، من كتاب حصن المسلم والسنة النبوية الصحيحة."})
+                segments.append({"type": "narration", "voice": "Charon", "text": make_tts_safe(lead)})
+            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(x["text"])})
+        segments.append({"type": "summary", "voice": "Rasalgethi", "text": f"حافظ على {slot_label} يومياً، من كتاب حصن المسلم والسنة النبوية الصحيحة."})
 
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
@@ -559,6 +547,7 @@ def main():
 
     segments.append({
         "type": "cta",
+        "voice": "Puck",
         "text": "قال رسول الله صلى الله عليه وسلم: من دل على خير فله مثل أجر فاعله. شارك المقطع لتعم الفائدة. ملاك المعرفة.",
     })
 
