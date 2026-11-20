@@ -1,5 +1,6 @@
 import gzip
 import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -26,50 +27,46 @@ def fetch_from_hadeethenc() -> list[dict]:
         print(f"   ⚠️ تعذر جلب أقسام HadeethEnc: {e}")
         return []
 
-    # جمع معرّفات الأحاديث من الأقسام الرئيسية والفرعية
+    if not isinstance(categories, list):
+        return []
+
+    random.shuffle(categories)
+
+    # جمع أحاديث متنوعة من جميع الأقسام
     stubs: dict[str, dict] = {}
     for cat in categories:
         cat_id = cat.get("id")
         cat_title = cat.get("title", "")
         if not cat_id:
             continue
-        for page in (1, 2):
-            try:
-                r_list = session.get(
-                    f"{HADEETHENC_BASE}/hadeeths/list/",
-                    params={"language": "ar", "category_id": cat_id, "page": page, "per_page": 50},
-                    timeout=20,
-                )
-                if r_list.status_code != 200:
-                    break
-                payload = r_list.json()
-                data = payload.get("data", [])
-                if not data:
-                    break
-                for row in data:
-                    hid = str(row.get("id", "")).strip()
-                    if hid and hid not in stubs:
-                        stubs[hid] = {
-                            "id": f"henc-{hid}",
-                            "henc_id": hid,
-                            "title": (row.get("title") or "").strip(),
-                            "category": cat_title,
-                        }
-                if len(stubs) >= 1200:
-                    break
-                meta = payload.get("meta", {})
-                if int(meta.get("current_page", 1)) >= int(meta.get("last_page", 1)):
-                    break
-            except Exception:
+        try:
+            r_list = session.get(
+                f"{HADEETHENC_BASE}/hadeeths/list/",
+                params={"language": "ar", "category_id": cat_id, "page": 1, "per_page": 25},
+                timeout=20,
+            )
+            if r_list.status_code != 200:
+                continue
+            data = r_list.json().get("data", [])
+            for row in data:
+                hid = str(row.get("id", "")).strip()
+                if hid and hid not in stubs:
+                    stubs[hid] = {
+                        "id": f"henc-{hid}",
+                        "henc_id": hid,
+                        "title": (row.get("title") or "").strip(),
+                        "category": cat_title,
+                    }
+            if len(stubs) >= 1200:
                 break
-        if len(stubs) >= 1200:
-            break
+        except Exception:
+            continue
 
-    print(f"   📚 تم حصر {len(stubs)} حديث، جاري تحميل التفاصيل والشروح لأول 250 حديثاً...")
+    print(f"   📚 تم حصر {len(stubs)} حديث من مختلف الأبواب، جاري تحميل الشروح والتخريج لـ 250 حديثاً...")
     all_ids = list(stubs.keys())
+    random.shuffle(all_ids)
     detailed_map: dict[str, dict] = {}
 
-    # جلب الشروح والتخريجات بدفعات من 25 حديثاً
     for i in range(0, min(len(all_ids), 250), 25):
         batch = all_ids[i : i + 25]
         try:
@@ -111,7 +108,6 @@ def fetch_from_hadeethenc() -> list[dict]:
                 "type": "hadith",
             })
         else:
-            # يحتفظ بالمعرّف ليتم جلب شرحه عند اختياره في generate_daily.py
             results.append({
                 "id": stub["id"],
                 "henc_id": hid,
@@ -127,7 +123,7 @@ def fetch_from_hadeethenc() -> list[dict]:
                 "type": "hadith",
             })
 
-    print(f"   ✅ جاهز: {len(results)} حديث ({len(detailed_map)} منها مخزنة بشرحها الكامل محلياً).")
+    print(f"   ✅ جاهز: {len(results)} حديث ({len(detailed_map)} بشرح كامل وتخريج محلياً).")
     return results
 
 
