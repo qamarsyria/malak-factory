@@ -2,9 +2,9 @@
 """
 scripts/gemini_tts_pool.py
 ==========================
-محرّك توليد الصوت النقي قبل RVC:
-- يستخدم Gemini 3.8 TTS بنبرة نقية بدون حشو style.
-- يطبع بوضوح أي محرك اشتغل فعلاً، ويحفظ موجة 48kHz صافية بدون تقطيع حاد.
+مشترك بين «همسات ملك» ومشروع «القصص الدينية»:
+- يحافظ على الصوت الافتراضي Charon وتقسيم النصوص الطويلة _split_text لمشروع القصص.
+- يدعم style الخفيف لأصوات Gemini 3.8 Flash TTS عند تمريره من همسات ملك.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class GeminiKeyPool:
     def get_current(self) -> str:
         if len(self.dead_keys) >= len(self.keys):
             raise RuntimeError("🚫 جميع مفاتيح Gemini غير صالحة!")
-        for _ in range(6):
+        for _ in range(8):
             key = self._available_key()
             if key:
                 return key
@@ -79,16 +79,19 @@ class GeminiKeyPool:
                 raise RuntimeError("🚫 جميع مفاتيح Gemini مستنفدة.")
             soonest = min(live_cooldowns.values())
             wait = max(1, int(soonest - time.time()))
-            if wait > 90:
+            if wait > 120:
                 raise RuntimeError("🚫 كل مفاتيح Gemini في تهدئة طويلة.")
             _log(f"⏳ انتظار {wait}ث لتوفر مفتاح...")
-            time.sleep(min(wait + 1, 25))
+            time.sleep(min(wait + 1, 30))
         raise RuntimeError("❌ تعذر الحصول على مفتاح متاح")
 
     def advance(self) -> None:
         self.current_index = (self.current_index + 1) % len(self.keys)
 
-    def mark_failed(self, cooldown_seconds: int = 20) -> None:
+    def _advance(self) -> None:
+        self.advance()
+
+    def mark_failed(self, cooldown_seconds: int = 25) -> None:
         key = self.keys[self.current_index]
         self.cooldowns[key] = time.time() + cooldown_seconds
         self.advance()
@@ -165,12 +168,47 @@ def discover_tts_models() -> list[str]:
                         json.dumps({"models": tts_models, "timestamp": time.time()}, ensure_ascii=False),
                         encoding="utf-8",
                     )
-                    _log(f"🎙️ نماذج TTS المكتشفة: {tts_models}")
                     return tts_models
             break
     except Exception:
         pass
     return fallback
+
+
+def _split_text(text: str, max_chars: int = 360) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!؟])\s+", text)
+    chunks, buf = [], ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if len(part) > max_chars:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            sub_parts = re.split(r"(?<=[،؛,:])\s+", part)
+            sub_buf = ""
+            for sp in sub_parts:
+                if len(sub_buf) + len(sp) + 1 <= max_chars:
+                    sub_buf = f"{sub_buf} {sp}".strip()
+                else:
+                    if sub_buf:
+                        chunks.append(sub_buf)
+                    sub_buf = sp
+            if sub_buf:
+                chunks.append(sub_buf)
+        elif len(buf) + len(part) + 1 <= max_chars:
+            buf = f"{buf} {part}".strip()
+        else:
+            if buf:
+                chunks.append(buf)
+            buf = part
+    if buf:
+        chunks.append(buf)
+    return chunks
 
 
 def _sanitize_tts_text(text: str) -> str:
@@ -184,37 +222,47 @@ def _save_audio_bytes(raw: bytes, out_wav: Path) -> None:
         tmp = out_wav.with_suffix(".raw_in.wav")
         tmp.write_bytes(raw)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(tmp), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+            ["ffmpeg", "-y", "-i", str(tmp), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
             check=True, capture_output=True, timeout=30,
         )
         tmp.unlink(missing_ok=True)
     else:
-        tmp = out_wav.with_suffix(".raw_pcm.wav")
-        with wave.open(str(tmp), "wb") as wf:
+        with wave.open(str(out_wav), "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(24000)
             wf.writeframes(raw)
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(tmp), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
-            check=True, capture_output=True, timeout=30,
-        )
-        tmp.unlink(missing_ok=True)
 
 
-def _trim_silence_only(input_wav: Path, output_wav: Path) -> bool:
+def _clean_chunk(input_wav: Path, output_wav: Path) -> bool:
     try:
         af = (
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-52dB,"
+            "silenceremove=start_periods=1:start_duration=0:start_threshold=-46dB,"
             "areverse,"
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-52dB,"
-            "areverse"
+            "silenceremove=start_periods=1:start_duration=0:start_threshold=-46dB,"
+            "areverse,"
+            "afade=t=in:st=0:d=0.015"
         )
         subprocess.run(
             ["ffmpeg", "-y", "-i", str(input_wav), "-af", af,
-             "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(output_wav)],
+             "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(output_wav)],
             check=True, capture_output=True, timeout=60,
         )
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(output_wav)],
+            capture_output=True, text=True, timeout=10,
+        )
+        dur = float(probe.stdout.strip() or 0)
+        if dur > 0.15:
+            tmp_fade = output_wav.with_name(output_wav.stem + "_f.wav")
+            st = max(0.0, dur - 0.025)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(output_wav), "-af", f"afade=t=out:st={st:.3f}:d=0.025",
+                 "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(tmp_fade)],
+                check=True, capture_output=True, timeout=60,
+            )
+            tmp_fade.replace(output_wav)
         return output_wav.exists() and output_wav.stat().st_size > 1000
     except Exception:
         return False
@@ -251,7 +299,6 @@ def _tts_single(text: str, out_wav: Path, voice: str, key: str, style: str = "")
                     return "INVALID_KEY"
                 if r.status_code == 429:
                     if "limit: 0" in r.text.lower() or '"limit":0' in r.text.lower():
-                        _log(f"⚠️ {model} غير مجاني على هذا المفتاح")
                         break
                     return "RATE_LIMIT"
                 if r.status_code == 400 and "speechMetadata" in part:
@@ -301,7 +348,7 @@ def _edge_fallback(text: str, out_wav: Path, voice_gender: str = "male") -> bool
         import edge_tts
         clean = _sanitize_tts_text(text)
         edge_voice = "ar-SA-ZariyahNeural" if voice_gender == "female" else "ar-SA-HamedNeural"
-        _log("🚨🚨🚨 [WARNING - FALLBACK] تعذر Gemini TTS، تم التشغيل بـ Edge TTS (يسبب روبوتية مع RVC!)")
+        _log(f"⚠️ [FALLBACK] تعذر Gemini TTS، تشغيل Edge TTS ({edge_voice})")
         tmp_mp3 = out_wav.with_suffix(".edge.mp3")
 
         async def _run():
@@ -311,7 +358,7 @@ def _edge_fallback(text: str, out_wav: Path, voice_gender: str = "male") -> bool
         asyncio.run(_run())
         if tmp_mp3.exists() and tmp_mp3.stat().st_size > 1000:
             subprocess.run(
-                ["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+                ["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
                 check=True, capture_output=True, timeout=30,
             )
             tmp_mp3.unlink(missing_ok=True)
@@ -324,51 +371,66 @@ def _edge_fallback(text: str, out_wav: Path, voice_gender: str = "male") -> bool
 def gemini_tts_with_pool(
     text: str,
     out_path: str,
-    voice: str = "Orus",
+    voice: str = "Charon",
     style: str = "",
     gender_hint: str = "male",
 ) -> str:
+    """الافتراضي voice='Charon' بدون style لحماية صوت السرد في مشروع القصص الدينية."""
     out_p = Path(out_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
     work_dir = out_p.parent / f"_tts_{int(time.time() * 1000)}"
     work_dir.mkdir(exist_ok=True)
 
     try:
-        raw_wav = work_dir / "raw.wav"
-        clean_wav = work_dir / "clean.wav"
-        success = False
+        chunks = _split_text(text)
+        if not chunks:
+            raise RuntimeError("❌ نص فارغ.")
+        wav_parts: list[Path] = []
+        pool = get_pool()
 
-        try:
-            pool = get_pool()
-            for _ in range(max(len(pool.keys), 4)):
+        for idx, chunk in enumerate(chunks):
+            wav_path = work_dir / f"part_{idx:03d}.wav"
+            success = False
+            for _ in range(max(len(pool.keys) * 2, 6)):
                 key = pool.get_current()
-                res = _tts_single(text, raw_wav, voice, key, style=style)
+                res = _tts_single(chunk, wav_path, voice, key, style=style)
                 if res == "INVALID_KEY":
                     pool.mark_dead("401/403")
                     continue
                 if res == "RATE_LIMIT":
-                    pool.mark_failed(25)
+                    pool.mark_failed(45)
                     continue
                 if res is True:
                     pool.advance()
                     success = True
                     break
-                pool.mark_failed(20)
-        except Exception as e:
-            _log(f"⚠️ تعذر Gemini TTS ({str(e)[:80]})...")
+                pool.mark_failed(25)
 
-        if not success:
-            if not _edge_fallback(text, raw_wav, voice_gender=gender_hint):
-                raise RuntimeError("❌ فشل Gemini TTS واحتياط Edge TTS معاً.")
+            if not success:
+                if not _edge_fallback(chunk, wav_path, voice_gender=gender_hint):
+                    raise RuntimeError(f"❌ فشل توليد المقطع الصوتي {idx + 1}")
 
-        target_wav = clean_wav if _trim_silence_only(raw_wav, clean_wav) else raw_wav
+            cleaned = work_dir / f"part_{idx:03d}_clean.wav"
+            wav_parts.append(cleaned if _clean_chunk(wav_path, cleaned) else wav_path)
+
+        merged_wav = work_dir / "merged.wav"
+        if len(wav_parts) == 1:
+            shutil.copy2(wav_parts[0], merged_wav)
+        else:
+            concat_txt = work_dir / "concat.txt"
+            concat_txt.write_text("\n".join(f"file '{p.resolve()}'" for p in wav_parts), encoding="utf-8")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+                 "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(merged_wav)],
+                check=True, capture_output=True, timeout=60,
+            )
 
         if out_p.suffix.lower() == ".wav":
-            shutil.copy2(target_wav, out_p)
+            shutil.copy2(merged_wav, out_p)
         else:
             subprocess.run(
-                ["ffmpeg", "-y", "-i", str(target_wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(out_p)],
-                check=True, capture_output=True, timeout=60,
+                ["ffmpeg", "-y", "-i", str(merged_wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(out_p)],
+                check=True, capture_output=True, timeout=120,
             )
         return str(out_p)
     finally:
