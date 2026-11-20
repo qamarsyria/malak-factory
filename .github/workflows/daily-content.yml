@@ -44,8 +44,6 @@ jobs:
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Fetch All Libraries (Fiqh, Hadith, Quran, Adhkar)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -u scripts/fetch_fiqh_library.py
           python -u scripts/fetch_hadith_library.py
@@ -57,7 +55,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FORCE_CONTENT_TYPE: ${{ github.event.inputs.content_type || 'auto' }}
         run: |
           python -u scripts/generate_daily.py
@@ -152,15 +149,13 @@ jobs:
       - name: Cleanup and Save State
         if: steps.tg.outcome == 'success'
         run: |
-          rm -rf videos/*.mp4 out/*.mp3 out/*_meta.json out/audio_cache
-          rm -rf data/daily/generated/*.json data/libraries/*.json.gz
-          rm -f out/latest_episode.txt
+          rm -rf videos out data/daily/generated data/libraries
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f state/daily_state.json
           if ! git diff --staged --quiet; then
             git commit -m "chore: update daily state [skip ci]"
-            git pull --rebase || true
+            git pull --rebase --autostash || true
             git push
           fi
