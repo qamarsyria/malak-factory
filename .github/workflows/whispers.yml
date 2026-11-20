@@ -27,47 +27,37 @@ on:
           - she
           - duet
       voice_mode:
-        description: 'التحكم ببصمات الصوت (أو إلغاؤها بدون تعديل الكود)'
+        description: 'وضع الصوت (الافتراضي no_rvc: أصوات جميني الصافية)'
         required: false
-        default: 'rvc_both'
+        default: 'no_rvc'
         type: choice
         options:
-          - rvc_both
+          - no_rvc
           - rvc_he_only
           - rvc_she_only
-          - no_rvc
-      he_pitch:
-        description: 'درجة Pitch صوتك (الافتراضي -7)'
+          - rvc_both
+      base_voice_he:
+        description: 'صوت الشاب (جميني)'
         required: false
-        default: '-7'
-        type: string
-      she_pitch:
-        description: 'درجة Pitch صوت ملك (الافتراضي 6)'
-        required: false
-        default: '6'
-        type: string
-      she_index_rate:
-        description: 'نسبة Index لصوت ملك (0.40 مطابق للقرآن أو 0 لأنعم)'
-        required: false
-        default: '0.40'
+        default: 'Charon'
         type: choice
         options:
-          - '0.40'
-          - '0'
-          - '0.25'
-          - '0.60'
-      base_voice_she:
-        description: 'صوت القاعدة قبل بصمة ملك'
-        required: false
-        default: 'Orus'
-        type: choice
-        options:
+          - Charon
+          - Umbriel
           - Orus
-          - Kore
+          - Achird
+      base_voice_she:
+        description: 'صوت البنت (جميني)'
+        required: false
+        default: 'Sulafat'
+        type: choice
+        options:
           - Sulafat
           - Aoede
+          - Despina
+          - Achernar
           - Leda
-          - Charon
+          - Kore
 
 jobs:
   whispers:
@@ -91,10 +81,10 @@ jobs:
             VM="${{ vars.VOICE_MODE }}"
           fi
           if [ -z "$VM" ]; then
-            VM="rvc_both"
+            VM="no_rvc"
           fi
           echo "voice_mode=$VM" >> $GITHUB_OUTPUT
-          echo "🎛️ وضع البصمات المعتمد: $VM"
+          echo "🎛️ وضع الصوت المعتمد: $VM"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -175,14 +165,12 @@ jobs:
           wget -q --timeout=90 -O assets/rmvpe/rmvpe.pt https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
           cp assets/rmvpe/rmvpe.pt rmvpe.pt
 
-      - name: Download Voice Models (He v4.0-clean + v3.1-myvoice & Malak v1.0)
+      - name: Download Voice Models (Only if RVC Enabled)
         if: steps.cfg.outputs.voice_mode != 'no_rvc'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p rvc/assets/weights /tmp/v40 /tmp/v31 /tmp/v10
-
-          # 1) بصمتك الصافية (v4.0-clean)
           gh release download v4.0-clean -R "${{ github.repository }}" -p "*.pth" -p "*.index" -D /tmp/v40 --clobber || true
           python - << 'EOF'
           import pathlib, shutil
@@ -193,7 +181,6 @@ jobs:
           if idxs: shutil.copy2(idxs[0], w / "clean.index")
           EOF
 
-          # 2) طبقة صوتك المساعدة (v3.1-myvoice)
           gh release download v3.1-myvoice -R "${{ github.repository }}" -p "*.pth" -p "*.index" -D /tmp/v31 --clobber || true
           python - << 'EOF'
           import pathlib, shutil
@@ -204,13 +191,10 @@ jobs:
           if idxs: shutil.copy2(idxs[0], w / "rough.index")
           EOF
 
-          # 3) بصمة ملك (v1.0)
           gh release download v1.0 -R "${{ github.repository }}" -p "malak_voice.pth" -p "added_malak_voice.index" -D /tmp/v10 --clobber || true
           [ -f /tmp/v10/malak_voice.pth ] && cp /tmp/v10/malak_voice.pth rvc/assets/weights/malak_voice.pth
           [ -f /tmp/v10/added_malak_voice.index ] && cp /tmp/v10/added_malak_voice.index rvc/assets/weights/added_malak_voice.index
-
           rm -rf /tmp/v40 /tmp/v31 /tmp/v10
-          ls -lh rvc/assets/weights/
 
       - name: Generate Whisper (Poetry + Grammar & I'rab Gate)
         id: gen
@@ -237,15 +221,15 @@ jobs:
             exit 1
           fi
 
-      - name: Build Dry Audio & Music Bed
+      - name: Build Clean Gemini Audio & Music Bed
         id: aud
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FREESOUND_API_KEY: ${{ secrets.FREESOUND_API_KEY }}
           VOICE_MODE: ${{ steps.cfg.outputs.voice_mode }}
-          BASE_VOICE_HE: Orus
-          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Orus' }}
+          BASE_VOICE_HE: ${{ github.event.inputs.base_voice_he || 'Charon' }}
+          BASE_VOICE_SHE: ${{ github.event.inputs.base_voice_she || 'Sulafat' }}
         run: |
           python -u scripts/whispers_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -256,16 +240,16 @@ jobs:
             exit 1
           fi
 
-      - name: Convert Dual Voices & Studio Mastering
+      - name: Studio Audio Mastering & Sidechain Music
         id: convert
         if: steps.aud.outcome == 'success'
         env:
           VOICE_MODE: ${{ steps.cfg.outputs.voice_mode }}
-          HE_PITCH_CLEAN: ${{ github.event.inputs.he_pitch || '-7' }}
+          HE_PITCH_CLEAN: '-7'
           HE_PITCH_ROUGH: '-6'
           HE_INDEX_RATE: '0.40'
-          SHE_PITCH: ${{ github.event.inputs.she_pitch || '6' }}
-          SHE_INDEX_RATE: ${{ github.event.inputs.she_index_rate || '0.40' }}
+          SHE_PITCH: '6'
+          SHE_INDEX_RATE: '0.40'
         run: |
           python -u malak_converter.py \
             "out/${{ steps.gen.outputs.EP_NAME }}.mp3" \
