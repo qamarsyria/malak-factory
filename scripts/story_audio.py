@@ -1,14 +1,16 @@
 """
-story_audio.py — المرحلة 4: بناء الصوت (نسخة Social طبيعية بقراء متعددين + نسخة YT بالحصري)
-- تشكيل ثنائي المراحل (Two-Pass Morphosyntactic): تحليل المعنى والصرف والنحو أولاً + تدقيق الشدّة والإعراب ثانياً.
-- دمج ذكي كلمة بكلمة (SequenceMatcher) يمنع سقوط التشكيل بسبب تصحيح همزة أو إملاء كلمة واحدة.
-- رفع مستوى صوت القارئ في النسختين بنسبة +30% مع محدد قمم (alimiter) لمنع التشويش.
-- ينوّع القراء داخل الحلقة الواحدة في نسخة Social بصوت طبيعي صافٍ دون تشويه المدود.
+story_audio.py — المرحلة 4: بناء الصوت
+- تعدد نبرات الصوت في الفقه والمحتوى اليومي: نبرة للسؤال، نبرة للفتوى/الحديث، ونبرة رصينة للشرح.
+- نسختان للقرآن الكريم:
+  * Social: تلاوة بشرية من القراء (العفاسي، السديس، الغامدي، الدوسري، القطامي).
+  * YouTube: قراءة Gemini لنص (quran-simple) الإملائي المشكول مع صدى وجو مسجد هادئ جداً للآية فقط.
+- تشكيل ثنائي المراحل + تهجي صوتي احتياطي عند تفعيل Edge TTS.
 """
 
 import os
 import sys
 import json
+import gzip
 import subprocess
 import tempfile
 import shutil
@@ -31,24 +33,70 @@ from gemini_tts_pool import get_pool, gemini_tts_with_pool
 
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
 
-if TTS_ENGINE == "1":
-    print("🔊 [TTS] المحرك: Gemini", flush=True)
+# خريطة النبرات الصوتية حسب الدور في الحلقة
+VOICE_BY_TYPE = {
+    "intro":     "Puck",        # نبرة حيوية واضحة لطرح السؤال والمقدمة
+    "teaser":    "Puck",
+    "fiqh":      "Orus",        # نبرة وقورة حازمة للحكم الشرعي والفتوى
+    "hadith":    "Orus",        # نبرة وقورة لنص الحديث النبوي
+    "narration": "Charon",      # نبرة الشارح الرصينة العميقة
+    "adhkar":    "Algieba",     # نبرة ناعمة وهادئة للأذكار
+    "summary":   "Rasalgethi",  # نبرة متزنة للمصدر والخلاصة
+    "outro":     "Rasalgethi",
+    "cta":       "Puck",
+}
+YT_QURAN_VOICE = "Algieba"      # نبرة هادئة رخيمة لآية اليوتيوب مع صدى المسجد
 
-    def generate_audio(text: str, out_path: str) -> bool:
+EDGE_VOICE_BY_GEMINI = {
+    "Puck":       "ar-EG-ShakirNeural",
+    "Fenrir":     "ar-EG-ShakirNeural",
+    "Orus":       "ar-SA-HamedNeural",
+    "Charon":     "ar-SA-HamedNeural",
+    "Algieba":    "ar-SA-HamedNeural",
+    "Rasalgethi": "ar-SA-HamedNeural",
+}
+
+
+def _edge_phonetic_fix(text: str) -> str:
+    replacements = {
+        "الرحمن": "الرَّحْمَان",
+        "الرحمٰن": "الرَّحْمَان",
+        "هذا": "هَاذَا",
+        "هذه": "هَاذِهِ",
+        "هؤلاء": "هَاؤُلَاءِ",
+        "ذلك": "ذَالِكَ",
+        "أولئك": "أُولَائِكَ",
+        "لكن": "لَاكِنْ",
+        "إله": "إِلَاه",
+        "داود": "دَاوُود",
+        "مائة": "مِئَة",
+        "مئة": "مِئَة",
+    }
+    for src, dst in replacements.items():
+        text = re.sub(rf"\b{src}\b", dst, text)
+    return text
+
+
+if TTS_ENGINE == "1":
+    print("🔊 [TTS] المحرك: Gemini (متعدد النبرات)", flush=True)
+
+    def generate_audio(text: str, out_path: str, voice: str = "Charon") -> bool:
         try:
-            gemini_tts_with_pool(text, out_path)
+            gemini_tts_with_pool(text, out_path, voice=voice)
             return True
         except Exception as e:
-            print(f"   ⚠️ Gemini TTS فشل: {str(e)[:120]}", flush=True)
+            print(f"   ⚠️ Gemini TTS فشل ({voice}): {str(e)[:120]}", flush=True)
             return False
 else:
     print("🔊 [TTS] المحرك: Edge", flush=True)
     import edge_tts
 
-    def generate_audio(text: str, out_path: str) -> bool:
+    def generate_audio(text: str, out_path: str, voice: str = "Charon") -> bool:
+        edge_v = EDGE_VOICE_BY_GEMINI.get(voice, "ar-SA-HamedNeural")
+        fixed_text = _edge_phonetic_fix(text)
         try:
             async def _run():
-                comm = edge_tts.Communicate(text, "ar-SA-HamedNeural", rate="-5%")
+                comm = edge_tts.Communicate(fixed_text, edge_v, rate="-7%")
                 await comm.save(out_path)
             asyncio.run(_run())
             return Path(out_path).exists() and Path(out_path).stat().st_size > 1000
@@ -57,24 +105,23 @@ else:
             return False
 
 
-RECITER_YT = {
-    "id": "Husary_128kbps",
-    "name": "الشيخ محمود خليل الحصري",
-}
-
 RECITER_LIST_SOCIAL = [
-    {"id": "Alafasy_128kbps",                "name": "مشاري راشد العفاسي"},
-    {"id": "Abdurrahmaan_As-Sudais_192kbps", "name": "عبد الرحمن السديس"},
-    {"id": "Ghamadi_40kbps",                 "name": "سعد الغامدي"},
-    {"id": "Yasser_Ad-Dussary_128kbps",      "name": "ياسر الدوسري"},
-    {"id": "Nasser_Alqatami_128kbps",        "name": "ناصر القطامي"},
+    {"id": "Alafasy_128kbps",                 "name": "مشاري راشد العفاسي"},
+    {"id": "Abdurrahmaan_As-Sudais_192kbps",  "name": "عبد الرحمن السديس"},
+    {"id": "Ghamadi_40kbps",                  "name": "سعد الغامدي"},
+    {"id": "Yasser_Ad-Dussary_128kbps",       "name": "ياسر الدوسري"},
+    {"id": "Nasser_Alqatami_128kbps",         "name": "ناصر القطامي"},
 ]
 
 QURAN_BASE_URL = "https://everyayah.com/data"
+AYAH_LIBRARY = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
 TARGET_SR = "24000"
 SILENCE_DUR = 0.20
-RECITER_VOLUME_MULT = 1.30  # رفع صوت القارئ بنسبة +30% مقارنة بالسرد
+RECITER_VOLUME_MULT = 1.30
 CACHE_DIR = _REPO_ROOT / "out" / "audio_cache"
+
+QURAN_SIMPLE_CACHE: dict[str, str] = {}
+QURAN_LOCAL_CACHE: dict[str, str] = {}
 
 _ARABIC_UNITS    = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"]
 _ARABIC_TEENS    = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر",
@@ -176,66 +223,98 @@ def _thinking_config(model: str) -> dict | None:
 
 
 def _call_diac_json(prompt: str, timeout: int = 75) -> dict | None:
-    pool = get_pool()
-    breaker = get_breaker()
-    for model in _diacritize_models():
-        if breaker.is_open(f"model:{model}"):
-            continue
+    try:
+        pool = get_pool()
+        breaker = get_breaker()
+        for model in _diacritize_models():
+            if breaker.is_open(f"model:{model}"):
+                continue
 
-        use_thinking = True
-        valid_tries = 0
-        while valid_tries < 2:
-            try:
-                key = pool.get_current()
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                gen_cfg = {
-                    "temperature": 0.05,
-                    "maxOutputTokens": 6144,
-                    "responseMimeType": "application/json",
-                }
-                if use_thinking:
-                    tc = _thinking_config(model)
-                    if tc:
-                        gen_cfg["thinkingConfig"] = tc
+            use_thinking = True
+            valid_tries = 0
+            while valid_tries < 2:
+                try:
+                    key = pool.get_current()
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                    gen_cfg = {
+                        "temperature": 0.05,
+                        "maxOutputTokens": 6144,
+                        "responseMimeType": "application/json",
+                    }
+                    if use_thinking:
+                        tc = _thinking_config(model)
+                        if tc:
+                            gen_cfg["thinkingConfig"] = tc
 
-                body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
-                r = requests.post(url, json=body, timeout=(15, timeout))
+                    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
+                    r = requests.post(url, json=body, timeout=(15, timeout))
 
-                if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
-                    txt = "\n".join(text_parts) if text_parts else (parts[-1].get("text", "") if parts else "")
-                    s, e = txt.find("{"), txt.rfind("}")
-                    if s == -1 or e <= s:
+                    if r.status_code == 200:
+                        parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                        text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
+                        txt = "\n".join(text_parts) if text_parts else (parts[-1].get("text", "") if parts else "")
+                        s, e = txt.find("{"), txt.rfind("}")
+                        if s == -1 or e <= s:
+                            break
+                        parsed = json.loads(txt[s:e + 1])
+                        pool._advance()
+                        breaker.record_success(f"model:{model}")
+                        return parsed
+                    elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                        pool.mark_dead(f"HTTP {r.status_code}")
+                        continue
+                    elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
+                        use_thinking = False
+                        continue
+                    elif r.status_code == 429:
+                        pool.mark_failed(75)
+                        valid_tries += 1
+                        time.sleep(2)
+                        continue
+                    elif r.status_code in (400, 403, 404):
+                        breaker.record_failure(f"model:{model}")
                         break
-                    parsed = json.loads(txt[s:e + 1])
+                    else:
+                        valid_tries += 1
+                        pool._advance()
+                        time.sleep(3)
+                        continue
+                except requests.exceptions.Timeout:
                     pool._advance()
-                    breaker.record_success(f"model:{model}")
-                    return parsed
-                elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
-                    pool.mark_dead(f"HTTP {r.status_code}")
-                    continue
-                elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
-                    use_thinking = False
-                    continue
-                elif r.status_code == 429:
-                    pool.mark_failed(75)
-                    valid_tries += 1
-                    time.sleep(2)
-                    continue
-                elif r.status_code in (400, 403, 404):
-                    breaker.record_failure(f"model:{model}")
                     break
-                else:
-                    valid_tries += 1
-                    pool._advance()
-                    time.sleep(3)
-                    continue
-            except requests.exceptions.Timeout:
-                pool._advance()
-                break
+                except Exception:
+                    break
+    except Exception:
+        pass
+
+    # احتياط التشكيل عبر GitHub Models لو تعطلت مفاتيح Gemini
+    gh_token = os.getenv("GITHUB_TOKEN", "").strip()
+    if gh_token:
+        for gh_model in ("openai/gpt-4o-mini", "openai/gpt-4o"):
+            try:
+                r = requests.post(
+                    "https://models.github.ai/inference/chat/completions",
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "Authorization": f"Bearer {gh_token}",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": gh_model,
+                        "temperature": 0.05,
+                        "response_format": {"type": "json_object"},
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=60,
+                )
+                if r.status_code == 200:
+                    txt = r.json()["choices"][0]["message"]["content"]
+                    s, e = txt.find("{"), txt.rfind("}")
+                    if s != -1 and e > s:
+                        return json.loads(txt[s:e + 1])
             except Exception:
-                break
+                continue
     return None
 
 
@@ -244,11 +323,9 @@ PASS1_PROMPT = """أنت أستاذ لغوي متخصص في الصرف والن
 المهمة: اضبط النص التالي بالتشكيل الكامل والدقيق (100%) بعد فهم المعنى الكامل للجمل وإعرابها.
 
 قواعد الصرف والنحو والنطق الإلزامية:
-1. افهم معنى كل جملة أولاً لتفرق بدقة بين:
-   - المبني للمعلوم والمبني للمجهول (مثل: خَلَقَ / خُلِقَ، أَنْزَلَ / أُنْزِلَ، قَدَّرَ / قُدِّرَ).
-   - المتشابهات السياقية (مثل: مَلِك / مَلَك / مُلْك، عِلْم / عَلَم / عَلَّمَ، خَلْق / خُلُق).
-2. **الشدّة (`ّ`) ضرورية جداً للنطق السليم**: ضع الشدّة على كل حرف مشدد وعلى الحرف الشمسي بعد (الـ) الشمسية، مثل: (اللَّهُ، الرَّحْمَنِ، السَّمَاوَاتِ، التَّدْبِيرِ، الرُّبُوبِيَّةِ، الأُلُوهِيَّةِ، النَّاسِ، كُلِّ، حَقِّ).
-3. اضبط أواخر الكلمات إعرابياً حسب موقعها (فاعل مرفوع، مفعول منصوب، مجرور بحرف الجر أو الإضافة).
+1. افهم معنى كل جملة أولاً لتفرق بدقة بين المبني للمعلوم والمجهول والمتشابهات السياقية.
+2. الشدّة (`ّ`) ضرورية جداً للنطق السليم: ضع الشدّة على كل حرف مشدد وعلى الحرف الشمسي بعد (الـ) الشمسية.
+3. اضبط أواخر الكلمات إعرابياً حسب موقعها، وضع سكوناً (`ْ`) على الحرف الساكن الأخير قبل الفاصلة والنقطة.
 4. حافظ على جميع الكلمات والمسافات وعلامات الترقيم كما هي تماماً دون حذف أو زيادة كلمة.
 
 النص:
@@ -256,7 +333,7 @@ PASS1_PROMPT = """أنت أستاذ لغوي متخصص في الصرف والن
 
 أعد JSON فقط:
 {{
-  "grammar_analysis": "خلاصة سريعة للمواضع الإعرابية والصرفية الحساسة في النص",
+  "grammar_analysis": "خلاصة سريعة للمواضع الحساسة",
   "diacritized": "النص مضبوطاً بالشكل الكامل..."
 }}"""
 
@@ -269,11 +346,7 @@ PASS2_VERIFY_PROMPT = """أنت مدقق صرفي ونحوي صارم تراجع
 التشكيل المقترح:
 {draft}
 
-راجع التشكيل المقترح كلمةً بكلمة وصحح أي خطأ في:
-1. سقوط الشدّة (خاصة اللام الشمسية، والأفعال المضعفة مثل قَدَّرَ / تَفَرَّدَ / عَظَّمَ، ولفظ الجلالة اللَّهِ).
-2. خطأ ضبط المشتقات أو المبني للمجهول أو الضمائر.
-3. خطأ الإعراب (المضاف إليه مجرور بالكسرة، والاسم بعد حرف الجر مجرور، والفاعل مرفوع).
-4. تأكد من سلامة الحروف دون تغيير أو إضافة كلمات.
+راجع التشكيل المقترح كلمةً بكلمة وصحح أي خطأ في الشدّة أو الإعراب أو الصرف، وتأكد من سلامة الحروف دون تغيير أو إضافة كلمات.
 
 أعد JSON فقط:
 {{
@@ -323,6 +396,117 @@ def sanitize_for_tts(t: str) -> str:
     t = re.sub(r"\[.*?\]|\(.*?\)|﴿.*?﴾", "", t, flags=re.DOTALL)
     t = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\s،؛؟!.:]", " ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+# ═══════════════════════════════════════════════════════════
+# تجهيز الآية القرآنية لنطق سليم لـ Gemini (quran-simple) + صدى المسجد
+# ═══════════════════════════════════════════════════════════
+def _load_local_uthmani_cache():
+    if QURAN_LOCAL_CACHE or not AYAH_LIBRARY.exists():
+        return
+    try:
+        with gzip.open(AYAH_LIBRARY, "rt", encoding="utf-8") as f:
+            for a in json.load(f):
+                s = int(a.get("surah") or a.get("surah_number") or 0)
+                v = int(a.get("ayah") or a.get("ayah_number") or 0)
+                txt = (a.get("text") or "").strip()
+                if s and v and txt:
+                    QURAN_LOCAL_CACHE[f"{s}:{v}"] = txt
+    except Exception:
+        pass
+
+
+def get_simple_ayah_text(surah: int, ayah: int) -> str:
+    key = f"{surah}:{ayah}"
+    if key in QURAN_SIMPLE_CACHE:
+        return QURAN_SIMPLE_CACHE[key]
+    try:
+        r = requests.get(f"https://api.alquran.cloud/v1/surah/{surah}/quran-simple", timeout=15)
+        if r.status_code == 200:
+            for item in r.json().get("data", {}).get("ayahs", []):
+                a_num = int(item.get("numberInSurah", 0))
+                if a_num:
+                    QURAN_SIMPLE_CACHE[f"{surah}:{a_num}"] = (item.get("text") or "").strip()
+            if key in QURAN_SIMPLE_CACHE:
+                return QURAN_SIMPLE_CACHE[key]
+    except Exception as e:
+        print(f"   ⚠️ تعذر جلب النص الإملائي للآية {key}: {e}", flush=True)
+
+    _load_local_uthmani_cache()
+    return QURAN_LOCAL_CACHE.get(key, "")
+
+
+def prepare_quran_for_gemini_tts(text: str) -> str:
+    """تحويل أي رموز عثمانية إلى إملاء قياسي مشكول يفهمه Gemini بدقة."""
+    if not text:
+        return ""
+    # إزالة علامات الوقف والسجدات والأحزاب
+    t = re.sub(r"[\u06D6-\u06ED۞۩]", "", text)
+    # تحويل همزة الوصل والسكون العثماني
+    t = t.replace("ٱ", "ا").replace("\u06E1", "\u0652").replace("ٰ", "ا")
+    # تصحيح رسم بعض الكلمات العثمانية الشهيرة
+    word_fixes = {
+        "الرَّحْمَان": "الرَّحْمَان",
+        "الصَّلَوة": "الصَّلَاة",
+        "الصَّلَاة": "الصَّلَاة",
+        "الزَّكَوة": "الزَّكَاة",
+        "الْحَيَوة": "الْحَيَاة",
+        "الْمِشْكَوة": "الْمِشْكَاة",
+        "الغَدَوة": "الْغَدَاة",
+    }
+    for k, v in word_fixes.items():
+        t = t.replace(k, v)
+
+    # فك الحروف المقطعة إن وردت في الآية
+    muqattaat = {
+        "الم": "أَلِفْ لَامْ مِيمْ",
+        "المص": "أَلِفْ لَامْ مِيمْ صَادْ",
+        "الر": "أَلِفْ لَامْ رَا",
+        "المر": "أَلِفْ لَامْ مِيمْ رَا",
+        "كهيعص": "كَافْ هَا يَا عَيْنْ صَادْ",
+        "طه": "طَا هَا",
+        "طسم": "طَا سِينْ مِيمْ",
+        "طس": "طَا سِينْ",
+        "يس": "يَا سِينْ",
+        "ص": "صَادْ",
+        "حم": "حَا مِيمْ",
+        "ق": "قَافْ",
+        "ن": "نُونْ",
+    }
+    tokens = t.split()
+    out_tokens = []
+    for tok in tokens:
+        skel = re.sub(r"[\u064B-\u065F\u0670]", "", tok)
+        if skel in muqattaat:
+            out_tokens.append(muqattaat[skel])
+        else:
+            out_tokens.append(tok)
+    t = " ".join(out_tokens)
+
+    t = re.sub(r"[^\u0621-\u064A\u064B-\u065F\s،؛؟!.:]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def apply_mosque_reverb(input_wav: Path, output_wav: Path) -> bool:
+    """إضافة صدى مسجد دافئ وهادئ جداً لنسخة تلاوة Gemini في اليوتيوب فقط."""
+    try:
+        af = (
+            "apad=pad_dur=0.65,"
+            "highpass=f=85,lowpass=f=7800,"
+            "equalizer=f=240:t=q:w=1.2:g=2.5,"
+            "aecho=0.86:0.84:55|115|185:0.24|0.13|0.06,"
+            "loudnorm=I=-15:TP=-1.5:LRA=10,"
+            "alimiter=limit=0.95,"
+            "afade=t=in:st=0:d=0.02"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(input_wav), "-af", af,
+             "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le", str(output_wav)],
+            check=True, capture_output=True, timeout=60,
+        )
+        return output_wav.exists() and output_wav.stat().st_size > 1000
+    except Exception:
+        return False
 
 
 def download_human_ayah(surah: int, ayah: int, reciter_id: str, out_path: Path) -> bool:
@@ -472,6 +656,9 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                 if not raw_text:
                     continue
 
+                seg_voice = seg.get("voice") or VOICE_BY_TYPE.get(stype, "Charon")
+                print(f"   🎙️ الفقرة {idx} [{stype}] ← النبرة: {seg_voice}", flush=True)
+
                 diac_cache = ep_cache / f"seg_{idx}_diac_v2.txt"
                 diac_text = smart_diacritize(raw_text, cache_file=diac_cache)
                 chunks = split_text(diac_text)
@@ -481,12 +668,12 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                     if not chunk.strip() or not re.search(r"[\u0621-\u064A]", chunk):
                         continue
 
-                    text_hash = hashlib.md5(chunk.encode("utf-8")).hexdigest()[:8]
+                    text_hash = hashlib.md5(f"{seg_voice}:{chunk}".encode("utf-8")).hexdigest()[:8]
                     cached_wav = ep_cache / f"seg_{idx}_{c_idx}_{text_hash}.wav"
 
                     if not cached_wav.exists() or cached_wav.stat().st_size < 1000:
                         temp_mp3 = work / f"temp_{idx}_{c_idx}.mp3"
-                        if not generate_audio(chunk, str(temp_mp3)):
+                        if not generate_audio(chunk, str(temp_mp3), voice=seg_voice):
                             raise RuntimeError(f"❌ فشل توليد صوت السرد للمقطع {idx}:{c_idx}")
                         normalize_wav(str(temp_mp3), str(cached_wav), gentle_loudnorm=True, volume_mult=1.0)
                         time.sleep(0.5)
@@ -523,24 +710,37 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                     continue
                 display = seg.get("display") or (f"{sname}: {ayahs[0]}" if sname else f"{s}:{ayahs[0]}")
 
+                # ── نسخة اليوتيوب: قراءة Gemini لنص quran-simple + صدى المسجد الهادئ ──
                 if build_yt:
+                    print(f"   🕌 آيات اليوتيوب {s}:{ayahs} → Gemini ({YT_QURAN_VOICE}) + صدى مسجد هادئ", flush=True)
                     yt_chunks = []
                     for a in ayahs:
-                        raw_mp3 = ep_cache / f"yt_husary_{s}_{a}.mp3"
-                        norm_wav = ep_cache / f"yt_husary_{s}_{a}_norm.wav"
-                        if not norm_wav.exists():
-                            if not download_human_ayah(s, a, RECITER_YT["id"], raw_mp3):
-                                raise RuntimeError(f"❌ فشل تحميل آية الحصري {s}:{a}")
-                            normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=True, volume_mult=RECITER_VOLUME_MULT)
+                        simple_raw = get_simple_ayah_text(s, a)
+                        tts_ayah = prepare_quran_for_gemini_tts(simple_raw)
+                        if not tts_ayah:
+                            raise RuntimeError(f"❌ تعذر تحضير نص الآية {s}:{a} لليوتيوب")
 
-                        yt_wavs.extend([norm_wav, silence_path])
+                        a_hash = hashlib.md5(f"{YT_QURAN_VOICE}:{tts_ayah}".encode("utf-8")).hexdigest()[:8]
+                        reverb_wav = ep_cache / f"yt_gemini_quran_{s}_{a}_{a_hash}_mosque.wav"
+
+                        if not reverb_wav.exists() or reverb_wav.stat().st_size < 1000:
+                            temp_mp3 = work / f"yt_q_{s}_{a}.mp3"
+                            dry_wav = work / f"yt_q_{s}_{a}_dry.wav"
+                            if not generate_audio(tts_ayah, str(temp_mp3), voice=YT_QURAN_VOICE):
+                                raise RuntimeError(f"❌ فشل توليد قراءة Gemini للآية {s}:{a}")
+                            normalize_wav(str(temp_mp3), str(dry_wav), gentle_loudnorm=True, volume_mult=1.0)
+                            if not apply_mosque_reverb(dry_wav, reverb_wav):
+                                shutil.copyfile(dry_wav, reverb_wav)
+                            time.sleep(0.5)
+
+                        yt_wavs.extend([reverb_wav, silence_path])
                         yt_chunks.append({
                             "surah": s,
                             "ayah": a,
                             "surah_name": sname,
-                            "reciter": RECITER_YT["name"],
+                            "reciter": "",
                             "text": f"{display} - آية {a}",
-                            "duration": round(get_dur(norm_wav) + SILENCE_DUR, 3),
+                            "duration": round(get_dur(reverb_wav) + SILENCE_DUR, 3),
                         })
                     if yt_chunks:
                         yt_meta.append({
@@ -550,13 +750,14 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                             "surah_name": sname,
                             "ayah_numbers": ayahs,
                             "display": display,
-                            "reciter": RECITER_YT["name"],
+                            "reciter": "",
                             "chunks": yt_chunks,
                         })
 
+                # ── نسخة السوشيال: تلاوة القراء البشريين من EveryAyah ──
                 if build_social:
                     reciter_social = next_social_reciter()
-                    print(f"   🎙️ الآيات {s}:{ayahs} → {reciter_social['name']}", flush=True)
+                    print(f"   🎙️ آيات السوشيال {s}:{ayahs} → {reciter_social['name']}", flush=True)
                     social_chunks = []
                     for a in ayahs:
                         used_reciter = reciter_social
