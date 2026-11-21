@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       build_youtube_rvc:
-        description: 'بناء نسخة اليوتيوب (الحصري + البصمة v4.0-clean) مع نسخة السوشيال'
+        description: 'بناء نسختي اليوتيوب (الحصري+البصمة و تلاوة جميني) مع السوشيال'
         type: boolean
         required: true
         default: true
@@ -139,23 +139,31 @@ jobs:
             echo "has_episode=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build audio
+      - name: Build audio (3 versions sharing narration)
         if: steps.gen.outputs.has_episode == 'true'
         id: audio
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TTS_ENGINE: '1'
         run: |
           mkdir -p out
-          MODE="social"
-          [ "$ENABLE_YT_RVC" = "true" ] && MODE="both"
-          python -u scripts/story_audio.py \
-            "${{ steps.gen.outputs.ep_file }}" \
-            "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
-            "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
-            --mode "$MODE"
+          if [ "$ENABLE_YT_RVC" = "true" ]; then
+            python -u scripts/story_audio.py \
+              "${{ steps.gen.outputs.ep_file }}" \
+              "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
+              "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
+              --yt-gemini-mp3 "out/yt_gemini_${{ steps.gen.outputs.ep_name }}.mp3" \
+              --mode all3
+          else
+            python -u scripts/story_audio.py \
+              "${{ steps.gen.outputs.ep_file }}" \
+              "out/yt_${{ steps.gen.outputs.ep_name }}.mp3" \
+              "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
+              --mode social
+          fi
 
-      - name: Apply v4.0-clean RVC to YouTube Quran
+      - name: Apply v4.0-clean RVC to YouTube Husary
         if: steps.audio.outcome == 'success' && env.ENABLE_YT_RVC == 'true'
         id: rvc_audio
         run: |
@@ -169,21 +177,36 @@ jobs:
         if: steps.audio.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          SHARE_EPISODE_MEDIA: "1"
         run: |
           mkdir -p videos
+          rm -rf /tmp/story_media_cache
+
           python -u scripts/story_video.py \
             "out/social_${{ steps.gen.outputs.ep_name }}_meta.json" \
             "out/social_${{ steps.gen.outputs.ep_name }}.mp3" \
             "videos/social_${{ steps.gen.outputs.ep_name }}.mp4" \
             social
 
-          if [ "$ENABLE_YT_RVC" = "true" ] && [ -f "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" ]; then
-            python -u scripts/story_video.py \
-              "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
-              "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" \
-              "videos/yt_${{ steps.gen.outputs.ep_name }}.mp4" \
-              yt
+          if [ "$ENABLE_YT_RVC" = "true" ]; then
+            if [ -f "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" ]; then
+              python -u scripts/story_video.py \
+                "out/yt_${{ steps.gen.outputs.ep_name }}_meta.json" \
+                "out/yt_rvc_${{ steps.gen.outputs.ep_name }}.mp3" \
+                "videos/yt_${{ steps.gen.outputs.ep_name }}.mp4" \
+                yt
+            fi
+
+            if [ -f "out/yt_gemini_${{ steps.gen.outputs.ep_name }}.mp3" ]; then
+              python -u scripts/story_video.py \
+                "out/yt_gemini_${{ steps.gen.outputs.ep_name }}_meta.json" \
+                "out/yt_gemini_${{ steps.gen.outputs.ep_name }}.mp3" \
+                "videos/yt_gemini_${{ steps.gen.outputs.ep_name }}.mp4" \
+                yt
+            fi
           fi
+
+          rm -rf /tmp/story_media_cache
           ls -lh videos/
 
       - name: Upload to Telegram (compress only if > 48MB)
@@ -225,7 +248,8 @@ jobs:
 
             LABEL="📱 Social (قراء متعددون)"
             case "$(basename "$f")" in
-              yt_*) LABEL="📺 YouTube (الحصري + البصمة v4)" ;;
+              yt_gemini_*) LABEL="🕌 YouTube 2 (تلاوة جميني + صدى المسجد)" ;;
+              yt_*)        LABEL="📺 YouTube 1 (الحصري + البصمة v4)" ;;
             esac
 
             RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
@@ -258,6 +282,7 @@ jobs:
         if: steps.gen.outputs.has_episode == 'true' && steps.telegram.outcome == 'success'
         run: |
           python scripts/cleanup_old_files.py --episode "${{ steps.gen.outputs.ep_name }}"
+          rm -f out/yt_gemini_* videos/yt_gemini_*
 
       - name: Commit state
         if: steps.gen.outcome == 'success' && (steps.gen.outputs.has_episode == 'false' || steps.telegram.outcome == 'success')
