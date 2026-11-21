@@ -734,4 +734,267 @@ def make_caption_slides(
 
         wm_txt = _prepare_draw_text("ملاك المعرفة")
         if HAS_RAQM:
-            wm_bbox = draw.te
+            wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
+            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28
+            draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", stroke_width=3, stroke_fill="black", direction="rtl")
+        else:
+            wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font)
+            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28
+            draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", stroke_width=3, stroke_fill="black")
+
+        png_path = base_png_path.with_name(f"{base_png_path.stem}_s{s_idx}.png")
+        overlay.save(png_path)
+        outputs.append((png_path, slide_dur))
+
+    if len(outputs) > 1:
+        diff = c_dur - sum(d for _, d in outputs)
+        last_p, last_d = outputs[-1]
+        outputs[-1] = (last_p, max(0.3, last_d + diff))
+
+    return outputs
+
+
+def get_duration(path) -> float:
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Path, fx_layers: dict | None = None):
+    is_img = bg_file.lower().endswith((".jpg", ".jpeg", ".png"))
+
+    if fx_layers:
+        try:
+            if is_img:
+                total_frames = max(24, int(duration * VIDEO_FPS) + 24)
+                base_cmd = ["-i", bg_file]
+                base_filter = (
+                    f"[0:v]scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
+                    f"crop={W*2}:{H*2},"
+                    f"zoompan=z='min(zoom+0.0007,1.14)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={W}x{H}:fps={VIDEO_FPS},"
+                    f"colorbalance=rs=0.05:gs=0.02:bs=-0.03,"
+                    f"eq=brightness=-0.09:contrast=1.08:saturation=1.18,"
+                    f"vignette=PI/5,format=yuv420p[base]"
+                )
+            else:
+                base_cmd = ["-stream_loop", "-1", "-i", bg_file]
+                base_filter = (
+                    f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+                    f"crop={W}:{H},fps={VIDEO_FPS},"
+                    f"colorbalance=rs=0.05:gs=0.02:bs=-0.03,"
+                    f"eq=brightness=-0.09:contrast=1.08:saturation=1.18,"
+                    f"vignette=PI/5,format=yuv420p[base]"
+                )
+
+            fx_inputs = [
+                "-loop", "1", "-i", str(fx_layers["bokeh"]),
+                "-loop", "1", "-i", str(fx_layers["sparkle"]),
+                "-loop", "1", "-i", str(fx_layers["leak"]),
+            ]
+            fc = (
+                f"{base_filter};"
+                f"[1:v]fps={VIDEO_FPS},format=rgba,colorchannelmixer=aa=0.22[bk];"
+                f"[2:v]fps={VIDEO_FPS},format=rgba,colorchannelmixer=aa=0.40[sp];"
+                f"[3:v]fps={VIDEO_FPS},format=rgba,colorchannelmixer=aa=0.25[lk];"
+                f"[base][bk]overlay=x='-100+50*sin(t/8)':y='-100+50*cos(t/10)':shortest=1[v1];"
+                f"[v1][sp]overlay=x='-50+30*cos(t/6)':y='-50+30*sin(t/9)':shortest=1[v2];"
+                f"[v2][lk]overlay=0:0:shortest=1,format=yuv420p,setsar=1[vout]"
+            )
+            subprocess.run(
+                ["ffmpeg", "-y"] + base_cmd + fx_inputs + [
+                    "-filter_complex", fc, "-map", "[vout]",
+                    "-t", f"{duration:.3f}", *ENCODE_ARGS, str(out_path),
+                ],
+                check=True, capture_output=True, timeout=240,
+            )
+            return
+        except Exception:
+            pass
+
+    input_flags = ["-loop", "1"] if is_img else ["-stream_loop", "-1"]
+    vf = (
+        f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+        f"crop={W}:{H},fps={VIDEO_FPS},"
+        f"eq=brightness=-0.10:contrast=1.06,"
+        f"format=yuv420p,setsar=1"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y"] + input_flags + [
+            "-i", bg_file, "-t", f"{duration:.3f}", "-vf", vf,
+            *ENCODE_ARGS, str(out_path),
+        ],
+        check=True, capture_output=True,
+    )
+
+
+def prepare_scene_backgrounds(meta: dict, work_dir: Path, W: int, H: int) -> tuple[list, dict]:
+    scenes = detect_scenes(meta["segments"])
+    used_urls = set()
+    used_local = set()
+    scene_bg_map = {}
+    print(f"🎨 تحضير {len(scenes)} مشهد بصري سحري متنوع...", flush=True)
+    for scene in scenes:
+        sid = scene["scene_id"]
+        query = scene["query"]
+        label = "🕌 منقبة" if query in NIQAB_SCENES else "✨"
+        print(f"   {label} Scene {sid} ({scene['duration']:.1f}s): '{query}'", flush=True)
+        scene_bg_map[sid] = fetch_media(query, work_dir, used_urls, used_local, W, H, sid)
+    return scenes, scene_bg_map
+
+
+def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, work_dir: Path, show_reciter: bool = True):
+    load_ayahs()
+    segments = meta["segments"]
+    ep_title = meta.get("title", "")
+    fx_layers = prepare_fx_layers(work_dir, W, H)
+    scenes, scene_bg_map = prepare_scene_backgrounds(meta, work_dir, W, H)
+
+    chunk_to_scene = {}
+    scene_bg_videos = {}
+    for scene in scenes:
+        sid = scene["scene_id"]
+        for key in scene["chunk_keys"]:
+            chunk_to_scene[key] = sid
+        scene_dur = scene["duration"]
+        if scene_dur > 0:
+            bg_mp4 = work_dir / f"bg_scene_{sid}_{W}x{H}.mp4"
+            prep_background(scene_bg_map[sid], scene_dur + 0.5, W, H, bg_mp4, fx_layers=fx_layers)
+            scene_bg_videos[sid] = bg_mp4
+
+    scene_offsets = {sc["scene_id"]: 0.0 for sc in scenes}
+    concat_lines = []
+
+    for seg_idx, seg in enumerate(segments):
+        chunks = seg.get("chunks", [])
+        is_quran = seg.get("type") == "quran"
+        ayahs = seg.get("ayah_numbers", [])
+
+        for c_idx, chunk_data in enumerate(chunks):
+            c_dur = float(chunk_data.get("duration", 0))
+            if c_dur <= 0:
+                continue
+
+            sid = chunk_to_scene[(seg_idx, c_idx)]
+            bg_video = scene_bg_videos[sid]
+            bg_offset = scene_offsets[sid]
+            scene_offsets[sid] += c_dur
+
+            c_text = chunk_data.get("text", "")
+            reciter = chunk_data.get("reciter") or seg.get("reciter", "")
+            display_ref = ""
+
+            if is_quran:
+                surah = int(chunk_data.get("surah") or seg.get("surah") or 0)
+                a_num = int(chunk_data.get("ayah") or (ayahs[c_idx] if c_idx < len(ayahs) else 0))
+                sname = (
+                    chunk_data.get("surah_name")
+                    or seg.get("surah_name")
+                    or SURAH_NAME_LOOKUP.get(surah, "")
+                ).replace("سورة ", "").strip()
+
+                real_text = get_ayah_text_safe(surah, a_num) if (surah and a_num) else ""
+                if real_text:
+                    c_text = f"﴿ {real_text} ﴾"
+                    display_ref = f"[ سورة {sname} : {a_num} ]" if sname else f"[ {surah}:{a_num} ]"
+
+            slides = make_caption_slides(
+                chunk_text=c_text,
+                display_ref=display_ref,
+                reciter_name=reciter,
+                is_quran=is_quran,
+                ep_title=ep_title,
+                base_png_path=work_dir / f"ov_{seg_idx}_{c_idx}.png",
+                W=W,
+                H=H,
+                c_dur=c_dur,
+                show_reciter=show_reciter,
+            )
+
+            out_chunk = work_dir / f"chunk_{seg_idx}_{c_idx}.mp4"
+            bg_cmd = ["-ss", f"{bg_offset:.3f}", "-t", f"{c_dur:.3f}", "-i", str(bg_video)]
+
+            if not slides:
+                subprocess.run(
+                    ["ffmpeg", "-y"] + bg_cmd + [*ENCODE_ARGS, str(out_chunk)],
+                    check=True, capture_output=True,
+                )
+            else:
+                slide_inputs = []
+                slide_filters = []
+                for s_i, (png_path, s_dur) in enumerate(slides):
+                    in_idx = s_i + 1
+                    slide_inputs.extend(["-loop", "1", "-t", f"{s_dur:.3f}", "-i", str(png_path)])
+                    slide_filters.append(f"[{in_idx}:v]fps={VIDEO_FPS},format=rgba[t{s_i}]")
+
+                concat_txt = "".join(f"[t{k}]" for k in range(len(slides)))
+                fc = ";".join(slide_filters) + f";{concat_txt}concat=n={len(slides)}:v=1:a=0[txt];[0:v][txt]overlay=shortest=1,format=yuv420p[v]"
+                subprocess.run(
+                    ["ffmpeg", "-y"] + bg_cmd + slide_inputs + [
+                        "-filter_complex", fc, "-map", "[v]",
+                        "-t", f"{c_dur:.3f}",
+                        *ENCODE_ARGS, str(out_chunk),
+                    ],
+                    check=True, capture_output=True,
+                )
+
+            concat_lines.append(f"file '{out_chunk.resolve()}'")
+
+    audio_dur = get_duration(audio_path)
+    concat_file = work_dir / f"concat_{W}x{H}.txt"
+    concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
+
+    Path(output_mp4).parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_file),
+            "-i", audio_path,
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "copy",
+            "-c:a", "aac", "-ac", "1", "-b:a", "96k",
+            "-movflags", "+faststart",
+            "-shortest",
+            output_mp4,
+        ],
+        check=True, capture_output=True,
+    )
+    size_mb = Path(output_mp4).stat().st_size / 1024 / 1024
+    print(f"✅ {Path(output_mp4).name}: {size_mb:.1f} MB | {audio_dur/60:.1f} دقيقة", flush=True)
+
+
+def main():
+    if len(sys.argv) < 5:
+        print("الاستخدام: python story_video.py <meta.json> <audio.mp3> <output.mp4> <yt|social>")
+        sys.exit(1)
+
+    meta_path, audio_path, output_path, orientation = sys.argv[1:5]
+    if orientation not in DIMENSIONS:
+        print(f"❌ وضع غير معروف: {orientation}")
+        sys.exit(1)
+
+    dims = DIMENSIONS[orientation]
+    meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
+    work_dir = Path(tempfile.mkdtemp(prefix=f"ep_{orientation}_"))
+
+    try:
+        build_video(
+            meta=meta,
+            audio_path=audio_path,
+            output_mp4=output_path,
+            W=dims["w"],
+            H=dims["h"],
+            work_dir=work_dir,
+            show_reciter=(orientation == "social"),
+        )
+    finally:
+        cleanup_dir(work_dir)
+
+
+if __name__ == "__main__":
+    main()
