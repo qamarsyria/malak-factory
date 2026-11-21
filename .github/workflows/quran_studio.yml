@@ -1,10 +1,36 @@
-name: 🎙️ استوديو البصمة والصدى
+name: 🎙️ استوديو البصمة والصدى والنصوص
 
 on:
   workflow_dispatch:
     inputs:
+      source_mode:
+        description: 'المصدر (quran=قرآن | custom_text=نص يدوي بتشكيل تلقائي | custom_text_no_diac=نص مشكول جاهز)'
+        required: true
+        default: 'quran'
+        type: choice
+        options:
+          - quran
+          - custom_text
+          - custom_text_no_diac
+      custom_text:
+        description: 'النص اليدوي (افصل الفقرات بـ | أو اكتب @file:data/studio_text.txt للنصوص الطويلة)'
+        required: false
+        default: ''
+        type: string
+      gemini_voice:
+        description: 'نبرة صوت Gemini الأساسية للنص اليدوي'
+        required: true
+        default: 'Charon'
+        type: choice
+        options:
+          - Charon
+          - Algieba
+          - Orus
+          - Puck
+          - Rasalgethi
+          - Kore
       reciter:
-        description: 'القارئ'
+        description: 'القارئ (في وضع القرآن)'
         required: true
         default: 'Husary_128kbps'
         type: choice
@@ -21,13 +47,13 @@ on:
           - Minshawy_Mujawwad_192kbps
           - Abdul_Basit_Murattal_192kbps
       surah:
-        description: 'اسم السورة (مثال: الكهف، البقرة) أو رقمها (1-114)'
-        required: true
+        description: 'اسم السورة أو رقمها (في وضع القرآن)'
+        required: false
         default: 'الكهف'
         type: string
       ayahs:
         description: 'الآيات (مثال: 1-5 أو 255 أو 1,3,5-7)'
-        required: true
+        required: false
         default: '1-5'
         type: string
       voice_mode:
@@ -42,7 +68,7 @@ on:
           - compare_all
           - original_echo
       my_voice_pitch:
-        description: 'باتش بصمتي (-12 إلى +12)'
+        description: 'باتش بصمتي (-12 إلى +12 — مع القرآن -6، ومع النص اليدوي 0 أو -2)'
         required: true
         default: '-6'
         type: string
@@ -101,6 +127,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+      models: read
 
     steps:
       - name: Checkout
@@ -120,7 +147,7 @@ jobs:
 
       - name: Install core Python deps
         run: |
-          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts
 
       - name: Install RVC & Voice Models
         if: inputs.voice_mode != 'original_echo'
@@ -202,9 +229,14 @@ jobs:
           print(f"📦 حالة بصمة ملك: model={pth_dst.exists()} | index={idx_dst.exists()}")
           EOF
 
-      - name: Run Quran Voice Studio
+      - name: Run Quran & Voice Studio
         id: studio
         env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STUDIO_SOURCE_MODE: ${{ inputs.source_mode }}
+          STUDIO_CUSTOM_TEXT: ${{ inputs.custom_text }}
+          STUDIO_GEMINI_VOICE: ${{ inputs.gemini_voice }}
           STUDIO_RECITER: ${{ inputs.reciter }}
           STUDIO_SURAH: ${{ inputs.surah }}
           STUDIO_AYAHS: ${{ inputs.ayahs }}
@@ -250,6 +282,15 @@ jobs:
           token = os.environ["TELEGRAM_BOT_TOKEN"]
           chat_id = os.environ["TELEGRAM_CHAT_ID"]
           manifest = json.loads(Path("out/studio/manifest.json").read_text(encoding="utf-8"))
+
+          diac_text = manifest.get("diacritized_text", "").strip()
+          if diac_text:
+              msg = f"🔤 النص بعد التشكيل والإعراب التلقائي:\n\n{diac_text}"
+              requests.post(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data={"chat_id": chat_id, "text": msg[:4000]},
+                  timeout=30,
+              )
 
           for item in manifest["outputs"]:
               mp3_path = Path(item["mp3"])
