@@ -1,10 +1,10 @@
 """
-story_audio.py — المرحلة 4: بناء الصوت
-- تعدد نبرات الصوت في الفقه والمحتوى اليومي: نبرة للسؤال (Puck)، نبرة للفتوى/الحديث (Orus)، نبرة رصينة للشرح (Charon).
-- نسختان للقرآن الكريم:
-  * Social: تلاوة بشرية من القراء (العفاسي، السديس، الغامدي، الدوسري، القطامي).
-  * YouTube: قراءة Gemini لنص (quran-simple) الإملائي المشكول مع صدى وجو مسجد هادئ جداً للآية فقط.
-- تشكيل ثنائي المراحل + احتياط GitHub Models + تهجي صوتي عند تفعيل Edge TTS.
+story_audio.py — المرحلة 4: بناء الصوت (متوافق مع اليوميات والقصص معاً)
+- تعدد نبرات الصوت في الفقه والمحتوى اليومي: السؤال (Puck)، الفتوى/الحديث (Orus)، الشرح (Charon).
+- وضع آية اليوتيوب (YT_QURAN_MODE):
+  * "gemini" (تلقائي في اليوميات، أو عبر env في القصص): قراءة Gemini لنص quran-simple + صدى مسجد هادئ.
+  * "husary" (تلقائي في القصص حتى تتوقف خطوة RVC): تحميل تلاوة الحصري لتمر على apply_rvc_to_quran.py.
+- نسخة السوشيال: قراء متعددون من EveryAyah كما هي.
 """
 
 import os
@@ -103,6 +103,11 @@ else:
             print(f"   ⚠️ Edge فشل: {str(e)[:120]}", flush=True)
             return False
 
+
+RECITER_YT = {
+    "id": "Husary_128kbps",
+    "name": "الشيخ محمود خليل الحصري",
+}
 
 RECITER_LIST_SOCIAL = [
     {"id": "Alafasy_128kbps",                 "name": "مشاري راشد العفاسي"},
@@ -432,12 +437,10 @@ def get_simple_ayah_text(surah: int, ayah: int) -> str:
 
 
 def prepare_quran_for_gemini_tts(text: str) -> str:
-    """تحويل أي رموز عثمانية وألفات خنجرية إلى إملاء قياسي مشكول يفهمه Gemini بدقة."""
     if not text:
         return ""
     t = re.sub(r"[\u06D6-\u06ED۞۩]", "", text)
     t = t.replace("ٱ", "ا").replace("\u06E1", "\u0652")
-    # معالجة الواو والياء متبوعة بألف خنجرية قبل الاستبدال العام (مثل الصلوٰة -> الصلاة، علىٰ -> على)
     t = t.replace("وٰ", "ا").replace("ىٰ", "ى")
     t = t.replace("ٰ", "ا")
 
@@ -470,7 +473,6 @@ def prepare_quran_for_gemini_tts(text: str) -> str:
 
 
 def apply_mosque_reverb(input_wav: Path, output_wav: Path) -> bool:
-    """إضافة صدى مسجد دافئ وهادئ جداً لنسخة تلاوة Gemini في اليوتيوب فقط."""
     try:
         af = (
             "apad=pad_dur=0.65,"
@@ -595,6 +597,12 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
     build_social = mode in ("social", "both")
 
     ep = json.loads(Path(json_path).read_text(encoding="utf-8"))
+
+    # تحديد وضع تلاوة اليوتيوب تلقائياً لحماية القصص من التداخل مع RVC لحين التبديل
+    yt_quran_mode = os.getenv("YT_QURAN_MODE", "").strip().lower()
+    if yt_quran_mode not in ("gemini", "husary"):
+        yt_quran_mode = "gemini" if str(ep.get("story_id", "")).startswith("daily_") else "husary"
+
     work = Path(tempfile.mkdtemp(prefix="ep_audio_"))
     ep_name = Path(json_path).stem
     ep_cache = CACHE_DIR / ep_name
@@ -693,47 +701,78 @@ def build_episode_audio(json_path: str, out_yt_mp3: str, out_social_mp3: str, mo
                 display = seg.get("display") or (f"{sname}: {ayahs[0]}" if sname else f"{s}:{ayahs[0]}")
 
                 if build_yt:
-                    print(f"   🕌 آيات اليوتيوب {s}:{ayahs} → Gemini ({YT_QURAN_VOICE}) + صدى مسجد هادئ", flush=True)
-                    yt_chunks = []
-                    for a in ayahs:
-                        simple_raw = get_simple_ayah_text(s, a)
-                        tts_ayah = prepare_quran_for_gemini_tts(simple_raw)
-                        if not tts_ayah:
-                            raise RuntimeError(f"❌ تعذر تحضير نص الآية {s}:{a} لليوتيوب")
+                    if yt_quran_mode == "gemini":
+                        print(f"   🕌 آيات اليوتيوب {s}:{ayahs} → Gemini ({YT_QURAN_VOICE}) + صدى مسجد هادئ", flush=True)
+                        yt_chunks = []
+                        for a in ayahs:
+                            simple_raw = get_simple_ayah_text(s, a)
+                            tts_ayah = prepare_quran_for_gemini_tts(simple_raw)
+                            if not tts_ayah:
+                                raise RuntimeError(f"❌ تعذر تحضير نص الآية {s}:{a} لليوتيوب")
 
-                        a_hash = hashlib.md5(f"{YT_QURAN_VOICE}:{tts_ayah}".encode("utf-8")).hexdigest()[:8]
-                        reverb_wav = ep_cache / f"yt_gemini_quran_{s}_{a}_{a_hash}_mosque.wav"
+                            a_hash = hashlib.md5(f"{YT_QURAN_VOICE}:{tts_ayah}".encode("utf-8")).hexdigest()[:8]
+                            reverb_wav = ep_cache / f"yt_gemini_quran_{s}_{a}_{a_hash}_mosque.wav"
 
-                        if not reverb_wav.exists() or reverb_wav.stat().st_size < 1000:
-                            temp_mp3 = work / f"yt_q_{s}_{a}.mp3"
-                            dry_wav = work / f"yt_q_{s}_{a}_dry.wav"
-                            if not generate_audio(tts_ayah, str(temp_mp3), voice=YT_QURAN_VOICE):
-                                raise RuntimeError(f"❌ فشل توليد قراءة Gemini للآية {s}:{a}")
-                            normalize_wav(str(temp_mp3), str(dry_wav), gentle_loudnorm=True, volume_mult=1.0)
-                            if not apply_mosque_reverb(dry_wav, reverb_wav):
-                                shutil.copyfile(dry_wav, reverb_wav)
-                            time.sleep(0.5)
+                            if not reverb_wav.exists() or reverb_wav.stat().st_size < 1000:
+                                temp_mp3 = work / f"yt_q_{s}_{a}.mp3"
+                                dry_wav = work / f"yt_q_{s}_{a}_dry.wav"
+                                if not generate_audio(tts_ayah, str(temp_mp3), voice=YT_QURAN_VOICE):
+                                    raise RuntimeError(f"❌ فشل توليد قراءة Gemini للآية {s}:{a}")
+                                normalize_wav(str(temp_mp3), str(dry_wav), gentle_loudnorm=True, volume_mult=1.0)
+                                if not apply_mosque_reverb(dry_wav, reverb_wav):
+                                    shutil.copyfile(dry_wav, reverb_wav)
+                                time.sleep(0.5)
 
-                        yt_wavs.extend([reverb_wav, silence_path])
-                        yt_chunks.append({
-                            "surah": s,
-                            "ayah": a,
-                            "surah_name": sname,
-                            "reciter": "",
-                            "text": f"{display} - آية {a}",
-                            "duration": round(get_dur(reverb_wav) + SILENCE_DUR, 3),
-                        })
-                    if yt_chunks:
-                        yt_meta.append({
-                            "index": idx,
-                            "type": "quran",
-                            "surah": s,
-                            "surah_name": sname,
-                            "ayah_numbers": ayahs,
-                            "display": display,
-                            "reciter": "",
-                            "chunks": yt_chunks,
-                        })
+                            yt_wavs.extend([reverb_wav, silence_path])
+                            yt_chunks.append({
+                                "surah": s,
+                                "ayah": a,
+                                "surah_name": sname,
+                                "reciter": "",
+                                "text": f"{display} - آية {a}",
+                                "duration": round(get_dur(reverb_wav) + SILENCE_DUR, 3),
+                            })
+                        if yt_chunks:
+                            yt_meta.append({
+                                "index": idx,
+                                "type": "quran",
+                                "surah": s,
+                                "surah_name": sname,
+                                "ayah_numbers": ayahs,
+                                "display": display,
+                                "reciter": "",
+                                "chunks": yt_chunks,
+                            })
+                    else:
+                        yt_chunks = []
+                        for a in ayahs:
+                            raw_mp3 = ep_cache / f"yt_husary_{s}_{a}.mp3"
+                            norm_wav = ep_cache / f"yt_husary_{s}_{a}_norm.wav"
+                            if not norm_wav.exists():
+                                if not download_human_ayah(s, a, RECITER_YT["id"], raw_mp3):
+                                    raise RuntimeError(f"❌ فشل تحميل آية الحصري {s}:{a}")
+                                normalize_wav(str(raw_mp3), str(norm_wav), gentle_loudnorm=True, volume_mult=RECITER_VOLUME_MULT)
+
+                            yt_wavs.extend([norm_wav, silence_path])
+                            yt_chunks.append({
+                                "surah": s,
+                                "ayah": a,
+                                "surah_name": sname,
+                                "reciter": RECITER_YT["name"],
+                                "text": f"{display} - آية {a}",
+                                "duration": round(get_dur(norm_wav) + SILENCE_DUR, 3),
+                            })
+                        if yt_chunks:
+                            yt_meta.append({
+                                "index": idx,
+                                "type": "quran",
+                                "surah": s,
+                                "surah_name": sname,
+                                "ayah_numbers": ayahs,
+                                "display": display,
+                                "reciter": RECITER_YT["name"],
+                                "chunks": yt_chunks,
+                            })
 
                 if build_social:
                     reciter_social = next_social_reciter()
