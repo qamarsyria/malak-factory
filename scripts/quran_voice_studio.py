@@ -1,8 +1,8 @@
 """
-quran_voice_studio.py — استوديو خاص للتحكم الكامل ببصمتي (v4.0-clean + v3.1) وبصمة ملك ومزجهما
-- يدعم اختيار القارئ، اسم السورة بالعربي أو رقمها، والآيات بأي صيغة (1-5 أو 1,3,7).
-- يدعم مزج البصمتين والتحكم بنسبة ارتفاع صوت كل بصمة من 0% إلى 200%.
-- يدعم التحكم الدقيق بالباتش، وزمن الصدى (ms)، وعدد التكرارات، ومعامل التلاشي، ونسبة صوت الصدى، وذيل التلاشي.
+quran_voice_studio.py — استوديو خاص شامل:
+1) وضع القرآن: اختيار القارئ + اسم السورة أو رقمها + الآيات.
+2) وضع النص اليدوي: تكتب النص بدون تشكيل -> تشكيل وإعراب وتصريف تلقائي مزدوج (Gemini + احتياط GPT-4.1) -> سرد Gemini -> بصمتي وبصمة ملك + الصدى.
+3) مزج البصمتين مع التحكم بنسبة ارتفاع كل بصمة والباتش وزمن الصدى والتكرارات والتلاشي ونسبة الصدى.
 """
 
 import json
@@ -12,17 +12,22 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 import requests
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from story_audio import smart_diacritize, arabize_numbers, split_text, _merge_diacritics_safely
+from gemini_tts_pool import gemini_tts_with_pool
+
 OUT_DIR = _REPO_ROOT / "out" / "studio"
 WORK_DIR = _REPO_ROOT / "temp_studio_work"
 RVC_DIR = _REPO_ROOT / "rvc"
 
 QURAN_BASE_URL = "https://everyayah.com/data"
 TARGET_SR = "48000"
-AYAH_GAP_SEC = 0.35
 
 RECITER_NAMES = {
     "Husary_128kbps":                 "الحصري (مرتل)",
@@ -38,7 +43,6 @@ RECITER_NAMES = {
     "Abdul_Basit_Murattal_192kbps":   "عبد الباسط (مرتل)",
 }
 
-# قائمة احتياطية كاملة بأسماء السور الـ 114 وعدد آياتها
 SURAH_FALLBACK = [
     (1, "الفاتحة", 7), (2, "البقرة", 286), (3, "آل عمران", 200), (4, "النساء", 176),
     (5, "المائدة", 120), (6, "الأنعام", 165), (7, "الأعراف", 206), (8, "الأنفال", 75),
@@ -148,6 +152,157 @@ def download_ayah(surah: int, ayah: int, reciter_id: str, out_wav: Path):
     )
 
 
+def clean_manual_text(text: str) -> str:
+    """ينظف النص اليدوي مع الإبقاء التام على أي كلمات داخل الأقواس () أو ﴿﴾."""
+    if not text:
+        return ""
+    text = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    text = text.replace("ﷺ", " صلى الله عليه وسلم ")
+    text = text.replace("صلى الله عليه وسلم", " صلى الله عليه وسلم ")
+    text = re.sub(r"[()\[\]﴿﴾«»\"'`]", " ", text)
+    text = re.sub(r"[*#@_•/\\|~=+]", " ", text)
+    text = arabize_numbers(text)
+    text = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\s،؛؟!.:]", " ", text)
+    text = re.sub(r"\s*([،؛؟!.:])\s*", r"\1 ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _diacritize_ratio(text: str) -> float:
+    letters = max(1, len(re.findall(r"[\u0621-\u064A]", text)))
+    diacs = len(re.findall(r"[\u064B-\u0652]", text))
+    return diacs / letters
+
+
+def _diacritize_via_github_models(text: str) -> str:
+    gh_token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not gh_token:
+        return ""
+    prompt = (
+        "أنت أستاذ لغوي متخصص في النحو والصرف العربي والتشكيل الصوتي الكامل.\n"
+        "اشكل النص التالي تشكيلاً كاملاً ودقيقاً 100% (الفتحة والضمة والكسرة والتنوين والشدّة على الحرف المشدد واللام الشمسية والسكون في الوقف)، "
+        "مع التمييز الدقيق بين المبني للمعلوم والمجهول وإعراب أواخر الكلمات دون تغيير أو حذف أي كلمة.\n\n"
+        f"النص:\n{text}\n\n"
+        'أعد JSON فقط بهذا الشكل: {"diacritized": "النص مشكولاً بالكامل"}'
+    )
+    for model in ("openai/gpt-4.1", "openai/gpt-4o", "openai/gpt-4o-mini"):
+        try:
+            r = requests.post(
+                "https://models.github.ai/inference/chat/completions",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {gh_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "temperature": 0.05,
+                    "response_format": {"type": "json_object"},
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=60,
+            )
+            if r.status_code == 200:
+                txt = r.json()["choices"][0]["message"]["content"]
+                s, e = txt.find("{"), txt.rfind("}")
+                if s != -1 and e > s:
+                    out = json.loads(txt[s : e + 1]).get("diacritized", "").strip()
+                    if out:
+                        return _merge_diacritics_safely(text, out)
+        except Exception:
+            continue
+    return ""
+
+
+def diacritize_studio_text(clean_para: str) -> str:
+    sub_parts = split_text(clean_para, max_chars=500)
+    diac_parts = []
+    for part in sub_parts:
+        res = smart_diacritize(part)
+        ratio = _diacritize_ratio(res)
+        if ratio < 0.35:
+            print(f"   ⚠️ نسبة التشكيل الأولية منخفضة ({ratio:.2f}) — جاري التعزيز عبر GitHub Models...", flush=True)
+            gh_res = _diacritize_via_github_models(part)
+            if gh_res and _diacritize_ratio(gh_res) > ratio:
+                res = gh_res
+                ratio = _diacritize_ratio(res)
+        print(f"   ✅ نسبة التشكيل النهائية: {ratio:.2f} حركة/حرف", flush=True)
+        diac_parts.append(res)
+    return " ".join(diac_parts).strip()
+
+
+def prepare_custom_text_units(raw_input: str, do_diacritize: bool, gemini_voice: str) -> tuple[list[dict], str]:
+    txt = (raw_input or "").strip()
+    if txt.startswith("@file:"):
+        fpath = _REPO_ROOT / txt[6:].strip()
+        if not fpath.exists():
+            raise RuntimeError(f"❌ الملف غير موجود: {fpath}")
+        txt = fpath.read_text(encoding="utf-8").strip()
+
+    if not txt:
+        raise RuntimeError("❌ خانة النص اليدوي فارغة! اكتب نصاً أو استخدم @file:data/studio_text.txt")
+
+    txt = txt.replace("|", "\n")
+    paragraphs = [p.strip() for p in re.split(r"\n+", txt) if p.strip()]
+
+    diac_paragraphs = []
+    units = []
+    unit_idx = 0
+
+    for p_idx, para in enumerate(paragraphs):
+        clean_para = clean_manual_text(para)
+        if not clean_para:
+            continue
+
+        if do_diacritize:
+            print(f"🔤 جاري التشكيل والإعراب التلقائي للفقرة {p_idx + 1}...", flush=True)
+            diac_para = diacritize_studio_text(clean_para)
+        else:
+            diac_para = clean_para
+
+        diac_paragraphs.append(diac_para)
+        chunks = split_text(diac_para, max_chars=350)
+
+        for c in chunks:
+            if not c.strip() or not re.search(r"[\u0621-\u064A]", c):
+                continue
+            unit_idx += 1
+            raw_mp3 = WORK_DIR / f"gem_raw_{unit_idx:03d}.mp3"
+            raw_wav = WORK_DIR / f"gem_raw_{unit_idx:03d}.wav"
+            print(f"🎙️ سرد Gemini ({gemini_voice}) للجزء #{unit_idx}: {c[:60]}...", flush=True)
+            gemini_tts_with_pool(c, str(raw_mp3), voice=gemini_voice)
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(raw_mp3),
+                    "-af", (
+                        "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                        "areverse,"
+                        "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                        "areverse"
+                    ),
+                    "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le", str(raw_wav),
+                ],
+                check=True, capture_output=True,
+            )
+            units.append({
+                "key": f"txt_{unit_idx:03d}",
+                "wav": raw_wav,
+                "text": c,
+                "is_quran": False,
+            })
+            time.sleep(0.4)
+
+    if not units:
+        raise RuntimeError("❌ لم ينتج عن النص اليدوي أي مقاطع صوتية صالحة.")
+
+    full_diac_text = "\n".join(diac_paragraphs)
+    print("\n" + "─" * 50)
+    print("📜 النص النهائي بعد التشكيل:")
+    print(full_diac_text)
+    print("─" * 50 + "\n", flush=True)
+    return units, full_diac_text
+
+
 def run_rvc_cli(in_wav: Path, out_wav: Path, model_rel: str, index_rel: str, pitch: int, protect: float, index_rate: float, rms_mix: float):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(RVC_DIR)
@@ -174,7 +329,6 @@ def run_rvc_cli(in_wav: Path, out_wav: Path, model_rel: str, index_rel: str, pit
 
 
 def build_my_voice_dry(in_48k: Path, out_dry: Path, base_pitch: int):
-    """بصمتي (87.5% v4.0-clean + 12.5% v3.1-myvoice) قبل إضافة الصدى."""
     clean_w = RVC_DIR / "assets/weights/clean.pth"
     rough_w = RVC_DIR / "assets/weights/rough.pth"
     if not clean_w.exists():
@@ -222,7 +376,7 @@ def _parse_malak_pitch(raw_spec: str, pre_cleaned: Path) -> int:
         if len(f0_voiced) > 0:
             input_hz = float(np.median(f0_voiced))
             auto_pitch = round(12 * math.log2(190.0 / input_hz))
-            print(f"   🎯 تحليل طبقة القارئ لملك: {input_hz:.1f} Hz | Auto={auto_pitch}", flush=True)
+            print(f"   🎯 تحليل طبقة الصوت لملك: {input_hz:.1f} Hz | Auto={auto_pitch}", flush=True)
     except Exception as e:
         print(f"   ⚠️ تعذر التحليل التلقائي لطبقة ملك ({e}) — استخدام الافتراضي 4", flush=True)
 
@@ -232,7 +386,6 @@ def _parse_malak_pitch(raw_spec: str, pre_cleaned: Path) -> int:
 
 
 def build_malak_dry(in_48k: Path, out_dry: Path, pitch_spec: str):
-    """بصمة ملك (تبطيء 25% + تحليل 190Hz + RVC + إعادة السرعة + EQ ملك)."""
     malak_w = RVC_DIR / "assets/weights/malak.pth"
     if not malak_w.exists():
         raise RuntimeError("❌ ملف بصمة ملك (malak_voice.pth) غير موجود في المستودع ولا في Releases!")
@@ -243,12 +396,11 @@ def build_malak_dry(in_48k: Path, out_dry: Path, pitch_spec: str):
     rvc_raw = out_dry.with_name(out_dry.stem + "_raw.wav")
 
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(in_wav_or := in_48k),
+        ["ffmpeg", "-y", "-i", str(in_48k),
          "-af", f"highpass=f=60,lowpass=f=15500,afftdn=nr=2:nf=-50,atempo={tempo_slow}",
          "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le", str(pre_cleaned)],
         check=True, capture_output=True,
     )
-    del in_wav_or
 
     final_pitch = _parse_malak_pitch(pitch_spec, pre_cleaned)
     idx_arg = "malak.index" if (RVC_DIR / "malak.index").exists() else ""
@@ -316,7 +468,6 @@ def apply_custom_echo(
     wet_pct: float,
     tail_fade_sec: float,
 ):
-    """صدى استوديو احترافي بالتحكم بزمن الصدى وعدد التكرارات والتلاشي ونسبة صوت الصدى."""
     dry_dur = get_dur(in_dry)
     repeats = max(0, min(8, int(repeats)))
     delay_ms = max(0.0, min(2000.0, float(delay_ms)))
@@ -364,6 +515,10 @@ def apply_custom_echo(
 
 
 def main():
+    source_mode = os.getenv("STUDIO_SOURCE_MODE", "quran").strip()
+    custom_text = os.getenv("STUDIO_CUSTOM_TEXT", "")
+    gemini_voice = os.getenv("STUDIO_GEMINI_VOICE", "Charon").strip()
+
     reciter_id = os.getenv("STUDIO_RECITER", "Husary_128kbps").strip()
     surah_input = os.getenv("STUDIO_SURAH", "الكهف").strip()
     ayahs_input = os.getenv("STUDIO_AYAHS", "1-5").strip()
@@ -380,52 +535,75 @@ def main():
     echo_wet = float(os.getenv("STUDIO_ECHO_WET", "35").strip())
     tail_fade = float(os.getenv("STUDIO_TAIL_FADE", "1.5").strip())
 
-    s_num, s_name, max_ayah = resolve_surah(surah_input)
-    ayah_list = parse_ayahs(ayahs_input, max_ayah)
-    reciter_label = RECITER_NAMES.get(reciter_id, reciter_id)
-
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    is_quran_source = (source_mode == "quran")
+    gap_sec = 0.35 if is_quran_source else 0.20
+
     gap_wav = WORK_DIR / "gap.wav"
     subprocess.run(
         ["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={TARGET_SR}:cl=mono",
-         "-t", str(AYAH_GAP_SEC), "-c:a", "pcm_s16le", str(gap_wav)],
+         "-t", str(gap_sec), "-c:a", "pcm_s16le", str(gap_wav)],
         check=True, capture_output=True,
     )
 
+    units: list[dict] = []
+    diac_text_full = ""
+
+    if is_quran_source:
+        s_num, s_name, max_ayah = resolve_surah(surah_input)
+        ayah_list = parse_ayahs(ayahs_input, max_ayah)
+        reciter_label = RECITER_NAMES.get(reciter_id, reciter_id)
+        base_slug = f"s{s_num:03d}"
+        ep_title = f"سورة {s_name}"
+        source_desc = f"📖 سورة {s_name} | الآيات: {ayahs_input} | القارئ: {reciter_label}"
+        for a in ayah_list:
+            in_wav = WORK_DIR / f"orig_{s_num}_{a}.wav"
+            download_ayah(s_num, a, reciter_id, in_wav)
+            units.append({
+                "key": f"{s_num}_{a}",
+                "wav": in_wav,
+                "surah": s_num,
+                "ayah": a,
+                "surah_name": s_name,
+                "text": f"{s_name}: {a}",
+                "is_quran": True,
+            })
+    else:
+        do_diac = (source_mode == "custom_text")
+        units, diac_text_full = prepare_custom_text_units(custom_text, do_diac, gemini_voice)
+        base_slug = "text"
+        ep_title = "نص صوتي خاص"
+        source_desc = f"✍️ نص يدوي ({'تشكيل تلقائي' if do_diac else 'مشكول مسبقاً'}) | أساس Gemini: {gemini_voice}"
+
     print("=" * 60)
-    print(f"🎙️ استوديو البصمة والصدى | سورة {s_name} ({s_num}) | الآيات: {ayah_list}")
-    print(f"📖 القارئ: {reciter_label} | الوضع: {voice_mode}")
+    print(f"🎙️ استوديو البصمة والصدى | {source_desc}")
     print(f"🔊 الصدى: delay={echo_delay}ms | repeats={echo_repeats} | decay={echo_decay} | wet={echo_wet}% | tail={tail_fade}s")
     print("=" * 60)
 
-    # 1) تحميل الآيات وتحويل الأصوات المطلوبة مرة واحدة لكل آية
-    raw_ayahs: dict[int, Path] = {}
-    my_dry_map: dict[int, Path] = {}
-    malak_dry_map: dict[int, Path] = {}
+    my_dry_map: dict[str, Path] = {}
+    malak_dry_map: dict[str, Path] = {}
 
     need_my = voice_mode in ("my_voice", "compare_all") or (voice_mode == "blend" and my_level > 0)
     need_malak = voice_mode in ("malak", "compare_all") or (voice_mode == "blend" and malak_level > 0)
 
-    for a in ayah_list:
-        in_wav = WORK_DIR / f"orig_{s_num}_{a}.wav"
-        download_ayah(s_num, a, reciter_id, in_wav)
-        raw_ayahs[a] = in_wav
-
+    for u in units:
+        k = u["key"]
+        in_wav = u["wav"]
         if need_my:
-            print(f"🔹 تحويل آية {s_num}:{a} ببصمتي (pitch={my_pitch})...", flush=True)
-            m_dry = WORK_DIR / f"mydry_{s_num}_{a}.wav"
+            print(f"🔹 تحويل {k} ببصمتي (pitch={my_pitch})...", flush=True)
+            m_dry = WORK_DIR / f"mydry_{k}.wav"
             build_my_voice_dry(in_wav, m_dry, my_pitch)
-            my_dry_map[a] = m_dry
+            my_dry_map[k] = m_dry
 
         if need_malak:
-            print(f"🔸 تحويل آية {s_num}:{a} ببصمة ملك (pitch_spec={malak_pitch})...", flush=True)
-            k_dry = WORK_DIR / f"malakdry_{s_num}_{a}.wav"
+            print(f"🔸 تحويل {k} ببصمة ملك (pitch_spec={malak_pitch})...", flush=True)
+            k_dry = WORK_DIR / f"malakdry_{k}.wav"
             build_malak_dry(in_wav, k_dry, malak_pitch)
-            malak_dry_map[a] = k_dry
+            malak_dry_map[k] = k_dry
 
     modes_to_export = ["my_voice", "malak", "blend"] if voice_mode == "compare_all" else [voice_mode]
     manifest_outputs = []
@@ -434,96 +612,112 @@ def main():
         final_wavs = []
         meta_chunks = []
 
-        for a in ayah_list:
-            dry_mix = WORK_DIR / f"mix_{m}_{s_num}_{a}.wav"
+        for idx, u in enumerate(units):
+            k = u["key"]
+            is_last = (idx == len(units) - 1)
+            dry_mix = WORK_DIR / f"mix_{m}_{k}.wav"
+
             if m == "original_echo":
                 subprocess.run(
-                    ["ffmpeg", "-y", "-i", str(raw_ayahs[a]),
+                    ["ffmpeg", "-y", "-i", str(u["wav"]),
                      "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95",
                      "-ar", TARGET_SR, "-ac", "1", "-c:a", "pcm_s16le", str(dry_mix)],
                     check=True, capture_output=True,
                 )
             elif m == "my_voice":
-                shutil.copyfile(my_dry_map[a], dry_mix)
+                shutil.copyfile(my_dry_map[k], dry_mix)
             elif m == "malak":
-                shutil.copyfile(malak_dry_map[a], dry_mix)
+                shutil.copyfile(malak_dry_map[k], dry_mix)
             elif m == "blend":
-                mix_voices(
-                    my_dry_map.get(a),
-                    malak_dry_map.get(a),
-                    my_level,
-                    malak_level,
-                    dry_mix,
-                )
+                mix_voices(my_dry_map.get(k), malak_dry_map.get(k), my_level, malak_level, dry_mix)
 
-            echoed = WORK_DIR / f"echo_{m}_{s_num}_{a}.wav"
-            apply_custom_echo(dry_mix, echoed, echo_delay, echo_repeats, echo_decay, echo_wet, tail_fade)
+            if is_quran_source:
+                unit_tail = tail_fade if is_last else min(tail_fade, 0.90)
+            else:
+                unit_tail = tail_fade if is_last else min(tail_fade, 0.35)
+
+            echoed = WORK_DIR / f"echo_{m}_{k}.wav"
+            apply_custom_echo(dry_mix, echoed, echo_delay, echo_repeats, echo_decay, echo_wet, unit_tail)
             dur = get_dur(echoed)
             final_wavs.extend([echoed, gap_wav])
 
-            meta_chunks.append({
-                "surah": s_num,
-                "ayah": a,
-                "surah_name": s_name,
-                "reciter": reciter_label,
-                "text": f"{s_name}: {a}",
-                "duration": round(dur + AYAH_GAP_SEC, 3),
-            })
+            if u["is_quran"]:
+                meta_chunks.append({
+                    "surah": u["surah"],
+                    "ayah": u["ayah"],
+                    "surah_name": u["surah_name"],
+                    "reciter": "",
+                    "text": u["text"],
+                    "duration": round(dur + gap_sec, 3),
+                })
+            else:
+                meta_chunks.append({
+                    "text": u["text"],
+                    "duration": round(dur + gap_sec, 3),
+                })
 
         concat_file = WORK_DIR / f"concat_{m}.txt"
         concat_file.write_text("\n".join(f"file '{p.resolve()}'" for p in final_wavs), encoding="utf-8")
 
-        out_mp3 = OUT_DIR / f"s{s_num:03d}_{m}.mp3"
+        out_mp3 = OUT_DIR / f"{base_slug}_{m}.mp3"
         subprocess.run(
             ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
              "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3)],
             check=True, capture_output=True, timeout=300,
         )
 
-        meta_path = OUT_DIR / f"s{s_num:03d}_{m}_meta.json"
+        seg_entry = {
+            "index": 0,
+            "type": "quran" if is_quran_source else "narration",
+            "display": "",
+            "reciter": "",
+            "chunks": meta_chunks,
+        }
+        if is_quran_source:
+            seg_entry["surah"] = units[0]["surah"]
+            seg_entry["surah_name"] = units[0]["surah_name"]
+            seg_entry["ayah_numbers"] = [u["ayah"] for u in units]
+            seg_entry["display"] = f"{units[0]['surah_name']}: {units[0]['ayah']}"
+
+        meta_path = OUT_DIR / f"{base_slug}_{m}_meta.json"
         meta_path.write_text(
             json.dumps({
                 "episode": 1,
-                "title": f"سورة {s_name}",
+                "title": ep_title,
                 "story_id": f"studio_{m}",
                 "total_duration": get_dur(out_mp3),
-                "segments": [{
-                    "index": 0,
-                    "type": "quran",
-                    "surah": s_num,
-                    "surah_name": s_name,
-                    "ayah_numbers": ayah_list,
-                    "display": f"{s_name}: {ayah_list[0]}",
-                    "reciter": "",
-                    "chunks": meta_chunks,
-                }],
+                "segments": [seg_entry],
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
+        orig_label = RECITER_NAMES.get(reciter_id, reciter_id) if is_quran_source else gemini_voice
         mode_labels = {
             "my_voice":      f"🎙️ بصمتي (pitch={my_pitch})",
             "malak":         f"✨ بصمة ملك (pitch={malak_pitch})",
             "blend":         f"🎚️ مزيج ({my_level:.0f}% بصمتي + {malak_level:.0f}% ملك)",
-            "original_echo": f"📖 الأصل بالصدى فقط ({reciter_label})",
+            "original_echo": f"📖 الأصل بالصدى فقط ({orig_label})",
         }
         caption = (
             f"{mode_labels[m]}\n"
-            f"📖 سورة {s_name} | الآيات: {ayahs_input} | القارئ: {reciter_label}\n"
+            f"{source_desc}\n"
             f"🎛️ باتش بصمتي: {my_pitch} | باتش ملك: {malak_pitch}\n"
             f"🔊 الصدى: زمن {echo_delay:.0f}ms | تكرار {echo_repeats} | تلاشي {echo_decay} | نسبة {echo_wet:.0f}% | ذيل {tail_fade}s"
         )
         manifest_outputs.append({
             "mode": m,
             "mp3": str(out_mp3),
-            "title": f"سورة {s_name} ({ayahs_input})",
+            "title": ep_title,
             "performer": mode_labels[m],
             "caption": caption,
         })
         print(f"✅ تم تجهيز: {out_mp3.name}")
 
     (OUT_DIR / "manifest.json").write_text(
-        json.dumps({"outputs": manifest_outputs}, ensure_ascii=False, indent=2),
+        json.dumps({
+            "diacritized_text": diac_text_full,
+            "outputs": manifest_outputs,
+        }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     shutil.rmtree(WORK_DIR, ignore_errors=True)
