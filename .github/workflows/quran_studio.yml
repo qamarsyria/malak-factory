@@ -1,0 +1,290 @@
+name: 🎙️ استوديو البصمة والصدى
+
+on:
+  workflow_dispatch:
+    inputs:
+      reciter:
+        description: 'القارئ'
+        required: true
+        default: 'Husary_128kbps'
+        type: choice
+        options:
+          - Husary_128kbps
+          - Husary_128kbps_Mujawwad
+          - Alafasy_128kbps
+          - Abdurrahmaan_As-Sudais_192kbps
+          - Ghamadi_40kbps
+          - Yasser_Ad-Dussary_128kbps
+          - Nasser_Alqatami_128kbps
+          - MaherAlMuaiqly128kbps
+          - Minshawy_Murattal_128kbps
+          - Minshawy_Mujawwad_192kbps
+          - Abdul_Basit_Murattal_192kbps
+      surah:
+        description: 'اسم السورة (مثال: الكهف، البقرة) أو رقمها (1-114)'
+        required: true
+        default: 'الكهف'
+        type: string
+      ayahs:
+        description: 'الآيات (مثال: 1-5 أو 255 أو 1,3,5-7)'
+        required: true
+        default: '1-5'
+        type: string
+      voice_mode:
+        description: 'البصمة (blend=مزيج | my_voice=بصمتي | malak=ملك | compare_all=الكل | original_echo=أصلي)'
+        required: true
+        default: 'blend'
+        type: choice
+        options:
+          - blend
+          - my_voice
+          - malak
+          - compare_all
+          - original_echo
+      my_voice_pitch:
+        description: 'باتش بصمتي (-12 إلى +12)'
+        required: true
+        default: '-6'
+        type: string
+      my_voice_level:
+        description: 'ارتفاع صوت بصمتي % (0 إلى 200)'
+        required: true
+        default: '100'
+        type: string
+      malak_pitch_offset:
+        description: 'باتش بصمة ملك (إزاحة مثل 0 أو +2، أو مطلق مثل =4)'
+        required: true
+        default: '0'
+        type: string
+      malak_level:
+        description: 'ارتفاع صوت بصمة ملك % (0 إلى 200)'
+        required: true
+        default: '60'
+        type: string
+      echo_delay_ms:
+        description: 'زمن الصدى بالملي ثانية (مثال: 150)'
+        required: true
+        default: '150'
+        type: string
+      echo_repeats:
+        description: 'عدد تكرار الصدى (0 إلى 8)'
+        required: true
+        default: '3'
+        type: string
+      echo_decay:
+        description: 'معامل التلاشي بين التكرارات (0.1 إلى 0.85)'
+        required: true
+        default: '0.5'
+        type: string
+      echo_wet_pct:
+        description: 'نسبة صوت الصدى % (0 إلى 100)'
+        required: true
+        default: '35'
+        type: string
+      tail_fade_sec:
+        description: 'زمن تلاشي نهاية الصدى بالثواني (مثال: 1.5)'
+        required: true
+        default: '1.5'
+        type: string
+      output_format:
+        description: 'صيغة الإخراج على تيليجرام'
+        required: true
+        default: 'mp3'
+        type: choice
+        options:
+          - mp3
+          - mp3_and_video
+
+jobs:
+  studio:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg git wget fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
+
+      - name: Install core Python deps
+        run: |
+          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+
+      - name: Install RVC & Voice Models
+        if: inputs.voice_mode != 'original_echo'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pip install -q "pip<24.1" "setuptools<81"
+          pip install -q torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q numpy==1.26.4 scipy librosa==0.10.2 soundfile transformers==4.39.3 onnxruntime av praat-parselmouth faiss-cpu==1.7.3 pyworld torchcrepe omegaconf ffmpeg-python
+          pip install -q fairseq==0.12.2 || echo "⚠️ fairseq skipped"
+
+          rm -rf rvc
+          git clone --depth 1 https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git rvc
+          cd rvc
+          grep -rl "torch.load(" --include="*.py" . | xargs -r sed -i 's/torch\.load(\([^)]*\)map_location="cpu")/torch.load(\1map_location="cpu", weights_only=False)/g'
+          mkdir -p assets/hubert_base assets/rmvpe assets/weights assets/pretrained_v2
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json -O assets/hubert_base/config.json
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/preprocessor_config.json -O assets/hubert_base/preprocessor_config.json
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin -O assets/hubert_base/pytorch_model.bin
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -O assets/rmvpe/rmvpe.pt
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G48k.pth -O assets/pretrained_v2/f0G48k.pth
+          wget -q https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D48k.pth -O assets/pretrained_v2/f0D48k.pth
+
+          # بصمتي (v4.0-clean + v3.1-myvoice)
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/my_clean_voice.pth -O assets/weights/clean.pth
+          wget -q https://github.com/qamarsyria/malak-factory/resolve/main/clean.index -O clean.index 2>/dev/null || \
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v4.0-clean/added_my_clean_voice.index -O clean.index
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/my_voice.pth -O assets/weights/rough.pth
+          wget -q https://github.com/qamarsyria/malak-factory/releases/download/v3.1-myvoice/added_my_voice.index -O rough.index
+
+          cd ..
+
+          # بصمة ملك: فحص المستودع أولاً ثم البحث التلقائي في GitHub Releases
+          if [ -f "malak_voice.pth" ]; then
+            cp -f "malak_voice.pth" "rvc/assets/weights/malak.pth"
+          fi
+          if [ -f "added_malak_voice.index" ]; then
+            cp -f "added_malak_voice.index" "rvc/malak.index"
+          fi
+
+          python - <<'EOF'
+          import os, requests
+          from pathlib import Path
+
+          pth_dst = Path("rvc/assets/weights/malak.pth")
+          idx_dst = Path("rvc/malak.index")
+          if pth_dst.exists() and idx_dst.exists():
+              print("✅ تم العثور على ملفات بصمة ملك محلياً في المستودع.")
+              raise SystemExit(0)
+
+          repo = os.getenv("GITHUB_REPOSITORY", "")
+          token = os.getenv("GITHUB_TOKEN", "")
+          headers = {"Accept": "application/vnd.github+json"}
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+
+          r = requests.get(f"https://api.github.com/repos/{repo}/releases", headers=headers, timeout=30)
+          if r.status_code != 200:
+              print(f"⚠️ تعذر قراءة Releases: HTTP {r.status_code}")
+              raise SystemExit(0)
+
+          for rel in r.json():
+              for asset in rel.get("assets", []):
+                  name = asset.get("name", "").lower()
+                  url = asset.get("url")
+                  if not url:
+                      continue
+                  if "malak" in name and name.endswith(".pth") and not pth_dst.exists():
+                      print(f"⬇️ تحميل موديل ملك من Release: {asset['name']}")
+                      dl = requests.get(url, headers={**headers, "Accept": "application/octet-stream"}, timeout=120)
+                      if dl.status_code == 200:
+                          pth_dst.write_bytes(dl.content)
+                  elif "malak" in name and name.endswith(".index") and not idx_dst.exists():
+                      print(f"⬇️ تحميل index ملك من Release: {asset['name']}")
+                      dl = requests.get(url, headers={**headers, "Accept": "application/octet-stream"}, timeout=120)
+                      if dl.status_code == 200:
+                          idx_dst.write_bytes(dl.content)
+
+          print(f"📦 حالة بصمة ملك: model={pth_dst.exists()} | index={idx_dst.exists()}")
+          EOF
+
+      - name: Run Quran Voice Studio
+        id: studio
+        env:
+          STUDIO_RECITER: ${{ inputs.reciter }}
+          STUDIO_SURAH: ${{ inputs.surah }}
+          STUDIO_AYAHS: ${{ inputs.ayahs }}
+          STUDIO_VOICE_MODE: ${{ inputs.voice_mode }}
+          STUDIO_MY_PITCH: ${{ inputs.my_voice_pitch }}
+          STUDIO_MY_LEVEL: ${{ inputs.my_voice_level }}
+          STUDIO_MALAK_PITCH: ${{ inputs.malak_pitch_offset }}
+          STUDIO_MALAK_LEVEL: ${{ inputs.malak_level }}
+          STUDIO_ECHO_DELAY: ${{ inputs.echo_delay_ms }}
+          STUDIO_ECHO_REPEATS: ${{ inputs.echo_repeats }}
+          STUDIO_ECHO_DECAY: ${{ inputs.echo_decay }}
+          STUDIO_ECHO_WET: ${{ inputs.echo_wet_pct }}
+          STUDIO_TAIL_FADE: ${{ inputs.tail_fade_sec }}
+        run: |
+          python -u scripts/quran_voice_studio.py
+
+      - name: Build Video (Optional)
+        if: inputs.output_format == 'mp3_and_video'
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          mkdir -p out/studio_videos
+          for meta in out/studio/*_meta.json; do
+            [ -f "$meta" ] || continue
+            mp3="${meta%_meta.json}.mp3"
+            base=$(basename "$mp3" .mp3)
+            python -u scripts/story_video.py \
+              "$meta" \
+              "$mp3" \
+              "out/studio_videos/${base}.mp4" \
+              "yt"
+          done
+
+      - name: Upload Results to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import json, os, requests
+          from pathlib import Path
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          manifest = json.loads(Path("out/studio/manifest.json").read_text(encoding="utf-8"))
+
+          for item in manifest["outputs"]:
+              mp3_path = Path(item["mp3"])
+              if mp3_path.exists():
+                  caption = item["caption"]
+                  with open(mp3_path, "rb") as f:
+                      r = requests.post(
+                          f"https://api.telegram.org/bot{token}/sendAudio",
+                          data={
+                              "chat_id": chat_id,
+                              "caption": caption[:1000],
+                              "title": item["title"][:64],
+                              "performer": item["performer"][:64],
+                          },
+                          files={"audio": (mp3_path.name, f, "audio/mpeg")},
+                          timeout=120,
+                      )
+                  res = r.json()
+                  assert res.get("ok"), f"Telegram Audio Error: {res}"
+                  print(f"✅ تم إرسال الصوت: {mp3_path.name}")
+
+              vid_path = Path("out/studio_videos") / f"{mp3_path.stem}.mp4"
+              if vid_path.exists():
+                  with open(vid_path, "rb") as f:
+                      r = requests.post(
+                          f"https://api.telegram.org/bot{token}/sendVideo",
+                          data={
+                              "chat_id": chat_id,
+                              "caption": item["caption"][:1000],
+                              "supports_streaming": "true",
+                          },
+                          files={"video": (vid_path.name, f, "video/mp4")},
+                          timeout=240,
+                      )
+                  res = r.json()
+                  assert res.get("ok"), f"Telegram Video Error: {res}"
+                  print(f"✅ تم إرسال الفيديو: {vid_path.name}")
+          EOF
