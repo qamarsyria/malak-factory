@@ -132,9 +132,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -- scripts/__pycache__/ 2>/dev/null || true
           git add data/stories/ state/models_cache.json || true
           git commit -m "🧪 تجهيز قصة: ${{ steps.check.outputs.story_to_prep }}" || echo "لا تغييرات"
-          git pull --rebase || true
+          git pull --rebase --autostash origin main || git pull --rebase --autostash
           git push
 
       - name: Notify Success
