@@ -6,6 +6,7 @@ generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد �
 - يمنع تتابع آيتين مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام لتجنب الفهم الخاطئ.
 - يعتمد حداً أدنى مرناً للكلمات حسب حجم المادة المدققة لمنع الحشو والاختلاق.
 - يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و Timeout و thinkingConfig.
+- يضمن عدم انقطاع نصوص الخلاصة والتشويق بضبط التوكنات والتفكير ورفض ردود MAX_TOKENS.
 - يستخدم story_library لتحديث العصر والقصة التالية بشكل صحيح.
 """
 
@@ -157,12 +158,14 @@ def _advance_pool(pool):
         pool.advance()
 
 
-def _thinking_config(model: str) -> dict | None:
+def _thinking_config(model: str, minimal_thinking: bool = False) -> dict | None:
     m = model.lower()
     if any(x in m for x in ["gemini-3", "gemini-4"]):
+        if minimal_thinking and "gemini-3" in m and "gemini-4" not in m:
+            return {"thinkingLevel": "minimal"}
         return {"thinkingLevel": "low"}
     if "gemini-2.5" in m:
-        return {"thinkingBudget": 512}
+        return {"thinkingBudget": 0 if minimal_thinking else 512}
     return None
 
 
@@ -182,7 +185,13 @@ def _prepare_models(raw_models: list[str]) -> list[str]:
     return cleaned
 
 
-def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: int = 8192):
+def call_llm(
+    prompt: str,
+    is_json: bool = True,
+    timeout: int = 60,
+    max_tokens: int = 8192,
+    minimal_thinking: bool = False,
+):
     global _LAST_LLM_ERROR
     _LAST_LLM_ERROR = ""
 
@@ -201,6 +210,7 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
             continue
 
         use_thinking = True
+        allow_minimal = minimal_thinking
         use_temperature = True
         valid_tries = 0
         dead_skips = 0
@@ -218,7 +228,7 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                 if is_json:
                     gen_cfg["responseMimeType"] = "application/json"
                 if use_thinking:
-                    tc = _thinking_config(model)
+                    tc = _thinking_config(model, minimal_thinking=allow_minimal)
                     if tc:
                         gen_cfg["thinkingConfig"] = tc
 
@@ -233,6 +243,12 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     if not parts:
                         _LAST_LLM_ERROR = f"{model}: رد فارغ (finish={finish})"
                         print(f"   ⚠️ {_LAST_LLM_ERROR}", flush=True)
+                        break
+
+                    if finish == "MAX_TOKENS":
+                        _LAST_LLM_ERROR = f"{model}: الرد مقطوع بسبب MAX_TOKENS"
+                        print(f"   ⚠️ {_LAST_LLM_ERROR}", flush=True)
+                        _advance_pool(pool)
                         break
 
                     text_parts = [p.get("text", "") for p in parts if not p.get("thought") and p.get("text")]
@@ -265,7 +281,10 @@ def call_llm(prompt: str, is_json: bool = True, timeout: int = 60, max_tokens: i
                     continue
 
                 elif r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
-                    use_thinking = False
+                    if allow_minimal:
+                        allow_minimal = False
+                    else:
+                        use_thinking = False
                     continue
 
                 elif r.status_code == 400 and use_temperature and "temperature" in r.text.lower():
@@ -669,7 +688,7 @@ def _build_retry_feedback(issues: list[str], ayahs_ep: list) -> str:
 
 
 def generate_summary(story_title, ep_title, segments):
-    narration_text = " ".join(s.get("text", "") for s in segments if s.get("type") == "narration")[:3000]
+    narration_text = " ".join(s.get("text", "") for s in segments if s.get("type") == "narration")[:6000]
     prompt = f"""القصة: {story_title} — {ep_title}
 سرد الحلقة:
 {narration_text}
@@ -678,7 +697,7 @@ def generate_summary(story_title, ep_title, segments):
 - عبرة مركزة دون تكرار للسرد.
 - فصحى سليمة بدون مقدمات ("وفي الختام" ممنوعة).
 أعد النص فقط."""
-    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=400)
+    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True)
     return clean_narration(res) if isinstance(res, str) else ""
 
 
@@ -689,7 +708,7 @@ def generate_teaser(story_title, next_ep_title):
 - ابدأ بسؤال درامي وقور.
 - جملة واحدة فقط.
 أعد الجملة فقط."""
-    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=200)
+    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True)
     teaser = clean_narration(res) if isinstance(res, str) else ""
     if len(teaser) < 15:
         teaser = "فماذا جاء بعد ذلك في هذه السلسلة المباركة؟"
@@ -870,75 +889,3 @@ def main(clear_latest: bool = True, _visited: set | None = None):
 
     print("   📝 خلاصة...")
     summary = generate_summary(story["title"], ev_title, script["segments"])
-
-    next_sub = sub_idx + 1
-    if next_sub < len(episodes_in_event):
-        next_ep_title = episodes_in_event[next_sub].get("sub_title", "")
-    elif ev_idx + 1 < len(ev_dirs):
-        next_meta_p = ev_dirs[ev_idx + 1] / "meta.json"
-        next_ep_title = json.loads(next_meta_p.read_text(encoding="utf-8")).get("title", "") if next_meta_p.exists() else ""
-    else:
-        next_ep_title = None
-
-    print("   📢 تشويق...")
-    teaser = generate_teaser(story["title"], next_ep_title)
-
-    segments = script["segments"]
-    if summary:
-        segments.append({"type": "summary", "text": summary, "visual": "sunrise sky"})
-    if teaser:
-        segments.append({
-            "type": "teaser",
-            "text": teaser,
-            "next_episode_title": f"الحلقة {ep_num + 1}",
-            "url": "https://qamarsyria.github.io/qamar-malak/",
-            "platform_name": "ملاك المعرفة",
-        })
-    outro = random.choice(OUTRO_TEMPLATES)
-    segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
-
-    for s in segments:
-        if s.get("type") in ("narration", "summary", "teaser", "cta"):
-            s["text"] = clean_narration(s["text"])
-
-    ep_data = {
-        "episode_number": ep_num,
-        "global_episode_number": global_ep_num,
-        "story_id": story_id,
-        "story_title": story["title"],
-        "title": f"{story['title']} — الحلقة {ep_num} — {script.get('title', ev_title)}",
-        "segments": segments,
-    }
-
-    output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    LATEST_EPISODE.write_text(str(output_path), encoding="utf-8")
-
-    _gh_summary(
-        f"### 🎬 الحلقة #{ep_num} (العامة #{global_ep_num}): `{ep_code}`\n"
-        f"- **القصة:** {story['title']} (`{story_id}`)\n"
-        f"- **الحدث:** `{ev_dir.name}` (`{ev_idx + 1}/{len(ev_dirs)}`) | الجزء `{sub_idx + 1}/{len(episodes_in_event)}`\n"
-        f"- **العنوان:** {script.get('title', ev_title)}"
-    )
-
-    notify_telegram(
-        f"✍️ حلقة جاهزة للبناء: #{ep_num} (العامة #{global_ep_num})\n"
-        f"📖 {story['title']} — {ep_code}\n"
-        f"📌 {ev_dir.name}: {script.get('title', ev_title)}",
-        level="info",
-    )
-    print(f"\n🎉 اكتملت الحلقة {ep_num} (العامة #{global_ep_num}): {output_path.name}")
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except Exception as e:
-        err_msg = f"خطأ غير متوقع في generate_story.py: {type(e).__name__}: {e}"
-        print(f"::error::{err_msg}", flush=True)
-        _gh_output(fail_reason=err_msg)
-        _gh_summary(f"### ❌ خطأ فادح أثناء التوليد\n```\n{err_msg}\n```")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
