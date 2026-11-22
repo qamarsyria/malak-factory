@@ -1,5 +1,5 @@
 {
-  "run_count": 6,
+  "run_count": 7,
   "adhkar_slot_idx": 1,
   "used_ids": {
     "fiqh": [
@@ -11,7 +11,8 @@
     ],
     "quran": [
       "ayah-018-005",
-      "ayah-002-280"
+      "ayah-002-280",
+      "ayah-017-088"
     ],
     "adhkar": [
       "adhkar-sabah-0024",
