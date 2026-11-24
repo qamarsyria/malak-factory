@@ -1,5 +1,5 @@
 {
-  "run_count": 9,
+  "run_count": 10,
   "adhkar_slot_idx": 1,
   "used_ids": {
     "fiqh": [
@@ -7,7 +7,9 @@
       "binbaz-8320"
     ],
     "hadith": [
-      "henc-66326"
+      "henc-66326",
+      "henc-65300",
+      "henc-2967"
     ],
     "quran": [
       "ayah-018-005",
