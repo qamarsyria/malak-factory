@@ -3,9 +3,11 @@
 scripts/generate_whispers.py
 ============================
 المحرّك الأدبي واللغوي لمشروع «همسات ملك»:
-- المرحلة 1 تكتب النص مشكولاً أصلاً؛ والمرحلة 2 تدققه نحوياً وصرفياً وإعرابياً.
-- بوابة تحقق برمجية تمنع أي نص غير مشكّل (<45% حركات) من الوصول للشاشة.
-- عرض «ملك» بدون أي تشكيل نهائياً على الشاشة، مع تأكيد نطقها في الصوت.
+- ينوّع تلقائياً بين 6 أشكال أدبية (شعر موزون مقفّى، نثر رومانسي دافئ، مناجاة ودعاء خاشع،
+  رسائل حنين ليلية، حوار وجداني ثنائي، ثلاثية الأسماء).
+- يفصل الإبداع الأدبي (المرحلة 1) عن التشكيل والإعراب الكامل (المرحلة 2) لتخرج الأشعار
+  والأدعية عميقة ومؤثرة ومضبوطة النطق 100%.
+- يولّد وصف مشهد رومانسي متطابق مع كل بيت/مقطع ليحوله whispers_video إلى رسومات حقيقية ودفتر قطني.
 """
 
 from __future__ import annotations
@@ -31,39 +33,39 @@ MALAK_LAM_MODE = os.environ.get("MALAK_LAM_MODE", "fatha").strip().lower()
 
 THEMES = [
     {
-        "id": "prayer_niqab",
-        "label": "دعاء ومناجاة بنكهة إيمانية",
-        "scene_category": "prayer_niqab",
-        "music_mood": "spiritual_warm",
-        "ambient_mood": "spiritual_calm",
-        "default_speaker_mode": "he",
-        "writing_guide": (
-            "اكتب دعاءً صادقاً هادئاً خاشعاً بنكهة إيمانية راقية، تستودع فيه الله قلبها وسكينتها، "
-            "وتدعو أن يجمع الله بينكما في خيرٍ وطُهرٍ وبركة."
-        ),
-    },
-    {
-        "id": "fantasy_fairies",
-        "label": "شوق وغرام وهيام في عالم الخيال",
-        "scene_category": "fantasy_fairies",
-        "music_mood": "dreamy_piano",
-        "ambient_mood": "starlight_magic",
-        "default_speaker_mode": "duet",
-        "writing_guide": (
-            "اكتب نصاً شعرياً أو نثراً عفيفاً هادئ الإيقاع، يمزج بين صور النجوم والفراشات والغابات المضيئة "
-            "والحنين الصادق بوقار ورقي."
-        ),
-    },
-    {
         "id": "modest_love",
-        "label": "غزل عفيف وحب هادئ",
+        "label": "أشعار وغرام عفيف وحب دافئ",
         "scene_category": "modest_love",
         "music_mood": "romantic_strings",
         "ambient_mood": "night_rain",
         "default_speaker_mode": "he",
         "writing_guide": (
-            "اكتب غزلاً عفيفاً هادئاً يتغزل بعفّتها ووقارها وهدوء روحها وجمال حيائها، "
-            "بعبارات رقيقة صادقة بلا تكلف."
+            "اكتب نصاً غرامياً عفيفاً عميق المشاعر مليئاً بالحنين والدفء والوفاء، "
+            "يصف أثر حضورها في القلب والروح بصور جمالية حية دافئة."
+        ),
+    },
+    {
+        "id": "prayer_niqab",
+        "label": "أدعية مؤثرة ومناجاة روحانية",
+        "scene_category": "prayer_niqab",
+        "music_mood": "spiritual_warm",
+        "ambient_mood": "spiritual_calm",
+        "default_speaker_mode": "he",
+        "writing_guide": (
+            "اكتب مناجاة قلبية خاشعة ودعاءً صادقاً مؤثراً يرتجف له الوجدان، "
+            "تستودع فيه الله قلبها وحفظها وسعادتها، وتدعو الله أن يجمعكما على الطهر والخير والبركة."
+        ),
+    },
+    {
+        "id": "fantasy_fairies",
+        "label": "شوق وهيام وأشعار حالمة",
+        "scene_category": "fantasy_fairies",
+        "music_mood": "dreamy_piano",
+        "ambient_mood": "starlight_magic",
+        "default_speaker_mode": "duet",
+        "writing_guide": (
+            "اكتب أبياتاً شعرية موزونة مقفّاة أو نثراً شاعرياً حالماً يمزج الشوق بضوء القمر "
+            "والمطر والورود وأمسيات الحنين الصادق."
         ),
     },
     {
@@ -74,10 +76,19 @@ THEMES = [
         "ambient_mood": "starlight_magic",
         "default_speaker_mode": "duet",
         "writing_guide": (
-            "اكتب مقطعاً رقيقاً يدمج بين الرومانسية الهادئة والدعاء، وينتهي بخاتمة صادقة مؤثرة "
-            "تجمع أسماءها الثلاثة (ملك، ومريم، وملاك) في جملة مترابطة عذبة."
+            "اكتب قصيدة وجدانية أو همسة تجمع بين الغزل العفيف والدعاء الصادق، "
+            "وتلتقي في ذروتها أسماؤها الثلاثة (ملك، ومريم، وملاك) بترابط شاعري بديع غير متكلف."
         ),
     },
+]
+
+LITERARY_FORMS = [
+    "قصيدة شعرية موزونة مقفّاة من 4 أبيات عذبة متناغمة الجرس والإيقاع، ينبض كل بيت منها بالشوق والوفاء.",
+    "رسالة حنين ليلية دافئة بلسان عاشق صادق يكتب لها تحت ضوء القمر والمطر بأسلوب وجداني مؤثر.",
+    "مناجاة روحانية ودعاء قلبي خاشع ممزوج بالمحبة الصادقة والسكينة والإخلاص في الطاعة والوفاء.",
+    "همسة نثرية شعرية رقيقة تصف كيف غيّرت تفاصيلها الصغيرة معنى الأمان والسكينة في حياته.",
+    "حوار قلبي دافئ تتعانق فيه الكلمات بين الشوق والدعاء والتمني باللقاء الحلال المبارك.",
+    "لوحة أدبية قصيرة مليئة بالصور الحسية الراقية (الورود، المطر، الدفء، القرب) مع خاتمة تخطف القلب.",
 ]
 
 _HARAKAT_CLASS = r"\u064B-\u065F\u0670\u0640"
@@ -145,23 +156,19 @@ def discover_text_models(pool: GeminiKeyPool) -> list[str]:
         return _DISCOVERED_MODELS_CACHE
 
     safe_defaults = [
-        "gemini-4-hydrogen",
+        "gemini-2.5-flash",
         "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
+        "gemini-flash-latest",
         "gemini-2.5-flash-lite",
     ]
     excluded = (
-        "argon", "carbon", "neon", "ultra", "pro",
-        "tts", "image", "banana", "imagen", "veo", "lyria", "embedding",
-        "robotics", "live", "transcribe", "translate", "audio", "computer-use",
-        "deep-research", "1.5", "2.0", "gemma",
+        "pro", "ultra", "tts", "image", "banana", "imagen", "veo", "lyria",
+        "embedding", "robotics", "live", "transcribe", "translate", "audio",
+        "computer-use", "deep-research", "1.5", "2.0", "gemma",
     )
     try:
-        for _ in range(min(4, max(1, pool.alive_count()))):
+        for _ in range(min(8, max(1, pool.alive_count()))):
             key = pool.current()
             r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
             if r.status_code in (401, 403):
@@ -181,8 +188,8 @@ def discover_text_models(pool: GeminiKeyPool) -> list[str]:
                     if m not in ordered:
                         ordered.append(m)
                 if ordered:
-                    _DISCOVERED_MODELS_CACHE = ordered[:10]
-                    print(f"🧠 [Models] المختارة: {_DISCOVERED_MODELS_CACHE[:6]}", flush=True)
+                    _DISCOVERED_MODELS_CACHE = ordered[:8]
+                    print(f"🧠 [Models] المختارة: {_DISCOVERED_MODELS_CACHE[:5]}", flush=True)
                     return _DISCOVERED_MODELS_CACHE
             break
     except Exception:
@@ -197,34 +204,34 @@ def _is_gemini_3_or_newer(model: str) -> bool:
     return bool(m and float(m.group(1)) >= 3.0)
 
 
-def _build_gen_config(model: str, use_thinking: bool = True, max_tokens: int = 8192) -> dict:
-    cfg: dict = {"maxOutputTokens": max_tokens, "responseMimeType": "application/json"}
+def _build_gen_config(model: str, use_thinking: bool = True, max_tokens: int = 8192, temp: float = 0.72) -> dict:
+    cfg: dict = {"maxOutputTokens": max_tokens, "responseMimeType": "application/json", "temperature": temp}
     ml = model.lower()
     if _is_gemini_3_or_newer(ml):
         if use_thinking:
             cfg["thinkingConfig"] = {"thinkingLevel": "low" if "lite" in ml else "medium"}
     else:
-        cfg["temperature"] = 0.2
         if use_thinking and "2.5" in ml:
-            cfg["thinkingConfig"] = {"thinkingBudget": 1024}
+            cfg["thinkingConfig"] = {"thinkingBudget": 512}
     return cfg
 
 
-def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 45) -> dict:
+def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 45, temp: float = 0.72) -> dict:
     models = discover_text_models(pool)
     last_err = ""
 
     for model in models:
         use_thinking = True
+        use_temp = True
         tries = 0
-        max_tries = min(3, max(2, pool.alive_count()))
+        max_tries = min(4, max(2, pool.alive_count()))
         while tries < max_tries and pool.alive_count() > 0:
             key = pool.current()
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            body = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": _build_gen_config(model, use_thinking=use_thinking),
-            }
+            gen_cfg = _build_gen_config(model, use_thinking=use_thinking, temp=temp)
+            if not use_temp:
+                gen_cfg.pop("temperature", None)
+            body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
             try:
                 r = requests.post(url, json=body, timeout=(12, timeout))
                 if r.status_code == 200:
@@ -248,6 +255,10 @@ def call_gemini_json(pool: GeminiKeyPool, prompt: str, timeout: int = 45) -> dic
 
                 if r.status_code == 400 and use_thinking and "thinking" in r.text.lower():
                     use_thinking = False
+                    continue
+
+                if r.status_code == 400 and use_temp and "temperature" in r.text.lower():
+                    use_temp = False
                     continue
 
                 if r.status_code == 429:
@@ -393,58 +404,70 @@ def _diacritic_ratio(text: str) -> float:
     return diacs / letters
 
 
-def _build_pass1_prompt(theme: dict, speaker_mode: str, recent_titles: list[str], recent_openings: list[str]) -> str:
+def _build_pass1_prompt(
+    theme: dict,
+    literary_form: str,
+    speaker_mode: str,
+    recent_titles: list[str],
+    recent_openings: list[str],
+) -> str:
     if theme["id"] == "trinity_names":
         names_instruction = (
-            "موضوع هذه الحلقة هو «ثلاثية الأسماء»: يجب أن تظهر أسماؤها الثلاثة (ملك، ومريم، وملاك) "
-            "في الحلقة؛ وتُختَم الجملة الأخيرة بجمع الأسماء الثلاثة معاً برقة ووقار."
+            "اجمع في هذه القطعة أسماءها الثلاثة (ملك، ومريم، وملاك) بصورة شعرية مترابطة عذبة، "
+            "مع التركيز على دفء القرب والوفاء."
         )
     else:
         chosen_name = random.choice(["ملك", "ملك", "مريم", "ملاك"])
         names_instruction = (
-            f"وظّف اسم «{chosen_name}» بشكل طبيعي في النص (منفرداً ما أمكن، مثل: قَلْبَ ملك، يَا ملك، عَيْنَيْ مَرْيَمَ، دَرْبَ مَلَاكَ)."
+            f"وجّه الهمسة إلى «{chosen_name}» بعذوبة وصدق (مثل: يا {chosen_name}، في قلبِ {chosen_name}، لعينَيْ {chosen_name}) دون تكرار آلي."
         )
 
     if speaker_mode == "duet":
-        speaker_rule = "الوضع: ثنائي (duet). وزّع الحلقات على 3 مقاطع قصيرة متبادلة بين \"he\" و\"she\"، على أن يبدأ \"he\" ويختم \"he\"."
+        speaker_rule = "الوضع: حوار ثنائي (duet) من 3 مقاطع متبادلة بين \"he\" و\"she\" (يبدأ \"he\" وترد \"she\" ويختم \"he\")."
     elif speaker_mode == "she":
-        speaker_rule = "الوضع: بصوتها (she). اجعل المقاطع بلسانها في مناجاة هادئة ودعاء رقيق (2 أو 3 مقاطع)."
+        speaker_rule = "الوضع: بصوتها (she) في 3 مقاطع رقيقة تفيض شوقاً ودعاءً وحنيناً."
     else:
-        speaker_rule = "الوضع: بصوته (he). اجعل المقاطع بلسانه في دعاءٍ أو غزلٍ عفيف أو شوقٍ هادئ رصين (3 مقاطع)."
+        speaker_rule = "الوضع: بصوته (he) في 3 مقاطع شاعرية دافئة تفيض غزلاً عفيفاً وشوقاً أو دعاءً عميقاً."
 
     avoid_block = ""
     if recent_titles or recent_openings:
         avoid_block = (
-            "\nتجنب تكرار هذه العناوين أو الافتتاحيات:\n"
-            f"- عناوين: {', '.join(recent_titles[-8:])}\n"
-            f"- افتتاحيات: {' | '.join(recent_openings[-6:])}\n"
+            "\n🚫 ممنوع تماماً تكرار أو محاكاة أي عنوان أو بداية من الحلقات السابقة:\n"
+            f"- عناوين سابقة: {', '.join(recent_titles[-12:])}\n"
+            f"- افتتاحيات سابقة: {' | '.join(recent_openings[-10:])}\n"
         )
 
-    return f"""أنت أديب عربي تكتب نصوصاً رومانسية عفيفة ومحتشمة جداً بنكهة روحانية هادئة، مخصّصة لحالات واتساب (35 إلى 45 ثانية).
+    scene_rule = (
+        "المشاهد الإنجليزية الموصوفة يجب أن تكون **دينية محتشمة وقورة فقط** (مسجد مضاء، قمر ونجوم، ورد أبيض، فوانيس دافئة، أو امرأة منتقبة تدعو بخشوع — بدون أي مشاهد عاطفية جريئة)."
+        if theme["id"] == "prayer_niqab"
+        else "المشاهد الإنجليزية الموصوفة يجب أن تكون **رومانسية شاعرية راقية ومحتشمة** (زوجان محبان يمشيان في غابة خريفية ذهبية، نافذة مطر دافئة على أضواء الشموع والورود الحمراء، أو سماء مرصعة بالنجوم والمروج المزهرة، مع كتابة المشهد الأخير بأسلوب الدفتر القطني الرومانسي)."
+    )
 
-المطلوب اليوم:
+    return f"""أنت شاعر وأديب عربي مبدع تكتب مقاطع قصيرة آسرة لقناة «همسات ملك» (45 إلى 65 كلمة إجمالاً).
+
 - المحور: {theme['label']}
-- التوجيه الأدبي: {theme['writing_guide']}
+- التوجيه: {theme['writing_guide']}
+- القالب الأدبي المطلوب لهذه الحلقة تحديداً: **{literary_form}**
 - {names_instruction}
 - {speaker_rule}
 {avoid_block}
 
-قواعد إلزامية:
-1. مجموع الكلمات الكلي بين 38 و65 كلمة فقط.
-2. **اكتب `raw_text` مشكولاً تشكيلاً كاملاً بالحركات والشدّة منذ البداية**، مع مراعاة النحو والصرف والممنوع من الصرف للأسماء الثلاثة.
-3. التزم بالهدوء والرزانة والصدق العاطفي؛ ابتعد عن المبالغة الدرامية.
-4. يُمنع استخدام كلمات (مَلِك / مُلْك / مَلَكَ بمعنى الحكم أو الامتلاك)؛ كلمة «ملك» تُستخدم حصراً كاسمها الشخصي.
-5. ضع علامات الترقيم العربية الطبيعية فقط (، . … ؟) بدون أي وسوم إنجليزية.
+قواعد الإبداع وجودة الأسلوب:
+1. لا تبدأ بمقدمات مكررة مثل "إلى ملك يا من سكنت القلب..."؛ ابتكر صورة شعرية أو افتتاحية جديدة ومفاجئة في جمالها!
+2. استخدم تشبيهات شعرية حية رقيقة ومشاعر صادقة حقيقية (شوق، حنين، أمان، دعاء خاشع، وفاء، غزل راقٍ)، وابتعد عن الجمل الروبوتية المتشابهة.
+3. يُمنع استخدام كلمة (مَلِك / مُلْك) بمعنى الحكم؛ كلمة «ملك» هي اسمها الشخصي فقط.
+4. قسّم النص إلى 3 مقاطع متناسقة: المقطع الأول والثاني يتكاملان مع المشاهد الرومانسية/الروحانية، والمقطع الأخير هو ذروة الهمسة أو بيت القصيد (`is_climax: true`).
+5. أرفق مع كل مقطع وصفاً بصرياً بالإنجليزية (`scene_prompt_en`) يترجم معنى المقطع حرفياً لينرسم له مشهد مطابق! ({scene_rule})
 
 أعد JSON فقط:
 {{
-  "title": "عنوان هادئ مختصر (2-4 كلمات)",
-  "poetic_hook": "وصف بصري بالإنجليزية",
+  "title": "عنوان شاعري متجدد (2-4 كلمات)",
   "segments": [
     {{
       "speaker": "he أو she",
       "pause_after_ms": 450,
-      "raw_text": "النص العربي المشكول بالكامل",
+      "raw_text": "المقطع الأول (شعر أو نثر دافئ أو دعاء)...",
+      "scene_prompt_en": "romantic visual scene matching this exact Arabic verse in English (15-25 words)",
       "is_climax": false
     }}
   ]
@@ -456,30 +479,29 @@ def _build_pass2_grammar_prompt(draft: dict) -> str:
         {"index": i, "speaker": s.get("speaker", "he"), "raw_text": s.get("raw_text", "")}
         for i, s in enumerate(draft.get("segments", []))
     ]
-    return f"""أنت عالم لغوي متخصص في النحو والصرف العربي والإعراب التفصيلي وضبط النطق الجَهري (TTS).
+    return f"""أنت عالم لغوي متخصص في النحو والصرف والعروض العربي وضبط النطق الجَهري (TTS).
 
-راجع المقاطع التالية واضبطها بالتشكيل الكامل (100% مع الشدّة `ّ` وجوباً):
+راجع المقاطع الشعرية/النثرية التالية واضبطها بالتشكيل الكامل (100% مع الشدّة `ّ` وجوباً):
 
 {json.dumps(segs_slim, ensure_ascii=False, indent=2)}
 
-قواعد النحو والصرف والإعراب:
-1. حلّل إعراب كل جملة وكلمة أولاً (الفاعل، المفعول، المضاف إليه، النواسخ، التوابع، المبني للمعلوم والمجهول).
+قواعد الإعراب والصرف:
+1. اضبط أواخر الكلمات إعرابياً حسب موقعها وحسب الوزن الشعري إن كان شعراً.
 2. الممنوع من الصرف للأسماء الثلاثة:
-   - «مَلَك»: بفتح الميم واللام بلا تنوين ولا جر بالكسرة (قَلْبَ مَلَكَ)، وعند الوقف (مَلَكْ).
-   - «مَرْيَم»: بلا تنوين ولا جر بالكسرة (لِمَرْيَمَ)، وعند الوقف (مَرْيَمْ).
-   - «مَلَاك»: بلا تنوين (مَلَاكَ)، وعند الوقف (مَلَاكْ).
-3. ضع الشدّة على الحروف المشددة واللام الشمسية (اللَّهُ، السَّمَاءِ، النُّورِ، كُلِّ، تَحُفُّ).
-4. حرّك التقاء الساكنين واضبط همزات الوصل والقطع.
-5. حافظ على نفس الكلمات تماماً دون زيادة أو نقصان.
+   - «مَلَك»: بفتح الميم واللام بلا تنوين (لِـمَلَكَ)، وعند الوقف (مَلَكْ).
+   - «مَرْيَم»: بلا تنوين (لِـمَرْيَمَ)، وعند الوقف (مَرْيَمْ).
+   - «مَلَاك»: بلا تنوين (لِـمَلَاكَ)، وعند الوقف (مَلَاكْ).
+3. ضع الشدّة على كل حرف مشدد واللام الشمسية.
+4. حافظ على جميع الكلمات والترقيم كما هي دون زيادة أو حذف.
 
 أعد JSON فقط:
 {{
   "segments_audit": [
     {{
       "index": 0,
-      "sentence_irab": "إعراب الجملة إجمالاً",
-      "word_irab": ["إعراب الكلمات الحساسة"],
-      "diacritized_text": "النص مشكولاً 100%"
+      "sentence_irab": "خلاصة الإعراب",
+      "word_irab": [],
+      "diacritized_text": "النص مضبوطاً بالشكل الكامل 100%..."
     }}
   ]
 }}"""
@@ -490,22 +512,23 @@ def _fallback_from_bank(theme: dict, speaker_mode: str) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
         from whispers_bank import WHISPERS_BANK
-        all_items = [item for lst in WHISPERS_BANK.values() for item in lst]
-        chosen = random.choice(all_items)
+        key = theme["id"] if theme["id"] in WHISPERS_BANK else random.choice(list(WHISPERS_BANK.keys()))
+        pool = WHISPERS_BANK.get(key) or [item for lst in WHISPERS_BANK.values() for item in lst]
+        chosen = random.choice(pool)
     except Exception:
         chosen = {
-            "display_text": "اَللَّهُمَّ إِنِّي أَسْتَوْدِعُكَ قَلْبَ ملك، وَأَسْأَلُكَ سَكِينَةً تَحُفُّ مَرْيَمَ، وَفَرَحًا لَا يُفَارِقُ مَلَاكَ.",
-            "tts_text": "اَللَّهُمَّ إِنِّي أَسْتَوْدِعُكَ قَلْبَ مَلَكْ، وَأَسْأَلُكَ سَكِينَةً تَحُفُّ مَرْيَمْ، وَفَرَحًا لَا يُفَارِقُ مَلَاكْ.",
+            "display_text": "أَنْتِ الْقَصِيدَةُ حِينَ يَصْمُتُ بَوْحُنَا، وَأَنْتِ السَّكِينَةُ يَا ملك فِي خَافِقِي.",
+            "tts_text": "أَنْتِ الْقَصِيدَةُ حِينَ يَصْمُتُ بَوْحُنَا، وَأَنْتِ السَّكِينَةُ يَا مَلَكْ فِي خَافِقِي.",
         }
     spk = "she" if speaker_mode == "she" else "he"
     return {
-        "title": "همسة لروحها",
-        "poetic_hook": "calm spiritual night",
+        "title": "نَبْضُ الحَنِينِ",
         "segments": [{
             "speaker": spk,
             "pause_after_ms": 450,
             "raw_text": chosen.get("display_text", ""),
             "diacritized_override": chosen.get("tts_text") or chosen.get("display_text", ""),
+            "scene_prompt_en": chosen.get("scene_prompt_en", "warm twilight garden with soft roses and glowing lantern light"),
             "is_climax": True,
         }],
     }
@@ -535,13 +558,15 @@ def _select_theme(history: dict, forced_theme: str | None) -> dict:
 
 def generate_episode(theme_override: str | None = None, speaker_override: str | None = None) -> Path:
     history = _load_history()
+    ep_counter = history.get("episode_counter", 0)
     theme = _select_theme(history, theme_override)
+    literary_form = LITERARY_FORMS[ep_counter % len(LITERARY_FORMS)]
+
     speaker_mode = speaker_override or theme["default_speaker_mode"]
     if not speaker_override and theme["id"] in ("prayer_niqab", "modest_love"):
-        ep_num = history.get("episode_counter", 0)
-        if ep_num % 5 == 4:
+        if ep_counter % 4 == 3:
             speaker_mode = "she"
-        elif ep_num % 3 == 2:
+        elif ep_counter % 3 == 2:
             speaker_mode = "duet"
 
     recent = history.get("recent", [])
@@ -553,24 +578,28 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
 
     try:
         pool = GeminiKeyPool()
-        print(f"🌙 [1/3] تأليف حلقة مشكولة | المحور: {theme['label']} | الصوت: {speaker_mode}", flush=True)
-        draft = call_gemini_json(pool, _build_pass1_prompt(theme, speaker_mode, recent_titles, recent_openings))
+        print(f"🌙 [1/3] تأليف همسة #{ep_counter + 1} | المحور: {theme['label']} | الصوت: {speaker_mode}", flush=True)
+        draft = call_gemini_json(
+            pool,
+            _build_pass1_prompt(theme, literary_form, speaker_mode, recent_titles, recent_openings),
+            temp=0.82,
+        )
         raw_segs = draft.get("segments") or []
         if not raw_segs:
-            raise RuntimeError("فارغ")
+            raise RuntimeError("مسودة فارغة")
 
-        print("📚 [2/3] التدقيق النحوي والصرفي والإعرابي...", flush=True)
+        print("📚 [2/3] التدقيق النحوي والعروضي والتشكيل الكامل...", flush=True)
         try:
-            audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft))
+            audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft), temp=0.12)
             aud_map = {int(a.get("index", i)): a for i, a in enumerate(audit.get("segments_audit") or [])}
         except Exception as e:
-            print(f"   ⚠️ تعذر التدقيق الثاني ({str(e)[:60]})، التحقق من تشكيل المرحلة الأولى...", flush=True)
+            print(f"   ⚠️ تعذر التدقيق الثاني ({str(e)[:60]})، متابعة التصحيح الفردي...", flush=True)
     except Exception as e:
-        print(f"⚠️ تعذر التوليد عبر Gemini ({str(e)[:90]}) — تفعيل البنك المنقح كاحتياط!", flush=True)
+        print(f"⚠️ تعذر التوليد عبر Gemini ({str(e)[:90]}) — استخدام البنك المنقح.", flush=True)
         draft = _fallback_from_bank(theme, speaker_mode)
 
     raw_segs = draft.get("segments") or []
-    print("🔒 [3/3] فحص كثافة التشكيل + قفل اسم «ملك»...", flush=True)
+    print("🔒 [3/3] التحقق من كثافة التشكيل + قفل نطق الأسماء...", flush=True)
     final_segments = []
     all_names_found = set()
 
@@ -584,12 +613,11 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         merged_diac = _merge_diacritics_safely(raw_text, diac_cand)
         ratio = _diacritic_ratio(merged_diac)
 
-        # إذا فشل التشكيل وبقي النص شبه عارٍ (<0.42)، أعد المحاولة قبل اعتماده!
         if ratio < 0.42:
-            print(f"   ⚠️ كثافة التشكيل منخفضة بالمقطع {idx} ({ratio:.2f})، إعادة التشكيل قسرياً...", flush=True)
+            print(f"   ⚠️ كثافة التشكيل منخفضة بالمقطع {idx} ({ratio:.2f})، إعادة التشكيل...", flush=True)
             try:
                 pool_retry = GeminiKeyPool()
-                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"raw_text": raw_text}]}))
+                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"raw_text": raw_text}]}), temp=0.10)
                 cand2 = (r2.get("segments_audit") or [{}])[0].get("diacritized_text", "").strip()
                 if cand2:
                     merged_diac = _merge_diacritics_safely(raw_text, cand2)
@@ -597,9 +625,8 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             except Exception:
                 pass
 
-        # إن بقي غير مشكّل إطلاقاً (<0.30)، استبدله بالبنك المنقح حتى لا يظهر نص عارٍ على الشاشة
         if ratio < 0.30:
-            print(f"   🚨 تعذر تشكيل المقطع {idx}، استخدام بديل مشكّل من البنك المنقح.", flush=True)
+            print(f"   🚨 تعذر تشكيل المقطع {idx}، استبداله بمقطع مشكول من البنك.", flush=True)
             fb = _fallback_from_bank(theme, seg.get("speaker", "he"))["segments"][0]
             merged_diac = fb["diacritized_override"]
             ratio = _diacritic_ratio(merged_diac)
@@ -620,6 +647,10 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         if spk not in ("he", "she"):
             spk = "he"
 
+        scene_en = re.sub(r"[^\x20-\x7E]", " ", str(seg.get("scene_prompt_en", ""))).strip()
+        if not scene_en:
+            scene_en = "romantic twilight rose garden in warm soft candlelight"
+
         final_segments.append({
             "index": idx,
             "speaker": spk,
@@ -629,6 +660,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             "raw_text": raw_text,
             "display_text": display_text,
             "tts_text": tts_text,
+            "scene_prompt_en": scene_en,
             "diacritic_ratio": round(ratio, 3),
             "featured_names": seg_names,
             "is_climax": bool(seg.get("is_climax", idx == len(raw_segs) - 1)),
@@ -642,7 +674,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
     if not final_segments:
         raise RuntimeError("❌ لا توجد مقاطع صالحة بعد التدقيق.")
 
-    ep_num = history.get("episode_counter", 0) + 1
+    ep_num = ep_counter + 1
     today = datetime.datetime.utcnow().strftime("%Y%m%d")
     ep_id = f"whisper_{today}_ep{ep_num:04d}"
 
@@ -653,13 +685,13 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         "title": draft.get("title", "همسة لروحها"),
         "theme_id": theme["id"],
         "theme_label": theme["label"],
+        "literary_form": literary_form,
         "scene_category": theme["scene_category"],
         "music_mood": theme["music_mood"],
         "ambient_mood": theme["ambient_mood"],
         "speaker_mode": speaker_mode,
         "malak_lam_mode": MALAK_LAM_MODE,
         "names_featured": sorted(all_names_found),
-        "poetic_hook": draft.get("poetic_hook", ""),
         "segments": final_segments,
     }
 
@@ -672,8 +704,8 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
     LATEST_PTR_FILE.write_text(rel_path, encoding="utf-8")
 
     history["episode_counter"] = ep_num
-    recent.append({"id": ep_id, "title": payload["title"], "theme": theme["id"], "opening": final_segments[0]["raw_text"][:60]})
-    history["recent"] = recent[-25:]
+    recent.append({"id": ep_id, "title": payload["title"], "theme": theme["id"], "opening": final_segments[0]["raw_text"][:65]})
+    history["recent"] = recent[-30:]
     _save_history(history)
 
     print(f"✅ تم حفظ الحلقة: {rel_path}", flush=True)
