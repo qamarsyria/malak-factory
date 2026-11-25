@@ -94,7 +94,7 @@ jobs:
 
       - name: Install System Dependencies (Fast & Mirror-Safe)
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass "; then
+          if ! command -v ffmpeg >/dev/null 2>&1; then
             wget -q --timeout=45 -O /tmp/ffmpeg.tar.xz \
               https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
               || true
@@ -109,6 +109,8 @@ jobs:
               sudo apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15 -o Acquire::Retries=3 ffmpeg
             fi
           fi
+
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libraqm-dev libfribidi-dev libharfbuzz-dev || true
 
           sudo mkdir -p /usr/share/fonts/amiri
           wget -q --timeout=30 -O /tmp/Amiri-1.000.zip \
@@ -128,8 +130,8 @@ jobs:
       - name: Install Project Requirements
         run: |
           python -m pip install --upgrade pip==24.0
-          pip install requests edge-tts pillow
-          pip install omegaconf==2.0.5
+          pip install requests==2.32.3 edge-tts "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+          pip install "huggingface_hub>=0.24.0,<1.0.0" "gradio_client>=1.10.0,<2.0.0" omegaconf==2.0.5
 
       - name: Install RVC Dependencies
         if: steps.cfg.outputs.voice_mode != 'no_rvc'
@@ -260,6 +262,10 @@ jobs:
         if: steps.convert.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WHISPERS_NOTEBOOK_MODE: "climax"
         run: |
           mkdir -p videos
           python -u scripts/whispers_video.py \
@@ -275,11 +281,23 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           VIDEO="videos/${{ steps.gen.outputs.EP_NAME }}.mp4"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+          RESP=$(curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "video=@${VIDEO}" \
-            -F "caption=🌙 همسات ملك" \
-            -F "supports_streaming=true"
+            -F "caption=🌙 همسات ملك — ${{ steps.gen.outputs.EP_NAME }}" \
+            -F "supports_streaming=true")
+          echo "$RESP" | grep -q '"ok":true' || { echo "❌ فشل رفع تلغرام: $RESP"; exit 1; }
+          echo "✅ تم رفع همسة ملك إلى تلغرام"
+
+      - name: Save Whisper History (Prevent Repetition)
+        if: steps.tg.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f data/whispers/history.json || true
+          git commit -m "🌙 ${{ steps.gen.outputs.EP_NAME }} [skip ci]" || echo "لا تغييرات"
+          git pull --rebase --autostash origin main || git pull --rebase --autostash || true
+          git push
 
       - name: Cleanup
         if: steps.tg.outcome == 'success'
