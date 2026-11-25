@@ -106,7 +106,8 @@ jobs:
 
       - name: Install core Python deps
         run: |
-          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+          pip install -q "numpy==1.26.4" requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3
+          pip install -q "opencv-python-headless==4.10.0.84" "onnxruntime>=1.17.0,<1.21.0" "huggingface_hub>=0.24.0,<1.0.0" "gradio_client>=1.10.0,<2.0.0"
 
       - name: Verify story is prepared
         id: verify
@@ -177,7 +178,13 @@ jobs:
         if: steps.audio.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SHARE_EPISODE_MEDIA: "1"
+          CINEMA_ANIME_MODE: "1"
+          ENABLE_HERO_I2V: "1"
+          MAX_HERO_I2V_SHOTS: "2"
         run: |
           mkdir -p videos
           rm -rf /tmp/story_media_cache
