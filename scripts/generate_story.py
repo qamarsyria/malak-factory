@@ -2,12 +2,12 @@
 generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد الحلقات
 - يقرأ audited/events/ بالترتيب الزمني الدقيق.
 - يبني كل حلقة بنمط: [فقرة سرد موثقة ← الآية المؤكدة لها مباشرة].
+- يفرض ضوابط التعظيم والتنزيه للذات الإلهية والعرش والكرسي والغيبيات في السرد والخلاصة والتشويق، مع فحص برمجي مانع.
+- ينوّع المقدمات تلقائياً عبر 6 أساليب متجددة ويمنع تشابه الافتتاحية مع الحلقات السابقة.
 - يمنع إقحام آيات من خارج الحدث أو تسرب نص الآية حرفياً داخل السرد (دون حظر الكلمات المفردة).
 - يمنع تتابع آيتين مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام لتجنب الفهم الخاطئ.
 - يعتمد حداً أدنى مرناً للكلمات حسب حجم المادة المدققة لمنع الحشو والاختلاق.
 - يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و Timeout و thinkingConfig.
-- يضمن عدم انقطاع نصوص الخلاصة والتشويق بضبط التوكنات والتفكير ورفض ردود MAX_TOKENS.
-- يستخدم story_library لتحديث العصر والقصة التالية بشكل صحيح.
 """
 
 import os
@@ -45,7 +45,6 @@ TARGET_WORDS_CAP      = 850
 
 _LAST_LLM_ERROR = ""
 
-# أسماء مهملة تحولها Google تلقائياً إلى النماذج الأحدث وتسبب تكرار المحاولات بلا فائدة
 _DEPRECATED_MODEL_ALIASES = {
     "gemini-3.7-flash": "gemini-3.8-flash",
     "gemini-3.5-flash": "gemini-3.6-flash",
@@ -83,6 +82,49 @@ _ARABIC_TEENS    = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة 
                     "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"]
 _ARABIC_TENS     = ["", "عشرة", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون", "تسعون"]
 _ARABIC_HUNDREDS = ["", "مئة", "مئتان", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة"]
+
+THEOLOGICAL_DIGNITY_RULES = """🛡️ ضوابط التعظيم والتنزيه العقائدي (مطلقة ولا تقبل التهاون):
+- التزم بأقصى درجات الأدب والتعظيم لله عز وجل وأسمائه الحسنى وصفاته وآياته ومخلوقاته العظيمة (العرش، الكرسي، السماوات، الملائكة، اللوح المحفوظ، القلم).
+- الله عز وجل هو القاهر فوق عباده، لا يعجزه شيء في الأرض ولا في السماء، ولا يؤثر مخلوق في خلقه أو ملكه أو عرشه أو كرسيه.
+- يُمنع منعاً باتاً إسقاط استعارات السياسة والصراعات البشرية على عرش الرحمن أو كرسيه أو ملكه سبحانه (مثل: "يصمد العرش"، "يتهوى الكرسي"، "خيانة"، "أنقاض"، "انهيار"، "سقوط العرش"، "صراع"، "تهديد"، "تحدٍّ للخالق").
+- اجعل لغة السرد والخلاصة والتشويق تأملية وقورة تُعظّم الخالق وتُبرز سعة علمه وقدرته وضآلة المخلوقين أمام عظمته سبحانه."""
+
+OPENING_STYLES = [
+    "الدخول مباشرة في صلب المشهد أو المعنى الموثق بأسلوب سردي حي، دون أي تمهيد إنشائي أو ترحيب.",
+    "الافتتاح بتساؤل تأملي إيماني يوجّه ذهن المستمع نحو الحكمة والعبرة قبل استعراض الدليل.",
+    "ربط المحطة الحالية بما سبقها في التسلسل الزمني ببيان تدرّج السنن الإلهية أو تسلسل الأحداث.",
+    "البدء بدلالة لفظية أو معنى قرآني محوري يفتح باب التدبر للفقرة الأولى والآية التي تليها.",
+    "مخاطبة إدراك الإنسان وحدود عقله أمام سعة الغيب وعظمة الخالق أو عمق الحكمة في القصة.",
+    "تقديم صورة مشهدية موجزة ومباشرة للموقف، يتلوها التوسع في تفاصيله الموثقة ثم الآية.",
+]
+
+_CLICHE_OPENINGS = (
+    "في هذه الحلقة",
+    "اهلا بكم",
+    "مرحبا بكم",
+    "السلام عليكم",
+    "نتحدث اليوم",
+    "نقف اليوم",
+    "في رحاب هذه الحلقة",
+    "في مستهل هذه الحلقة",
+    "مما لا شك فيه",
+    "من الجدير بالذكر",
+)
+
+# عبارات صراع/ضعف سياسية يُمنع اقترانها بمقدسات العقيدة أو استعمالها في عهد بداية الخلق
+_FORBIDDEN_IN_CREATION_RE = re.compile(
+    r"(?:خيان[ةه]|يتهوى|يتداعى|أنقاض|انقاض|يصمد\s+العرش|سقوط\s+العرش|انهيار\s+العرش|"
+    r"تهوي\s+الكرسي|يتزلزل\s+الكرسي|صراع\s+على\s+العرش|مؤامر[ةه]|انقلاب)"
+)
+
+_SACRED_DISRESPECT_RE = re.compile(
+    r"(?:(?:عرش\s+(?:الله|الرحمن)|الكرسي|كرسي\s+الله|ملك\s+الله|قدرة\s+الله|الذات\s+الالهية)"
+    r"[^.،؟!]{0,55}"
+    r"(?:خيان[ةه]|يتهوى|يتداعى|أنقاض|انقاض|انهيار|سقوط|يصمد|عجز|تهديد|يضعف))|"
+    r"(?:(?:خيان[ةه]|يتهوى|يتداعى|أنقاض|انقاض|انهيار|سقوط|يصمد)"
+    r"[^.،؟!]{0,55}"
+    r"(?:عرش\s+(?:الله|الرحمن)|الكرسي|كرسي\s+الله|ملك\s+الله))"
+)
 
 
 def _gh_output(**kwargs):
@@ -151,6 +193,46 @@ def _norm_ar(text: str) -> str:
     return re.sub(r"[^\u0621-\u064A\s]", " ", text).strip()
 
 
+def check_theological_and_context_safety(text: str, story: dict | None = None) -> list[str]:
+    if not text:
+        return []
+    issues = []
+    era = (story or {}).get("era", "")
+    story_id = (story or {}).get("story_id") or (story or {}).get("id", "")
+    is_creation = (era == "creation" or story_id.startswith("creation-"))
+
+    norm_txt = re.sub(r"[\u0640\u064B-\u065F\u0670]", "", text)
+    if is_creation and _FORBIDDEN_IN_CREATION_RE.search(norm_txt):
+        issues.append("inappropriate_dramatic_metaphor_in_creation_era")
+    if _SACRED_DISRESPECT_RE.search(norm_txt):
+        issues.append("disrespectful_phrase_towards_divine_attributes")
+    return issues
+
+
+def get_recent_openings(story_id: str, current_ep_num: int, limit: int = 5) -> list[str]:
+    gen_dir = STORIES_DIR / story_id / "generated"
+    if not gen_dir.exists():
+        return []
+    openings = []
+    for p in sorted(gen_dir.glob(f"{story_id}-*.json"), reverse=True):
+        m = re.search(r"-(\d+)\.json$", p.name)
+        if not m or int(m.group(1)) >= current_ep_num:
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            for seg in data.get("segments", []):
+                if seg.get("type") == "narration" and seg.get("text"):
+                    words = seg["text"].strip().split()[:18]
+                    if words:
+                        openings.append(" ".join(words))
+                    break
+        except Exception:
+            continue
+        if len(openings) >= limit:
+            break
+    return openings
+
+
 def _advance_pool(pool):
     if hasattr(pool, "_advance"):
         pool._advance()
@@ -180,7 +262,6 @@ def _prepare_models(raw_models: list[str]) -> list[str]:
             cleaned.append(canonical)
     if "gemini-3.5-flash-lite" not in seen:
         cleaned.append("gemini-3.5-flash-lite")
-    # تأخير النماذج التي تعرّضت لـ Timeout أو ضغط متكرر في المحاولات السابقة
     cleaned.sort(key=lambda m: _MODEL_PENALTIES.get(m, 0))
     return cleaned
 
@@ -191,6 +272,7 @@ def call_llm(
     timeout: int = 60,
     max_tokens: int = 8192,
     minimal_thinking: bool = False,
+    temperature: float = 0.25,
 ):
     global _LAST_LLM_ERROR
     _LAST_LLM_ERROR = ""
@@ -224,7 +306,7 @@ def call_llm(
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 gen_cfg = {"maxOutputTokens": max_tokens}
                 if use_temperature:
-                    gen_cfg["temperature"] = 0.25
+                    gen_cfg["temperature"] = temperature
                 if is_json:
                     gen_cfg["responseMimeType"] = "application/json"
                 if use_thinking:
@@ -456,7 +538,7 @@ def ensure_splits(story_id: str) -> list[Path]:
     return ev_dirs
 
 
-SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزاماً صارماً بالمادة الموثقة فقط.
+SCRIPT_PROMPT = """أنت راوٍ إسلامي وقور تلتزم التزاماً صارماً بالمادة الموثقة فقط وبأعلى درجات التعظيم الشرعي.
 
 📖 القصة: {story_title}
 📖 الحلقة: {ep_title}
@@ -475,6 +557,11 @@ SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزا
 - كتلة `"narration"`: تشرح الفكرة أو الحدث استناداً فقط للمادة المدققة أعلاه (بلغة سردية جذابة خالية من الحشو ومن أي نص قرآني حرفي).
 - تتلوها مباشرة كتلة `"quran"`: الآية (أو الآيات المتتابعة المتتالية أرقاماً من نفس السورة) التي **تؤكد وتثبت ما ذُكر في فقرة السرد التي سبقتها مباشرة**.
 
+🎙️ أسلوب الافتتاحية الإلزامي لهذه الحلقة (للتنويع ومنع التكرار):
+- افتتح أول كتلة `"narration"` بهذا الأسلوب تحديداً: **{opening_style}**
+- يُمنع البدء بعبارات مكررة أو مستهلكة ("في هذه الحلقة"، "أهلاً بكم"، "مرحباً بكم"، "نقف اليوم"، "في رحاب"، "نتحدث اليوم"، "مما لا شك فيه").
+{recent_openings_block}
+
 ⚠️ قواعد صارمة:
 1️⃣ **لا إضافة من الخارج**: التزم بالمعلومات الموثقة أعلاه فقط. لا تخترع أحداثاً ولا تستورد آيات غير موجودة في القائمة.
 2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً أو اقتباس جملة قرآنية كاملة داخل نص `"narration"`. اشرح معناها وسياقها بكلمات وصفية، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
@@ -483,6 +570,8 @@ SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزا
 5️⃣ **اللغة**: فصحى سليمة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد.
 6️⃣ **الطول المستهدف للسرد**: {min_words} إلى {max_words} كلمة (بقدر المادة الموثقة دون مطّ).
 
+{dignity_rules}
+{story_rules_block}
 {forbidden_rules}
 {retry_feedback}
 
@@ -496,7 +585,18 @@ SCRIPT_PROMPT = """أنت راوٍ إسلامي محترف تلتزم التزا
 }}"""
 
 
-def generate_episode_script(story_title, ep_title, event_title, ayahs, narrative, min_words, max_words, retry_feedback=""):
+def generate_episode_script(
+    story,
+    ep_title,
+    event_title,
+    ayahs,
+    narrative,
+    min_words,
+    max_words,
+    opening_style,
+    recent_openings,
+    retry_feedback="",
+):
     ayahs_block = "\n".join(
         f"[{a['ref']}] ({a.get('surah_name', '')}): {a['text']}"
         for a in ayahs
@@ -507,21 +607,46 @@ def generate_episode_script(story_title, ep_title, event_title, ayahs, narrative
         for i, b in enumerate(narrative)
     )
 
+    guide = story.get("story_guide", {})
+    special_rules = guide.get("special_rules") or []
+    story_rules_block = ""
+    if special_rules:
+        story_rules_block = "📌 ضوابط خاصة بهذه القصة:\n" + "\n".join(f"- {r}" for r in special_rules)
+
+    recent_openings_block = ""
+    if recent_openings:
+        lines = "\n".join(f"  * {op}..." for op in recent_openings)
+        recent_openings_block = (
+            "- يُمنع منعاً باتاً تشابه الجملة الأولى في هذه الحلقة مع بدايات الحلقات السابقة التالية:\n"
+            + lines
+        )
+
     prompt = SCRIPT_PROMPT.format(
-        story_title=story_title,
+        story_title=story["title"],
         ep_title=ep_title,
         event_title=event_title,
         ayahs_block=ayahs_block,
         narrative_block=narrative_block,
+        opening_style=opening_style,
+        recent_openings_block=recent_openings_block,
         min_words=min_words,
         max_words=max_words,
+        dignity_rules=THEOLOGICAL_DIGNITY_RULES,
+        story_rules_block=story_rules_block,
         forbidden_rules=get_llm_forbidden_rules(),
         retry_feedback=retry_feedback,
     )
-    return call_llm(prompt, is_json=True, timeout=60, max_tokens=8192)
+    return call_llm(prompt, is_json=True, timeout=60, max_tokens=8192, temperature=0.38)
 
 
-def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: int, max_words: int) -> tuple[bool, list[str]]:
+def enrich_and_validate_script(
+    script: dict,
+    expected_ayahs: list,
+    min_words: int,
+    max_words: int,
+    story: dict | None = None,
+    recent_openings: list[str] | None = None,
+) -> tuple[bool, list[str]]:
     issues = []
     segments = script.get("segments", [])
     if not segments:
@@ -572,6 +697,33 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
     if not meaningful_segments or meaningful_segments[0].get("type") == "quran":
         issues.append("starts_with_quran_without_narration")
 
+    # فحص تنوع الافتتاحية ومنع البدايات المكررة
+    first_narr = next((s.get("text", "") for s in meaningful_segments if s.get("type") == "narration"), "")
+    if first_narr:
+        norm_first = _norm_ar(first_narr)
+        for cliche in _CLICHE_OPENINGS:
+            if norm_first.startswith(_norm_ar(cliche)):
+                issues.append(f"cliche_opening ({cliche})")
+                break
+        if recent_openings:
+            cur_words = norm_first.split()[:10]
+            cur_head4 = cur_words[:4]
+            for prev_op in recent_openings:
+                prev_words = _norm_ar(prev_op).split()[:10]
+                if cur_head4 and cur_head4 == prev_words[:4]:
+                    issues.append("repetitive_opening_exact_start")
+                    break
+                if len(cur_words) >= 6 and len(set(cur_words[:8]) & set(prev_words[:8])) >= 6:
+                    issues.append("repetitive_opening_similar_to_previous")
+                    break
+
+    # فحص التعظيم والتنزيه في جميع فقرات السرد
+    for s in meaningful_segments:
+        if s.get("type") == "narration":
+            for t_issue in check_theological_and_context_safety(s.get("text", ""), story):
+                if t_issue not in issues:
+                    issues.append(t_issue)
+
     # حماية مهمة: منع وجود آيتين وراء بعض مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام
     for idx in range(len(meaningful_segments) - 1):
         prev_s = meaningful_segments[idx]
@@ -593,7 +745,7 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
                 c_disp = curr_s.get("display") or f"{c_surah}:{c_nums}"
                 issues.append(f"consecutive_unrelated_quran_segments ({p_disp} -> {c_disp})")
 
-    # فحص تسرّب الآيات الكاملة أو المقاطع القرآنية الطويلة داخل السرد (دون منع الكلمات المفردة أو أسماء الله الحسنى)
+    # فحص تسرّب الآيات الكاملة أو المقاطع القرآنية الطويلة داخل السرد
     norm_expected = [
         (_norm_ar(a["text"]).split(), a["ref"])
         for a in expected_ayahs
@@ -607,7 +759,6 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
         if not n_words:
             continue
 
-        # منع وضع نص قرآني بين أقواس التلاوة ﴿...﴾ داخل السرد
         for qb in re.findall(r"﴿([^﴾]+)﴾", raw_text):
             if len(_norm_ar(qb).split()) >= 4:
                 if "quran_quoted_with_brackets_in_narration" not in issues:
@@ -617,12 +768,10 @@ def enrich_and_validate_script(script: dict, expected_ayahs: list, min_words: in
         for a_words, ref in norm_expected:
             a_len = len(a_words)
             if a_len == 5:
-                # آية قصيرة من 5 كلمات: لا تُرفض إلا إذا نُقلت كاملة حرفياً
                 min_match = 5
             elif a_len <= 8:
                 min_match = a_len - 1
             else:
-                # آية طويلة (9+ كلمات): تطابق 8 إلى 11 كلمة متتالية على الأقل
                 min_match = max(8, min(11, int(a_len * 0.55)))
 
             if len(n_words) < min_match:
@@ -677,6 +826,15 @@ def _build_retry_feedback(issues: list[str], ayahs_ep: list) -> str:
                 f"- خطأ أرقام غير متتالية ({iss}): لا تضع أرقام آيات متباعدة في كتلة quran واحدة؛ "
                 f"اجعل لكل آية (أو آيات متتالية فقط) كتلتها المسبوقة بفقرة narration."
             )
+        elif iss in ("inappropriate_dramatic_metaphor_in_creation_era", "disrespectful_phrase_towards_divine_attributes"):
+            notes.append(
+                "- خطأ عقائدي/أدبي خطير: استُخدمت ألفاظ صراع أو سقوط أو خيانة لا تليق بالله عز وجل ولا بعرشه وكرسيه. "
+                "أعد الصياغة بأسلوب تعظيم وتنزيه خاشع يبتعد كلياً عن أي تشبيه بملوك البشر أو سقوط العروش."
+            )
+        elif iss.startswith("cliche_opening") or iss.startswith("repetitive_opening"):
+            notes.append(
+                "- الافتتاحية مكررة أو تقليدية؛ غيّر الجملة الأولى كلياً والتزم بأسلوب الافتتاحية المحدد أعلاه."
+            )
         elif iss == "empty_narration_segment":
             notes.append("- توجد فقرة narration فارغة؛ اكتب فيها شرحاً مناسباً أو احذفها.")
         else:
@@ -687,32 +845,60 @@ def _build_retry_feedback(issues: list[str], ayahs_ep: list) -> str:
     )
 
 
-def generate_summary(story_title, ep_title, segments):
+def generate_summary(story, ep_title, segments):
+    story_title = story["title"]
     narration_text = " ".join(s.get("text", "") for s in segments if s.get("type") == "narration")[:6000]
     prompt = f"""القصة: {story_title} — {ep_title}
 سرد الحلقة:
 {narration_text}
 
+{THEOLOGICAL_DIGNITY_RULES}
+
 اكتب "خلاصة وعبرة" بليغة من سطرين إلى ثلاثة أسطر:
-- عبرة مركزة دون تكرار للسرد.
+- عبرة إيمانية مركزة دون تكرار للسرد ودون أي ألفاظ صراع أو مجازات غير لائقة بالذات الإلهية أو العرش والكرسي.
 - فصحى سليمة بدون مقدمات ("وفي الختام" ممنوعة).
 أعد النص فقط."""
-    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True)
-    return clean_narration(res) if isinstance(res, str) else ""
+    for _ in range(2):
+        res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True, temperature=0.30)
+        summary = clean_narration(res) if isinstance(res, str) else ""
+        if summary and not check_theological_and_context_safety(summary, story):
+            return summary
+    return ""
 
 
-def generate_teaser(story_title, next_ep_title):
-    next_hint = f"الحدث القادم: {next_ep_title}" if next_ep_title else "الحدث القادم"
-    prompt = f"""القصة: {story_title}. {next_hint}.
-اكتب جملة واحدة تشوق المستمع للحلقة القادمة:
-- ابدأ بسؤال درامي وقور.
-- جملة واحدة فقط.
+def generate_teaser(story, ep_title, summary_text, next_ep_title):
+    story_title = story["title"]
+    next_hint = f"موضوع الحلقة القادمة: {next_ep_title}" if next_ep_title else "الانتقال إلى المحطة القادمة في السلسلة"
+    summary_hint = f"خلاصة الحلقة الحالية: {summary_text[:400]}" if summary_text else ""
+
+    for attempt in range(2):
+        extra_warn = (
+            "\n⚠️ تحذير: المحاولة السابقة احتوت ألفاظاً غير لائقة بعظمة الله أو عرشه وكرسيه؛ التزم بالتنزيه والتأدب التام!"
+            if attempt > 0 else ""
+        )
+        prompt = f"""السلسلة: {story_title} — الحلقة الحالية: {ep_title}.
+{summary_hint}
+{next_hint}
+
+{THEOLOGICAL_DIGNITY_RULES}
+{get_llm_forbidden_rules()}
+{extra_warn}
+
+المطلوب: اكتب جملة واحدة فقط تشوّق المستمع للحلقة القادمة:
+- اربط السؤال بموضوع الحلقة القادمة الحقيقي بأسلوب تأملي إيماني وقور يبرز عظمة الله وحكمته.
+- يُمنع منعاً باتاً استخدام كلمات الصراع البشري أو الخيانة أو السقوط أو انهيار العروش/الكراسي.
+- جملة واحدة فقط باللغة العربية الفصحى السليمة.
 أعد الجملة فقط."""
-    res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True)
-    teaser = clean_narration(res) if isinstance(res, str) else ""
-    if len(teaser) < 15:
-        teaser = "فماذا جاء بعد ذلك في هذه السلسلة المباركة؟"
-    return teaser
+        res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True, temperature=0.35)
+        teaser = clean_narration(res) if isinstance(res, str) else ""
+        if len(teaser) >= 15 and not check_theological_and_context_safety(teaser, story):
+            return teaser
+
+    if next_ep_title:
+        clean_next = clean_narration(next_ep_title)
+        if clean_next and not check_theological_and_context_safety(clean_next, story):
+            return f"فما الذي تكشفه لنا النصوص الموثقة في المحطة القادمة حول {clean_next}؟"
+    return "فماذا تكشف لنا الآيات الكريمة والأحاديث الصحيحة في المحطة القادمة من هذه السلسلة المباركة؟"
 
 
 def main(clear_latest: bool = True, _visited: set | None = None):
@@ -756,7 +942,6 @@ def main(clear_latest: bool = True, _visited: set | None = None):
     ev_idx = sstate["current_event_index"]
     sub_idx = sstate["current_sub_episode"]
 
-    # التقدم عبر الأحداث داخل نفس القصة في حلقة واحدة بدون إعادة الدخول في _visited
     while ev_idx < len(ev_dirs):
         ev_dir = ev_dirs[ev_idx]
         split = json.loads((ev_dir / "split.json").read_text(encoding="utf-8"))
@@ -845,23 +1030,35 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         )
         return
 
+    recent_openings = get_recent_openings(story_id, ep_num, limit=5)
+    opening_style = OPENING_STYLES[(ep_num - 1) % len(OPENING_STYLES)]
+
     script = None
     retry_feedback = ""
     last_issues = []
     for attempt in range(3):
-        print(f"   ✍️ محاولة توليد {attempt + 1}/3...", flush=True)
+        print(f"   ✍️ محاولة توليد {attempt + 1}/3 (أسلوب الافتتاح: #{((ep_num - 1) % len(OPENING_STYLES)) + 1})...", flush=True)
         candidate = generate_episode_script(
-            story_title=story["title"],
+            story=story,
             ep_title=ev_title,
             event_title=meta.get("title") or ev_dir.name,
             ayahs=ayahs_ep,
             narrative=narrative_ep,
             min_words=min_words,
             max_words=max_words,
+            opening_style=opening_style,
+            recent_openings=recent_openings,
             retry_feedback=retry_feedback,
         )
         if candidate:
-            ok, issues = enrich_and_validate_script(candidate, ayahs_ep, min_words, max_words)
+            ok, issues = enrich_and_validate_script(
+                candidate,
+                ayahs_ep,
+                min_words,
+                max_words,
+                story=story,
+                recent_openings=recent_openings,
+            )
             if ok:
                 script = candidate
                 print("   ✅ سكريبت صالح ومتطابق 100%")
@@ -888,7 +1085,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         sys.exit(1)
 
     print("   📝 خلاصة...")
-    summary = generate_summary(story["title"], ev_title, script["segments"])
+    summary = generate_summary(story, ev_title, script["segments"])
 
     next_sub = sub_idx + 1
     if next_sub < len(episodes_in_event):
@@ -900,7 +1097,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         next_ep_title = None
 
     print("   📢 تشويق...")
-    teaser = generate_teaser(story["title"], next_ep_title)
+    teaser = generate_teaser(story, ev_title, summary, next_ep_title)
 
     segments = script["segments"]
     if summary:
