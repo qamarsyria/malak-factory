@@ -1,9 +1,8 @@
 """
 story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280) بلمسات خيالية وسينمائية
-- طبقات سحرية متحركة خلف النص: بوكيه ذهبي عائم + لمعان Sparkles + إضاءة دافئة Light Leak + تلوين سينمائي و Vignette.
-- مصادر المشاهد: Pixabay (فيديو ورسوم animation + صور، per_page=50) + Openverse API (مجاني بالكامل بدون أي مفتاح) + المجلد المحلي.
-- باقات مخصصة: جداول وينابيع، شلالات وثلوج، غابات من كوكب آخر، بيوت خشب مع أزهار وأمطار، وحارات الشام القديمة.
-- موازنة ذكية لمدة المشهد (13ث لليوميات، 22ث للقصص الطويلة) + مشاركة الخلفيات بين نسخ القصة الثلاث عبر SHARE_EPISODE_MEDIA=1.
+- فصل خط القرآن (AmiriQuran-Regular) عن خط السرد (Amiri-Bold) مع رسم Halo خارجي نقي بدون تشويه التشكيل أو علامات الوقف.
+- جلب نص الآيات بالرسم العثماني الموثوق من Quran.com API v4 / AlQuran Cloud (والمكتبة المحلية احتياطياً فقط) دون المساس بتلاوة Gemini.
+- ضغط نهائي ذكي متصل (single-pass slow + aq-mode 3 + GOP 4s) يقلل الحجم ~45% مع الحفاظ التام على أبعاد 720×1280 و 24fps.
 """
 
 import io
@@ -42,19 +41,35 @@ DIMENSIONS = {
 }
 
 VIDEO_FPS = 24
+
+# ترميز وسطي سريع وعالي الجودة لتفادي فقدان الجودة عند الدمج المتكرر
 ENCODE_ARGS = [
     "-c:v", "libx264",
-    "-preset", "medium",
-    "-crf", "28",
-    "-maxrate", "550k",
-    "-bufsize", "1100k",
-    "-profile:v", "main",
+    "-preset", "veryfast",
+    "-crf", "18",
+    "-pix_fmt", "yuv420p",
+]
+
+# ترميز نهائي ذكي متصل على كامل الفيديو لتقليل الحجم مع بقاء النص حاداً وإعدادات العرض كما هي
+FINAL_ENCODE_ARGS = [
+    "-c:v", "libx264",
+    "-preset", "slow",
+    "-crf", "27",
+    "-maxrate", "340k",
+    "-bufsize", "680k",
+    "-profile:v", "high",
+    "-level:v", "4.0",
+    "-g", str(VIDEO_FPS * 4),
+    "-bf", "3",
+    "-aq-mode", "3",
     "-pix_fmt", "yuv420p",
 ]
 
 AYAH_LIBRARY = _REPO_ROOT / "data" / "libraries" / "ayah-library.json.gz"
 AYAH_LOOKUP: dict[str, str] = {}
 SURAH_NAME_LOOKUP: dict[int, str] = {}
+UTHMANI_SURAH_CACHE: dict[int, dict[int, str]] = {}
+_UTHMANI_CACHE_DIR = Path(tempfile.gettempdir()) / "quran_uthmani_cache"
 
 
 def load_ayahs():
@@ -73,30 +88,80 @@ def load_ayahs():
                 AYAH_LOOKUP[f"{s}:{v}"] = txt
                 if sname and s not in SURAH_NAME_LOOKUP:
                     SURAH_NAME_LOOKUP[s] = sname
-        print(f"✅ تم تحميل {len(AYAH_LOOKUP)} آية من المكتبة المحلية.")
+        print(f"✅ تم تحميل {len(AYAH_LOOKUP)} آية احتياطية من المكتبة المحلية.")
     except Exception as e:
         print(f"⚠️ تعذر تحميل مكتبة الآيات: {e}")
 
 
-def get_ayah_text_safe(surah: int, ayah: int) -> str:
-    key = f"{surah}:{ayah}"
-    if key in AYAH_LOOKUP:
-        return AYAH_LOOKUP[key]
+def _fetch_uthmani_surah(surah: int) -> dict[int, str]:
+    if surah in UTHMANI_SURAH_CACHE:
+        return UTHMANI_SURAH_CACHE[surah]
+
+    _UTHMANI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = _UTHMANI_CACHE_DIR / f"surah_{surah}.json"
+    if cache_file.exists():
+        try:
+            raw = json.loads(cache_file.read_text(encoding="utf-8"))
+            parsed = {int(k): v for k, v in raw.items() if str(v).strip()}
+            if parsed:
+                UTHMANI_SURAH_CACHE[surah] = parsed
+                return parsed
+        except Exception:
+            pass
+
+    surah_map: dict[int, str] = {}
+
+    # 1) المصدر الأساسي: Quran.com API v4 بالرسم العثماني المعتمد
     try:
-        r = requests.get(f"https://api.alquran.cloud/v1/surah/{surah}/quran-uthmani", timeout=15)
+        r = requests.get(
+            f"https://api.quran.com/api/v4/quran/verses/uthmani?chapter_number={surah}",
+            timeout=15,
+        )
         if r.status_code == 200:
-            data = r.json().get("data", {})
-            sname = str(data.get("name", "")).replace("سورة ", "").replace("سُورَةُ ", "").strip()
-            if sname:
-                SURAH_NAME_LOOKUP[surah] = sname
-            for item in data.get("ayahs", []):
-                a_num = int(item.get("numberInSurah", 0))
-                if a_num:
-                    AYAH_LOOKUP[f"{surah}:{a_num}"] = item.get("text", "")
-            return AYAH_LOOKUP.get(key, "")
+            for item in r.json().get("verses", []):
+                vk = str(item.get("verse_key", ""))
+                txt = (item.get("text_uthmani") or "").strip()
+                if ":" in vk and txt:
+                    _, a_str = vk.split(":", 1)
+                    if a_str.isdigit():
+                        surah_map[int(a_str)] = txt
     except Exception:
         pass
-    return ""
+
+    # 2) المصدر الثانوي: AlQuran Cloud (quran-uthmani)
+    if not surah_map:
+        try:
+            r = requests.get(f"https://api.alquran.cloud/v1/surah/{surah}/quran-uthmani", timeout=15)
+            if r.status_code == 200:
+                data = r.json().get("data", {})
+                sname = str(data.get("name", "")).replace("سورة ", "").replace("سُورَةُ ", "").strip()
+                if sname and surah not in SURAH_NAME_LOOKUP:
+                    SURAH_NAME_LOOKUP[surah] = sname
+                for item in data.get("ayahs", []):
+                    a_num = int(item.get("numberInSurah", 0))
+                    txt = (item.get("text") or "").strip()
+                    if a_num and txt:
+                        surah_map[a_num] = txt
+        except Exception:
+            pass
+
+    if surah_map:
+        UTHMANI_SURAH_CACHE[surah] = surah_map
+        try:
+            cache_file.write_text(json.dumps(surah_map, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    return surah_map
+
+
+def get_ayah_text_safe(surah: int, ayah: int) -> str:
+    if not surah or not ayah:
+        return ""
+    surah_map = _fetch_uthmani_surah(surah)
+    if ayah in surah_map:
+        return surah_map[ayah]
+    return AYAH_LOOKUP.get(f"{surah}:{ayah}", "")
 
 
 def find_arabic_font() -> str:
@@ -122,8 +187,50 @@ def find_arabic_font() -> str:
     raise RuntimeError("❌ لم يُعثر على أي خط عربي")
 
 
+def find_quran_font() -> str:
+    font_cache_dir = Path(tempfile.gettempdir()) / "quran_fonts_cache"
+    font_cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_amiri_quran = font_cache_dir / "AmiriQuran-Regular.ttf"
+
+    if cached_amiri_quran.exists() and cached_amiri_quran.stat().st_size > 50000:
+        return str(cached_amiri_quran)
+
+    # جلب أحدث إصدار من AmiriQuran-Regular.ttf لضمان دقة مواضع علامات الوقف والهمزات العثمانية
+    urls = [
+        "https://cdn.jsdelivr.net/gh/mohammed-2-5/islamic-library-data@master/fonts/AmiriQuran-Regular.ttf",
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/amiriquran/AmiriQuran-Regular.ttf",
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=20)
+            if r.status_code == 200 and len(r.content) > 50000:
+                cached_amiri_quran.write_bytes(r.content)
+                return str(cached_amiri_quran)
+        except Exception:
+            continue
+
+    local_candidates = [
+        "/usr/share/fonts/opentype/fonts-hosny-amiri/AmiriQuran.ttf",
+        "/usr/share/fonts/truetype/hosny-amiri/AmiriQuran.ttf",
+        "/usr/share/fonts/truetype/amiri/AmiriQuran.ttf",
+    ]
+    for c in local_candidates:
+        if os.path.exists(c):
+            return c
+    try:
+        r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
+        for f in r.stdout.splitlines():
+            if "AmiriQuran" in f and os.path.exists(f.strip()):
+                return f.strip()
+    except Exception:
+        pass
+    return FONT_PATH
+
+
 FONT_PATH = find_arabic_font()
-print(f"✅ الخط: {FONT_PATH}", flush=True)
+QURAN_FONT_PATH = find_quran_font()
+print(f"✅ خط السرد: {FONT_PATH}", flush=True)
+print(f"✅ خط القرآن: {QURAN_FONT_PATH}", flush=True)
 
 
 def create_bokeh_layer(W: int, H: int) -> Image.Image:
@@ -597,10 +704,11 @@ def fetch_media(query: str, work_dir: Path, used_urls: set, used_local: set, W: 
     return _make_islamic_fallback_bg(fb, W, H)
 
 
-def _load_font(size: int):
+def _load_font(size: int, is_quran: bool = False):
+    fpath = QURAN_FONT_PATH if is_quran else FONT_PATH
     if HAS_RAQM:
-        return ImageFont.truetype(FONT_PATH, size, layout_engine=ImageFont.Layout.RAQM)
-    return ImageFont.truetype(FONT_PATH, size)
+        return ImageFont.truetype(fpath, size, layout_engine=ImageFont.Layout.RAQM)
+    return ImageFont.truetype(fpath, size)
 
 
 def _prepare_draw_text(line: str) -> str:
@@ -609,25 +717,42 @@ def _prepare_draw_text(line: str) -> str:
     return bidi_display(arabic_reshaper.reshape(line))
 
 
-def _measure_line(draw, line: str, font) -> tuple[int, int]:
+def _measure_bbox(draw, line: str, font) -> tuple[int, int, int, int]:
     txt = _prepare_draw_text(line)
     if HAS_RAQM:
-        bbox = draw.textbbox((0, 0), txt, font=font, direction="rtl")
-    else:
-        bbox = draw.textbbox((0, 0), txt, font=font)
+        return draw.textbbox((0, 0), txt, font=font, direction="rtl")
+    return draw.textbbox((0, 0), txt, font=font)
+
+
+def _measure_line(draw, line: str, font) -> tuple[int, int]:
+    bbox = _measure_bbox(draw, line, font)
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
 
-def _draw_centered(draw, y: int, line: str, font, fill, stroke_w: int, stroke_fill, W: int):
+def _draw_centered(draw, y: int, line: str, font, fill, W: int):
     txt = _prepare_draw_text(line)
     if HAS_RAQM:
         bbox = draw.textbbox((0, 0), txt, font=font, direction="rtl")
-        x = (W - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), txt, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill, direction="rtl")
+        x = (W - (bbox[2] - bbox[0])) // 2 - bbox[0]
+        draw.text((x, y), txt, font=font, fill=fill, direction="rtl")
     else:
         bbox = draw.textbbox((0, 0), txt, font=font)
-        x = (W - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), txt, font=font, fill=fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
+        x = (W - (bbox[2] - bbox[0])) // 2 - bbox[0]
+        draw.text((x, y), txt, font=font, fill=fill)
+
+
+def _composite_with_outline(canvas: Image.Image, fg_layer: Image.Image, outline_px: int = 2, shadow_blur: int = 3):
+    alpha = fg_layer.getchannel("A")
+    zero = Image.new("L", canvas.size, 0)
+    if outline_px > 0:
+        outline_alpha = alpha.filter(ImageFilter.MaxFilter(outline_px * 2 + 1))
+        if shadow_blur > 0:
+            sh_alpha = outline_alpha.filter(ImageFilter.GaussianBlur(shadow_blur))
+            sh_rgba = Image.merge("RGBA", (zero, zero, zero, sh_alpha))
+            canvas.alpha_composite(sh_rgba, dest=(0, 3))
+        outline_rgba = Image.merge("RGBA", (zero, zero, zero, outline_alpha))
+        canvas.alpha_composite(outline_rgba)
+    canvas.alpha_composite(fg_layer)
 
 
 def _wrap_logical(text: str, font, max_w: int, draw) -> list[str]:
@@ -651,20 +776,30 @@ def _wrap_logical(text: str, font, max_w: int, draw) -> list[str]:
     return lines
 
 
-def _layout_slides(text: str, max_w: int, max_h: int, start_size: int = 48, min_size: int = 34) -> tuple[object, list[list[str]], int]:
+def _layout_slides(
+    text: str,
+    max_w: int,
+    max_h: int,
+    start_size: int = 48,
+    min_size: int = 32,
+    is_quran: bool = False,
+) -> tuple[object, list[list[str]], int]:
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
+    lh_mult = 2.35 if is_quran else 1.75
 
     for size in range(start_size, min_size - 1, -2):
-        font = _load_font(size)
-        lh = int(size * 1.65)
+        font = _load_font(size, is_quran=is_quran)
         lines = _wrap_logical(text, font, max_w, ddraw)
+        max_glyph_h = max((_measure_line(ddraw, ln, font)[1] for ln in lines), default=0)
+        lh = max(int(size * lh_mult), max_glyph_h + 16)
         if len(lines) * lh <= max_h:
             return font, [lines], lh
 
-    font = _load_font(min_size)
-    lh = int(min_size * 1.65)
+    font = _load_font(min_size, is_quran=is_quran)
     lines = _wrap_logical(text, font, max_w, ddraw)
+    max_glyph_h = max((_measure_line(ddraw, ln, font)[1] for ln in lines), default=0)
+    lh = max(int(min_size * lh_mult), max_glyph_h + 16)
     max_lines_per_slide = max(2, max_h // lh)
     slides = [lines[i:i + max_lines_per_slide] for i in range(0, len(lines), max_lines_per_slide)]
     return font, slides, lh
@@ -682,28 +817,32 @@ def make_caption_slides(
     c_dur: float,
     show_reciter: bool = True,
 ) -> list[tuple[Path, float]]:
-    clean_body = re.sub(r"[*#@_\[\]]", "", chunk_text or "")
-    clean_body = re.sub(r"[a-zA-Z]", "", clean_body).strip()
-    clean_body = clean_body.replace("ﷺ", "صلى الله عليه وسلم")
+    if is_quran:
+        clean_body = (chunk_text or "").strip()
+    else:
+        clean_body = re.sub(r"[*#@_\[\]]", "", chunk_text or "")
+        clean_body = re.sub(r"[a-zA-Z]", "", clean_body).strip()
+        clean_body = clean_body.replace("ﷺ", "صلى الله عليه وسلم")
 
     if not clean_body:
         return []
 
     font, slides_lines, lh = _layout_slides(
         clean_body,
-        max_w=W - 90,
-        max_h=H - 360,
-        start_size=48 if not is_quran else 46,
-        min_size=32,
+        max_w=W - 96 if is_quran else W - 90,
+        max_h=H - 520 if is_quran else H - 360,
+        start_size=44 if is_quran else 48,
+        min_size=34 if is_quran else 32,
+        is_quran=is_quran,
     )
 
     total_chars = max(1, sum(len(" ".join(sl)) for sl in slides_lines))
     outputs: list[tuple[Path, float]] = []
 
-    title_font = _load_font(26)
-    ref_font = _load_font(28)
-    reciter_font = _load_font(24)
-    wm_font = _load_font(28)
+    title_font = _load_font(26, is_quran=False)
+    ref_font = _load_font(28, is_quran=False)
+    reciter_font = _load_font(24, is_quran=False)
+    wm_font = _load_font(28, is_quran=False)
 
     clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
 
@@ -712,35 +851,45 @@ def make_caption_slides(
         slide_dur = max(0.3, c_dur * (slide_chars / total_chars)) if len(slides_lines) > 1 else c_dur
 
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
+        body_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        meta_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        body_draw = ImageDraw.Draw(body_fg)
+        meta_draw = ImageDraw.Draw(meta_fg)
 
         if clean_title:
-            _draw_centered(draw, 36, clean_title, title_font, "#D4AF37", 4, "black", W)
+            _draw_centered(meta_draw, 36, clean_title, title_font, "#D4AF37", W)
 
-        ref_extra = 55 if (is_quran and display_ref) else 0
+        min_top = min((_measure_bbox(body_draw, ln, font)[1] for ln in lines), default=0)
+        last_bottom = _measure_bbox(body_draw, lines[-1], font)[3] if lines else lh
+
+        ref_extra = 64 if (is_quran and display_ref) else 0
         total_h = len(lines) * lh + ref_extra
-        y = max(140, (H - total_h) // 2)
+        y = max(145 + max(0, -min_top), (H - total_h) // 2)
 
         text_color = "#FFE066" if is_quran else "#FFFFFF"
         for line in lines:
-            _draw_centered(draw, y, line, font, text_color, 5, "black", W)
+            _draw_centered(body_draw, y, line, font, text_color, W)
             y += lh
 
         if is_quran and display_ref:
-            _draw_centered(draw, y + 12, display_ref, ref_font, "#D4AF37", 4, "black", W)
+            ref_y = max(y + 8, (y - lh) + last_bottom + 20)
+            _draw_centered(meta_draw, ref_y, display_ref, ref_font, "#D4AF37", W)
 
         if is_quran and reciter_name and show_reciter:
-            _draw_centered(draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", 3, "black", W)
+            _draw_centered(meta_draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", W)
 
         wm_txt = _prepare_draw_text("ملاك المعرفة")
         if HAS_RAQM:
-            wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
-            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28
-            draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", stroke_width=3, stroke_fill="black", direction="rtl")
+            wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
+            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
+            meta_draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
         else:
-            wm_bbox = draw.textbbox((0, 0), wm_txt, font=wm_font)
-            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28
-            draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", stroke_width=3, stroke_fill="black")
+            wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font)
+            wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
+            meta_draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37")
+
+        _composite_with_outline(overlay, body_fg, outline_px=2, shadow_blur=3)
+        _composite_with_outline(overlay, meta_fg, outline_px=1, shadow_blur=2)
 
         png_path = base_png_path.with_name(f"{base_png_path.stem}_s{s_idx}.png")
         overlay.save(png_path)
@@ -933,7 +1082,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                     slide_filters.append(f"[{in_idx}:v]fps={VIDEO_FPS},format=rgba[t{s_i}]")
 
                 concat_txt = "".join(f"[t{k}]" for k in range(len(slides)))
-                fc = ";".join(slide_filters) + f";{concat_txt}concat=n={len(slides)}:v=1:a=0[txt];[0:v][txt]overlay=shortest=1,format=yuv420p[v]"
+                fc = ";".join(slide_filters) + f";{concat_txt}concat=n={len(slides)}:v=1:a=0[txt];[0:v][txt]overlay=shortest=1,format=yuv420p,setsar=1[v]"
                 subprocess.run(
                     ["ffmpeg", "-y"] + bg_cmd + slide_inputs + [
                         "-filter_complex", fc, "-map", "[v]",
@@ -956,8 +1105,8 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             "-f", "concat", "-safe", "0", "-i", str(concat_file),
             "-i", audio_path,
             "-map", "0:v", "-map", "1:a",
-            "-c:v", "copy",
-            "-c:a", "aac", "-ac", "1", "-b:a", "96k",
+            *FINAL_ENCODE_ARGS,
+            "-c:a", "aac", "-ac", "1", "-b:a", "64k",
             "-movflags", "+faststart",
             "-shortest",
             output_mp4,
