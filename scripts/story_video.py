@@ -1,8 +1,9 @@
 """
-story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280) بلمسات خيالية وسينمائية
-- فصل خط القرآن (AmiriQuran-Regular) عن خط السرد (Amiri-Bold) مع رسم Halo خارجي نقي بدون تشويه التشكيل أو علامات الوقف.
-- جلب نص الآيات بالرسم العثماني الموثوق من Quran.com API v4 / AlQuran Cloud (والمكتبة المحلية احتياطياً فقط) دون المساس بتلاوة Gemini.
-- ضغط نهائي ذكي متصل (single-pass slow + aq-mode 3 + GOP 4s) يقلل الحجم ~45% مع الحفاظ التام على أبعاد 720×1280 و 24fps.
+story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
+- يدعم وضع الأنيميشن السينمائي (CINEMA_ANIME_MODE=1): AI Shot Director + لوحات موحدة + Vision Guard
+  + تحريك 3D عبر Depth Anything V2 (ONNX) + ترقية الذروة لفيديو AI + ترجمة سينمائية في الثلث السفلي
+  + مؤثرات طبيعية حلال (-26dB) تُكتم تماماً عند القرآن.
+- يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) وتوافق اليوميات (daily_*).
 """
 
 import io
@@ -32,6 +33,17 @@ from config import PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR
 from utilities import cleanup_dir
 from filters_loader import is_safe_tag, is_safe_query, get_allowed_keywords
 
+try:
+    from cinema_engine import (
+        CINEMA_AVAILABLE,
+        plan_episode_shots,
+        prepare_and_render_episode_chunks,
+        build_halal_ambient_mix,
+    )
+except Exception as _ce:
+    CINEMA_AVAILABLE = False
+    print(f"ℹ️ الوضع الكلاسيكي للخلفيات (cinema_engine غير متاح: {_ce})", flush=True)
+
 HAS_RAQM = features.check("raqm")
 print(f"🔤 محرك الخط العربي: {'RAQM (مباشر)' if HAS_RAQM else 'Reshaper + Bidi (احتياطي)'}", flush=True)
 
@@ -42,7 +54,6 @@ DIMENSIONS = {
 
 VIDEO_FPS = 24
 
-# ترميز وسطي سريع وعالي الجودة لتفادي فقدان الجودة عند الدمج المتكرر
 ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "veryfast",
@@ -50,7 +61,6 @@ ENCODE_ARGS = [
     "-pix_fmt", "yuv420p",
 ]
 
-# ترميز نهائي ذكي متصل على كامل الفيديو لتقليل الحجم مع بقاء النص حاداً وإعدادات العرض كما هي
 FINAL_ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "slow",
@@ -111,7 +121,6 @@ def _fetch_uthmani_surah(surah: int) -> dict[int, str]:
 
     surah_map: dict[int, str] = {}
 
-    # 1) المصدر الأساسي: Quran.com API v4 بالرسم العثماني المعتمد
     try:
         r = requests.get(
             f"https://api.quran.com/api/v4/quran/verses/uthmani?chapter_number={surah}",
@@ -128,7 +137,6 @@ def _fetch_uthmani_surah(surah: int) -> dict[int, str]:
     except Exception:
         pass
 
-    # 2) المصدر الثانوي: AlQuran Cloud (quran-uthmani)
     if not surah_map:
         try:
             r = requests.get(f"https://api.alquran.cloud/v1/surah/{surah}/quran-uthmani", timeout=15)
@@ -195,7 +203,6 @@ def find_quran_font() -> str:
     if cached_amiri_quran.exists() and cached_amiri_quran.stat().st_size > 50000:
         return str(cached_amiri_quran)
 
-    # جلب أحدث إصدار من AmiriQuran-Regular.ttf لضمان دقة مواضع علامات الوقف والهمزات العثمانية
     urls = [
         "https://cdn.jsdelivr.net/gh/mohammed-2-5/islamic-library-data@master/fonts/AmiriQuran-Regular.ttf",
         "https://raw.githubusercontent.com/google/fonts/main/ofl/amiriquran/AmiriQuran-Regular.ttf",
@@ -755,6 +762,25 @@ def _composite_with_outline(canvas: Image.Image, fg_layer: Image.Image, outline_
     canvas.alpha_composite(fg_layer)
 
 
+def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int):
+    """خلفية سينمائية متدرجة: تظليل ناعم للثلث السفلي فقط أثناء السرد، وتعتيم مهيب أثناء الآية."""
+    scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(scrim)
+    if is_quran:
+        draw.rectangle([0, 0, W, H], fill=(4, 10, 18, 128))
+    else:
+        for y in range(0, 105):
+            alpha = int(115 * (1.0 - y / 105.0))
+            draw.line([(0, y), (W, y)], fill=(4, 8, 15, alpha))
+        start_y = int(H * 0.62)
+        span = H - start_y
+        for y in range(start_y, H):
+            ratio = (y - start_y) / max(1, span)
+            alpha = int(195 * (ratio ** 1.35))
+            draw.line([(0, y), (W, y)], fill=(4, 8, 15, alpha))
+    overlay.alpha_composite(scrim)
+
+
 def _wrap_logical(text: str, font, max_w: int, draw) -> list[str]:
     lines = []
     for para in text.splitlines():
@@ -783,24 +809,29 @@ def _layout_slides(
     start_size: int = 48,
     min_size: int = 32,
     is_quran: bool = False,
+    cinematic_subtitles: bool = False,
 ) -> tuple[object, list[list[str]], int]:
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
-    lh_mult = 2.35 if is_quran else 1.75
+    lh_mult = 2.35 if is_quran else (1.58 if cinematic_subtitles else 1.75)
 
     for size in range(start_size, min_size - 1, -2):
         font = _load_font(size, is_quran=is_quran)
         lines = _wrap_logical(text, font, max_w, ddraw)
         max_glyph_h = max((_measure_line(ddraw, ln, font)[1] for ln in lines), default=0)
-        lh = max(int(size * lh_mult), max_glyph_h + 16)
-        if len(lines) * lh <= max_h:
+        lh = max(int(size * lh_mult), max_glyph_h + 14)
+        max_lines_cap = 2 if (cinematic_subtitles and not is_quran) else 99
+        if len(lines) <= max_lines_cap and len(lines) * lh <= max_h:
             return font, [lines], lh
 
     font = _load_font(min_size, is_quran=is_quran)
     lines = _wrap_logical(text, font, max_w, ddraw)
     max_glyph_h = max((_measure_line(ddraw, ln, font)[1] for ln in lines), default=0)
-    lh = max(int(min_size * lh_mult), max_glyph_h + 16)
-    max_lines_per_slide = max(2, max_h // lh)
+    lh = max(int(min_size * lh_mult), max_glyph_h + 14)
+    if cinematic_subtitles and not is_quran:
+        max_lines_per_slide = 2
+    else:
+        max_lines_per_slide = max(2, max_h // lh)
     slides = [lines[i:i + max_lines_per_slide] for i in range(0, len(lines), max_lines_per_slide)]
     return font, slides, lh
 
@@ -816,6 +847,7 @@ def make_caption_slides(
     H: int,
     c_dur: float,
     show_reciter: bool = True,
+    cinematic_subtitles: bool = False,
 ) -> list[tuple[Path, float]]:
     if is_quran:
         clean_body = (chunk_text or "").strip()
@@ -827,22 +859,34 @@ def make_caption_slides(
     if not clean_body:
         return []
 
-    font, slides_lines, lh = _layout_slides(
-        clean_body,
-        max_w=W - 96 if is_quran else W - 90,
-        max_h=H - 520 if is_quran else H - 360,
-        start_size=44 if is_quran else 48,
-        min_size=34 if is_quran else 32,
-        is_quran=is_quran,
-    )
+    if cinematic_subtitles and not is_quran:
+        font, slides_lines, lh = _layout_slides(
+            clean_body,
+            max_w=W - 84,
+            max_h=210,
+            start_size=38,
+            min_size=30,
+            is_quran=False,
+            cinematic_subtitles=True,
+        )
+    else:
+        font, slides_lines, lh = _layout_slides(
+            clean_body,
+            max_w=W - 96 if is_quran else W - 90,
+            max_h=H - 520 if is_quran else H - 360,
+            start_size=44 if is_quran else 48,
+            min_size=34 if is_quran else 32,
+            is_quran=is_quran,
+            cinematic_subtitles=False,
+        )
 
     total_chars = max(1, sum(len(" ".join(sl)) for sl in slides_lines))
     outputs: list[tuple[Path, float]] = []
 
-    title_font = _load_font(26, is_quran=False)
+    title_font = _load_font(24 if cinematic_subtitles else 26, is_quran=False)
     ref_font = _load_font(28, is_quran=False)
     reciter_font = _load_font(24, is_quran=False)
-    wm_font = _load_font(28, is_quran=False)
+    wm_font = _load_font(26 if cinematic_subtitles else 28, is_quran=False)
 
     clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
 
@@ -851,20 +895,27 @@ def make_caption_slides(
         slide_dur = max(0.3, c_dur * (slide_chars / total_chars)) if len(slides_lines) > 1 else c_dur
 
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        if cinematic_subtitles:
+            _apply_cinematic_scrim(overlay, is_quran=is_quran, W=W, H=H)
+
         body_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         meta_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         body_draw = ImageDraw.Draw(body_fg)
         meta_draw = ImageDraw.Draw(meta_fg)
 
         if clean_title:
-            _draw_centered(meta_draw, 36, clean_title, title_font, "#D4AF37", W)
+            _draw_centered(meta_draw, 30 if cinematic_subtitles else 36, clean_title, title_font, "#D4AF37", W)
 
         min_top = min((_measure_bbox(body_draw, ln, font)[1] for ln in lines), default=0)
         last_bottom = _measure_bbox(body_draw, lines[-1], font)[3] if lines else lh
 
-        ref_extra = 64 if (is_quran and display_ref) else 0
-        total_h = len(lines) * lh + ref_extra
-        y = max(145 + max(0, -min_top), (H - total_h) // 2)
+        if cinematic_subtitles and not is_quran:
+            block_h = len(lines) * lh
+            y = H - 108 - block_h + max(0, -min_top)
+        else:
+            ref_extra = 64 if (is_quran and display_ref) else 0
+            total_h = len(lines) * lh + ref_extra
+            y = max(145 + max(0, -min_top), (H - total_h) // 2)
 
         text_color = "#FFE066" if is_quran else "#FFFFFF"
         for line in lines:
@@ -882,11 +933,11 @@ def make_caption_slides(
         if HAS_RAQM:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
-            meta_draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
+            meta_draw.text((wx, H - 58), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
         else:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font)
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
-            meta_draw.text((wx, H - 64), wm_txt, font=wm_font, fill="#D4AF37")
+            meta_draw.text((wx, H - 58), wm_txt, font=wm_font, fill="#D4AF37")
 
         _composite_with_outline(overlay, body_fg, outline_px=2, shadow_blur=3)
         _composite_with_outline(overlay, meta_fg, outline_px=1, shadow_blur=2)
@@ -1001,22 +1052,41 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     load_ayahs()
     segments = meta["segments"]
     ep_title = meta.get("title", "")
-    fx_layers = prepare_fx_layers(work_dir, W, H)
-    scenes, scene_bg_map = prepare_scene_backgrounds(meta, work_dir, W, H)
+    story_id = str(meta.get("story_id", ""))
 
+    cinema_env = os.getenv("CINEMA_ANIME_MODE", "").strip()
+    if cinema_env == "1":
+        use_cinema = CINEMA_AVAILABLE
+    elif cinema_env == "0":
+        use_cinema = False
+    else:
+        use_cinema = CINEMA_AVAILABLE and (not story_id.startswith("daily_"))
+
+    chunk_bg_map: dict[tuple[int, int], Path] = {}
     chunk_to_scene = {}
     scene_bg_videos = {}
-    for scene in scenes:
-        sid = scene["scene_id"]
-        for key in scene["chunk_keys"]:
-            chunk_to_scene[key] = sid
-        scene_dur = scene["duration"]
-        if scene_dur > 0:
-            bg_mp4 = work_dir / f"bg_scene_{sid}_{W}x{H}.mp4"
-            prep_background(scene_bg_map[sid], scene_dur + 0.5, W, H, bg_mp4, fx_layers=fx_layers)
-            scene_bg_videos[sid] = bg_mp4
+    scene_offsets = {}
+    final_audio_input = audio_path
 
-    scene_offsets = {sc["scene_id"]: 0.0 for sc in scenes}
+    if use_cinema:
+        print("🎥 تفعيل مخرج الأنيميشن السينمائي 3D (Painterly Epic + Depth Parallax + Vision Guard)", flush=True)
+        cinema_plan = plan_episode_shots(meta)
+        chunk_bg_map = prepare_and_render_episode_chunks(meta, cinema_plan, W, H, work_dir)
+        final_audio_input = build_halal_ambient_mix(meta, cinema_plan, audio_path, work_dir)
+    else:
+        fx_layers = prepare_fx_layers(work_dir, W, H)
+        scenes, scene_bg_map = prepare_scene_backgrounds(meta, work_dir, W, H)
+        for scene in scenes:
+            sid = scene["scene_id"]
+            for key in scene["chunk_keys"]:
+                chunk_to_scene[key] = sid
+            scene_dur = scene["duration"]
+            if scene_dur > 0:
+                bg_mp4 = work_dir / f"bg_scene_{sid}_{W}x{H}.mp4"
+                prep_background(scene_bg_map[sid], scene_dur + 0.5, W, H, bg_mp4, fx_layers=fx_layers)
+                scene_bg_videos[sid] = bg_mp4
+        scene_offsets = {sc["scene_id"]: 0.0 for sc in scenes}
+
     concat_lines = []
 
     for seg_idx, seg in enumerate(segments):
@@ -1029,10 +1099,15 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             if c_dur <= 0:
                 continue
 
-            sid = chunk_to_scene[(seg_idx, c_idx)]
-            bg_video = scene_bg_videos[sid]
-            bg_offset = scene_offsets[sid]
-            scene_offsets[sid] += c_dur
+            if use_cinema:
+                bg_video = chunk_bg_map[(seg_idx, c_idx)]
+                bg_cmd = ["-i", str(bg_video)]
+            else:
+                sid = chunk_to_scene[(seg_idx, c_idx)]
+                bg_video = scene_bg_videos[sid]
+                bg_offset = scene_offsets[sid]
+                scene_offsets[sid] += c_dur
+                bg_cmd = ["-ss", f"{bg_offset:.3f}", "-t", f"{c_dur:.3f}", "-i", str(bg_video)]
 
             c_text = chunk_data.get("text", "")
             reciter = chunk_data.get("reciter") or seg.get("reciter", "")
@@ -1063,14 +1138,14 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 H=H,
                 c_dur=c_dur,
                 show_reciter=show_reciter,
+                cinematic_subtitles=use_cinema,
             )
 
             out_chunk = work_dir / f"chunk_{seg_idx}_{c_idx}.mp4"
-            bg_cmd = ["-ss", f"{bg_offset:.3f}", "-t", f"{c_dur:.3f}", "-i", str(bg_video)]
 
             if not slides:
                 subprocess.run(
-                    ["ffmpeg", "-y"] + bg_cmd + [*ENCODE_ARGS, str(out_chunk)],
+                    ["ffmpeg", "-y"] + bg_cmd + ["-t", f"{c_dur:.3f}", *ENCODE_ARGS, str(out_chunk)],
                     check=True, capture_output=True,
                 )
             else:
@@ -1103,7 +1178,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
         [
             "ffmpeg", "-y",
             "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-i", audio_path,
+            "-i", final_audio_input,
             "-map", "0:v", "-map", "1:a",
             *FINAL_ENCODE_ARGS,
             "-c:a", "aac", "-ac", "1", "-b:a", "64k",
