@@ -640,7 +640,7 @@ def generate_episode_script(
         max_words=max_words,
         dignity_rules=THEOLOGICAL_DIGNITY_RULES,
         story_rules_block=story_rules_block,
-        forbidden_rules=get_llm_forbidden_rules(),
+        forbidden_rules=get_llm_forbidden_rules(allow_ordinary_humans=True),
         retry_feedback=retry_feedback,
     )
     return call_llm(prompt, is_json=True, timeout=60, max_tokens=8192, temperature=0.38)
@@ -884,7 +884,7 @@ def generate_teaser(story, ep_title, summary_text, next_ep_title):
 {next_hint}
 
 {THEOLOGICAL_DIGNITY_RULES}
-{get_llm_forbidden_rules()}
+{get_llm_forbidden_rules(allow_ordinary_humans=True)}
 {extra_warn}
 
 المطلوب: اكتب جملة واحدة فقط تشوّق المستمع للحلقة القادمة:
