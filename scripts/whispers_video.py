@@ -2,14 +2,18 @@
 """
 scripts/whispers_video.py
 =========================
-المخرج السينمائي لمشروع «همسات ملك» (9:16 WhatsApp Status):
-- مشاهد أنيميشن محتشم وفانتازيا + طبقات جنيات ضوئية وفراشات وبوكيه.
-- خط عربي كبير وواضح جداً (Amiri Bold 112px) متزامن مع الصوت + تظليل ناعم للقراءة
-  + مساحات آمنة بعيداً عن شريط الواتساب العلوي والسفلي.
+المخرج السينمائي الجديد لمشروع «همسات ملك» (1080×1920 @ 30fps):
+- يحذف المضلعات البدائية والمثلثات تماماً.
+- يولّد لكل مقطع لوحة/فيديو رومانسي أو روحاني واقعي متطابق مع نص الهمسة عبر
+  (HF ZeroGPU FLUX -> AI Horde Juggernaut/RealVis -> Pixabay HD Film) مع فاحص Gemini Vision.
+- يعرض الخط العربي بوضوح فائق (Amiri Bold + RAQM + MaxFilter Halo) في مساحة آمنة للواتساب،
+  وينتقل في ذروة الهمسة بسلاسة إلى الدفتر القطني الصوفي الرومانسي 3D (romantic_cards.py).
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import math
 import os
@@ -19,381 +23,407 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, features
 import requests
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCENES_ROOT = REPO_ROOT / "assets" / "scenes"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display as bidi_display
+    HAS_RESHAPER = True
+except Exception:
+    arabic_reshaper = None
+    bidi_display = None
+    HAS_RESHAPER = False
+
+from romantic_cards import render_romantic_notebook_slides, _find_amiri_font
 
 VIDEO_W = 1080
 VIDEO_H = 1920
 FPS = 30
-NUM_SCENES = 4
-CROSSFADE = 1.0
+XFADE_DUR = 0.60
 
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
+HAS_RAQM = features.check("raqm")
 _HARAKAT_RE = re.compile(r"[\u064B-\u065F\u0670\u0640]")
 
 
-def _get_local_scenes(category: str) -> list[Path]:
-    exts = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}
-    cat_dir = SCENES_ROOT / category
-    files: list[Path] = []
-    if cat_dir.exists():
-        files.extend([p for p in cat_dir.iterdir() if p.is_file() and p.suffix.lower() in exts])
-    if len(files) < NUM_SCENES and SCENES_ROOT.exists():
-        extra = [p for p in SCENES_ROOT.rglob("*") if p.is_file() and p.suffix.lower() in exts and p not in files]
-        random.shuffle(extra)
-        files.extend(extra)
-    random.shuffle(files)
-    return files[:NUM_SCENES]
+def _prep_txt(text: str) -> str:
+    if HAS_RAQM or not HAS_RESHAPER:
+        return text
+    return bidi_display(arabic_reshaper.reshape(text))
 
 
-def _is_pixabay_safe(tags: str, category: str) -> bool:
-    tl = (tags or "").lower()
-    blacklist = [
-        "bikini", "swim", "lingerie", "sexy", "nude", "kiss", "alcohol", "wine", "beer",
-        "skeleton", "skull", "bone", "robot", "cyborg", "alien", "zombie", "horror",
-        "scary", "creepy", "monster", "demon", "ghost", "devil", "satan", "occult",
-        "gore", "blood", "war", "military", "weapon", "gun", "bomb", "death", "grave",
-        "witch", "vampire", "clown", "spider", "snake",
-    ]
-    if any(b in tl for b in blacklist):
+def _load_font(font_path: str, size: int):
+    if HAS_RAQM:
+        return ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
+    return ImageFont.truetype(font_path, size)
+
+
+def _measure(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int, int, int]:
+    pt = _prep_txt(text)
+    if HAS_RAQM:
+        return draw.textbbox((0, 0), pt, font=font, direction="rtl")
+    return draw.textbbox((0, 0), pt, font=font)
+
+
+def _wrap_text(text: str, font, max_w: int, draw: ImageDraw.ImageDraw) -> list[str]:
+    lines: list[str] = []
+    for para in text.splitlines():
+        words = para.split()
+        if not words:
+            continue
+        cur = ""
+        for w in words:
+            trial = f"{cur} {w}".strip() if cur else w
+            bb = _measure(draw, trial, font)
+            if (bb[2] - bb[0]) <= max_w:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+    return lines
+
+
+def _composite_halo(canvas: Image.Image, fg_layer: Image.Image, outline_px: int = 3):
+    alpha = fg_layer.getchannel("A")
+    zero = Image.new("L", canvas.size, 0)
+    out_a = alpha.filter(ImageFilter.MaxFilter(outline_px * 2 + 1))
+    sh_a = out_a.filter(ImageFilter.GaussianBlur(4))
+    canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, sh_a)), dest=(0, 4))
+    canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, out_a)))
+    canvas.alpha_composite(fg_layer)
+
+
+def _make_whisper_overlay_png(
+    text: str,
+    title: str,
+    show_title: bool,
+    font_path: str,
+    out_png: Path,
+):
+    overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
+
+    # تظليل سينمائي ناعم في الأسفل والأعلى لحماية القراءة بعيداً عن أشرطة واتساب
+    scrim = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(scrim)
+    if show_title:
+        for y in range(90, 290):
+            a = int(110 * (1.0 - abs(y - 180) / 110.0))
+            sd.line([(0, y), (VIDEO_W, y)], fill=(8, 4, 14, max(0, a)))
+
+    start_y = int(VIDEO_H * 0.56)
+    for y in range(start_y, VIDEO_H):
+        ratio = (y - start_y) / max(1, VIDEO_H - start_y)
+        alpha = int(195 * (ratio ** 1.25))
+        sd.line([(0, y), (VIDEO_W, y)], fill=(8, 4, 14, alpha))
+    overlay.alpha_composite(scrim)
+
+    fg_body = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
+    fg_meta = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(fg_body)
+    md = ImageDraw.Draw(fg_meta)
+
+    if show_title and title:
+        t_font = _load_font(font_path, 48)
+        clean_t = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ك[\u064B-\u065F]*", "ملك", title)
+        pt = _prep_txt(clean_t)
+        bb = _measure(md, clean_t, t_font)
+        tx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
+        if HAS_RAQM:
+            md.text((tx, 155), pt, font=t_font, fill=(255, 224, 156, 245), direction="rtl")
+        else:
+            md.text((tx, 155), pt, font=t_font, fill=(255, 224, 156, 245))
+
+    clean_text = (text or "").strip()
+    if clean_text:
+        chosen_font = _load_font(font_path, 46)
+        lines: list[str] = []
+        lh = 76
+        for sz in range(60, 40, -2):
+            f = _load_font(font_path, sz)
+            lns = _wrap_text(clean_text, f, VIDEO_W - 140, bd)
+            cand_lh = max(78, int(sz * 1.62))
+            if len(lns) <= 4 and len(lns) * cand_lh <= 360:
+                chosen_font, lines, lh = f, lns, cand_lh
+                break
+        if not lines:
+            lines = _wrap_text(clean_text, chosen_font, VIDEO_W - 140, bd)[:4]
+
+        block_h = len(lines) * lh
+        cur_y = 1610 - block_h  # مساحة آمنة تماماً فوق شريط رد الواتساب
+        for ln in lines:
+            pt = _prep_txt(ln)
+            bb = _measure(bd, ln, chosen_font)
+            lx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
+            if HAS_RAQM:
+                bd.text((lx, cur_y), pt, font=chosen_font, fill=(252, 246, 238, 255), direction="rtl")
+            else:
+                bd.text((lx, cur_y), pt, font=chosen_font, fill=(252, 246, 238, 255))
+            cur_y += lh
+
+    wm_font = _load_font(font_path, 34)
+    wm = "همسات ملك"
+    bb = _measure(md, wm, wm_font)
+    wx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
+    if HAS_RAQM:
+        md.text((wx, 1735), _prep_txt(wm), font=wm_font, fill=(238, 200, 128, 225), direction="rtl")
+    else:
+        md.text((wx, 1735), _prep_txt(wm), font=wm_font, fill=(238, 200, 128, 225))
+
+    _composite_halo(overlay, fg_body, outline_px=3)
+    _composite_halo(overlay, fg_meta, outline_px=2)
+    overlay.save(out_png)
+
+
+def _vision_check_whisper_image(img_path: Path, category: str, scene_en: str) -> bool:
+    raw_keys = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
+    keys = [k.strip() for k in re.split(r"[\s,;]+", raw_keys.strip()) if len(k.strip()) > 20]
+    if not keys:
+        return True
+
+    try:
+        with Image.open(img_path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=82)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
         return False
 
     if category == "prayer_niqab":
-        whitelist = ["rose", "flower", "butterfly", "cat", "kitten", "moon", "lantern", "mosque", "sky", "garden"]
-    elif category == "modest_love":
-        whitelist = ["rose", "flower", "butterfly", "cat", "kitten", "rain", "window", "lantern", "candle", "garden", "bokeh"]
-    else:
-        whitelist = ["butterfly", "forest", "glow", "firefly", "aurora", "nebula", "star", "galaxy", "flower", "magic", "lake"]
-    return any(w in tl for w in whitelist)
-
-
-def _pixabay_queries(category: str) -> list[tuple[str, str]]:
-    if category == "prayer_niqab":
-        return [
-            ("white roses butterflies", "film"),
-            ("cute kitten flowers", "film"),
-            ("crescent moon stars night", "film"),
-            ("islamic lantern glowing", "film"),
-            ("butterfly flowers animation", "animation"),
-        ]
-    if category == "modest_love":
-        return [
-            ("rain window night cozy", "film"),
-            ("kitten watching stars", "film"),
-            ("pink roses soft bokeh", "film"),
-            ("lantern flowers garden", "film"),
-        ]
-    return [
-        ("glowing forest fireflies", "film"),
-        ("blue butterfly glowing", "animation"),
-        ("aurora stars lake night", "film"),
-        ("golden bokeh lights", "animation"),
-        ("milky way stars reflection", "film"),
-    ]
-
-
-def _fetch_pixabay_video(query: str, vtype: str, category: str, work_dir: Path, used: set[str]) -> Path | None:
-    if not PIXABAY_KEY:
-        return None
-    try:
-        r = requests.get(
-            "https://pixabay.com/api/videos/",
-            params={"key": PIXABAY_KEY, "q": query, "video_type": vtype, "per_page": 40, "safesearch": "true"},
-            timeout=20,
+        policy = (
+            "Religious prayer scene: ONLY modest veiled Muslim woman in loose dark niqab/hijab OR "
+            "mosque/lantern/moonlight/white roses. REJECT uncovered women, couples hugging/kissing, "
+            "crosses, statues, cheap 2D cartoon/clipart, or text."
         )
-        if r.status_code != 200:
-            return None
-        hits = r.json().get("hits", [])
-        random.shuffle(hits)
-        for h in hits:
-            tags = h.get("tags", "")
-            if not _is_pixabay_safe(tags, category):
-                continue
-            url = (h.get("videos") or {}).get("medium", {}).get("url")
-            if url and url not in used:
-                out = work_dir / f"px_{h['id']}.mp4"
-                with open(out, "wb") as f:
-                    for ch in requests.get(url, timeout=60, stream=True).iter_content(8192):
-                        f.write(ch)
-                used.add(url)
-                print(f"   ✅ [Pixabay] {query} ({tags[:35]})", flush=True)
-                return out
+    else:
+        policy = (
+            "Romantic modest cinematic scene matching the prompt. Tasteful loving couple in modest "
+            "attire, roses, rainy window, starlight or enchanted forest are ALLOWED. REJECT nudity, "
+            "explicit kissing, deformed faces/extra limbs, crosses, cheap 2D clipart, or gibberish text."
+        )
+
+    prompt = (
+        f"Inspect this vertical illustration.\nIntended scene: '{scene_en[:160]}'\nPolicy: {policy}\n"
+        'Return ONLY JSON: {"safe": true, "high_craft": true, "reason": "ok"}'
+    )
+    key = random.choice(keys)
+    for model in ("gemini-2.5-flash", "gemini-3.5-flash-lite"):
+        try:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                json={
+                    "contents": [{"parts": [{"inline_data": {"mime_type": "image/jpeg", "data": b64}}, {"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 256, "responseMimeType": "application/json"},
+                },
+                timeout=20,
+            )
+            if r.status_code == 200:
+                parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+                txt = "\n".join(p.get("text", "") for p in parts if not p.get("thought") and p.get("text"))
+                s, e = txt.find("{"), txt.rfind("}")
+                if s != -1 and e > s:
+                    res = json.loads(txt[s : e + 1])
+                    return bool(res.get("safe", True)) and bool(res.get("high_craft", True))
+        except Exception:
+            continue
+    return True
+
+
+def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, seed: int) -> bool:
+    if category == "prayer_niqab":
+        style = (
+            "hyper-realistic peaceful twilight cinematic photography, glowing golden mosque lantern, "
+            "crescent moonlight and white jasmine blossoms, volumetric soft light beams, modest Islamic "
+            "dignity, 8k vertical 9:16 portrait, no text, no watermark"
+        )
+        neg = (
+            "nudity, uncovered woman, kissing, couple, cross, church, statue, cartoon, vector, "
+            "clipart, text, watermark, deformed hands, deformed faces"
+        )
+    else:
+        style = (
+            "luminous Makoto Shinkai and photorealistic 8k romantic cinema fusion, dreamy golden-rose "
+            "hour volumetric lighting, warm glowing bokeh, soft rain or petals, tasteful modest attire, "
+            "vertical 9:16 portrait composition, no text, no watermark"
+        )
+        neg = (
+            "nudity, explicit, bikini, lingerie, cheap 2d cartoon, stick figure, clipart, ugly faces, "
+            "deformed hands, extra fingers, cross, horror, skull, text, words, watermark"
+        )
+
+    full_prompt = f"{scene_en}, {style}"
+
+    # 1) Hugging Face ZeroGPU (FLUX.1-schnell)
+    try:
+        from gradio_client import Client as GradioClient
+        tok = (os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACE_HUB_TOKEN", "")).strip() or None
+        for attempt_anon in (False, True):
+            kwargs = {} if (attempt_anon or not tok) else {"token": tok}
+            try:
+                client = GradioClient("black-forest-labs/FLUX.1-schnell", **kwargs)
+                res = client.predict(
+                    prompt=full_prompt,
+                    seed=seed,
+                    randomize_seed=False,
+                    width=720,
+                    height=1280,
+                    num_inference_steps=4,
+                    api_name="/infer",
+                )
+                fpath = res[0] if isinstance(res, (list, tuple)) else res
+                if isinstance(fpath, dict):
+                    fpath = fpath.get("path") or fpath.get("url")
+                if fpath and os.path.exists(str(fpath)):
+                    with Image.open(str(fpath)) as im:
+                        im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
+                        im.save(out_jpg, "JPEG", quality=93)
+                    if out_jpg.exists() and out_jpg.stat().st_size > 25000 and _vision_check_whisper_image(out_jpg, category, scene_en):
+                        return True
+                break
+            except Exception as e:
+                if "401" in str(e) and not attempt_anon:
+                    os.environ.pop("HF_TOKEN", None)
+                    os.environ.pop("HUGGINGFACE_HUB_TOKEN", None)
+                    continue
+                break
     except Exception:
         pass
+
+    # 2) AI Horde (Juggernaut XL / DreamShaper XL / RealVisXL)
+    try:
+        headers = {
+            "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
+            "Client-Agent": "HamsatMalak:3.0:romantic-scene",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "prompt": f"{full_prompt} ### {neg}",
+            "params": {
+                "sampler_name": "k_euler_a",
+                "width": 576,
+                "height": 1024,
+                "steps": 22,
+                "cfg_scale": 6.5,
+                "seed": str(seed),
+                "n": 1,
+            },
+            "nsfw": False,
+            "censor_nsfw": True,
+            "r2": True,
+            "models": ["Juggernaut XL", "DreamShaper XL", "RealVisXL", "AlbedoBase XL (SDXL)"],
+        }
+        r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=15)
+        if r.status_code in (200, 202):
+            job_id = r.json().get("id")
+            if job_id:
+                deadline = time.time() + 90
+                while time.time() < deadline:
+                    time.sleep(4)
+                    chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=12)
+                    if chk.status_code == 200 and chk.json().get("done"):
+                        st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=15)
+                        gens = st.json().get("generations") or [] if st.status_code == 200 else []
+                        if gens and gens[0].get("img"):
+                            ir = requests.get(gens[0]["img"], timeout=25)
+                            if ir.status_code == 200 and len(ir.content) > 8000:
+                                tmp = out_jpg.with_suffix(".webp")
+                                tmp.write_bytes(ir.content)
+                                with Image.open(tmp) as im:
+                                    im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
+                                    im.save(out_jpg, "JPEG", quality=93)
+                                tmp.unlink(missing_ok=True)
+                                if out_jpg.exists() and _vision_check_whisper_image(out_jpg, category, scene_en):
+                                    return True
+                        break
+    except Exception:
+        pass
+    return False
+
+
+def _fetch_pixabay_film(category: str, work_dir: Path, used_urls: set[str]) -> Path | None:
+    if not PIXABAY_KEY:
+        return None
+    queries = (
+        ["islamic lantern night", "crescent moon clouds", "white roses dew"]
+        if category == "prayer_niqab"
+        else ["rain window night cozy", "pink roses sunset", "starry night lake aurora", "autumn forest sunlight"]
+    )
+    random.shuffle(queries)
+    for q in queries:
+        try:
+            r = requests.get(
+                "https://pixabay.com/api/videos/",
+                params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "per_page": 25, "safesearch": "true"},
+                timeout=18,
+            )
+            if r.status_code != 200:
+                continue
+            hits = r.json().get("hits", [])
+            random.shuffle(hits)
+            for h in hits:
+                tl = (h.get("tags") or "").lower()
+                if any(b in tl for b in ("bikini", "swim", "horror", "skull", "cross", "church")):
+                    continue
+                u = (h.get("videos") or {}).get("medium", {}).get("url")
+                if u and u not in used_urls:
+                    out = work_dir / f"px_{h['id']}.mp4"
+                    with open(out, "wb") as f:
+                        for ch in requests.get(u, timeout=45, stream=True).iter_content(16384):
+                            f.write(ch)
+                    if out.exists() and out.stat().st_size > 40000:
+                        used_urls.add(u)
+                        return out
+        except Exception:
+            continue
     return None
 
 
-def _make_celestial_fallback(out_jpg: Path, category: str, seed_idx: int = 0) -> Path:
+def _make_romantic_gradient_bg(out_jpg: Path, category: str):
     img = Image.new("RGB", (VIDEO_W, VIDEO_H))
-    draw = ImageDraw.Draw(img, "RGBA")
-
-    palettes = {
-        "prayer_niqab": ((14, 24, 48), (62, 42, 76), (175, 118, 130)),
-        "fantasy_fairies": ((8, 16, 44), (20, 62, 92), (82, 46, 112)),
-        "modest_love": ((24, 14, 38), (74, 38, 68), (168, 108, 118)),
-    }
-    c1, c2, c3 = palettes.get(category, palettes["fantasy_fairies"])
+    d = ImageDraw.Draw(img)
+    c1, c2 = ((16, 26, 48), (64, 42, 68)) if category == "prayer_niqab" else ((34, 14, 34), (112, 48, 72))
     for y in range(VIDEO_H):
         t = y / VIDEO_H
-        if t < 0.55:
-            k = t / 0.55
-            r = int(c1[0] + (c2[0] - c1[0]) * k)
-            g = int(c1[1] + (c2[1] - c1[1]) * k)
-            b = int(c1[2] + (c2[2] - c1[2]) * k)
-        else:
-            k = (t - 0.55) / 0.45
-            r = int(c2[0] + (c3[0] - c2[0]) * k)
-            g = int(c2[1] + (c3[1] - c2[1]) * k)
-            b = int(c2[2] + (c3[2] - c2[2]) * k)
-        draw.line([(0, y), (VIDEO_W, y)], fill=(r, g, b))
-
-    glow = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    for _ in range(5):
-        gx = random.randint(150, VIDEO_W - 150)
-        gy = random.randint(250, VIDEO_H - 400)
-        gr = random.randint(220, 420)
-        col = random.choice([(120, 220, 255, 45), (255, 200, 140, 40), (220, 140, 255, 40)])
-        gd.ellipse([gx - gr, gy - gr, gx + gr, gy + gr], fill=col)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=90))
-    img.paste(glow, (0, 0), glow)
-
-    stars = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(stars)
-    for _ in range(180):
-        sx, sy = random.randint(0, VIDEO_W), random.randint(0, int(VIDEO_H * 0.85))
-        sr = random.choice([1, 1, 2, 3])
-        sa = random.randint(100, 245)
-        sd.ellipse([sx - sr, sy - sr, sx + sr, sy + sr], fill=(255, 250, 230, sa))
-
-    if seed_idx % 2 == 0:
-        mx, my, mr = int(VIDEO_W * 0.75), 320, 75
-        moon_mask = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
-        md = ImageDraw.Draw(moon_mask)
-        md.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(255, 242, 200, 220))
-        md.ellipse([mx - mr + 30, my - mr - 12, mx + mr + 30, my + mr - 12], fill=(0, 0, 0, 0))
-        moon_mask = moon_mask.filter(ImageFilter.GaussianBlur(radius=1.2))
-        img.paste(moon_mask, (0, 0), moon_mask)
-
-    img.paste(stars, (0, 0), stars)
-    img.save(out_jpg, "JPEG", quality=94)
-    return out_jpg
+        d.line([(0, y), (VIDEO_W, y)], fill=tuple(int(c1[k] + (c2[k] - c1[k]) * t) for k in range(3)))
+    img.save(out_jpg, "JPEG", quality=92)
 
 
-def _create_fairies_layer(out_png: Path):
-    W, H = VIDEO_W + 400, VIDEO_H + 400
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    for _ in range(130):
-        x, y = random.randint(0, W), random.randint(0, H)
-        r = random.randint(2, 4)
-        col = random.choice([(255, 248, 210, 220), (190, 245, 255, 200), (255, 210, 240, 190)])
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=col)
-
-    for _ in range(12):
-        cx = random.randint(150, W - 150)
-        cy = random.randint(150, H - 250)
-        sz = random.randint(16, 28)
-        tint = random.choice([(255, 232, 160), (170, 242, 255), (255, 195, 235)])
-
-        draw.polygon([(cx, cy), (cx - sz, cy - sz // 2), (cx - int(sz * 0.7), cy - int(sz * 1.1))], fill=(*tint, 95))
-        draw.polygon([(cx, cy), (cx + sz, cy - sz // 2), (cx + int(sz * 0.7), cy - int(sz * 1.1))], fill=(*tint, 95))
-        draw.polygon([(cx, cy), (cx - int(sz * 0.7), cy + sz // 2), (cx - sz // 3, cy + sz)], fill=(*tint, 70))
-        draw.polygon([(cx, cy), (cx + int(sz * 0.7), cy + sz // 2), (cx + sz // 3, cy + sz)], fill=(*tint, 70))
-
-        hr = int(sz * 1.1)
-        draw.ellipse([cx - hr, cy - hr, cx + hr, cy + hr], fill=(*tint, 55))
-        cr = max(4, sz // 4)
-        draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=(255, 255, 245, 240))
-
-    img = img.filter(ImageFilter.GaussianBlur(radius=1.3))
-    img.save(out_png)
-
-
-def _create_butterflies_layer(out_png: Path):
-    W, H = VIDEO_W + 400, VIDEO_H + 400
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    for _ in range(14):
-        cx = random.randint(120, W - 120)
-        cy = random.randint(120, H - 120)
-        s = random.randint(20, 44)
-        angle = random.uniform(-0.45, 0.45)
-        col = random.choice([
-            (255, 222, 130, 155),
-            (180, 238, 255, 145),
-            (255, 196, 222, 145),
-            (255, 248, 232, 165),
-        ])
-
-        def rot(px, py):
-            ca, sa = math.cos(angle), math.sin(angle)
-            return (cx + px * ca - py * sa, cy + px * sa + py * ca)
-
-        left_top = [rot(0, 0), rot(-s * 1.1, -s * 0.9), rot(-s * 1.25, -s * 0.1), rot(-s * 0.35, s * 0.15)]
-        right_top = [rot(0, 0), rot(s * 1.1, -s * 0.9), rot(s * 1.25, -s * 0.1), rot(s * 0.35, s * 0.15)]
-        left_bot = [rot(0, 0), rot(-s * 0.85, s * 0.2), rot(-s * 0.65, s * 0.85), rot(-s * 0.1, s * 0.45)]
-        right_bot = [rot(0, 0), rot(s * 0.85, s * 0.2), rot(s * 0.65, s * 0.85), rot(s * 0.1, s * 0.45)]
-
-        draw.polygon(left_top, fill=col)
-        draw.polygon(right_top, fill=col)
-        draw.polygon(left_bot, fill=(col[0], col[1], col[2], int(col[3] * 0.78)))
-        draw.polygon(right_bot, fill=(col[0], col[1], col[2], int(col[3] * 0.78)))
-        draw.ellipse([cx - 3, cy - s * 0.3, cx + 3, cy + s * 0.35], fill=(255, 252, 235, 210))
-
-    img = img.filter(ImageFilter.GaussianBlur(radius=1.0))
-    img.save(out_png)
-
-
-def _create_bokeh_layer(out_png: Path):
-    W, H = VIDEO_W + 400, VIDEO_H + 400
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    for _ in range(55):
-        x, y = random.randint(0, W), random.randint(0, H)
-        r = random.randint(24, 85)
-        alpha = random.randint(35, 115)
-        color = random.choice([(255, 215, 110), (255, 235, 175), (210, 185, 255), (175, 235, 255)])
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=(*color, alpha))
-    img = img.filter(ImageFilter.GaussianBlur(radius=16))
-    img.save(out_png)
-
-
-def _create_text_scrim(out_png: Path):
-    img = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    start_y = int(VIDEO_H * 0.48)
-    for y in range(start_y, VIDEO_H):
-        t = (y - start_y) / (VIDEO_H - start_y)
-        bell = math.sin(min(1.0, t * 1.15) * math.pi)
-        alpha = int(125 * (0.45 * t + 0.55 * bell))
-        draw.line([(0, y), (VIDEO_W, y)], fill=(6, 4, 14, min(145, alpha)))
-    img.save(out_png)
-
-
-def _ass_time(sec: float) -> str:
-    sec = max(0.0, sec)
-    h = int(sec // 3600)
-    m = int((sec % 3600) // 60)
-    s = int(sec % 60)
-    cs = int(round((sec - int(sec)) * 100))
-    if cs >= 100:
-        s += 1
-        cs = 0
-    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
-
-def _wrap_arabic_lines(text: str, max_chars_per_line: int = 20) -> str:
-    words = text.split()
-    lines, cur = [], []
-    cur_len = 0
-    for w in words:
-        plain_len = len(_HARAKAT_RE.sub("", w))
-        if cur and (cur_len + plain_len + 1) > max_chars_per_line:
-            lines.append(" ".join(cur))
-            cur = [w]
-            cur_len = plain_len
-        else:
-            cur.append(w)
-            cur_len += plain_len + (1 if cur_len else 0)
-    if cur:
-        lines.append(" ".join(cur))
-    return r"\N".join(lines)
-
-
-def _highlight_names_ass(wrapped_text: str) -> str:
-    out_lines = []
-    for line in wrapped_text.split(r"\N"):
-        tokens = line.split(" ")
-        new_toks = []
-        for tok in tokens:
-            skel = _HARAKAT_RE.sub("", tok)
-            skel_clean = re.sub(r"[^\u0621-\u064A]", "", skel)
-            if skel_clean in ("ملك", "مريم", "ملاك"):
-                new_toks.append(
-                    r"{\1c&H006BD8FF&\3c&H50103855&\blur2}"
-                    + tok
-                    + r"{\1c&H00FAF7F2&\3c&H250A0514&\blur0}"
-                )
-            else:
-                new_toks.append(tok)
-        out_lines.append(" ".join(new_toks))
-    return r"\N".join(out_lines)
-
-
-def _write_ass_subtitles(ep: dict, meta: dict | None, total_dur: float, out_ass: Path):
-    title = (ep.get("title") or "همسة لروحها").strip()
-    title = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ك[\u064B-\u065F]*", "ملك", title)
-
-    header = f"""[Script Info]
-Title: {title}
-ScriptType: v4.00+
-PlayResX: {VIDEO_W}
-PlayResY: {VIDEO_H}
-WrapStyle: 2
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TitleTop,Amiri,76,&H159CE0FF,&H000000FF,&H400C0618,&H9006030C,-1,0,0,0,100,100,0,0,1,4.0,3,8,60,60,210,1
-Style: WhisperLine,Amiri,112,&H00FAF7F2,&H000000FF,&H250A0514,&H9505020C,-1,0,0,0,100,100,0,0,1,5.0,4,2,65,65,360,1
-Style: NameHalo,Amiri,148,&H006BD8FF,&H000000FF,&H350C2B42,&H9505020C,-1,0,0,0,100,100,0,0,1,6.0,5,2,50,50,980,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    events = []
-
-    t_end_title = min(total_dur, 4.0)
-    events.append(
-        f"Dialogue: 0,{_ass_time(0.2)},{_ass_time(t_end_title)},TitleTop,,0,0,0,,"
-        + r"{\fad(500,600)}"
-        + f"🌙 {title}"
-    )
-
-    segs = (meta or {}).get("segments") or ep.get("segments") or []
-    if segs and all("start_sec" in s and "end_sec" in s for s in segs):
-        for s in segs:
-            st = float(s["start_sec"])
-            en = min(total_dur, float(s["end_sec"]) + 0.35)
-            disp = (s.get("display_text") or s.get("text") or "").strip()
-            if not disp:
-                continue
-            wrapped = _highlight_names_ass(_wrap_arabic_lines(disp, max_chars_per_line=20))
-            events.append(
-                f"Dialogue: 1,{_ass_time(st)},{_ass_time(en)},WhisperLine,,0,0,0,,"
-                + r"{\fad(350,300)}"
-                + wrapped
-            )
-            if s.get("is_climax") and s.get("featured_names"):
-                names_str = "  •  ".join(s["featured_names"])
-                events.append(
-                    f"Dialogue: 2,{_ass_time(st + 0.25)},{_ass_time(en)},NameHalo,,0,0,0,,"
-                    + r"{\fad(550,450)\blur2.5}"
-                    + f"✦ {names_str} ✦"
-                )
-    else:
-        n = max(1, len(segs))
-        chunk_d = total_dur / n
+def _extract_segment_durations(segs: list[dict], total_dur: float) -> list[float]:
+    if not segs:
+        return [total_dur]
+    if all("start_sec" in s and "end_sec" in s for s in segs):
+        durs = []
         for i, s in enumerate(segs):
-            st, en = i * chunk_d, (i + 1) * chunk_d
-            disp = (s.get("display_text") or s.get("text") or "").strip()
-            if not disp:
-                continue
-            wrapped = _highlight_names_ass(_wrap_arabic_lines(disp, max_chars_per_line=20))
-            events.append(
-                f"Dialogue: 1,{_ass_time(st)},{_ass_time(en)},WhisperLine,,0,0,0,,"
-                + r"{\fad(350,300)}"
-                + wrapped
-            )
+            if i < len(segs) - 1:
+                d = max(0.8, float(segs[i + 1]["start_sec"]) - float(s["start_sec"]))
+            else:
+                d = max(0.8, total_dur - float(s["start_sec"]))
+            durs.append(d)
+    elif all("dry_duration" in s for s in segs):
+        raw = [float(s["dry_duration"]) + float(s.get("pause_after_ms", 450)) / 1000.0 for s in segs]
+        scale = total_dur / max(0.1, sum(raw))
+        durs = [max(0.8, round(x * scale, 3)) for x in raw]
+    else:
+        weights = [max(10, len(s.get("display_text") or s.get("text") or "")) for s in segs]
+        tot_w = sum(weights)
+        durs = [max(0.8, round(total_dur * w / tot_w, 3)) for w in weights]
 
-    out_ass.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    if len(durs) > 1:
+        durs[-1] = max(0.8, round(total_dur - sum(durs[:-1]), 3))
+    else:
+        durs[0] = round(total_dur, 3)
+    return durs
 
 
 def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
@@ -412,155 +442,241 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
             meta = json.loads(cand.read_text(encoding="utf-8"))
             break
 
-    category = ep.get("scene_category") or ep.get("category") or "fantasy_fairies"
+    category = ep.get("scene_category") or ep.get("category") or "modest_love"
     if category == "romantic":
-        category = "fantasy_fairies"
+        category = "modest_love"
     elif category == "dua":
         category = "prayer_niqab"
+
+    title = (ep.get("title") or "همسة لروحها").strip()
+    segs = (meta or {}).get("segments") or ep.get("segments") or []
+
+    # دمج scene_prompt_en من ملف الحلقة داخل مقاطع الميتاداتا
+    ep_segs = ep.get("segments") or []
+    for idx, s in enumerate(segs):
+        if "scene_prompt_en" not in s and idx < len(ep_segs):
+            s["scene_prompt_en"] = ep_segs[idx].get("scene_prompt_en", "")
 
     dur_out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(audio_p)],
         capture_output=True, text=True,
     ).stdout.strip()
-    total_dur = max(6.0, float(dur_out or 15.0))
-    print(f"⏱️ مدة الصوت: {total_dur:.2f} ث | المحور البصري: {category}", flush=True)
+    total_dur = max(6.0, float(dur_out or 20.0))
+
+    font_path = _find_amiri_font()
+    seg_durs = _extract_segment_durations(segs, total_dur)
+    notebook_mode = os.environ.get("WHISPERS_NOTEBOOK_MODE", "climax").strip().lower()
+
+    print(f"⏱️ مدة الصوت: {total_dur:.2f} ث | المحور: {category} | الوضع: {notebook_mode}", flush=True)
 
     work = Path(tempfile.mkdtemp(prefix="whisper_vid_"))
     try:
-        scenes = _get_local_scenes(category)
-        used_urls: set[str] = set()
-        if len(scenes) < NUM_SCENES and PIXABAY_KEY:
-            px_queries = _pixabay_queries(category)
-            random.shuffle(px_queries)
-            for q, vt in px_queries:
-                if len(scenes) >= NUM_SCENES:
-                    break
-                vid = _fetch_pixabay_video(q, vt, category, work, used_urls)
-                if vid:
-                    scenes.append(vid)
-
-        while len(scenes) < NUM_SCENES:
-            fb_img = work / f"celestial_{len(scenes)}.jpg"
-            _make_celestial_fallback(fb_img, category, seed_idx=len(scenes))
-            scenes.append(fb_img)
-
-        scene_dur = (total_dur + (len(scenes) - 1) * CROSSFADE) / len(scenes)
-        frames_per_scene = max(30, int(round(scene_dur * FPS)))
-        print(f"🎬 تجهيز {len(scenes)} مشاهد × {scene_dur:.1f} ث...", flush=True)
-
-        processed: list[Path] = []
-        for i, sp in enumerate(scenes):
-            sc_out = work / f"scene_{i:02d}.mp4"
-            is_img = sp.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
-
-            if is_img:
-                zoom_dir = "min(zoom+0.0007,1.12)" if i % 2 == 0 else "max(1.12-0.0007*on,1.0)"
-                vf = (
-                    f"scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
-                    f"crop={VIDEO_W*2}:{VIDEO_H*2},"
-                    f"zoompan=z='{zoom_dir}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                    f"d={frames_per_scene}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
-                    "colorbalance=rs=0.05:gs=0.01:bs=0.03,"
-                    "eq=contrast=1.06:saturation=1.14,"
-                    "vignette=PI/5,format=yuv420p"
-                )
-                cmd = [
-                    "ffmpeg", "-y", "-i", str(sp), "-t", f"{scene_dur:.3f}",
-                    "-vf", vf, "-r", str(FPS),
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "20", str(sc_out),
-                ]
-            else:
-                vf = (
-                    f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
-                    f"crop={VIDEO_W}:{VIDEO_H},fps={FPS},"
-                    "colorbalance=rs=0.05:gs=0.01:bs=0.03,"
-                    "eq=contrast=1.06:saturation=1.14,"
-                    "vignette=PI/5,format=yuv420p"
-                )
-                cmd = [
-                    "ffmpeg", "-y", "-stream_loop", "-1", "-i", str(sp), "-t", f"{scene_dur:.3f}",
-                    "-vf", vf, "-an",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "20", str(sc_out),
-                ]
-            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
-            processed.append(sc_out)
-
-        bg_vid = work / "bg_merged.mp4"
-        if len(processed) == 1:
-            shutil.copy2(processed[0], bg_vid)
-        else:
-            inputs = []
-            for p in processed:
-                inputs.extend(["-i", str(p)])
-            fc, last, offset = [], "[0:v]", 0.0
-            for i in range(1, len(processed)):
-                offset += scene_dur - CROSSFADE
-                nxt = f"[x{i}]"
-                fc.append(f"{last}[{i}:v]xfade=transition=fade:duration={CROSSFADE}:offset={offset:.3f}{nxt}")
-                last = nxt
-            subprocess.run(
-                ["ffmpeg", "-y"] + inputs + [
-                    "-filter_complex", ";".join(fc), "-map", last,
-                    "-t", f"{total_dur:.3f}",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "20", str(bg_vid),
-                ],
-                check=True, capture_output=True, timeout=240,
+        if notebook_mode == "full_notebook" or len(segs) <= 1:
+            # كامل الحلقة على الدفتر القطني الرومانسي 3D
+            card_slides = render_romantic_notebook_slides(
+                segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=total_dur
             )
+            _render_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4")
+        else:
+            # المقاطع الأولى: رسومات رومانسية/روحانية واقعية متزامنة + الذروة الأخيرة: الدفتر القطني الرومانسي 3D
+            scene_segs = segs[:-1]
+            scene_durs = seg_durs[:-1]
+            climax_dur = seg_durs[-1]
+            used_urls: set[str] = set()
 
-        fairies_png = work / "fairies.png"
-        butterflies_png = work / "butterflies.png"
-        bokeh_png = work / "bokeh.png"
-        scrim_png = work / "scrim.png"
-        ass_file = work / "subtitles.ass"
+            # 1) توليد المشاهد بالتوازي للسرعة
+            def _prep_scene(i_s):
+                idx, s = i_s
+                sc_en = s.get("scene_prompt_en") or (
+                    "glowing golden mosque lantern in twilight courtyard with white roses"
+                    if category == "prayer_niqab"
+                    else "warm golden sunset over rose garden and misty mountains"
+                )
+                out_img = work / f"sc_{idx}.jpg"
+                seed = 5000 + idx * 911 + random.randint(1, 500)
+                if _generate_romantic_scene_image(sc_en, category, out_img, seed):
+                    return out_img
+                px_vid = _fetch_pixabay_film(category, work, used_urls)
+                if px_vid:
+                    return px_vid
+                _make_romantic_gradient_bg(out_img, category)
+                return out_img
 
-        _create_fairies_layer(fairies_png)
-        _create_butterflies_layer(butterflies_png)
-        _create_bokeh_layer(bokeh_png)
-        _create_text_scrim(scrim_png)
-        _write_ass_subtitles(ep, meta, total_dur, ass_file)
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                media_list = list(ex.map(_prep_scene, list(enumerate(scene_segs))))
 
-        print("✨ دمج الجنيات والفراشات والتظليل والخط العربي الكبير...", flush=True)
-        ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
-        fc_final = (
-            "[1:v]format=rgba,colorchannelmixer=aa=0.85[fr];"
-            "[2:v]format=rgba,colorchannelmixer=aa=0.78[bf];"
-            "[3:v]format=rgba,colorchannelmixer=aa=0.38[bk];"
-            "[4:v]format=rgba[sc];"
-            "[0:v][bk]overlay=x='-200+70*cos(t/9)':y='-200+55*sin(t/11)':shortest=1[v1];"
-            "[v1][fr]overlay=x='-200+90*sin(t/5)':y='-200+70*cos(t/6)':shortest=1[v2];"
-            "[v2][bf]overlay=x='-200+80*cos(t/7)':y='-200+85*sin(t/8)':shortest=1[v3];"
-            "[v3][sc]overlay=0:0:shortest=1[v4];"
-            f"[v4]ass='{ass_escaped}':fontsdir=/usr/share/fonts,format=yuv420p[vout]"
-        )
+            clip_slots: list[tuple[Path, float]] = []
+            for idx, (s, sdur, media_p) in enumerate(zip(scene_segs, scene_durs, media_list)):
+                render_dur = sdur + XFADE_DUR
+                ov_png = work / f"ov_{idx}.png"
+                _make_whisper_overlay_png(
+                    s.get("display_text") or s.get("text") or "",
+                    title=title,
+                    show_title=(idx == 0),
+                    font_path=font_path,
+                    out_png=ov_png,
+                )
+                seg_mp4 = work / f"seg_clip_{idx}.mp4"
+                is_img = media_p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+                if is_img:
+                    frames = max(30, int(round(render_dur * FPS)) + 15)
+                    z_expr = "min(zoom+0.0005,1.10)" if idx % 2 == 0 else "max(1.10-0.0005*on,1.0)"
+                    fc = (
+                        f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
+                        f"crop={VIDEO_W*2}:{VIDEO_H*2},"
+                        f"zoompan=z='{z_expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
+                        f"eq=contrast=1.05:saturation=1.10,vignette=PI/6,format=yuv420p[bg];"
+                        f"[1:v]fps={FPS},format=rgba[ov];"
+                        f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                    )
+                    in_flags = ["-loop", "1", "-t", f"{render_dur:.3f}"]
+                else:
+                    fc = (
+                        f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
+                        f"crop={VIDEO_W}:{VIDEO_H},fps={FPS},"
+                        f"eq=contrast=1.05:saturation=1.10,vignette=PI/6,format=yuv420p[bg];"
+                        f"[1:v]fps={FPS},format=rgba[ov];"
+                        f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                    )
+                    in_flags = ["-stream_loop", "-1", "-t", f"{render_dur:.3f}"]
 
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        *in_flags, "-i", str(media_p),
+                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
+                        "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                        str(seg_mp4),
+                    ],
+                    check=True, capture_output=True, timeout=180,
+                )
+                clip_slots.append((seg_mp4, sdur))
+
+            # 2) مقطع الذروة الأخير على الدفتر القطني الصوفي الرومانسي (يعرض القصيدة كاملة مع إبراز الختام!)
+            card_slides = render_romantic_notebook_slides(
+                segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
+            )
+            climax_png = card_slides[-1][0]
+            climax_mp4 = work / "seg_climax_notebook.mp4"
+            climax_frames = max(30, int(round(climax_dur * FPS)) + 10)
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(climax_png),
+                    "-vf", (
+                        f"scale={VIDEO_W*2}:{VIDEO_H*2},"
+                        f"zoompan=z='min(zoom+0.00035,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                        f"d={climax_frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p,setsar=1"
+                    ),
+                    "-t", f"{climax_dur:.3f}",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                    str(climax_mp4),
+                ],
+                check=True, capture_output=True, timeout=180,
+            )
+            clip_slots.append((climax_mp4, climax_dur))
+
+            _concat_clips_with_xfade(clip_slots, total_dur, work / "vid_only.mp4")
+
+        # الدمج النهائي مع الصوت الماسترد والموسيقى
         subprocess.run(
             [
-                "ffmpeg", "-y",
-                "-i", str(bg_vid),
-                "-loop", "1", "-i", str(fairies_png),
-                "-loop", "1", "-i", str(butterflies_png),
-                "-loop", "1", "-i", str(bokeh_png),
-                "-loop", "1", "-i", str(scrim_png),
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(work / "vid_only.mp4"),
                 "-i", str(audio_p),
-                "-filter_complex", fc_final,
-                "-map", "[vout]", "-map", "5:a",
+                "-map", "0:v", "-map", "1:a",
                 "-t", f"{total_dur:.3f}",
                 "-c:v", "libx264", "-preset", "medium", "-crf", "23",
                 "-maxrate", "3.2M", "-bufsize", "6.4M",
-                "-profile:v", "high", "-level", "4.0",
+                "-profile:v", "high", "-level:v", "4.0",
                 "-movflags", "+faststart",
                 "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
                 str(out_p),
             ],
             check=True, capture_output=True, timeout=360,
         )
-
         size_mb = out_p.stat().st_size / (1024 * 1024)
-        print(f"✅ تم إخراج الفيديو: {out_p.name} ({size_mb:.2f} MB)", flush=True)
+        print(f"✅ تم إخراج فيديو همسات ملك: {out_p.name} ({size_mb:.2f} MB)", flush=True)
         return True
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _concat_clips_with_xfade(clip_slots: list[tuple[Path, float]], total_dur: float, out_mp4: Path):
+    if len(clip_slots) == 1:
+        shutil.copy2(clip_slots[0][0], out_mp4)
+        return
+
+    inputs = []
+    for p, _ in clip_slots:
+        inputs.extend(["-i", str(p)])
+    filters = []
+    last_tag = "[0:v]"
+    offset = 0.0
+    for k in range(len(clip_slots) - 1):
+        offset += float(clip_slots[k][1])
+        out_tag = "[vout]" if k == len(clip_slots) - 2 else f"[vx{k}]"
+        filters.append(f"{last_tag}[{k+1}:v]xfade=transition=fade:duration={XFADE_DUR:.3f}:offset={offset:.3f}{out_tag}")
+        last_tag = out_tag
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            *inputs,
+            "-filter_complex", ";".join(filters),
+            "-map", "[vout]",
+            "-t", f"{total_dur:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+            str(out_mp4),
+        ],
+        check=True, capture_output=True, timeout=240,
+    )
+
+
+def _render_slides_with_fade(card_slides: list[tuple[Path, float]], total_dur: float, out_mp4: Path):
+    if len(card_slides) == 1:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-loop", "1", "-t", f"{total_dur:.3f}", "-i", str(card_slides[0][0]),
+                "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(out_mp4),
+            ],
+            check=True, capture_output=True, timeout=180,
+        )
+        return
+
+    min_d = min(d for _, d in card_slides)
+    fade_d = min(0.35, min_d * 0.35)
+    inputs = []
+    filters = []
+    for i, (p, d) in enumerate(card_slides):
+        in_d = d + (fade_d if i < len(card_slides) - 1 else 0.0)
+        inputs.extend(["-loop", "1", "-t", f"{in_d:.3f}", "-i", str(p)])
+        filters.append(f"[{i}:v]scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1[c{i}]")
+
+    last_tag = "[c0]"
+    offset = 0.0
+    for k in range(len(card_slides) - 1):
+        offset += float(card_slides[k][1])
+        out_tag = "[vout]" if k == len(card_slides) - 2 else f"[cx{k}]"
+        filters.append(f"{last_tag}[c{k+1}]xfade=transition=fade:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}")
+        last_tag = out_tag
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            *inputs,
+            "-filter_complex", ";".join(filters),
+            "-map", "[vout]",
+            "-t", f"{total_dur:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+            str(out_mp4),
+        ],
+        check=True, capture_output=True, timeout=240,
+    )
 
 
 if __name__ == "__main__":
