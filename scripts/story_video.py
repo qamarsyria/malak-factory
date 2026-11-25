@@ -1,8 +1,7 @@
 """
 story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
-- يدعم وضع الأنيميشن السينمائي (CINEMA_ANIME_MODE=1): AI Shot Director + لوحات موحدة + Vision Guard
-  + تحريك 3D عبر Depth Anything V2 (ONNX) + ترقية الذروة لفيديو AI + ترجمة سينمائية في الثلث السفلي
-  + مؤثرات طبيعية حلال (-26dB) تُكتم تماماً عند القرآن.
+- يدعم وضع الأنيميشن/الواقعية السينمائية (CINEMA_ANIME_MODE=1) لمقاطع السرد والملخص والتشويق.
+- يفعّل نمط الدفاتر والبطاقات الإسلامية المطرّزة (islamic_cards.py) لمقاطع الحديث والفقه والأذكار والتشجيع (CTA/Outro).
 - يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) وتوافق اليوميات (daily_*).
 """
 
@@ -43,6 +42,15 @@ try:
 except Exception as _ce:
     CINEMA_AVAILABLE = False
     print(f"ℹ️ الوضع الكلاسيكي للخلفيات (cinema_engine غير متاح: {_ce})", flush=True)
+
+try:
+    from islamic_cards import render_islamic_card_slides
+    CARDS_AVAILABLE = True
+except Exception as _ice:
+    CARDS_AVAILABLE = False
+    print(f"ℹ️ بطاقات النصوص المطرّزة غير متاحة: {_ice}", flush=True)
+
+CARD_SEG_TYPES = {"cta", "outro", "hadith", "fiqh", "adhkar"}
 
 HAS_RAQM = features.check("raqm")
 print(f"🔤 محرك الخط العربي: {'RAQM (مباشر)' if HAS_RAQM else 'Reshaper + Bidi (احتياطي)'}", flush=True)
@@ -524,7 +532,7 @@ def _make_islamic_fallback_bg(path: Path, W: int, H: int) -> str:
 def _try_pixabay_video(q: str, work_dir: Path, used_urls: set, scene_id: int) -> str | None:
     if not PIXABAY_KEY:
         return None
-    v_types = ["animation", "film"] if ("animation" in q or "bokeh" in q or scene_id % 3 == 1) else ["all", "film"]
+    v_types = ["film", "all"]
     for v_type in v_types:
         for page in (random.choice([1, 1, 2]), 1):
             try:
@@ -579,7 +587,7 @@ def _try_pixabay_image(q: str, work_dir: Path, used_urls: set, scene_id: int) ->
             params={
                 "key": PIXABAY_KEY,
                 "q": q,
-                "image_type": "all",
+                "image_type": "photo",
                 "safesearch": "true",
                 "per_page": 40,
                 "page": random.choice([1, 1, 2]),
@@ -763,7 +771,6 @@ def _composite_with_outline(canvas: Image.Image, fg_layer: Image.Image, outline_
 
 
 def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int):
-    """خلفية سينمائية متدرجة: تظليل ناعم للثلث السفلي فقط أثناء السرد، وتعتيم مهيب أثناء الآية."""
     scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(scrim)
     if is_quran:
@@ -772,11 +779,11 @@ def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int)
         for y in range(0, 105):
             alpha = int(115 * (1.0 - y / 105.0))
             draw.line([(0, y), (W, y)], fill=(4, 8, 15, alpha))
-        start_y = int(H * 0.62)
+        start_y = int(H * 0.60)
         span = H - start_y
         for y in range(start_y, H):
             ratio = (y - start_y) / max(1, span)
-            alpha = int(195 * (ratio ** 1.35))
+            alpha = int(198 * (ratio ** 1.35))
             draw.line([(0, y), (W, y)], fill=(4, 8, 15, alpha))
     overlay.alpha_composite(scrim)
 
@@ -864,8 +871,8 @@ def make_caption_slides(
             clean_body,
             max_w=W - 84,
             max_h=210,
-            start_size=38,
-            min_size=30,
+            start_size=36,
+            min_size=28,
             is_quran=False,
             cinematic_subtitles=True,
         )
@@ -911,7 +918,7 @@ def make_caption_slides(
 
         if cinematic_subtitles and not is_quran:
             block_h = len(lines) * lh
-            y = H - 108 - block_h + max(0, -min_top)
+            y = H - 122 - block_h + max(0, -min_top)
         else:
             ref_extra = 64 if (is_quran and display_ref) else 0
             total_h = len(lines) * lh + ref_extra
@@ -933,11 +940,11 @@ def make_caption_slides(
         if HAS_RAQM:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
-            meta_draw.text((wx, H - 58), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
+            meta_draw.text((wx, H - 56), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
         else:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font)
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
-            meta_draw.text((wx, H - 58), wm_txt, font=wm_font, fill="#D4AF37")
+            meta_draw.text((wx, H - 56), wm_txt, font=wm_font, fill="#D4AF37")
 
         _composite_with_outline(overlay, body_fg, outline_px=2, shadow_blur=3)
         _composite_with_outline(overlay, meta_fg, outline_px=1, shadow_blur=2)
@@ -952,6 +959,54 @@ def make_caption_slides(
         outputs[-1] = (last_p, max(0.3, last_d + diff))
 
     return outputs
+
+
+def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: float, W: int, H: int, out_chunk: Path):
+    """يحوّل شرائح البطاقة/الدفتر الإسلامي إلى مقطع سلس مع انتقال ذهبي ناعم بين العبارات."""
+    n = len(card_slides)
+    if n == 1:
+        png_path, _ = card_slides[0]
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-loop", "1", "-t", f"{c_dur:.3f}", "-i", str(png_path),
+                "-vf", f"scale={W}:{H},fps={VIDEO_FPS},format=yuv420p,setsar=1",
+                *ENCODE_ARGS, str(out_chunk),
+            ],
+            check=True, capture_output=True, timeout=120,
+        )
+        return
+
+    min_s = min(d for _, d in card_slides)
+    fade_d = min(0.28, min_s * 0.35)
+    inputs = []
+    filters = []
+    for i, (png_path, s_dur) in enumerate(card_slides):
+        in_dur = s_dur + (fade_d if i < n - 1 else 0.0)
+        inputs.extend(["-loop", "1", "-t", f"{in_dur:.3f}", "-i", str(png_path)])
+        filters.append(f"[{i}:v]scale={W}:{H},fps={VIDEO_FPS},format=yuv420p,setsar=1[c{i}]")
+
+    last_tag = "[c0]"
+    offset = 0.0
+    for k in range(n - 1):
+        offset += float(card_slides[k][1])
+        out_tag = "[vout]" if k == n - 2 else f"[cx{k}]"
+        filters.append(
+            f"{last_tag}[c{k+1}]xfade=transition=fade:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}"
+        )
+        last_tag = out_tag
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            *inputs,
+            "-filter_complex", ";".join(filters),
+            "-map", "[vout]",
+            "-t", f"{c_dur:.3f}",
+            *ENCODE_ARGS, str(out_chunk),
+        ],
+        check=True, capture_output=True, timeout=180,
+    )
 
 
 def get_duration(path) -> float:
@@ -1062,6 +1117,8 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     else:
         use_cinema = CINEMA_AVAILABLE and (not story_id.startswith("daily_"))
 
+    card_mode = CARDS_AVAILABLE and (os.getenv("USE_ISLAMIC_CARDS", "1") == "1")
+
     chunk_bg_map: dict[tuple[int, int], Path] = {}
     chunk_to_scene = {}
     scene_bg_videos = {}
@@ -1069,9 +1126,18 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     final_audio_input = audio_path
 
     if use_cinema:
-        print("🎥 تفعيل مخرج الأنيميشن السينمائي 3D (Painterly Epic + Depth Parallax + Vision Guard)", flush=True)
-        cinema_plan = plan_episode_shots(meta)
-        chunk_bg_map = prepare_and_render_episode_chunks(meta, cinema_plan, W, H, work_dir)
+        print("🎥 تفعيل مخرج الواقعية السينمائية 3D + الدفاتر الإسلامية المطرّزة", flush=True)
+        cinema_meta = meta
+        if card_mode:
+            cinema_meta = {
+                **meta,
+                "segments": [
+                    ({**s, "chunks": []} if s.get("type") in CARD_SEG_TYPES else s)
+                    for s in segments
+                ],
+            }
+        cinema_plan = plan_episode_shots(cinema_meta)
+        chunk_bg_map = prepare_and_render_episode_chunks(cinema_meta, cinema_plan, W, H, work_dir)
         final_audio_input = build_halal_ambient_mix(meta, cinema_plan, audio_path, work_dir)
     else:
         fx_layers = prepare_fx_layers(work_dir, W, H)
@@ -1090,14 +1156,39 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     concat_lines = []
 
     for seg_idx, seg in enumerate(segments):
+        stype = seg.get("type", "")
         chunks = seg.get("chunks", [])
-        is_quran = seg.get("type") == "quran"
+        is_quran = (stype == "quran")
+        is_card_seg = card_mode and (stype in CARD_SEG_TYPES)
         ayahs = seg.get("ayah_numbers", [])
 
         for c_idx, chunk_data in enumerate(chunks):
             c_dur = float(chunk_data.get("duration", 0))
             if c_dur <= 0:
                 continue
+
+            c_text = chunk_data.get("text", "")
+            out_chunk = work_dir / f"chunk_{seg_idx}_{c_idx}.mp4"
+
+            # نمط الدفتر/البطاقات المطرّزة للأحاديث والنصوص والـ CTA
+            if is_card_seg and c_text.strip():
+                if not use_cinema and (seg_idx, c_idx) in chunk_to_scene:
+                    scene_offsets[chunk_to_scene[(seg_idx, c_idx)]] += c_dur
+
+                card_slides = render_islamic_card_slides(
+                    chunk_text=c_text,
+                    seg_type=stype,
+                    ep_title=ep_title,
+                    font_path=FONT_PATH,
+                    base_png_path=work_dir / f"card_{seg_idx}_{c_idx}.png",
+                    W=W,
+                    H=H,
+                    c_dur=c_dur,
+                )
+                if card_slides:
+                    _render_card_slides_video(card_slides, c_dur, W, H, out_chunk)
+                    concat_lines.append(f"file '{out_chunk.resolve()}'")
+                    continue
 
             if use_cinema:
                 bg_video = chunk_bg_map[(seg_idx, c_idx)]
@@ -1109,7 +1200,6 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 scene_offsets[sid] += c_dur
                 bg_cmd = ["-ss", f"{bg_offset:.3f}", "-t", f"{c_dur:.3f}", "-i", str(bg_video)]
 
-            c_text = chunk_data.get("text", "")
             reciter = chunk_data.get("reciter") or seg.get("reciter", "")
             display_ref = ""
 
@@ -1140,8 +1230,6 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 show_reciter=show_reciter,
                 cinematic_subtitles=use_cinema,
             )
-
-            out_chunk = work_dir / f"chunk_{seg_idx}_{c_idx}.mp4"
 
             if not slides:
                 subprocess.run(
