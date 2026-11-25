@@ -1,6 +1,6 @@
 """
 cinema_engine.py — محرك الأنيميشن السينمائي 2.5D/AI لقناة ملاك المعرفة
-- يستخدم التوكنات الموجودة فقط: HF_TOKEN (ZeroGPU + Depth ONNX) + GEMINI_API_KEYS + PIXABAY_API_KEY + AI Horde المجاني.
+- يستخدم التوكنات الموجودة مع تجاوز تلقائي لأي HF_TOKEN معطوب (401) بالتحميل العام وAI Horde المتوازي.
 - يطبّق ضوابط بصرية ذات مستويين: يسمح بالبشر العاديين تاريخياً عند حاجة القصة، ويمنع تماماً أي تجسيد في سياقات
   الذات الإلهية والأنبياء والصحابة والملائكة والمبشرين بالجنة والنساء المسلمات.
 """
@@ -20,6 +20,7 @@ import random
 import shutil
 import inspect
 import tempfile
+import threading
 import subprocess
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -67,6 +68,10 @@ except Exception:
 
 CINEMA_AVAILABLE = HAS_CV2 and (np is not None)
 
+_STATE_LOCK = threading.Lock()
+_VISION_LOCK = threading.Lock()
+_LAST_VISION_TS = 0.0
+
 # ==============================================================================
 # الهوية البصرية الموحدة (Master Art Style Bible — Painterly 3D Epic Cocktail)
 # ==============================================================================
@@ -82,13 +87,20 @@ BASE_NEGATIVE = (
     "photorealistic modern selfie, flat cartoon, chibi, anime meme, text, words, letters, "
     "watermark, logo, signature, border, modern car, airplane, skyscraper, electricity pole, "
     "neon sign, wristwatch, modern clothing, deformed hands, extra limbs, distorted anatomy, "
-    "glowing halo around head, angelic wings, idol statue, nudity, revealing clothes"
+    "glowing halo around head, angelic wings, idol statue, sculpture, church, cross, crucifix, "
+    "bell tower, cathedral, nudity, revealing clothes"
 )
 
 STRICT_NO_HUMANS_NEGATIVE = (
     "human, humans, person, people, man, men, woman, women, child, face, faces, portrait, "
     "body, silhouette, crowd, hand, hands, eye, eyes, angel, angels, cherub, wings, "
     "warrior, figure, humanoid, " + BASE_NEGATIVE
+)
+
+_FORBIDDEN_STOCK_RE = re.compile(
+    r"\b(?:church|cathedral|chapel|basilica|monastery|abbey|bell\s*tower|steeple|gothic|"
+    r"crucifix|cross|altar|priest|nun|monk|statue|sculpture|idol|buddha|hindu|shrine)\b",
+    re.IGNORECASE,
 )
 
 MOOD_PALETTES = {
@@ -102,7 +114,7 @@ MOOD_PALETTES = {
         "default_sfx": "desert_breeze",
     },
     "ancient_civilization": {
-        "desc": "warm sandstone ochre and twilight slate, torchlight shadows, colossal carved stone architecture, floating golden dust",
+        "desc": "warm sandstone ochre and twilight slate, torchlight shadows, colossal carved desert canyon sandstone, floating golden dust",
         "tint_bgr": (-12, 4, 18),
         "contrast": 1.10,
         "sat": 1.10,
@@ -129,7 +141,7 @@ MOOD_PALETTES = {
         "default_sfx": "none",
     },
     "sacred_heritage": {
-        "desc": "warm amber lantern light, carved limestone arches, tranquil courtyard water reflections, atmospheric dusk",
+        "desc": "warm amber lantern light, ancient middle eastern desert oasis and calm water reflections, atmospheric dusk",
         "tint_bgr": (-6, 5, 14),
         "contrast": 1.08,
         "sat": 1.12,
@@ -157,6 +169,7 @@ _DEFAULT_I2V_SPACES = [
 ]
 
 _RUNTIME_STATE = {
+    "hf_token_invalid": False,
     "zerogpu_exhausted": False,
     "hf_inference_disabled": False,
     "bad_spaces": set(),
@@ -165,6 +178,18 @@ _RUNTIME_STATE = {
     "depth_session": None,
     "depth_failed": False,
 }
+
+
+def _purge_invalid_hf_token(reason: str = "401"):
+    with _STATE_LOCK:
+        if not _RUNTIME_STATE["hf_token_invalid"]:
+            print(f"   🔓 تم اكتشاف HF_TOKEN غير صالح ({reason}) — التحويل للوصول العام المجاني بدون توكن.", flush=True)
+        _RUNTIME_STATE["hf_token_invalid"] = True
+        _RUNTIME_STATE["hf_inference_disabled"] = True
+        _RUNTIME_STATE["space_clients"].clear()
+        _RUNTIME_STATE["space_apis"].clear()
+        os.environ.pop("HF_TOKEN", None)
+        os.environ.pop("HUGGINGFACE_HUB_TOKEN", None)
 
 
 def _cache_root() -> Path:
@@ -281,18 +306,18 @@ def _call_gemini_json(parts: list[dict], timeout: int = 45, max_tokens: int = 40
 
 
 # ==============================================================================
-# 1) مخرج اللقطات الذكي (AI Shot Director — كل 4 إلى 5.5 ثوانٍ متزامنة مع السرد)
+# 1) مخرج اللقطات الذكي (AI Shot Director — إيقاع سينمائي 5-6.5 ثوانٍ متزامنة)
 # ==============================================================================
 def _target_shots_for_duration(c_dur: float, is_quran: bool) -> int:
     if is_quran:
-        return 2 if c_dur >= 14.0 else 1
-    if c_dur < 6.0:
+        return 2 if c_dur >= 16.0 else 1
+    if c_dur < 7.0:
         return 1
-    if c_dur < 10.5:
+    if c_dur < 13.0:
         return 2
-    if c_dur < 15.5:
+    if c_dur < 20.0:
         return 3
-    return max(3, min(6, int(round(c_dur / 4.8))))
+    return max(3, min(4, int(round(c_dur / 6.0))))
 
 
 def _normalize_shot_durations(shots: list[dict], total_dur: float) -> list[dict]:
@@ -331,34 +356,38 @@ def _fallback_shots_for_chunk(c_text: str, c_dur: float, stype: str, ep_title: s
             "monumental expanse of ancient heavens glowing with amber starlight and layered translucent clouds",
             "intimate view of shimmering golden dust motes drifting across a deep indigo celestial horizon",
         ]
+        fb_q = "starry night milky way"
     elif any(w in t for w in ("بحر", "موج", "طوفان", "مطر", "ريح", "عاصفة", "رعد", "برق")):
         mood = "storm_trial"
         base_envs = [
             "dramatic stormy ocean horizon under towering dark thunderclouds lit by golden-copper lightning",
             "sweeping wind over rugged coastal cliffs with crashing waves and mist in volumetric twilight",
-            "close cinematic view of heavy raindrops splashing across ancient carved stone in storm light",
+            "close cinematic view of heavy raindrops splashing across dark basalt rocks in storm light",
         ]
+        fb_q = "ocean waves clouds sunset"
     elif any(w in t for w in ("مدينة", "قصر", "حجر", "صخر", "قافلة", "قوم", "بناء", "جبل", "صحراء")):
         mood = "ancient_civilization"
         if sacred:
             base_envs = [
-                "sweeping wide shot of ancient carved sandstone cliffs and desert canyon bathed in golden hour dust",
-                "medium cinematic view of monumental ancient stone arches and glowing bronze torches at dusk",
-                "close view of wind-blown desert sand drifting across weathered ancient stone steps",
+                "sweeping wide shot of ancient desert canyon cliffs bathed in golden hour dust",
+                "medium cinematic view of ancient desert sandstone formations and glowing warm twilight",
+                "close view of wind-blown desert sand drifting across weathered sandstone ridges",
             ]
         else:
             base_envs = [
-                "wide establishing view of an ancient sandstone city with distant workers and caravans under golden dusk",
-                "medium tracking shot of ancient stone masons hauling weathered limestone blocks beside flickering torches",
-                "dramatic low angle silhouette of ancient travelers gazing toward a colossal horizon at sunset",
+                "wide establishing view of an ancient middle eastern desert valley with distant caravans under golden dusk",
+                "medium tracking shot of ancient stone masons working beside sandstone cliffs at twilight",
+                "dramatic low angle silhouette of ancient travelers gazing toward a vast desert horizon at sunset",
             ]
+        fb_q = "desert sand dunes sunset"
     else:
         mood = "serenity_quran" if is_quran else "sacred_heritage"
         base_envs = [
-            "serene ancient limestone courtyard with calm water basin reflecting golden sunset clouds and olive leaves",
-            "medium view through carved arabesque stone arches overlooking misty emerald valleys and distant mountains",
-            "close cinematic view of warm golden lantern light glowing softly on ancient parchment and stone",
+            "serene ancient desert oasis with calm reflective water pool mirroring golden sunset clouds",
+            "medium view of misty emerald mountain valley with soft golden sunbeams piercing clouds",
+            "close cinematic view of warm golden lantern light glowing softly beside an open blank parchment scroll",
         ]
+        fb_q = "misty mountain sunrise"
 
     if is_quran:
         mood = "serenity_quran"
@@ -376,10 +405,10 @@ def _fallback_shots_for_chunk(c_text: str, c_dur: float, stype: str, ep_title: s
             "mood": mood,
             "particles": "none" if is_quran else MOOD_PALETTES[mood]["default_particles"],
             "sfx_type": "none" if is_quran else MOOD_PALETTES[mood]["default_sfx"],
-            "allow_humans": False if sacred else (not is_quran and "workers" in env or "masons" in env or "travelers" in env),
+            "allow_humans": False if sacred else (not is_quran and ("workers" in env or "masons" in env or "travelers" in env)),
             "is_hero_climax": (i == 0 and stype in ("narration", "teaser")),
             "prompt_en": f"{st} cinematic shot, {env}, consistent with {episode_anchor}",
-            "fallback_query": "starry night nebula cosmos" if mood == "cosmic_awe" else "ancient stone arch courtyard",
+            "fallback_query": fb_q,
         })
     return _normalize_shot_durations(shots, c_dur)
 
@@ -396,19 +425,25 @@ def _enforce_shot_safety(shot: dict, c_text: str, stype: str, ep_title: str) -> 
     if len(prompt) < 15:
         prompt = "epic ancient desert horizon beneath dramatic golden twilight clouds"
 
+    prompt = _FORBIDDEN_STOCK_RE.sub("desert rock", prompt)
+
     if not shot["allow_humans"]:
-        # إزالة أي إشارة بشرية إن تسللت للبرومبت في المشاهد المقدسة
         prompt = re.sub(
             r"\b(man|men|woman|women|person|people|human|humans|crowd|worker|workers|angel|angels|prophet|face|hands?|silhouettes?|travelers?|soldiers?)\b",
-            "ancient monument",
+            "ancient sandstone canyon",
             prompt,
             flags=re.IGNORECASE,
         )
-        prompt += ", completely uninhabited environment, zero people, zero figures, zero faces, zero wings"
+        prompt += ", completely uninhabited pure natural environment, zero people, zero figures, zero faces, zero wings"
     else:
-        prompt += ", modest ancient historical attire, no wings, no halos"
+        prompt += ", modest ancient historical middle eastern attire, no wings, no halos"
 
     shot["prompt_en"] = re.sub(r"\s+", " ", prompt).strip()
+
+    fb_q = str(shot.get("fallback_query", "")).strip()
+    if not fb_q or _FORBIDDEN_STOCK_RE.search(fb_q) or any(w in fb_q.lower() for w in ("arch", "courtyard", "building", "palace", "tower", "city", "monument")):
+        shot["fallback_query"] = "starry night milky way" if shot.get("mood") == "cosmic_awe" else "desert sunset mountain clouds"
+
     if shot.get("mood") not in MOOD_PALETTES:
         shot["mood"] = "serenity_quran" if is_quran else "cosmic_awe"
     if shot.get("camera_move") not in CAMERA_MOVES:
@@ -423,10 +458,6 @@ def _enforce_shot_safety(shot: dict, c_text: str, stype: str, ep_title: str) -> 
 
 
 def plan_episode_shots(meta: dict) -> dict:
-    """
-    يخطط كامل لقطات الحلقة (4-5.5 ثانية لكل لقطة) متزامنة مع كل chunk،
-    ويُعيد استخدام خطة اللقطات عبر النسخ الثلاث عند تفعيل SHARE_EPISODE_MEDIA.
-    """
     ep_title = meta.get("title", "")
     story_id = meta.get("story_id", "")
     segments = meta.get("segments", [])
@@ -435,7 +466,7 @@ def plan_episode_shots(meta: dict) -> dict:
     shared_plan_file = _cache_root() / f"cinema_plan_{plan_key}.json"
 
     cached_chunks_plan: dict[str, dict] = {}
-    episode_anchor = "golden twilight ancient Middle Eastern limestone architecture and vast dramatic skies"
+    episode_anchor = "golden twilight ancient Middle Eastern desert horizons and vast dramatic cosmic skies"
 
     if _share_enabled() and shared_plan_file.exists():
         try:
@@ -445,7 +476,6 @@ def plan_episode_shots(meta: dict) -> dict:
         except Exception:
             cached_chunks_plan = {}
 
-    # تحضير قائمة المقاطع التي تحتاج تخطيطاً جديداً فقط
     pending_batches = []
     current_batch = []
     for seg_idx, seg in enumerate(segments):
@@ -469,7 +499,7 @@ def plan_episode_shots(meta: dict) -> dict:
                 "force_no_humans": sacred,
                 "text": c_text[:450],
             })
-            if len(current_batch) >= 7:
+            if len(current_batch) >= 8:
                 pending_batches.append(current_batch)
                 current_batch = []
     if current_batch:
@@ -478,18 +508,18 @@ def plan_episode_shots(meta: dict) -> dict:
     if pending_batches:
         print(f"🎬 AI Shot Director: تخطيط لقطات سينمائية متزامنة لـ {sum(len(b) for b in pending_batches)} مقطع...", flush=True)
 
-    for b_idx, batch in enumerate(pending_batches):
+    for batch in pending_batches:
         batch_desc = json.dumps(batch, ensure_ascii=False, indent=2)
         prompt = f"""You are a Hollywood Animation Art Director for an Islamic historical & cosmic documentary series ("Malak Al-Marifa").
 Episode: "{ep_title}"
 
-Task: Break each audio chunk below into exact sequential visual shots (each 4-5.5 seconds, Wide -> Medium -> Close-up/POV) that directly depict what the Arabic narration is saying in that moment.
+Task: Break each audio chunk below into exact sequential visual shots (5-6.5 seconds each, Wide -> Medium -> Close-up/POV) that directly depict what the Arabic narration is saying.
 
 STRICT VISUAL & ISLAMIC POLICY:
-1. If "force_no_humans" is true (e.g. Quran, Allah, Throne/Kursi, Creation, Angels, Prophets, Companions, Muslim women), you MUST set "allow_humans": false and describe ONLY cosmic scale, natural phenomena, light rays, ancient empty architecture, scrolls, desert/ocean vistas, or POV camera views — NEVER include people, faces, hands, silhouettes, angels, or wings.
-2. If "force_no_humans" is false AND the Arabic text clearly mentions ordinary historical humans (ancient builders, crowds, travelers, markets, caravans), you MAY set "allow_humans": true with historically modest attire (no wings, no glowing halos, no modern clothes). Otherwise keep "allow_humans": false.
-3. Visual Style Unity: every prompt must harmonize with a single episode setting anchor ("episode_anchor") so cuts feel like one cohesive movie.
-4. Keep "prompt_en" purely visual English (18-32 words per shot) describing concrete objects, lighting, framing, and action matching the Arabic sentence.
+1. If "force_no_humans" is true (e.g. Quran, Allah, Throne/Kursi, Creation, Angels, Prophets, Companions, Muslim women), you MUST set "allow_humans": false and describe ONLY cosmic scale, natural phenomena, light rays, ancient desert/mountain vistas, blank parchment scrolls, or POV camera views — NEVER include people, faces, hands, silhouettes, angels, or wings.
+2. If "force_no_humans" is false AND the Arabic text clearly mentions ordinary historical humans (ancient builders, crowds, travelers, caravans), you MAY set "allow_humans": true with historically modest Middle Eastern attire (no wings, no glowing halos, no modern clothes). Otherwise keep "allow_humans": false.
+3. NEVER use churches, cathedrals, crosses, statues, idols, or gothic towers.
+4. Keep "prompt_en" purely visual English (18-30 words per shot), and keep "fallback_query" strictly a 3-word nature/sky/desert query (e.g. "starry night sky", "desert dunes sunset", "ocean waves clouds").
 
 Input Chunks:
 {batch_desc}
@@ -507,9 +537,9 @@ Return ONLY valid JSON:
         "sfx_type": "wind|desert_breeze|ocean|rain_thunder|embers|none",
         "allow_humans": false,
         "is_hero_climax": true,
-        "duration": 4.8,
+        "duration": 5.5,
         "prompt_en": "wide establishing view of...",
-        "fallback_query": "short 3 word safe stock query"
+        "fallback_query": "starry night sky"
       }}
     ]
   }}
@@ -533,7 +563,6 @@ Return ONLY valid JSON:
                             "shots": _normalize_shot_durations(cleaned_list, item["duration"]),
                         }
                         continue
-                # احتياط منظم في حال نقص مفتاح واحد
                 cached_chunks_plan[ck] = {
                     "shots": _fallback_shots_for_chunk(
                         item["text"], item["duration"], item["type"], ep_title, episode_anchor
@@ -547,7 +576,6 @@ Return ONLY valid JSON:
                     )
                 }
 
-    # بناء الخطة النهائية المتطابقة زمنياً تماماً مع مدد meta الحالية
     final_chunks: dict[str, list[dict]] = {}
     for seg_idx, seg in enumerate(segments):
         stype = seg.get("type", "narration")
@@ -586,6 +614,7 @@ Return ONLY valid JSON:
 # 2) فاحص الأمان البصري (Gemini Vision Guard + كاشف احتياطي محلي)
 # ==============================================================================
 def _vision_guard_check(img_path: Path, allow_humans: bool) -> tuple[bool, str]:
+    global _LAST_VISION_TS
     try:
         with Image.open(img_path) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
@@ -606,7 +635,7 @@ def _vision_guard_check(img_path: Path, allow_humans: bool) -> tuple[bool, str]:
     guard_prompt = f"""Inspect this vertical illustration strictly for Islamic documentary quality & safety.
 Policy:
 1. {human_rule}
-2. Reject if there is gibberish text, watermarks, logos, modern vehicles/skyscrapers, idolatry/crosses/statues, horror/gore, or severe visual distortion.
+2. Reject if there is gibberish text, watermarks, logos, modern vehicles/skyscrapers, Christian crosses/churches/idolatry/statues, horror/gore, or severe visual distortion.
 
 Return ONLY JSON:
 {{
@@ -618,14 +647,20 @@ Return ONLY JSON:
   "reason": "short note"
 }}"""
 
-    res = _call_gemini_json(
-        [
-            {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-            {"text": guard_prompt},
-        ],
-        timeout=25,
-        max_tokens=512,
-    )
+    with _VISION_LOCK:
+        gap = 1.0 - (time.time() - _LAST_VISION_TS)
+        if gap > 0:
+            time.sleep(gap)
+        res = _call_gemini_json(
+            [
+                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+                {"text": guard_prompt},
+            ],
+            timeout=25,
+            max_tokens=512,
+        )
+        _LAST_VISION_TS = time.time()
+
     if res:
         has_humans = bool(res.get("has_humans", False))
         has_wings = bool(res.get("has_wings_or_halo", False))
@@ -639,7 +674,6 @@ Return ONLY JSON:
             return False, "vision_guard_detected_human_in_strict_scene"
         return True, "ok"
 
-    # احتياط محلي في حال نفاد كل مفاتيح Gemini: فحص وجوه OpenCV في المشاهد غير المسموح فيها بالبشر
     if (not allow_humans) and HAS_CV2:
         try:
             cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
@@ -655,38 +689,55 @@ Return ONLY JSON:
 
 
 # ==============================================================================
-# 3) مولد الصور متعدد الطبقات (HF ZeroGPU -> HF Inference -> AI Horde -> Stock)
+# 3) مولد الصور متعدد الطبقات (HF ZeroGPU -> AI Horde المتوازي -> Stock آمن)
 # ==============================================================================
-def _get_hf_token() -> str:
-    return (os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACE_HUB_TOKEN", "")).strip()
+def _get_hf_token() -> str | None:
+    if _RUNTIME_STATE["hf_token_invalid"]:
+        return None
+    tok = (os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACE_HUB_TOKEN", "")).strip()
+    return tok or None
 
 
 def _get_gradio_client(space_id: str):
-    if not HAS_GRADIO or space_id in _RUNTIME_STATE["bad_spaces"]:
+    if not HAS_GRADIO:
         return None
-    if space_id in _RUNTIME_STATE["space_clients"]:
-        return _RUNTIME_STATE["space_clients"][space_id]
+    with _STATE_LOCK:
+        if space_id in _RUNTIME_STATE["bad_spaces"]:
+            return None
+        if space_id in _RUNTIME_STATE["space_clients"]:
+            return _RUNTIME_STATE["space_clients"][space_id]
 
-    hf_token = _get_hf_token()
-    try:
-        sig = inspect.signature(GradioClient.__init__)
-        kwargs = {}
-        if hf_token:
-            if "token" in sig.parameters:
-                kwargs["token"] = hf_token
-            elif "hf_token" in sig.parameters:
-                kwargs["hf_token"] = hf_token
-        client = GradioClient(space_id, **kwargs)
-        _RUNTIME_STATE["space_clients"][space_id] = client
+    for attempt_anon in (False, True):
+        hf_token = None if attempt_anon else _get_hf_token()
+        if attempt_anon and not _RUNTIME_STATE["hf_token_invalid"]:
+            break
         try:
-            _RUNTIME_STATE["space_apis"][space_id] = client.view_api(return_format="dict") or {}
-        except Exception:
-            _RUNTIME_STATE["space_apis"][space_id] = {}
-        return client
-    except Exception as e:
-        print(f"   ⚠️ تعذر فتح Space ({space_id}): {str(e)[:90]}", flush=True)
-        _RUNTIME_STATE["bad_spaces"].add(space_id)
-        return None
+            sig = inspect.signature(GradioClient.__init__)
+            kwargs = {}
+            if hf_token:
+                if "token" in sig.parameters:
+                    kwargs["token"] = hf_token
+                elif "hf_token" in sig.parameters:
+                    kwargs["hf_token"] = hf_token
+            client = GradioClient(space_id, **kwargs)
+            try:
+                api_info = client.view_api(return_format="dict") or {}
+            except Exception:
+                api_info = {}
+            with _STATE_LOCK:
+                _RUNTIME_STATE["space_clients"][space_id] = client
+                _RUNTIME_STATE["space_apis"][space_id] = api_info
+            return client
+        except Exception as e:
+            msg = str(e)
+            if ("401" in msg or "403" in msg or "invalid" in msg.lower()) and not _RUNTIME_STATE["hf_token_invalid"]:
+                _purge_invalid_hf_token("Gradio 401")
+                continue
+            print(f"   ⚠️ تعذر فتح Space ({space_id}): {msg[:90]}", flush=True)
+            with _STATE_LOCK:
+                _RUNTIME_STATE["bad_spaces"].add(space_id)
+            return None
+    return None
 
 
 def _extract_media_path(result, out_dir: Path, prefix: str) -> Path | None:
@@ -716,7 +767,7 @@ def _extract_media_path(result, out_dir: Path, prefix: str) -> Path | None:
             r = requests.get(found, timeout=45)
             if r.status_code == 200 and len(r.content) > 5000:
                 ext = ".mp4" if ".mp4" in found.lower() else ".png"
-                dst = out_dir / f"{prefix}_{int(time.time()*1000)}{ext}"
+                dst = out_dir / f"{prefix}_{int(time.time()*1000)}_{threading.get_ident()}{ext}"
                 dst.write_bytes(r.content)
                 return dst
         except Exception:
@@ -725,12 +776,12 @@ def _extract_media_path(result, out_dir: Path, prefix: str) -> Path | None:
 
 
 def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int, w: int, h: int, image_file: Path | None = None):
-    api = _RUNTIME_STATE["space_apis"].get(space_id, {})
+    with _STATE_LOCK:
+        api = _RUNTIME_STATE["space_apis"].get(space_id, {})
     named = api.get("named_endpoints", {})
     if not named:
         return None, None
 
-    # اختيار نقطة النهاية الأنسب
     ep_name = None
     for candidate in ("/infer", "/generate", "/predict", "/generate_image", "/image_to_video"):
         if candidate in named:
@@ -763,7 +814,6 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
         elif pname in ("guidance_scale", "guidance"):
             kwargs[p["parameter_name"]] = 0.0 if ("schnell" in space_id.lower() or "z-image" in space_id.lower()) else 3.5
         elif pname == "resolution":
-            # لفضاءات مثل Z-Image-Turbo تستخدم سلاسل مثل "720x1280 ( 9:16 )"
             enum_vals = (p.get("type") or {}).get("enum") or []
             chosen_res = None
             for ev in enum_vals:
@@ -801,8 +851,7 @@ def _call_zerogpu_image(prompt: str, neg_prompt: str, seed: int, out_path: Path)
 
         try:
             with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_invoke)
-                res = fut.result(timeout=75)
+                res = ex.submit(_invoke).result(timeout=75)
             media = _extract_media_path(res, out_path.parent, out_path.stem)
             if media and _normalize_generated_image(media, out_path, 720, 1280):
                 return True
@@ -810,9 +859,14 @@ def _call_zerogpu_image(prompt: str, neg_prompt: str, seed: int, out_path: Path)
             print(f"   ⏱️ ZeroGPU timeout ({space_id})", flush=True)
         except Exception as e:
             msg = str(e).lower()
+            if "401" in msg or "403" in msg:
+                _purge_invalid_hf_token("ZeroGPU predict 401")
+                continue
             if any(k in msg for k in ("zerogpu", "quota", "exceeded", "too many requests", "rate limit")):
-                print(f"   ⏸️ انتهت حصة ZeroGPU اليومية مؤقتاً — التبديل للبدائل المفتوحة.", flush=True)
-                _RUNTIME_STATE["zerogpu_exhausted"] = True
+                with _STATE_LOCK:
+                    if not _RUNTIME_STATE["zerogpu_exhausted"]:
+                        print("   ⏸️ انتهت حصة ZeroGPU المؤقتة — التحويل الفوري إلى AI Horde المتوازي.", flush=True)
+                    _RUNTIME_STATE["zerogpu_exhausted"] = True
                 return False
             print(f"   ⚠️ ZeroGPU ({space_id}): {str(e)[:90]}", flush=True)
     return False
@@ -823,7 +877,7 @@ def _call_hf_inference_image(prompt: str, neg_prompt: str, out_path: Path) -> bo
     if not HAS_HF_HUB or not hf_token or _RUNTIME_STATE["hf_inference_disabled"]:
         return False
     try:
-        client = InferenceClient(token=hf_token, timeout=60)
+        client = InferenceClient(token=hf_token, timeout=50)
         img = client.text_to_image(
             prompt=prompt,
             negative_prompt=neg_prompt,
@@ -833,15 +887,18 @@ def _call_hf_inference_image(prompt: str, neg_prompt: str, out_path: Path) -> bo
             num_inference_steps=4,
         )
         if isinstance(img, Image.Image):
-            tmp = out_path.with_suffix(".hf_raw.png")
+            tmp = out_path.with_suffix(f".hf_{threading.get_ident()}.png")
             img.save(tmp)
             ok = _normalize_generated_image(tmp, out_path, 720, 1280)
             tmp.unlink(missing_ok=True)
             return ok
     except Exception as e:
         msg = str(e).lower()
-        if any(k in msg for k in ("402", "403", "credit", "payment", "subscribe", "unauthorized")):
-            _RUNTIME_STATE["hf_inference_disabled"] = True
+        if any(k in msg for k in ("401", "402", "403", "credit", "payment", "subscribe", "unauthorized")):
+            if "401" in msg or "403" in msg:
+                _purge_invalid_hf_token("HF Inference 401")
+            else:
+                _RUNTIME_STATE["hf_inference_disabled"] = True
     return False
 
 
@@ -849,7 +906,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
     api_key = os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000"
     headers = {
         "apikey": api_key,
-        "Client-Agent": "MalakAlMarifa:2.0:github-actions",
+        "Client-Agent": "MalakAlMarifa:2.1:github-actions",
         "Content-Type": "application/json",
     }
     full_prompt = f"{prompt} ### {neg_prompt}"
@@ -859,7 +916,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
             "sampler_name": "k_euler_a",
             "width": 576,
             "height": 1024,
-            "steps": 20,
+            "steps": 18,
             "cfg_scale": 7.0,
             "seed": str(seed),
             "n": 1,
@@ -877,7 +934,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
         if not job_id:
             return False
 
-        deadline = time.time() + 105
+        deadline = time.time() + 115
         while time.time() < deadline:
             time.sleep(4)
             chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
@@ -886,7 +943,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
             cdata = chk.json()
             if cdata.get("faulted"):
                 return False
-            if cdata.get("wait_time", 0) > 220 and not cdata.get("done"):
+            if cdata.get("wait_time", 0) > 260 and not cdata.get("done"):
                 return False
             if cdata.get("done"):
                 st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=20)
@@ -895,7 +952,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
                     if gens and gens[0].get("img"):
                         img_resp = requests.get(gens[0]["img"], timeout=30)
                         if img_resp.status_code == 200 and len(img_resp.content) > 5000:
-                            tmp = out_path.with_suffix(".horde.webp")
+                            tmp = out_path.with_suffix(f".horde_{threading.get_ident()}.webp")
                             tmp.write_bytes(img_resp.content)
                             ok = _normalize_generated_image(tmp, out_path, 720, 1280)
                             tmp.unlink(missing_ok=True)
@@ -907,20 +964,18 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
 
 
 def _stylize_stock_painterly(img_bgr):
-    """دمج صور الاحتياط داخل الهوية البصرية للأسلوب الموحد."""
     if not HAS_CV2:
         return img_bgr
     try:
         smoothed = cv2.bilateralFilter(img_bgr, d=7, sigmaColor=55, sigmaSpace=55)
         stylized = cv2.stylization(smoothed, sigma_s=45, sigma_r=0.35)
-        blended = cv2.addWeighted(smoothed, 0.58, stylized, 0.42, 0)
-        return blended
+        return cv2.addWeighted(smoothed, 0.58, stylized, 0.42, 0)
     except Exception:
         return img_bgr
 
 
 def _fallback_stock_image(query: str, allow_humans: bool, out_path: Path, used_urls: set) -> bool:
-    safe_q = query if is_safe_query(query, allow_ordinary_humans=allow_humans) else "starry night mountain clouds"
+    safe_q = query if (is_safe_query(query, allow_ordinary_humans=allow_humans) and not _FORBIDDEN_STOCK_RE.search(query)) else "starry night milky way"
     candidates: list[str] = []
 
     if PIXABAY_KEY:
@@ -941,12 +996,14 @@ def _fallback_stock_image(query: str, allow_humans: bool, out_path: Path, used_u
                 hits = r.json().get("hits", [])
                 random.shuffle(hits)
                 for h in hits:
-                    if not is_safe_tag(h.get("tags", ""), allow_ordinary_humans=allow_humans):
+                    tags = h.get("tags", "")
+                    if _FORBIDDEN_STOCK_RE.search(tags) or not is_safe_tag(tags, allow_ordinary_humans=allow_humans):
                         continue
                     u = h.get("largeImageURL") or h.get("webformatURL")
-                    if u and u not in used_urls:
-                        candidates.append(u)
-                        break
+                    with _STATE_LOCK:
+                        if u and u not in used_urls:
+                            candidates.append(u)
+                            break
         except Exception:
             pass
 
@@ -954,7 +1011,7 @@ def _fallback_stock_image(query: str, allow_humans: bool, out_path: Path, used_u
         try:
             r = requests.get(
                 "https://api.openverse.org/v1/images/",
-                headers={"User-Agent": "MalakAlMarifa/2.0"},
+                headers={"User-Agent": "MalakAlMarifa/2.1"},
                 params={
                     "q": safe_q,
                     "license_type": "commercial",
@@ -970,26 +1027,29 @@ def _fallback_stock_image(query: str, allow_humans: bool, out_path: Path, used_u
                 random.shuffle(res)
                 for item in res:
                     u = item.get("url")
-                    if not u or u in used_urls:
-                        continue
                     tags_raw = item.get("tags") or []
                     tag_words = [t.get("name", "") if isinstance(t, dict) else str(t) for t in tags_raw]
                     safety_txt = f"{item.get('title', '')} {' '.join(tag_words)}".strip()
-                    if safety_txt and is_safe_tag(safety_txt, allow_ordinary_humans=allow_humans):
-                        candidates.append(u)
-                        break
+                    if not safety_txt or _FORBIDDEN_STOCK_RE.search(safety_txt):
+                        continue
+                    if is_safe_tag(safety_txt, allow_ordinary_humans=allow_humans):
+                        with _STATE_LOCK:
+                            if u and u not in used_urls:
+                                candidates.append(u)
+                                break
         except Exception:
             pass
 
     for u in candidates:
         try:
-            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/2.0"}, timeout=25)
+            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/2.1"}, timeout=25)
             if resp.status_code == 200 and len(resp.content) > 10000:
-                tmp = out_path.with_suffix(".stock_raw")
+                tmp = out_path.with_suffix(f".stock_{threading.get_ident()}.raw")
                 tmp.write_bytes(resp.content)
                 if _normalize_generated_image(tmp, out_path, 720, 1280, stylize=True):
                     tmp.unlink(missing_ok=True)
-                    used_urls.add(u)
+                    with _STATE_LOCK:
+                        used_urls.add(u)
                     return True
                 tmp.unlink(missing_ok=True)
         except Exception:
@@ -1000,7 +1060,6 @@ def _fallback_stock_image(query: str, allow_humans: bool, out_path: Path, used_u
 def _make_atmospheric_fallback(out_path: Path, mood: str, seed: int):
     rng = random.Random(seed)
     W, H = 720, 1280
-    arr = np.zeros((H, W, 3), dtype=np.uint8)
     if mood == "cosmic_awe":
         c1, c2 = np.array([38, 20, 12]), np.array([85, 58, 22])
     elif mood == "storm_trial":
@@ -1074,7 +1133,7 @@ def generate_and_guard_shot(
         )
         if not generated:
             generated = _fallback_stock_image(
-                shot.get("fallback_query", "desert sunset mountains"),
+                shot.get("fallback_query", "starry night milky way"),
                 allow_humans,
                 out_img,
                 used_urls,
@@ -1135,7 +1194,6 @@ def try_upgrade_hero_i2v(
                 res = ex.submit(_invoke).result(timeout=140)
             vid = _extract_media_path(res, work_dir, f"raw_i2v_{shot_id}")
             if vid and vid.exists() and vid.stat().st_size > 25000:
-                # توحيد المقاس والمدة بسلاسة
                 vf = (
                     f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
                     f"fps=24,eq=contrast=1.08:saturation=1.10,vignette=PI/6,format=yuv420p,setsar=1"
@@ -1153,42 +1211,82 @@ def try_upgrade_hero_i2v(
                     return out_mp4
         except Exception as e:
             msg = str(e).lower()
+            if "401" in msg or "403" in msg:
+                _purge_invalid_hf_token("I2V 401")
+                continue
             if any(k in msg for k in ("zerogpu", "quota", "exceeded", "too many requests")):
                 _RUNTIME_STATE["zerogpu_exhausted"] = True
                 return None
-            _RUNTIME_STATE["bad_spaces"].add(space_id)
+            with _STATE_LOCK:
+                _RUNTIME_STATE["bad_spaces"].add(space_id)
     return None
 
 
 # ==============================================================================
 # 5) محرك العمق Depth Anything V2 Small (ONNX/CPU) + تحريك كاميرا 3D حقيقي
 # ==============================================================================
+def _download_depth_onnx(depth_cache: Path) -> str | None:
+    # 1) عبر huggingface_hub (بتوكن صالح إن وجد، أو token=False بالوضع العام عند 401)
+    if HAS_HF_HUB:
+        for tok in (_get_hf_token(), False):
+            if tok is None and _RUNTIME_STATE["hf_token_invalid"]:
+                continue
+            for fname in ("onnx/model.onnx", "onnx/model_quantized.onnx"):
+                try:
+                    return hf_hub_download(
+                        repo_id="onnx-community/depth-anything-v2-small",
+                        filename=fname,
+                        cache_dir=str(depth_cache),
+                        token=tok,
+                    )
+                except Exception as e:
+                    msg = str(e)
+                    if ("401" in msg or "403" in msg) and tok:
+                        _purge_invalid_hf_token("Depth Hub 401")
+                        break
+                    print(f"   ⚠️ تعذر تحميل Depth ({fname}): {msg[:80]}", flush=True)
+
+    # 2) احتياط مباشر بدون توكن عبر HTTPS
+    local_onnx = depth_cache / "depth_v2_small.onnx"
+    if local_onnx.exists() and local_onnx.stat().st_size > 10_000_000:
+        return str(local_onnx)
+    for url in (
+        "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx",
+        "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx",
+    ):
+        try:
+            r = requests.get(url, timeout=90, stream=True)
+            if r.status_code == 200:
+                with open(local_onnx, "wb") as f:
+                    for ch in r.iter_content(65536):
+                        f.write(ch)
+                if local_onnx.stat().st_size > 10_000_000:
+                    return str(local_onnx)
+        except Exception:
+            continue
+    return None
+
+
 def _get_depth_session():
-    if _RUNTIME_STATE["depth_failed"] or not HAS_ORT or not HAS_HF_HUB:
+    if _RUNTIME_STATE["depth_failed"] or not HAS_ORT:
         return None
     if _RUNTIME_STATE["depth_session"] is not None:
         return _RUNTIME_STATE["depth_session"]
 
     depth_cache = Path(tempfile.gettempdir()) / "depth_v2_cache"
     depth_cache.mkdir(parents=True, exist_ok=True)
-    hf_token = _get_hf_token() or None
-
-    for fname in ("onnx/model.onnx", "onnx/model_quantized.onnx"):
+    model_path = _download_depth_onnx(depth_cache)
+    if model_path:
         try:
-            model_path = hf_hub_download(
-                repo_id="onnx-community/depth-anything-v2-small",
-                filename=fname,
-                cache_dir=str(depth_cache),
-                token=hf_token,
-            )
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = max(2, os.cpu_count() or 2)
             sess = ort.InferenceSession(model_path, sess_options=opts, providers=["CPUExecutionProvider"])
             _RUNTIME_STATE["depth_session"] = sess
-            print(f"🧊 Depth Anything V2 Small ONNX جاهز ({fname})", flush=True)
+            print(f"🧊 Depth Anything V2 Small ONNX جاهز: {Path(model_path).name}", flush=True)
             return sess
         except Exception as e:
-            print(f"   ⚠️ تعذر تحميل Depth ({fname}): {str(e)[:80]}", flush=True)
+            print(f"   ⚠️ فشل تشغيل جلسة Depth ONNX: {str(e)[:80]}", flush=True)
+
     _RUNTIME_STATE["depth_failed"] = True
     return None
 
@@ -1224,12 +1322,10 @@ def compute_depth_map(img_path: Path, shot_id: str, W: int, H: int):
             pred = sess.run([out_name], {in_name: tensor})[0]
             pred2d = np.squeeze(pred).astype(np.float32)
 
-            # Depth Anything V2 يُخرج inverse depth حيث القيمة الأكبر = أقرب للكاميرا بالفعل
             d_min, d_max = float(pred2d.min()), float(pred2d.max())
             if d_max - d_min > 1e-5:
                 norm2d = (pred2d - d_min) / (d_max - d_min)
                 up = cv2.resize(norm2d, (W, H), interpolation=cv2.INTER_CUBIC)
-                # تنعيم ذكي للحواف لمنع التمزق أثناء Parallax
                 up = cv2.bilateralFilter(up.astype(np.float32), d=9, sigmaColor=0.18, sigmaSpace=14)
                 up = cv2.GaussianBlur(up, (21, 21), 8.0)
                 depth_01 = np.clip(up, 0.0, 1.0).astype(np.float32)
@@ -1237,7 +1333,6 @@ def compute_depth_map(img_path: Path, shot_id: str, W: int, H: int):
             print(f"   ⚠️ خطأ استنتاج العمق: {str(e)[:70]}", flush=True)
 
     if depth_01 is None:
-        # خريطة عمق تدرجية منطقية عند عدم توفر ONNX (الأسفل أقرب والأعلى سماء بعيدة)
         depth_01 = np.linspace(0.08, 0.95, H, dtype=np.float32)[:, None] * np.ones((1, W), dtype=np.float32)
 
     if _share_enabled():
@@ -1285,7 +1380,6 @@ def _init_particles(kind: str, W: int, H: int, seed: int):
             "rad": rng.integers(2, 5, count),
             "phase": rng.uniform(0, 6.28, count),
         }
-    # gold_motes أو mist
     count = 36
     return {
         "kind": "gold_motes",
@@ -1341,19 +1435,16 @@ def render_parallax_clip(
         bgr = cv2.imread(str(img_path))
     bgr = cv2.resize(bgr, (W, H), interpolation=cv2.INTER_LANCZOS4)
 
-    # تلوين سينمائي متناغم + تظليل حواف ناعم قبل الحلقة الزمنية لتسريع المعالجة
     mood_cfg = MOOD_PALETTES.get(shot.get("mood", "cosmic_awe"), MOOD_PALETTES["cosmic_awe"])
     bgr_f = bgr.astype(np.float32)
     tint = np.array(mood_cfg["tint_bgr"], dtype=np.float32)
     bgr_f = (bgr_f - 128.0) * mood_cfg["contrast"] + 128.0 + tint
     bgr_f = np.clip(bgr_f, 0, 255)
 
-    # ضباب عمق خفيف للخلفيات البعيدة (depth القريب من 0)
     far_mask = (1.0 - depth_map)[..., None] ** 1.8 * 0.14
     haze_color = np.array(mood_cfg["ray_color"], dtype=np.float32) * 0.42
     bgr_f = bgr_f * (1.0 - far_mask) + haze_color * far_mask
 
-    # Vignette سينمائي خفيف
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
     nx = (xx - W * 0.5) / (W * 0.5)
     ny = (yy - H * 0.5) / (H * 0.5)
@@ -1433,7 +1524,7 @@ def render_parallax_clip(
 
 
 # ==============================================================================
-# 6) تحضير ورندرة خلفيات المقاطع مع انتقالات xfade ومشاركة الكاش للنسخ الثلاث
+# 6) تحضير ورندرة خلفيات المقاطع بالتوازي + xfade + مشاركة الكاش للنسخ الثلاث
 # ==============================================================================
 def _get_vid_dur(path: Path) -> float:
     try:
@@ -1454,20 +1545,13 @@ def prepare_and_render_episode_chunks(
     H: int,
     work_dir: Path,
 ) -> dict[tuple[int, int], Path]:
-    """
-    1) يولد ويفحص كل اللوحات أولاً (لحماية حصة ZeroGPU قبل محاولة فيديو الذروة).
-    2) يرقي حتى MAX_HERO_I2V_SHOTS من لقطات الذروة إن توفرت الحصة.
-    3) يستخرج Depth ويرندر مقاطع 2.5D مع xfade متطابق المدة لكل chunk.
-    """
     segments = meta.get("segments", [])
     used_urls = set()
     plan_key = plan["plan_key"]
     ep_anchor = plan["episode_anchor"]
 
-    # المرحلة أ: توليد اللوحات وفحص Vision Guard لكل لقطة
-    shot_assets: dict[tuple[int, int, int], dict] = {}
-    hero_candidates: list[tuple[int, int, int, float]] = []
-
+    # المرحلة أ: تجهيز قائمة اللقطات وتوليدها بالتوازي (4 مسارات لتسريع AI Horde)
+    jobs: list[tuple[int, int, int, dict, str, bool]] = []
     for seg_idx, seg in enumerate(segments):
         stype = seg.get("type", "narration")
         is_quran = (stype == "quran")
@@ -1478,18 +1562,30 @@ def prepare_and_render_episode_chunks(
             shots = plan["chunks"].get(f"{seg_idx}_{c_idx}", [])
             for s_idx, sh in enumerate(shots):
                 shot_id = f"{plan_key}_{seg_idx}_{c_idx}_{s_idx}"
-                img_path = generate_and_guard_shot(sh, ep_anchor, shot_id, work_dir, used_urls)
-                shot_assets[(seg_idx, c_idx, s_idx)] = {
-                    "shot": sh,
-                    "shot_id": shot_id,
-                    "img_path": img_path,
-                    "is_quran": is_quran,
-                    "i2v_path": None,
-                }
-                if sh.get("is_hero_climax") and (not is_quran):
-                    hero_candidates.append((seg_idx, c_idx, s_idx, float(sh["duration"])))
+                jobs.append((seg_idx, c_idx, s_idx, sh, shot_id, is_quran))
 
-    # المرحلة ب: ترقية حتى لقطتي ذروة لفيديو AI حقيقي إذا بقيت حصة ZeroGPU
+    print(f"🎨 توليد وفحص {len(jobs)} لوحة أنيميشن بالتوازي...", flush=True)
+    shot_assets: dict[tuple[int, int, int], dict] = {}
+    hero_candidates: list[tuple[int, int, int, float]] = []
+
+    def _run_shot_job(job):
+        seg_idx, c_idx, s_idx, sh, shot_id, is_quran = job
+        img_path = generate_and_guard_shot(sh, ep_anchor, shot_id, work_dir, used_urls)
+        return seg_idx, c_idx, s_idx, sh, shot_id, is_quran, img_path
+
+    with ThreadPoolExecutor(max_workers=4) as pool_ex:
+        for seg_idx, c_idx, s_idx, sh, shot_id, is_quran, img_path in pool_ex.map(_run_shot_job, jobs):
+            shot_assets[(seg_idx, c_idx, s_idx)] = {
+                "shot": sh,
+                "shot_id": shot_id,
+                "img_path": img_path,
+                "is_quran": is_quran,
+                "i2v_path": None,
+            }
+            if sh.get("is_hero_climax") and (not is_quran):
+                hero_candidates.append((seg_idx, c_idx, s_idx, float(sh["duration"])))
+
+    # المرحلة ب: ترقية حتى لقطتي ذروة لفيديو AI حقيقي إذا توفرت حصة ZeroGPU
     max_hero = max(0, int(os.getenv("MAX_HERO_I2V_SHOTS", "2")))
     upgraded = 0
     for seg_idx, c_idx, s_idx, sdur in hero_candidates:
@@ -1503,7 +1599,7 @@ def prepare_and_render_episode_chunks(
             asset["i2v_path"] = vid_path
             upgraded += 1
 
-    # المرحلة ج: رندر مقاطع الخلفية النهائية لكل chunk (تُشارك بين social / yt / yt_gemini)
+    # المرحلة ج: رندر مقاطع الخلفية النهائية لكل chunk
     chunk_bg_map: dict[tuple[int, int], Path] = {}
 
     for seg_idx, seg in enumerate(segments):
@@ -1517,7 +1613,6 @@ def prepare_and_render_episode_chunks(
             if not shots:
                 continue
 
-            # للقرآن نرندر مدة طويلة نسبياً في المرة الأولى لتكفي قراءات الحصري وجميني الأطول دون إعادة رندر
             target_dur = max(c_dur, 24.0) if (is_quran and _share_enabled()) else c_dur
             cache_chunk_mp4 = _cache_root() / f"chunk_bg_{plan_key}_{seg_idx}_{c_idx}_{W}x{H}.mp4"
 
@@ -1539,7 +1634,6 @@ def prepare_and_render_episode_chunks(
                         chunk_bg_map[(seg_idx, c_idx)] = trimmed
                     continue
 
-            # إذا احتاج الأمر رندراً جديداً (أول نسخة أو آية أطول من 24ث):
             shots_scaled = _normalize_shot_durations([dict(s) for s in shots], target_dur)
             n = len(shots_scaled)
             min_slot = min(s["duration"] for s in shots_scaled)
@@ -1613,7 +1707,7 @@ def prepare_and_render_episode_chunks(
                 )
                 chunk_bg_map[(seg_idx, c_idx)] = trimmed
             else:
-                chunk_bg_map[(seg_idx, c_idx)] = final_chunk_mp4
+                chunk_bg_map[(seg_idx, c_idx)] = final_chunk_bg
 
     return chunk_bg_map
 
@@ -1628,23 +1722,19 @@ def _gen_natural_noise_texture(kind: str, n_samples: int, sr: int = 24000, seed:
     spec = np.fft.rfft(white)
 
     if kind == "rain_thunder":
-        # مطر ناعم متوسط التردد + هدير منخفض خفيف بدون نغمات موسيقية
         filt = np.exp(-((freqs - 1200.0) / 1400.0) ** 2) + 0.35 * np.exp(-(freqs / 160.0) ** 2)
         env = 0.78 + 0.22 * np.sin(2 * np.pi * np.linspace(0, n_samples / sr, n_samples) * 0.17)
     elif kind == "ocean":
-        # أمواج بحر إيقاعية طبيعية
         filt = 1.0 / np.maximum(1.0, (freqs / 140.0) ** 1.1)
         t = np.linspace(0, n_samples / sr, n_samples, dtype=np.float32)
         env = 0.45 + 0.55 * (0.5 + 0.5 * np.sin(2 * np.pi * t * 0.14)) ** 1.6
     elif kind == "embers":
-        # طقطقة جمر ونسيم دافئ
         filt = 1.0 / np.maximum(1.0, (freqs / 280.0) ** 0.9)
         crackles = (rng.random(n_samples) > 0.9985).astype(np.float32) * rng.uniform(0.3, 0.9, n_samples)
         base = np.fft.irfft(spec * filt, n=n_samples).astype(np.float32)
         base = base / max(1e-5, float(np.max(np.abs(base))))
         return np.clip(base * 0.55 + crackles * 0.45, -1.0, 1.0).astype(np.float32)
     else:
-        # رياح ونسيم صحراوي هادئ
         filt = np.exp(-((freqs - 260.0) / 240.0) ** 2) + 0.25 * np.exp(-(freqs / 90.0) ** 2)
         t = np.linspace(0, n_samples / sr, n_samples, dtype=np.float32)
         env = 0.62 + 0.38 * np.sin(2 * np.pi * t * 0.11 + 0.7)
@@ -1658,7 +1748,6 @@ def _gen_natural_noise_texture(kind: str, n_samples: int, sr: int = 24000, seed:
 
 
 def build_halal_ambient_mix(meta: dict, plan: dict, voice_audio_path: str, work_dir: Path) -> str:
-    """يمزج مؤثرات طبيعية هادئة (-26dB) أثناء السرد، ويكتمها 100% أثناء القرآن."""
     if np is None:
         return voice_audio_path
     try:
@@ -1697,7 +1786,7 @@ def build_halal_ambient_mix(meta: dict, plan: dict, voice_audio_path: str, work_
                 if fl > 0:
                     win[:fl] = np.linspace(0.0, 1.0, fl, dtype=np.float32)
                     win[-fl:] = np.linspace(1.0, 0.0, fl, dtype=np.float32)
-                ambient[i0:i1] += tex * win * 0.048  # ~ -26 dB تحت السرد الصافي
+                ambient[i0:i1] += tex * win * 0.048
 
         sfx_wav = work_dir / "halal_ambient.wav"
         pcm = np.clip(ambient * 32767.0, -32768, 32767).astype(np.int16)
