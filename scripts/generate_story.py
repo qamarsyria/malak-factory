@@ -3,11 +3,10 @@ generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد �
 - يقرأ audited/events/ بالترتيب الزمني الدقيق.
 - يبني كل حلقة بنمط: [فقرة سرد موثقة ← الآية المؤكدة لها مباشرة].
 - يفرض ضوابط التعظيم والتنزيه للذات الإلهية والعرش والكرسي والغيبيات في السرد والخلاصة والتشويق، مع فحص برمجي مانع.
-- ينوّع المقدمات تلقائياً عبر 6 أساليب متجددة ويمنع تشابه الافتتاحية مع الحلقات السابقة.
+- ينوّع المقدمات تلقائياً عبر 6 أساليب متجددة ويحفظ آخر 5 افتتاحيات في state.json لمنع تكرارها بين الحلقات حتى على خوادم CI.
 - يمنع إقحام آيات من خارج الحدث أو تسرب نص الآية حرفياً داخل السرد (دون حظر الكلمات المفردة).
 - يمنع تتابع آيتين مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام لتجنب الفهم الخاطئ.
 - يعتمد حداً أدنى مرناً للكلمات حسب حجم المادة المدققة لمنع الحشو والاختلاق.
-- يستبعد المفاتيح المعطوبة (401/403) ويعالج ضغط 503 و Timeout و thinkingConfig.
 """
 
 import os
@@ -111,10 +110,9 @@ _CLICHE_OPENINGS = (
     "من الجدير بالذكر",
 )
 
-# عبارات صراع/ضعف سياسية يُمنع اقترانها بمقدسات العقيدة أو استعمالها في عهد بداية الخلق
 _FORBIDDEN_IN_CREATION_RE = re.compile(
     r"(?:خيان[ةه]|يتهوى|يتداعى|أنقاض|انقاض|يصمد\s+العرش|سقوط\s+العرش|انهيار\s+العرش|"
-    r"تهوي\s+الكرسي|يتزلزل\s+الكرسي|صراع\s+على\s+العرش|مؤامر[ةه]|انقلاب)"
+    r"تهوي\s+الكرسي|يتزلزل\s+الكرسي|صراع\s+على\s+العرش|مؤامر[ةه]|انقلاب|تحدي\s+الخالق)"
 )
 
 _SACRED_DISRESPECT_RE = re.compile(
@@ -209,28 +207,37 @@ def check_theological_and_context_safety(text: str, story: dict | None = None) -
     return issues
 
 
-def get_recent_openings(story_id: str, current_ep_num: int, limit: int = 5) -> list[str]:
+def get_recent_openings(story_id: str, current_ep_num: int, sstate: dict | None = None, limit: int = 5) -> list[str]:
+    openings: list[str] = []
     gen_dir = STORIES_DIR / story_id / "generated"
-    if not gen_dir.exists():
-        return []
-    openings = []
-    for p in sorted(gen_dir.glob(f"{story_id}-*.json"), reverse=True):
-        m = re.search(r"-(\d+)\.json$", p.name)
-        if not m or int(m.group(1)) >= current_ep_num:
-            continue
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            for seg in data.get("segments", []):
-                if seg.get("type") == "narration" and seg.get("text"):
-                    words = seg["text"].strip().split()[:18]
-                    if words:
-                        openings.append(" ".join(words))
-                    break
-        except Exception:
-            continue
-        if len(openings) >= limit:
-            break
-    return openings
+    if gen_dir.exists():
+        for p in sorted(gen_dir.glob(f"{story_id}-*.json"), reverse=True):
+            m = re.search(r"-(\d+)\.json$", p.name)
+            if not m or int(m.group(1)) >= current_ep_num:
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                for seg in data.get("segments", []):
+                    if seg.get("type") == "narration" and seg.get("text"):
+                        words = seg["text"].strip().split()[:18]
+                        if words:
+                            op = " ".join(words)
+                            if op not in openings:
+                                openings.append(op)
+                        break
+            except Exception:
+                continue
+            if len(openings) >= limit:
+                break
+
+    for op in (sstate or {}).get("recent_openings") or []:
+        op_s = str(op).strip()
+        if op_s and op_s not in openings:
+            openings.append(op_s)
+            if len(openings) >= limit:
+                break
+
+    return openings[:limit]
 
 
 def _advance_pool(pool):
@@ -697,7 +704,6 @@ def enrich_and_validate_script(
     if not meaningful_segments or meaningful_segments[0].get("type") == "quran":
         issues.append("starts_with_quran_without_narration")
 
-    # فحص تنوع الافتتاحية ومنع البدايات المكررة
     first_narr = next((s.get("text", "") for s in meaningful_segments if s.get("type") == "narration"), "")
     if first_narr:
         norm_first = _norm_ar(first_narr)
@@ -717,14 +723,12 @@ def enrich_and_validate_script(
                     issues.append("repetitive_opening_similar_to_previous")
                     break
 
-    # فحص التعظيم والتنزيه في جميع فقرات السرد
     for s in meaningful_segments:
         if s.get("type") == "narration":
             for t_issue in check_theological_and_context_safety(s.get("text", ""), story):
                 if t_issue not in issues:
                     issues.append(t_issue)
 
-    # حماية مهمة: منع وجود آيتين وراء بعض مباشرة إلا إذا كانتا من نفس السورة ومتتاليتين بالأرقام
     for idx in range(len(meaningful_segments) - 1):
         prev_s = meaningful_segments[idx]
         curr_s = meaningful_segments[idx + 1]
@@ -745,7 +749,6 @@ def enrich_and_validate_script(
                 c_disp = curr_s.get("display") or f"{c_surah}:{c_nums}"
                 issues.append(f"consecutive_unrelated_quran_segments ({p_disp} -> {c_disp})")
 
-    # فحص تسرّب الآيات الكاملة أو المقاطع القرآنية الطويلة داخل السرد
     norm_expected = [
         (_norm_ar(a["text"]).split(), a["ref"])
         for a in expected_ayahs
@@ -1030,7 +1033,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
         )
         return
 
-    recent_openings = get_recent_openings(story_id, ep_num, limit=5)
+    recent_openings = get_recent_openings(story_id, ep_num, sstate=sstate, limit=5)
     opening_style = OPENING_STYLES[(ep_num - 1) % len(OPENING_STYLES)]
 
     script = None
@@ -1116,6 +1119,15 @@ def main(clear_latest: bool = True, _visited: set | None = None):
     for s in segments:
         if s.get("type") in ("narration", "summary", "teaser", "cta"):
             s["text"] = clean_narration(s["text"])
+
+    first_opening = next(
+        (" ".join(s["text"].split()[:18]) for s in segments if s.get("type") == "narration" and s.get("text")),
+        "",
+    )
+    if first_opening:
+        updated_openings = [first_opening] + [op for op in recent_openings if op != first_opening]
+        sstate["recent_openings"] = updated_openings[:5]
+        save_story_state(story_id, sstate)
 
     ep_data = {
         "episode_number": ep_num,
