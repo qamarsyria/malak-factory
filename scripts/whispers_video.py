@@ -4,7 +4,7 @@ scripts/whispers_video.py
 =========================
 المخرج السينمائي المحسّن لمشروع «همسات ملك» (1080×1920 @ 30fps):
 - يولّد لوحات رومانسية أو روحانية متطابقة مع السرد عبر:
-  (Gemini Native Image -> ZeroGPU Z-Image-Turbo/FLUX -> AI Horde النشط -> Pixabay Film)
+  (Gemini Native Image -> ZeroGPU Z-Image-Turbo/FLUX عبر _open_gradio_client -> AI Horde النشط -> Pixabay Film)
   مع فحص Gemini Vision وطباعة السجل بوضوح.
 - يضيف أجواءً رومانسية دافئة (غطاء مخملي عنابي-وردي، هالات بوكيه، وذرات نور ذهبية صاعدة).
 - يعرض الخط العربي بوضوح فائق (Amiri Bold + RAQM + MaxFilter Halo) في مساحة آمنة للواتساب،
@@ -47,6 +47,7 @@ from romantic_cards import (
     _find_amiri_font,
     _check_valid_hf_token,
     _get_active_horde_models,
+    _open_gradio_client,
 )
 
 VIDEO_W = 1080
@@ -346,7 +347,8 @@ def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
     if not keys:
         return False
 
-    for model_id in ("gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"):
+    logged = False
+    for model_id in ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview"):
         for k in keys[:4]:
             try:
                 r = requests.post(
@@ -361,6 +363,9 @@ def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
                     timeout=55,
                 )
                 if r.status_code != 200:
+                    if not logged:
+                        print(f"   ℹ️ [Scene Gemini Image {model_id}]: HTTP {r.status_code} ({r.text[:90]})", flush=True)
+                        logged = True
                     continue
                 parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
                 for p in parts:
@@ -373,7 +378,10 @@ def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
                         if out_jpg.exists() and out_jpg.stat().st_size > 25000:
                             print(f"   ✨ [Scene Gemini Image] تم الرسم عبر {model_id}", flush=True)
                             return True
-            except Exception:
+            except Exception as e:
+                if not logged:
+                    print(f"   ℹ️ [Scene Gemini Image]: {str(e)[:80]}", flush=True)
+                    logged = True
                 continue
     return False
 
@@ -406,14 +414,12 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
     if _gemini_scene_image(full_prompt, out_jpg) and _vision_check_whisper_image(out_jpg, category, scene_en):
         return True
 
-    # 2) Hugging Face ZeroGPU (Z-Image-Turbo ثم FLUX.1-schnell)
+    # 2) Hugging Face ZeroGPU (Z-Image-Turbo ثم FLUX.1-schnell عبر _open_gradio_client)
     try:
-        from gradio_client import Client as GradioClient
         tok = _check_valid_hf_token()
         for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
             try:
-                kwargs = {"token": tok} if tok else {}
-                client = GradioClient(space_id, **kwargs)
+                client = _open_gradio_client(space_id, tok)
                 api = client.view_api(return_format="dict") or {}
                 named = api.get("named_endpoints", {})
                 ep_name = "/generate" if "/generate" in named else ("/infer" if "/infer" in named else next(iter(named.keys()), None))
@@ -447,7 +453,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                         call_kw[p["parameter_name"]] = p.get("parameter_default")
 
                 with ThreadPoolExecutor(max_workers=1) as ex:
-                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=80)
+                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=85)
 
                 fpath = _extract_gradio_path(res, out_jpg.parent)
                 if fpath and os.path.exists(fpath):
@@ -458,18 +464,18 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                         print(f"   ✅ [Scene ZeroGPU] تم الرسم عبر {space_id}", flush=True)
                         return True
             except Exception as e:
-                print(f"   ⚠️ [Scene ZeroGPU {space_id}]: {str(e)[:85]}", flush=True)
+                print(f"   ⚠️ [Scene ZeroGPU {space_id}]: {str(e)[:95]}", flush=True)
                 continue
     except Exception:
         pass
 
-    # 3) AI Horde النشط ديناميكياً (مهلة 145 ثانية)
+    # 3) AI Horde النشط ديناميكياً
     try:
         models = _get_active_horde_models()
         print(f"   🎨 [Scene AI Horde] رسم '{scene_en[:45]}...' عبر {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "HamsatMalak:3.2:romantic-scene",
+            "Client-Agent": "HamsatMalak:3.3:romantic-scene",
             "Content-Type": "application/json",
         }
         payload = {
@@ -478,7 +484,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                 "sampler_name": "k_euler_a",
                 "width": 576,
                 "height": 1024,
-                "steps": 20,
+                "steps": 18,
                 "cfg_scale": 6.5,
                 "seed": str(seed),
                 "n": 1,
@@ -496,7 +502,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
         if not job_id:
             return False
 
-        deadline = time.time() + 145
+        deadline = time.time() + 150
         while time.time() < deadline:
             time.sleep(5)
             chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
@@ -521,7 +527,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                             print("   ✅ [Scene Horde] تم توليد اللوحة الرومانسية بنجاح!", flush=True)
                             return True
                 return False
-        print("   ⏱️ [Scene Horde] تجاوز المهلة 145ث", flush=True)
+        print("   ⏱️ [Scene Horde] تجاوز المهلة 150ث", flush=True)
     except Exception as e:
         print(f"   ⚠️ [Scene Horde error]: {str(e)[:85]}", flush=True)
     return False
@@ -735,7 +741,6 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 )
                 clip_slots.append((seg_mp4, sdur))
 
-            # في الذروة نمرر المقطع الختامي فقط [segs[-1]] ليبقى الدفتر مهوىً وفخماً دون تزاحم أسطر
             card_slides = render_romantic_notebook_slides(
                 [segs[-1]], title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
