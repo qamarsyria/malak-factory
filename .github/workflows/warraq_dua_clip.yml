@@ -31,6 +31,14 @@ on:
         options:
           - auto_vertical
           - fill_crop
+      video_quality:
+        description: 'جودة الفيديو (high_clean ~7-12MB بلا تكسير | compact ~5-7MB)'
+        required: true
+        default: 'high_clean'
+        type: choice
+        options:
+          - high_clean
+          - compact
 
 jobs:
   apply_dua_to_clip:
@@ -66,6 +74,7 @@ jobs:
           TTS_VOICE: ${{ inputs.tts_voice }}
           SHOW_TEXT: ${{ inputs.show_text }}
           LAYOUT_MODE: ${{ inputs.layout_mode }}
+          VIDEO_QUALITY: ${{ inputs.video_quality }}
         run: |
           cat <<'PYEOF' > /tmp/warraq_dua_clip.py
           import asyncio
@@ -93,12 +102,13 @@ jobs:
           except Exception:
               gemini_tts_with_pool = None
 
-          W, H, FPS = 720, 1280, 24
+          W, H = 720, 1280
           HAS_RAQM = features.check("raqm")
           VIDEO_PATH = os.getenv("VIDEO_PATH", "warraq_clip.mp4").strip()
           TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
           SHOW_TEXT = os.getenv("SHOW_TEXT", "true").strip().lower() == "true"
           LAYOUT_MODE = os.getenv("LAYOUT_MODE", "auto_vertical").strip()
+          VIDEO_QUALITY = os.getenv("VIDEO_QUALITY", "high_clean").strip()
 
           DUA_LINES = [
               "اللَّهُمَّ يَا أَرْحَمَ الرَّاحِمِينَ، إِلَيْكَ نَشْكُو ضَعْفَنَا وَأَلَمَ قُلُوبِنَا فِي مُصَابِ أَهْلِنَا بِمِصْرَ فِي فَاجِعَةِ الْوَرَّاقِ.",
@@ -131,18 +141,46 @@ jobs:
               raise RuntimeError("لم يُعثر على خط عربي")
 
 
-          def probe_video(path: Path) -> tuple[int, int, float]:
+          def probe_video(path: Path) -> tuple[int, int, float, int]:
               r = subprocess.run(
                   ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                   "-show_entries", "stream=width,height",
+                   "-show_entries", "stream=width,height,r_frame_rate,sample_aspect_ratio,side_data_list:stream_tags=rotate",
                    "-show_entries", "format=duration",
                    "-of", "json", str(path)],
                   capture_output=True, text=True, check=True,
               )
               info = json.loads(r.stdout)
               st = info["streams"][0]
+              vw, vh = int(st["width"]), int(st["height"])
+
+              # تصحيح العرض والطول إذا كان ملف الموبايل يحمل وسم دوران 90/270
+              rot = 0
+              tags = st.get("tags") or {}
+              if "rotate" in tags:
+                  try:
+                      rot = abs(int(float(tags["rotate"])))
+                  except Exception:
+                      pass
+              for sd in st.get("side_data_list") or []:
+                  if "rotation" in sd:
+                      try:
+                          rot = abs(int(float(sd["rotation"])))
+                      except Exception:
+                          pass
+              if rot in (90, 270):
+                  vw, vh = vh, vw
+
+              # حساب معدل الإطارات الحقيقي والحفاظ على سلاسة حتى 30fps
+              fps_raw = str(st.get("r_frame_rate") or "30/1")
+              try:
+                  num, den = fps_raw.split("/")
+                  src_fps = float(num) / max(1.0, float(den))
+              except Exception:
+                  src_fps = 30.0
+              target_fps = max(24, min(30, round(src_fps)))
+
               dur = float(info["format"]["duration"])
-              return int(st["width"]), int(st["height"]), dur
+              return vw, vh, dur, target_fps
 
 
           def get_dur(path: Path) -> float:
@@ -170,7 +208,6 @@ jobs:
                       await comm.save(str(raw_mp3))
                   asyncio.run(_run())
 
-              # تنظيف الصمت + تبطئة خفيفة رصينة + دفء صوتي قبل قياس المدة لضمان تطابق الترجمة 100%
               af = (
                   "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
                   "areverse,"
@@ -309,12 +346,11 @@ jobs:
               src_video = REPO_ROOT / VIDEO_PATH
               if not src_video.exists():
                   raise FileNotFoundError(
-                      f"❌ لم يُعثر على الفيديو في المسار '{VIDEO_PATH}'. "
-                      "ارفع الفيديو إلى المستودع بنفس الاسم أو اكتب مساره الصحيح في خانة video_path."
+                      f"❌ لم يُعثر على الفيديو في المسار '{VIDEO_PATH}'."
                   )
 
-              vw, vh, vdur = probe_video(src_video)
-              print(f"📹 الفيديو الأصلي: {vw}x{vh} | المدة: {vdur:.2f}s (سيُزال صوته الأصلي 100%)", flush=True)
+              vw, vh, vdur, target_fps = probe_video(src_video)
+              print(f"📹 الفيديو الأصلي: {vw}x{vh} | {target_fps}fps | المدة: {vdur:.2f}s (صامت 100%)", flush=True)
 
               work = Path(tempfile.mkdtemp(prefix="warraq_dua_"))
               try:
@@ -333,6 +369,7 @@ jobs:
 
                   audio_parts = []
                   seg_timings = []
+                  cur_t = 0.0
                   for i, line in enumerate(DUA_LINES):
                       wav = work / f"dua_seg_{i}.wav"
                       synth_dua_sentence(line, wav, work, i)
@@ -341,7 +378,8 @@ jobs:
                       pad_dur = 1.25 if is_last else 0.55
                       seg_dur = get_dur(wav) + pad_dur
                       audio_parts.extend([wav, pad_wav])
-                      seg_timings.append((line, seg_dur))
+                      seg_timings.append((line, cur_t, cur_t + seg_dur))
+                      cur_t += seg_dur
                       print(f"🎙️ جملة {i + 1}/{len(DUA_LINES)} جاهزة ({seg_dur:.2f}s)", flush=True)
 
                   a_list = work / "a_concat.txt"
@@ -353,7 +391,6 @@ jobs:
                   ])
 
                   total_dua_dur = get_dur(merged_dry)
-                  # صدى مسجد دافئ وهادئ على مجمل الدعاء دفعة واحدة حتى يمتد الذيل عبر الوقفات بانسيابية
                   final_dua = work / "dua_final.wav"
                   fade_out_st = max(0.0, total_dua_dur - 0.90)
                   af_reverb = (
@@ -368,59 +405,72 @@ jobs:
                   ])
                   print(f"🤲 مدة الدعاء الكاملة: {total_dua_dur:.2f}s", flush=True)
 
-                  # تجهيز مسار الفيديو بدون أي صوت (-an) ومواءمة الأبعاد والمدة
-                  pts_prefix = ""
+                  # تحويل مستقر وموحد لإطارات وألوان الفيديو الأصلي بدون إسقاط فريمات مزعج
+                  pts_step = ""
                   if total_dua_dur > vdur and vdur > 0.5:
                       slow_ratio = total_dua_dur / vdur
-                      pts_prefix = f"setpts={slow_ratio:.5f}*PTS,"
-                      print(f"🐢 تبطيء سينمائي خفيف للفيديو ({slow_ratio:.2f}x) ليغطي كامل الدعاء", flush=True)
+                      pts_step = f",setpts={slow_ratio:.5f}*PTS,fps={target_fps}"
+                      print(f"🐢 تبطيء سينمائي خفيف ({slow_ratio:.2f}x) لتغطية الدعاء", flush=True)
 
+                  prep_prefix = f"[0:v]format=yuv420p,fps={target_fps}{pts_step}"
                   if vw > vh and LAYOUT_MODE == "auto_vertical":
                       base_fc = (
-                          f"[0:v]{pts_prefix}fps={FPS},split=2[bg][fg];"
+                          f"{prep_prefix},split=2[bg][fg];"
                           f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-                          f"gblur=sigma=24,eq=brightness=-0.22:saturation=0.85[b];"
-                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease[f];"
+                          f"gblur=sigma=24,eq=brightness=-0.20:saturation=0.88,setsar=1[b];"
+                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease,setsar=1[f];"
                           f"[b][f]overlay=(W-w)/2:(H-h)/2,"
-                          f"eq=brightness=-0.06:contrast=1.08:saturation=0.90,vignette=PI/4,format=yuv420p,setsar=1[vbase]"
+                          f"eq=brightness=-0.05:contrast=1.06:saturation=0.92,vignette=PI/4,"
+                          f"tpad=stop_mode=clone:stop_duration=1.5,format=yuv420p,setsar=1[vbase]"
                       )
                   else:
                       base_fc = (
-                          f"[0:v]{pts_prefix}scale={W}:{H}:force_original_aspect_ratio=increase,"
-                          f"crop={W}:{H},fps={FPS},"
-                          f"eq=brightness=-0.06:contrast=1.08:saturation=0.90,vignette=PI/4,format=yuv420p,setsar=1[vbase]"
+                          f"{prep_prefix},"
+                          f"scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,"
+                          f"crop={W}:{H},"
+                          f"eq=brightness=-0.05:contrast=1.06:saturation=0.92,vignette=PI/4,"
+                          f"tpad=stop_mode=clone:stop_duration=1.5,format=yuv420p,setsar=1[vbase]"
                       )
+
+                  if VIDEO_QUALITY == "compact":
+                      v_encode = ["-c:v", "libx264", "-preset", "slow", "-crf", "23", "-maxrate", "1400k", "-bufsize", "2800k"]
+                  else:
+                      v_encode = ["-c:v", "libx264", "-preset", "slow", "-crf", "21", "-maxrate", "2200k", "-bufsize", "4400k"]
 
                   final_mp4 = work / "al_warraq_dua_reel.mp4"
                   fade_vid_filter = f"fade=t=in:st=0:d=0.45,fade=t=out:st={max(0.0, total_dua_dur - 0.90):.3f}:d=0.90"
 
                   if SHOW_TEXT:
                       ov_inputs = []
-                      ov_filters = []
-                      for idx, (line, seg_dur) in enumerate(seg_timings):
+                      ov_chain = []
+                      prev_lbl = "vbase"
+                      n_segs = len(seg_timings)
+                      for idx, (line, t_start, t_end) in enumerate(seg_timings):
                           png = work / f"ov_{idx}.png"
                           make_dua_overlay_png(png, line, bold_font)
-                          ov_inputs.extend(["-loop", "1", "-t", f"{seg_dur:.3f}", "-i", str(png)])
-                          ov_filters.append(f"[{idx + 2}:v]fps={FPS},format=rgba[o{idx}]")
+                          ov_inputs.extend(["-framerate", str(target_fps), "-loop", "1", "-t", f"{total_dua_dur:.3f}", "-i", str(png)])
+                          in_idx = idx + 2
+                          out_lbl = f"vt{idx}"
+                          cond = f"gte(t,{t_start:.3f})" if idx == n_segs - 1 else f"gte(t,{t_start:.3f})*lt(t,{t_end:.3f})"
+                          ov_chain.append(f"[{in_idx}:v]format=rgba[ov{idx}]")
+                          ov_chain.append(f"[{prev_lbl}][ov{idx}]overlay=0:0:enable='{cond}':shortest=1[{out_lbl}]")
+                          prev_lbl = out_lbl
 
-                      concat_ovs = "".join(f"[o{k}]" for k in range(len(seg_timings)))
                       full_fc = (
                           f"{base_fc};"
-                          + ";".join(ov_filters)
-                          + f";{concat_ovs}concat=n={len(seg_timings)}:v=1:a=0[ov];"
-                          + f"[vbase][ov]overlay=shortest=1,{fade_vid_filter},format=yuv420p[vout]"
+                          + ";".join(ov_chain)
+                          + f";[{prev_lbl}]{fade_vid_filter},format=yuv420p[vout]"
                       )
                       cmd = (
-                          ["ffmpeg", "-y", "-i", str(src_video), "-i", str(final_dua)]
+                          ["ffmpeg", "-y", "-fflags", "+genpts", "-i", str(src_video), "-i", str(final_dua)]
                           + ov_inputs
                           + [
                               "-filter_complex", full_fc,
                               "-map", "[vout]", "-map", "1:a:0",
                               "-t", f"{total_dua_dur:.3f}",
-                              "-c:v", "libx264", "-preset", "slow", "-crf", "25",
-                              "-maxrate", "500k", "-bufsize", "1000k",
+                              *v_encode,
                               "-profile:v", "high", "-level:v", "4.0",
-                              "-g", str(FPS * 4), "-bf", "3", "-aq-mode", "3",
+                              "-g", str(target_fps * 3), "-bf", "2", "-aq-mode", "2",
                               "-pix_fmt", "yuv420p",
                               "-c:a", "aac", "-ac", "1", "-b:a", "96k",
                               "-movflags", "+faststart", "-shortest",
@@ -430,14 +480,13 @@ jobs:
                   else:
                       full_fc = f"{base_fc};[vbase]{fade_vid_filter},format=yuv420p[vout]"
                       cmd = [
-                          "ffmpeg", "-y", "-i", str(src_video), "-i", str(final_dua),
+                          "ffmpeg", "-y", "-fflags", "+genpts", "-i", str(src_video), "-i", str(final_dua),
                           "-filter_complex", full_fc,
                           "-map", "[vout]", "-map", "1:a:0",
                           "-t", f"{total_dua_dur:.3f}",
-                          "-c:v", "libx264", "-preset", "slow", "-crf", "25",
-                          "-maxrate", "500k", "-bufsize", "1000k",
+                          *v_encode,
                           "-profile:v", "high", "-level:v", "4.0",
-                          "-g", str(FPS * 4), "-bf", "3", "-aq-mode", "3",
+                          "-g", str(target_fps * 3), "-bf", "2", "-aq-mode", "2",
                           "-pix_fmt", "yuv420p",
                           "-c:a", "aac", "-ac", "1", "-b:a", "96k",
                           "-movflags", "+faststart", "-shortest",
@@ -447,12 +496,12 @@ jobs:
                   run_cmd(cmd)
                   size_mb = final_mp4.stat().st_size / 1024 / 1024
                   out_dur = get_dur(final_mp4)
-                  print(f"🎬 الفيديو جاهز: {size_mb:.2f} MB | المدة: {out_dur:.1f}s (صامت الأصل 100%)", flush=True)
+                  print(f"🎬 الفيديو جاهز: {size_mb:.2f} MB | {target_fps}fps | المدة: {out_dur:.1f}s", flush=True)
 
                   tg_token = os.environ["TELEGRAM_BOT_TOKEN"]
                   tg_chat = os.environ["TELEGRAM_CHAT_ID"]
                   caption = (
-                      "🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، والربط على قلوب ذويهم.\n\n"
+                      "🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، واربط على قلوب ذويهم.\n\n"
                       "خالص العزاء والمواساة من الشعبين الفلسطيني والسوري إلى أهلنا وأحبتنا في مصر الحبيبة 🇵🇸 🇸🇾 🇪🇬\n"
                       f"📦 الحجم: {size_mb:.1f} MB | المدة: {out_dur:.0f} ثانية"
                   )
