@@ -2,12 +2,12 @@
 """
 scripts/whispers_video.py
 =========================
-المخرج السينمائي الجديد لمشروع «همسات ملك» (1080×1920 @ 30fps):
-- يحذف المضلعات البدائية والمثلثات تماماً.
-- يولّد لكل مقطع لوحة/فيديو رومانسي أو روحاني واقعي متطابق مع نص الهمسة عبر
-  (HF ZeroGPU FLUX -> AI Horde Juggernaut/RealVis -> Pixabay HD Film) مع فاحص Gemini Vision.
+المخرج السينمائي المحسّن لمشروع «همسات ملك» (1080×1920 @ 30fps):
+- يولّد لوحات رومانسية أو روحانية متطابقة مع السرد عبر (ZeroGPU FLUX/Z-Image -> AI Horde النشط -> Pixabay Film)
+  مع فحص Gemini Vision وطباعة السجل بوضوح.
 - يعرض الخط العربي بوضوح فائق (Amiri Bold + RAQM + MaxFilter Halo) في مساحة آمنة للواتساب،
   وينتقل في ذروة الهمسة بسلاسة إلى الدفتر القطني الصوفي الرومانسي 3D (romantic_cards.py).
+- يضغط الفيديو بذكاء (~3.5-4.5 MB للدقيقة بدلاً من 13 MB) مع بقاء النصوص والملمس حادّين.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import math
 import os
 import random
 import re
@@ -41,7 +40,12 @@ except Exception:
     bidi_display = None
     HAS_RESHAPER = False
 
-from romantic_cards import render_romantic_notebook_slides, _find_amiri_font
+from romantic_cards import (
+    render_romantic_notebook_slides,
+    _find_amiri_font,
+    _check_valid_hf_token,
+    _get_active_horde_models,
+)
 
 VIDEO_W = 1080
 VIDEO_H = 1920
@@ -50,7 +54,21 @@ XFADE_DUR = 0.60
 
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 HAS_RAQM = features.check("raqm")
-_HARAKAT_RE = re.compile(r"[\u064B-\u065F\u0670\u0640]")
+
+FINAL_WHISPER_ENCODE = [
+    "-c:v", "libx264",
+    "-preset", "slow",
+    "-crf", "27",
+    "-maxrate", "480k",
+    "-bufsize", "960k",
+    "-profile:v", "high",
+    "-level:v", "4.0",
+    "-g", str(FPS * 4),
+    "-bf", "3",
+    "-aq-mode", "3",
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+]
 
 
 def _prep_txt(text: str) -> str:
@@ -112,12 +130,11 @@ def _make_whisper_overlay_png(
 ):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
 
-    # تظليل سينمائي ناعم في الأسفل والأعلى لحماية القراءة بعيداً عن أشرطة واتساب
     scrim = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(scrim)
     if show_title:
         for y in range(90, 290):
-            a = int(110 * (1.0 - abs(y - 180) / 110.0))
+            a = int(115 * (1.0 - abs(y - 180) / 110.0))
             sd.line([(0, y), (VIDEO_W, y)], fill=(8, 4, 14, max(0, a)))
 
     start_y = int(VIDEO_H * 0.56)
@@ -159,7 +176,7 @@ def _make_whisper_overlay_png(
             lines = _wrap_text(clean_text, chosen_font, VIDEO_W - 140, bd)[:4]
 
         block_h = len(lines) * lh
-        cur_y = 1610 - block_h  # مساحة آمنة تماماً فوق شريط رد الواتساب
+        cur_y = 1610 - block_h
         for ln in lines:
             pt = _prep_txt(ln)
             bb = _measure(bd, ln, chosen_font)
@@ -203,8 +220,8 @@ def _vision_check_whisper_image(img_path: Path, category: str, scene_en: str) ->
     if category == "prayer_niqab":
         policy = (
             "Religious prayer scene: ONLY modest veiled Muslim woman in loose dark niqab/hijab OR "
-            "mosque/lantern/moonlight/white roses. REJECT uncovered women, couples hugging/kissing, "
-            "crosses, statues, cheap 2D cartoon/clipart, or text."
+            "mosque/lantern/moonlight/white roses. REJECT uncovered women, couples kissing, "
+            "crosses, statues, cheap 2D clipart, or text."
         )
     else:
         policy = (
@@ -217,11 +234,10 @@ def _vision_check_whisper_image(img_path: Path, category: str, scene_en: str) ->
         f"Inspect this vertical illustration.\nIntended scene: '{scene_en[:160]}'\nPolicy: {policy}\n"
         'Return ONLY JSON: {"safe": true, "high_craft": true, "reason": "ok"}'
     )
-    key = random.choice(keys)
-    for model in ("gemini-2.5-flash", "gemini-3.5-flash-lite"):
+    for k in keys[:3]:
         try:
             r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={k}",
                 json={
                     "contents": [{"parts": [{"inline_data": {"mime_type": "image/jpeg", "data": b64}}, {"text": prompt}]}],
                     "generationConfig": {"temperature": 0.1, "maxOutputTokens": 256, "responseMimeType": "application/json"},
@@ -264,23 +280,46 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
 
     full_prompt = f"{scene_en}, {style}"
 
-    # 1) Hugging Face ZeroGPU (FLUX.1-schnell)
+    # 1) Hugging Face ZeroGPU (FLUX.1-schnell ثم Z-Image-Turbo)
     try:
         from gradio_client import Client as GradioClient
-        tok = (os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACE_HUB_TOKEN", "")).strip() or None
-        for attempt_anon in (False, True):
-            kwargs = {} if (attempt_anon or not tok) else {"token": tok}
+        tok = _check_valid_hf_token()
+        for space_id in ("black-forest-labs/FLUX.1-schnell", "Tongyi-MAI/Z-Image-Turbo"):
             try:
-                client = GradioClient("black-forest-labs/FLUX.1-schnell", **kwargs)
-                res = client.predict(
-                    prompt=full_prompt,
-                    seed=seed,
-                    randomize_seed=False,
-                    width=720,
-                    height=1280,
-                    num_inference_steps=4,
-                    api_name="/infer",
-                )
+                kwargs = {"token": tok} if tok else {}
+                client = GradioClient(space_id, **kwargs)
+                api = client.view_api(return_format="dict") or {}
+                named = api.get("named_endpoints", {})
+                ep_name = "/infer" if "/infer" in named else ("/generate" if "/generate" in named else next(iter(named.keys()), None))
+                if not ep_name:
+                    continue
+                params = named[ep_name].get("parameters", [])
+                call_kw = {}
+                for p in params:
+                    pn = (p.get("parameter_name") or "").lower()
+                    if pn in ("prompt", "positive_prompt"):
+                        call_kw[p["parameter_name"]] = full_prompt
+                    elif pn in ("negative_prompt", "neg_prompt"):
+                        call_kw[p["parameter_name"]] = neg
+                    elif pn == "seed":
+                        call_kw[p["parameter_name"]] = int(seed)
+                    elif pn in ("randomize_seed", "random_seed"):
+                        call_kw[p["parameter_name"]] = False
+                    elif pn == "width":
+                        call_kw[p["parameter_name"]] = 720
+                    elif pn == "height":
+                        call_kw[p["parameter_name"]] = 1280
+                    elif pn in ("num_inference_steps", "steps"):
+                        call_kw[p["parameter_name"]] = 4 if "schnell" in space_id else 8
+                    elif pn == "resolution":
+                        enums = (p.get("type") or {}).get("enum") or []
+                        call_kw[p["parameter_name"]] = next((e for e in enums if "9:16" in str(e) or "720x1280" in str(e)), p.get("parameter_default"))
+                    elif "parameter_default" in p and p.get("parameter_has_default", True):
+                        call_kw[p["parameter_name"]] = p.get("parameter_default")
+
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=75)
+
                 fpath = res[0] if isinstance(res, (list, tuple)) else res
                 if isinstance(fpath, dict):
                     fpath = fpath.get("path") or fpath.get("url")
@@ -289,22 +328,21 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                         im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
                         im.save(out_jpg, "JPEG", quality=93)
                     if out_jpg.exists() and out_jpg.stat().st_size > 25000 and _vision_check_whisper_image(out_jpg, category, scene_en):
+                        print(f"   ✅ [Scene ZeroGPU] تم الرسم عبر {space_id}", flush=True)
                         return True
-                break
             except Exception as e:
-                if "401" in str(e) and not attempt_anon:
-                    os.environ.pop("HF_TOKEN", None)
-                    os.environ.pop("HUGGINGFACE_HUB_TOKEN", None)
-                    continue
-                break
+                print(f"   ⚠️ [Scene ZeroGPU {space_id}]: {str(e)[:85]}", flush=True)
+                continue
     except Exception:
         pass
 
-    # 2) AI Horde (Juggernaut XL / DreamShaper XL / RealVisXL)
+    # 2) AI Horde النشط ديناميكياً (مهلة 145 ثانية)
     try:
+        models = _get_active_horde_models()
+        print(f"   🎨 [Scene AI Horde] رسم '{scene_en[:45]}...' عبر {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "HamsatMalak:3.0:romantic-scene",
+            "Client-Agent": "HamsatMalak:3.1:romantic-scene",
             "Content-Type": "application/json",
         }
         payload = {
@@ -313,7 +351,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                 "sampler_name": "k_euler_a",
                 "width": 576,
                 "height": 1024,
-                "steps": 22,
+                "steps": 20,
                 "cfg_scale": 6.5,
                 "seed": str(seed),
                 "n": 1,
@@ -321,33 +359,44 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
             "nsfw": False,
             "censor_nsfw": True,
             "r2": True,
-            "models": ["Juggernaut XL", "DreamShaper XL", "RealVisXL", "AlbedoBase XL (SDXL)"],
+            "models": models,
         }
-        r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=15)
-        if r.status_code in (200, 202):
-            job_id = r.json().get("id")
-            if job_id:
-                deadline = time.time() + 90
-                while time.time() < deadline:
-                    time.sleep(4)
-                    chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=12)
-                    if chk.status_code == 200 and chk.json().get("done"):
-                        st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=15)
-                        gens = st.json().get("generations") or [] if st.status_code == 200 else []
-                        if gens and gens[0].get("img"):
-                            ir = requests.get(gens[0]["img"], timeout=25)
-                            if ir.status_code == 200 and len(ir.content) > 8000:
-                                tmp = out_jpg.with_suffix(".webp")
-                                tmp.write_bytes(ir.content)
-                                with Image.open(tmp) as im:
-                                    im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
-                                    im.save(out_jpg, "JPEG", quality=93)
-                                tmp.unlink(missing_ok=True)
-                                if out_jpg.exists() and _vision_check_whisper_image(out_jpg, category, scene_en):
-                                    return True
-                        break
-    except Exception:
-        pass
+        r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=20)
+        if r.status_code not in (200, 202):
+            print(f"   ⚠️ [Scene Horde HTTP {r.status_code}]", flush=True)
+            return False
+        job_id = r.json().get("id")
+        if not job_id:
+            return False
+
+        deadline = time.time() + 145
+        while time.time() < deadline:
+            time.sleep(5)
+            chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
+            if chk.status_code != 200:
+                continue
+            cdata = chk.json()
+            if cdata.get("faulted"):
+                return False
+            if cdata.get("done"):
+                st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=20)
+                gens = st.json().get("generations") or [] if st.status_code == 200 else []
+                if gens and gens[0].get("img"):
+                    ir = requests.get(gens[0]["img"], timeout=30)
+                    if ir.status_code == 200 and len(ir.content) > 8000:
+                        tmp = out_jpg.with_suffix(".webp")
+                        tmp.write_bytes(ir.content)
+                        with Image.open(tmp) as im:
+                            im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
+                            im.save(out_jpg, "JPEG", quality=93)
+                        tmp.unlink(missing_ok=True)
+                        if out_jpg.exists() and _vision_check_whisper_image(out_jpg, category, scene_en):
+                            print("   ✅ [Scene Horde] تم توليد اللوحة الرومانسية بنجاح!", flush=True)
+                            return True
+                return False
+        print("   ⏱️ [Scene Horde] تجاوز المهلة 145ث", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ [Scene Horde error]: {str(e)[:85]}", flush=True)
     return False
 
 
@@ -357,7 +406,7 @@ def _fetch_pixabay_film(category: str, work_dir: Path, used_urls: set[str]) -> P
     queries = (
         ["islamic lantern night", "crescent moon clouds", "white roses dew"]
         if category == "prayer_niqab"
-        else ["rain window night cozy", "pink roses sunset", "starry night lake aurora", "autumn forest sunlight"]
+        else ["pink roses petals bokeh", "rain window candlelight", "couple sunset beach silhouette", "autumn forest sunlight"]
     )
     random.shuffle(queries)
     for q in queries:
@@ -411,7 +460,7 @@ def _extract_segment_durations(segs: list[dict], total_dur: float) -> list[float
                 d = max(0.8, total_dur - float(s["start_sec"]))
             durs.append(d)
     elif all("dry_duration" in s for s in segs):
-        raw = [float(s["dry_duration"]) + float(s.get("pause_after_ms", 450)) / 1000.0 for s in segs]
+        raw = [float(s["dry_duration"]) + float(s.get("pause_after_ms", 420)) / 1000.0 for s in segs]
         scale = total_dur / max(0.1, sum(raw))
         durs = [max(0.8, round(x * scale, 3)) for x in raw]
     else:
@@ -451,7 +500,6 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
     title = (ep.get("title") or "همسة لروحها").strip()
     segs = (meta or {}).get("segments") or ep.get("segments") or []
 
-    # دمج scene_prompt_en من ملف الحلقة داخل مقاطع الميتاداتا
     ep_segs = ep.get("segments") or []
     for idx, s in enumerate(segs):
         if "scene_prompt_en" not in s and idx < len(ep_segs):
@@ -473,25 +521,22 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
     work = Path(tempfile.mkdtemp(prefix="whisper_vid_"))
     try:
         if notebook_mode == "full_notebook" or len(segs) <= 1:
-            # كامل الحلقة على الدفتر القطني الرومانسي 3D
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=total_dur
             )
             _render_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4")
         else:
-            # المقاطع الأولى: رسومات رومانسية/روحانية واقعية متزامنة + الذروة الأخيرة: الدفتر القطني الرومانسي 3D
             scene_segs = segs[:-1]
             scene_durs = seg_durs[:-1]
             climax_dur = seg_durs[-1]
             used_urls: set[str] = set()
 
-            # 1) توليد المشاهد بالتوازي للسرعة
             def _prep_scene(i_s):
                 idx, s = i_s
                 sc_en = s.get("scene_prompt_en") or (
                     "glowing golden mosque lantern in twilight courtyard with white roses"
                     if category == "prayer_niqab"
-                    else "warm golden sunset over rose garden and misty mountains"
+                    else "warm golden sunset over blooming rose garden and rainy cozy window"
                 )
                 out_img = work / f"sc_{idx}.jpg"
                 seed = 5000 + idx * 911 + random.randint(1, 500)
@@ -554,22 +599,16 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 )
                 clip_slots.append((seg_mp4, sdur))
 
-            # 2) مقطع الذروة الأخير على الدفتر القطني الصوفي الرومانسي (يعرض القصيدة كاملة مع إبراز الختام!)
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
             climax_png = card_slides[-1][0]
             climax_mp4 = work / "seg_climax_notebook.mp4"
-            climax_frames = max(30, int(round(climax_dur * FPS)) + 10)
             subprocess.run(
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(climax_png),
-                    "-vf", (
-                        f"scale={VIDEO_W*2}:{VIDEO_H*2},"
-                        f"zoompan=z='min(zoom+0.00035,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                        f"d={climax_frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p,setsar=1"
-                    ),
+                    "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
                     "-t", f"{climax_dur:.3f}",
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
                     str(climax_mp4),
@@ -580,7 +619,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
 
             _concat_clips_with_xfade(clip_slots, total_dur, work / "vid_only.mp4")
 
-        # الدمج النهائي مع الصوت الماسترد والموسيقى
+        # التصدير النهائي بالضغط الذكي (~3.5-4.5 MB للدقيقة)
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
@@ -588,11 +627,9 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 "-i", str(audio_p),
                 "-map", "0:v", "-map", "1:a",
                 "-t", f"{total_dur:.3f}",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-                "-maxrate", "3.2M", "-bufsize", "6.4M",
-                "-profile:v", "high", "-level:v", "4.0",
-                "-movflags", "+faststart",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+                *FINAL_WHISPER_ENCODE,
+                "-c:a", "aac", "-b:a", "80k", "-ar", "44100",
+                "-shortest",
                 str(out_p),
             ],
             check=True, capture_output=True, timeout=360,
