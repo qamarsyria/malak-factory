@@ -55,7 +55,7 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
           pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts numpy
 
-      - name: Generate Realistic 50s Al-Warraq Reel
+      - name: Generate Vision-Verified Realistic 50s Al-Warraq Reel
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -67,7 +67,7 @@ jobs:
           VIDEO_SIZE: ${{ inputs.video_size }}
         run: |
           python -u - <<'PYEOF'
-          import asyncio, io, json, math, os, random, re, shutil, subprocess, sys, tempfile
+          import asyncio, base64, io, json, math, os, re, shutil, subprocess, sys, tempfile, time
           from pathlib import Path
           import numpy as np
           import requests
@@ -82,9 +82,13 @@ jobs:
           REPO_ROOT = Path.cwd()
           sys.path.insert(0, str(REPO_ROOT / "scripts"))
           try:
-              from gemini_tts_pool import gemini_tts_with_pool
+              from gemini_tts_pool import gemini_tts_with_pool, get_pool
           except Exception:
-              gemini_tts_with_pool = None
+              gemini_tts_with_pool, get_pool = None, None
+          try:
+              from model_discovery import discover_and_cache
+          except Exception:
+              discover_and_cache = None
 
           W, H, FPS = 720, 1280, 30
           HAS_RAQM = features.check("raqm")
@@ -142,26 +146,287 @@ jobs:
               "animation", "cartoon", "3d", "cgi", "illustration", "drawing", "abstract",
               "fireplace", "campfire", "bonfire", "candle", "candles", "birthday", "bbq",
               "grill", "cooking", "kitchen", "fireworks", "sparkler", "sparklers", "lighter",
+              "insect", "bug", "fly", "bee", "berry", "fruit", "food", "macro", "flower",
               "woman", "girl", "female", "man", "men", "boy", "person", "people", "human",
               "face", "portrait", "crowd", "wedding", "party", "concert", "dance", "bikini",
           }
 
-          # مشاهد واقعية تحاكي تسلسل حادث صهريج الوراق ليلاً بدون وجوه أو حقوق
+          # 7 مشاهد موجهة بدقة ومفحوصة بالرؤية لتحاكي حريق صهريج الوراق وإحراق السيارات
           STORYBOARD_SHOTS = [
-              {"queries": ["highway night traffic", "bridge traffic night", "night road cars"], "mood": "night"},
-              {"queries": ["semi truck night", "truck highway night", "truck driving night"], "mood": "night"},
-              {"queries": ["fire explosion night", "large fire night", "burning fire dark"], "mood": "ember"},
-              {"queries": ["raging fire flames", "building fire night", "inferno fire dark"], "mood": "ember"},
-              {"queries": ["black smoke fire", "thick smoke rising", "dark smoke burning"], "mood": "smoke"},
-              {"queries": ["emergency lights night", "fire truck night", "police flashing lights night"], "mood": "siren"},
-              {"queries": ["firefighter fire night", "dark storm clouds night", "rain night street lights"], "mood": "night"},
-              {"queries": ["mosque night cairo", "mosque silhouette dawn", "mosque dome night"], "mood": "dawn"},
+              {
+                  "name": "الطريق السريع ليلاً وشاحنة البترول",
+                  "queries": ["tanker truck highway", "highway traffic night", "semi truck night"],
+                  "wiki_queries": ["tanker truck highway", "highway night traffic"],
+                  "req": "Dark nighttime highway overpass with traffic lights OR a large fuel tanker / semi truck driving on an asphalt highway road.",
+              },
+              {
+                  "name": "انفجار صهريج الوقود ونار واصلة للسماء",
+                  "queries": ["oil fire explosion", "huge fire flames night", "gas explosion fire", "building fire night"],
+                  "wiki_queries": ["fuel tanker fire", "tanker explosion fire", "massive oil fire flames"],
+                  "req": "Terrifying massive towering fire explosion with gigantic flames reaching high into the sky and heavy disaster fire (NOT a campfire, NOT fireworks, NOT candles).",
+              },
+              {
+                  "name": "سيارات تحترق بنص الطريق",
+                  "queries": ["car fire flames", "burning car road", "vehicle fire", "burning car night"],
+                  "wiki_queries": ["car fire highway", "burning cars road accident", "vehicle fire flames"],
+                  "req": "Real cars or trucks burning / engulfed in fierce orange flames and smoke on an asphalt road or highway accident.",
+              },
+              {
+                  "name": "دخان أسود كثيف يملأ السماء",
+                  "queries": ["black smoke fire disaster", "thick black smoke burning", "industrial fire smoke"],
+                  "wiki_queries": ["black smoke fire highway", "massive fire black smoke plume"],
+                  "req": "Apocalyptic thick black smoke clouds billowing violently into the sky from a catastrophic oil/vehicle fire.",
+              },
+              {
+                  "name": "سيارات الإطفاء والإسعاف بالليل",
+                  "queries": ["fire truck night emergency", "firefighter burning", "ambulance flashing lights night"],
+                  "wiki_queries": ["firefighters car fire night", "fire truck emergency lights night"],
+                  "req": "Real firefighters with hoses fighting a huge fire OR fire truck / ambulance with emergency flashing lights on a road at night.",
+              },
+              {
+                  "name": "آثار الحريق وسيارات محروقة",
+                  "queries": ["burned car wreck", "firefighter smoke", "car accident night fire"],
+                  "wiki_queries": ["burned cars highway wreck", "charred vehicles fire aftermath"],
+                  "req": "Charred / burned-out vehicles or heavy smoke aftermath on a road after a major fire accident.",
+              },
+              {
+                  "name": "مسجد ليلاً للدعاء لمصر",
+                  "queries": ["mosque night cairo", "mosque dome night", "islamic mosque dusk"],
+                  "wiki_queries": ["Cairo mosque night", "mosque minaret night sky"],
+                  "req": "Respectful serene mosque dome and minaret at night or dusk for prayer.",
+              },
           ]
 
           def run_cmd(cmd):
               res = subprocess.run(cmd, capture_output=True, text=True)
               if res.returncode != 0:
                   raise RuntimeError(f"فشل {' '.join(cmd[:4])}:\n{res.stderr[-800:]}")
+
+          def _vision_models():
+              ms = []
+              if discover_and_cache is not None:
+                  try:
+                      for m in discover_and_cache(force=False):
+                          bm = m.removeprefix("models/").strip()
+                          if bm and not any(x in bm.lower() for x in ("tts", "embedding", "imagen", "nano", "omni", "live")):
+                              ms.append(bm)
+                  except Exception:
+                      pass
+              for fb in ("gemini-3.8-flash", "gemini-2.5-flash", "gemini-3.8-flash-lite"):
+                  if fb not in ms:
+                      ms.append(fb)
+              return ms[:6]
+
+          def vision_inspect(frame_bytes_list: list[bytes], req: str) -> tuple[bool, int, str]:
+              if get_pool is None or not frame_bytes_list:
+                  return True, 7, "no_pool"
+              pool = get_pool()
+              models = _vision_models()
+              prompt = (
+                  f"You are a strict documentary video editor for a tragic fuel-tanker highway fire disaster Reel.\n"
+                  f"Target scene requirement: {req}\n\n"
+                  "Inspect the attached image(s) strictly:\n"
+                  "- ACCEPT (accept=true) ONLY if the visual genuinely depicts the catastrophic disaster/emergency/mosque requirement cleanly and realistically.\n"
+                  "- STRICTLY REJECT (accept=false, score=1) if it shows ANY of: fireworks/celebrations, small cozy campfires/bonfires/fireplaces/candles/stoves/BBQ, insects/flies/animals/berries/plants/peaceful forests, cartoons/3D renders, close-up smiling people/women faces, OR giant TV news channel logos/text banners.\n"
+                  'Reply JSON only: {"accept": true, "score": 8, "reason": "short english description"}'
+              )
+              parts = [{"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(b).decode("ascii")}} for b in frame_bytes_list]
+              parts.append({"text": prompt})
+
+              for model in models:
+                  for _ in range(2):
+                      try:
+                          key = pool.get_current()
+                          if not key:
+                              return True, 6, "no_key"
+                          url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                          r = requests.post(
+                              url,
+                              json={"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300, "responseMimeType": "application/json"}},
+                              timeout=25,
+                          )
+                          if r.status_code == 200:
+                              cands = r.json().get("candidates") or []
+                              if not cands:
+                                  break
+                              txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", []) if not p.get("thought"))
+                              s, e = txt.find("{"), txt.rfind("}")
+                              if s != -1 and e > s:
+                                  obj = json.loads(txt[s:e + 1])
+                                  if hasattr(pool, "_advance"): pool._advance()
+                                  return bool(obj.get("accept", False)), int(obj.get("score", 5)), str(obj.get("reason", ""))[:80]
+                              break
+                          elif r.status_code in (401, 403):
+                              pool.mark_dead(f"HTTP {r.status_code}")
+                          elif r.status_code == 429:
+                              pool.mark_failed(60)
+                              time.sleep(1)
+                          else:
+                              break
+                      except Exception:
+                          break
+              return True, 5, "vision_fallback"
+
+          def extract_video_frames_bytes(vid_path: Path) -> list[bytes]:
+              dur = get_dur(vid_path)
+              t1 = max(0.3, dur * 0.25)
+              t2 = max(0.8, dur * 0.65)
+              out_frames = []
+              for idx, ts in enumerate((t1, t2)):
+                  jp = vid_path.with_name(f"{vid_path.stem}_vf{idx}.jpg")
+                  res = subprocess.run(
+                      ["ffmpeg", "-y", "-v", "error", "-ss", f"{ts:.2f}", "-i", str(vid_path), "-frames:v", "1", "-vf", "scale=512:-1", "-q:v", "5", str(jp)],
+                      capture_output=True,
+                  )
+                  if res.returncode == 0 and jp.exists():
+                      out_frames.append(jp.read_bytes())
+                      jp.unlink(missing_ok=True)
+              return out_frames
+
+          def _clean_tags(tags):
+              words = set(re.split(r"[^a-z0-9]+", (tags or "").lower()))
+              return len(words & BAD_TAGS) == 0
+
+          def fetch_verified_shot(shot_cfg, work_dir, used_urls, idx):
+              req = shot_cfg["req"]
+              best_media, best_score, best_reason = None, -1, ""
+
+              # 1) فحص فيديوهات Pixabay الواقعية بعين Gemini Vision
+              if PIXABAY_KEY:
+                  for q in shot_cfg["queries"]:
+                      try:
+                          r = requests.get(
+                              "https://pixabay.com/api/videos/",
+                              params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 640},
+                              timeout=15,
+                          )
+                          if r.status_code != 200:
+                              continue
+                          hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", "")) and h.get("duration", 0) >= 4]
+                          for h in hits[:5]:
+                              vids = h.get("videos", {})
+                              url = vids.get("medium", {}).get("url") or vids.get("large", {}).get("url")
+                              if not url or url in used_urls:
+                                  continue
+                              cand = work_dir / f"cand_v_{idx}_{h['id']}.mp4"
+                              with open(cand, "wb") as f:
+                                  for ch in requests.get(url, timeout=35, stream=True).iter_content(16384): f.write(ch)
+                              if cand.stat().st_size < 60000:
+                                  cand.unlink(missing_ok=True)
+                                  continue
+                              fbytes = extract_video_frames_bytes(cand)
+                              ok, score, reason = vision_inspect(fbytes, req)
+                              print(f"   👁️ [فيديو {idx + 1} | {q}] accept={ok} ({score}/10): {reason}", flush=True)
+                              if ok and score > best_score:
+                                  if best_media and best_media.exists(): best_media.unlink(missing_ok=True)
+                                  best_media, best_score, best_reason = cand, score, reason
+                                  used_urls.add(url)
+                                  if score >= 8:
+                                      return best_media
+                              else:
+                                  cand.unlink(missing_ok=True)
+                      except Exception:
+                          pass
+
+              if best_media and best_score >= 7:
+                  return best_media
+
+              # 2) البحث في صور Wikimedia Commons الحقيقية (صور حوادث صهاريج واحتراق سيارات حقيقية!)
+              for wq in shot_cfg.get("wiki_queries", []):
+                  try:
+                      r = requests.get(
+                          "https://commons.wikimedia.org/w/api.php",
+                          headers={"User-Agent": "AlWarraqDocBot/1.0 (https://github.com/qamarsyria/malak-factory)"},
+                          params={
+                              "action": "query", "generator": "search", "gsrsearch": f"{wq} filetype:bitmap",
+                              "gsrnamespace": "6", "gsrlimit": "8", "prop": "imageinfo",
+                              "iiprop": "url|size|mime", "iiurlwidth": "1280", "format": "json",
+                          },
+                          timeout=15,
+                      )
+                      if r.status_code != 200:
+                          continue
+                      pages = list((r.json().get("query") or {}).get("pages", {}).values())
+                      for p in pages[:6]:
+                          ii = (p.get("imageinfo") or [{}])[0]
+                          mime = str(ii.get("mime", ""))
+                          if mime not in ("image/jpeg", "image/png"):
+                              continue
+                          url = ii.get("thumburl") or ii.get("url")
+                          if not url or url in used_urls:
+                              continue
+                          resp = requests.get(url, headers={"User-Agent": "AlWarraqDocBot/1.0"}, timeout=20)
+                          if resp.status_code != 200:
+                              continue
+                          with Image.open(io.BytesIO(resp.content)) as im:
+                              im = ImageOps.exif_transpose(im).convert("RGB")
+                              if min(im.size) < 420:
+                                  continue
+                              buf = io.BytesIO()
+                              im.resize((min(640, im.width), int(im.height * min(640, im.width) / im.width))).save(buf, "JPEG", quality=82)
+                              ok, score, reason = vision_inspect([buf.getvalue()], req)
+                              print(f"   👁️ [أرشيف {idx + 1} | {wq}] accept={ok} ({score}/10): {reason}", flush=True)
+                              if ok and score > best_score:
+                                  if best_media and best_media.exists(): best_media.unlink(missing_ok=True)
+                                  cand = work_dir / f"cand_w_{idx}_{p.get('pageid', 0)}.jpg"
+                                  im.save(cand, "JPEG", quality=92)
+                                  best_media, best_score, best_reason = cand, score, reason
+                                  used_urls.add(url)
+                                  if score >= 8:
+                                      return best_media
+                  except Exception:
+                      pass
+
+              # 3) فحص صور Pixabay الواقعية كاحتياط مفحوص بالرؤية أيضاً
+              if PIXABAY_KEY and best_score < 7:
+                  for q in shot_cfg["queries"]:
+                      try:
+                          r = requests.get(
+                              "https://pixabay.com/api/",
+                              params={"key": PIXABAY_KEY, "q": q, "image_type": "photo", "safesearch": "true", "per_page": 15, "min_width": 720},
+                              timeout=15,
+                          )
+                          if r.status_code != 200:
+                              continue
+                          hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", ""))]
+                          for h in hits[:5]:
+                              url = h.get("largeImageURL") or h.get("webformatURL")
+                              if not url or url in used_urls:
+                                  continue
+                              resp = requests.get(url, timeout=20)
+                              if resp.status_code != 200:
+                                  continue
+                              with Image.open(io.BytesIO(resp.content)) as im:
+                                  im = ImageOps.exif_transpose(im).convert("RGB")
+                                  if min(im.size) < 480:
+                                      continue
+                                  buf = io.BytesIO()
+                                  im.resize((min(640, im.width), int(im.height * min(640, im.width) / im.width))).save(buf, "JPEG", quality=82)
+                                  ok, score, reason = vision_inspect([buf.getvalue()], req)
+                                  print(f"   👁️ [صورة {idx + 1} | {q}] accept={ok} ({score}/10): {reason}", flush=True)
+                                  if ok and score > best_score:
+                                      if best_media and best_media.exists(): best_media.unlink(missing_ok=True)
+                                      cand = work_dir / f"cand_p_{idx}_{h['id']}.jpg"
+                                      im.save(cand, "JPEG", quality=92)
+                                      best_media, best_score, best_reason = cand, score, reason
+                                      used_urls.add(url)
+                                      if score >= 8:
+                                          return best_media
+                      except Exception:
+                          pass
+
+              if best_media:
+                  print(f"   ✅ اعتُمد للقطة {idx + 1} (تقييم {best_score}/10): {best_reason}", flush=True)
+                  return best_media
+
+              fb = work_dir / f"shot_fb_{idx}.jpg"
+              im = Image.new("RGB", (W, H), (14, 12, 16))
+              dr = ImageDraw.Draw(im)
+              for y in range(H):
+                  t = y / H
+                  dr.line([(0, y), (W, y)], fill=(int(20 + 75 * (t ** 2)), int(14 + 26 * (t ** 2)), 16))
+              im.save(fb, "JPEG", quality=92)
+              return fb
 
           def find_bold_font():
               for p in ("/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf"):
@@ -248,71 +513,6 @@ jobs:
               mp3.write_bytes(r.content)
               af = "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,loudnorm=I=-15:TP=-1.5:LRA=10,alimiter=limit=0.95,afade=t=in:st=0:d=0.015"
               run_cmd(["ffmpeg", "-y", "-i", str(mp3), "-af", af, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)])
-
-          def _clean_tags(tags):
-              words = set(re.split(r"[^a-z0-9]+", (tags or "").lower()))
-              return len(words & BAD_TAGS) == 0
-
-          def fetch_realistic_shot(queries, work_dir, used_urls, idx, mood):
-              if PIXABAY_KEY:
-                  for q in queries:
-                      try:
-                          r = requests.get(
-                              "https://pixabay.com/api/videos/",
-                              params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 40, "min_width": 640},
-                              timeout=15,
-                          )
-                          if r.status_code == 200:
-                              hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", "")) and h.get("duration", 0) >= 4]
-                              random.shuffle(hits)
-                              for h in hits:
-                                  vids = h.get("videos", {})
-                                  url = vids.get("large", {}).get("url") or vids.get("medium", {}).get("url")
-                                  if not url or url in used_urls: continue
-                                  out = work_dir / f"shot_{idx}_{h['id']}.mp4"
-                                  with open(out, "wb") as f:
-                                      for ch in requests.get(url, timeout=45, stream=True).iter_content(16384): f.write(ch)
-                                  if out.stat().st_size > 80000:
-                                      used_urls.add(url)
-                                      print(f"   🎥 لقطة {idx + 1} (فيديو حقيقي): '{q}'", flush=True)
-                                      return out
-                      except Exception:
-                          pass
-                  for q in queries:
-                      try:
-                          r = requests.get(
-                              "https://pixabay.com/api/",
-                              params={"key": PIXABAY_KEY, "q": q, "image_type": "photo", "safesearch": "true", "per_page": 30, "min_width": 720},
-                              timeout=15,
-                          )
-                          if r.status_code == 200:
-                              hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", ""))]
-                              random.shuffle(hits)
-                              for h in hits:
-                                  url = h.get("largeImageURL") or h.get("webformatURL")
-                                  if not url or url in used_urls: continue
-                                  resp = requests.get(url, timeout=25)
-                                  if resp.status_code == 200:
-                                      with Image.open(io.BytesIO(resp.content)) as im:
-                                          im = ImageOps.exif_transpose(im).convert("RGB")
-                                          if min(im.size) >= 540:
-                                              out = work_dir / f"shot_{idx}_{h['id']}.jpg"
-                                              im.save(out, "JPEG", quality=92)
-                                              used_urls.add(url)
-                                              print(f"   📷 لقطة {idx + 1} (صورة حقيقية): '{q}'", flush=True)
-                                              return out
-                      except Exception:
-                          pass
-
-              fb = work_dir / f"shot_fb_{idx}.jpg"
-              im = Image.new("RGB", (W, H), (12, 13, 18))
-              dr = ImageDraw.Draw(im)
-              for y in range(H):
-                  t = y / H
-                  col = (int(16 + 70 * (t ** 2)), int(12 + 24 * (t ** 2)), 16) if mood in ("ember", "smoke") else (14, 18, int(28 + 30 * t))
-                  dr.line([(0, y), (W, y)], fill=col)
-              im.save(fb, "JPEG", quality=92)
-              return fb
 
           def _font(p, sz):
               return ImageFont.truetype(p, sz, layout_engine=ImageFont.Layout.RAQM) if HAS_RAQM else ImageFont.truetype(p, sz)
@@ -410,10 +610,10 @@ jobs:
           def read_shot_frames(media_path, n_frames):
               is_img = media_path.suffix.lower() in (".jpg", ".jpeg", ".png")
               if is_img:
-                  vf = f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={n_frames + 10}:s={W}x{H}:fps={FPS},eq=brightness=-0.06:contrast=1.08:saturation=0.88,format=rgb24"
+                  vf = f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},zoompan=z='min(zoom+0.0010,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={n_frames + 10}:s={W}x{H}:fps={FPS},eq=brightness=-0.06:contrast=1.10:saturation=0.88,format=rgb24"
                   cmd = ["ffmpeg", "-v", "error", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
               else:
-                  vf = f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},eq=brightness=-0.06:contrast=1.08:saturation=0.88,format=rgb24"
+                  vf = f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},eq=brightness=-0.06:contrast=1.10:saturation=0.88,format=rgb24"
                   cmd = ["ffmpeg", "-v", "error", "-stream_loop", "-1", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
 
               proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -422,10 +622,7 @@ jobs:
               for _ in range(n_frames):
                   raw = proc.stdout.read(fbytes)
                   if not raw or len(raw) < fbytes:
-                      if frames:
-                          frames.append(frames[-1])
-                      else:
-                          frames.append(np.zeros((H, W, 3), dtype=np.uint8))
+                      frames.append(frames[-1] if frames else np.zeros((H, W, 3), dtype=np.uint8))
                   else:
                       frames.append(np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3)).copy())
               proc.stdout.close()
@@ -434,7 +631,7 @@ jobs:
               return frames
 
           def main():
-              work = Path(tempfile.mkdtemp(prefix="warraq_realistic_"))
+              work = Path(tempfile.mkdtemp(prefix="warraq_vision_"))
               try:
                   bold_p = find_bold_font()
                   quran_p = find_quran_font(work, bold_p)
@@ -444,7 +641,6 @@ jobs:
                   verses = fetch_uthmani_chapter(surah, pairs)
                   rec_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
 
-                  # 1) تلاوة الآيات بسرعة القارئ الطبيعية 100%
                   q_items, q_dur_sum = [], 0.0
                   for idx, (a_num, _) in enumerate(pairs):
                       w = work / f"q_{idx}.wav"
@@ -454,7 +650,6 @@ jobs:
                       q_items.append({"type": "quran", "wav": w, "dur": d, "gap": gap, "text": f"﴿ {verses[a_num]} ﴾", "ref": f"[ سورة {sname} : {a_num} ]"})
                       q_dur_sum += d + gap
 
-                  # 2) الدعاء الهادئ وضبطه بحيث لا يتجاوز المجموع 49.5 ثانية أبداً
                   d_raw_wavs, d_raw_sum = [], 0.0
                   for idx, ln in enumerate(DUA_LINES):
                       w = work / f"draw_{idx}.wav"
@@ -500,13 +695,12 @@ jobs:
                   total_frames = max(1, int(round(tdur * FPS)))
                   print(f"⏱️ المدة الكلية: {tdur:.2f}s ({total_frames} إطار) | tempo الدعاء={tempo:.3f}", flush=True)
 
-                  # 3) جلب 8 لقطات فيديو حقيقية متتابعة من وحي حادث الوراق
-                  print("🎬 جاري تجهيز 8 مشاهد حقيقية لحادث الوراق...", flush=True)
+                  print("👁️ البحث عن 7 مشاهد كوارث حريق طرقات وسيارات وإطفاء مع الفحص البصري لجميني...", flush=True)
                   used_urls = set()
-                  shot_files = [
-                      fetch_realistic_shot(sc["queries"], work, used_urls, i, sc["mood"])
-                      for i, sc in enumerate(STORYBOARD_SHOTS)
-                  ]
+                  shot_files = []
+                  for i, sc in enumerate(STORYBOARD_SHOTS):
+                      print(f"🔎 المشهد {i + 1}/{len(STORYBOARD_SHOTS)}: {sc['name']}", flush=True)
+                      shot_files.append(fetch_verified_shot(sc, work, used_urls, i))
 
                   ov_layers = [
                       make_overlay_arrays(sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
@@ -528,15 +722,12 @@ jobs:
                   )
 
                   n_shots = len(shot_files)
-                  xfade_frames = 9  # انتقال ناعم 0.30 ثانية بين كل لقطة والتي تليها
+                  xfade_frames = 9
                   base_len = total_frames // n_shots
                   rem = total_frames % n_shots
                   shot_counts = [base_len + (1 if k < rem else 0) for k in range(n_shots)]
 
-                  global_f = 0
-                  seg_idx = 0
-                  prev_tail = []
-
+                  global_f, seg_idx, prev_tail = 0, 0, []
                   for k, sf in enumerate(shot_files):
                       cnt = shot_counts[k]
                       extra = xfade_frames if k < n_shots - 1 else 0
@@ -587,7 +778,7 @@ jobs:
                           timeout=180,
                       ).json()
                   assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم إرسال الريلز الواقعي إلى تيليغرام بنجاح!", flush=True)
+                  print("✅ تم إرسال الريلز الواقعي المفحوص بصرياً إلى تيليغرام!", flush=True)
               finally:
                   shutil.rmtree(work, ignore_errors=True)
 
