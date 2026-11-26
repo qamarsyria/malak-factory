@@ -1,0 +1,721 @@
+name: 🕯️ ريلز عزاء فاجعة الوراق (مصر)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reciter:
+        description: 'القارئ لآيات الصبر (البقرة 155-157)'
+        required: true
+        default: 'Minshawy_Murattal_128kbps'
+        type: choice
+        options:
+          - Minshawy_Murattal_128kbps
+          - Ghamadi_40kbps
+          - Alafasy_128kbps
+          - Nasser_Alqatami_128kbps
+          - Husary_128kbps
+      tts_voice:
+        description: 'صوت السرد الهادئ (بدون مبالغة)'
+        required: true
+        default: 'Charon'
+        type: choice
+        options:
+          - Charon
+          - Rasalgethi
+          - Algieba
+
+jobs:
+  build_condolence_reel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg wget fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
+
+      - name: Install Python deps
+        run: |
+          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts
+
+      - name: Build & Send Al-Warraq Condolence Reel
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RECITER_ID: ${{ inputs.reciter }}
+          TTS_VOICE: ${{ inputs.tts_voice }}
+        run: |
+          cat <<'PYEOF' > /tmp/warraq_reel.py
+          import asyncio
+          import io
+          import json
+          import os
+          import random
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+          import requests
+          from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, features
+          import arabic_reshaper
+
+          try:
+              from bidi.algorithm import get_display as bidi_display
+          except ImportError:
+              from bidi import get_display as bidi_display
+
+          REPO_ROOT = Path.cwd()
+          sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+          try:
+              from gemini_tts_pool import gemini_tts_with_pool
+          except Exception:
+              gemini_tts_with_pool = None
+
+          W, H, FPS = 720, 1280, 24
+          HAS_RAQM = features.check("raqm")
+          PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "").strip()
+          RECITER_ID = os.getenv("RECITER_ID", "Minshawy_Murattal_128kbps").strip()
+          TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
+
+          RECITER_LABELS = {
+              "Minshawy_Murattal_128kbps": "محمد صديق المنشاوي",
+              "Ghamadi_40kbps": "سعد الغامدي",
+              "Alafasy_128kbps": "مشاري راشد العفاسي",
+              "Nasser_Alqatami_128kbps": "ناصر القطامي",
+              "Husary_128kbps": "محمود خليل الحصري",
+          }
+
+          UTHMANI_FALLBACK_BAQARAH = {
+              155: "وَلَنَبْلُوَنَّكُم بِشَىْءٍ مِّنَ ٱلْخَوْفِ وَٱلْجُوعِ وَنَقْصٍ مِّنَ ٱلْأَمْوَٰلِ وَٱلْأَنفُسِ وَٱلثَّمَرَٰتِ ۗ وَبَشِّرِ ٱلصَّـٰبِرِينَ",
+              156: "ٱلَّذِينَ إِذَآ أَصَـٰبَتْهُم مُّصِيبَةٌ قَالُوٓا۟ إِنَّا لِلَّهِ وَإِنَّآ إِلَيْهِ رَٰجِعُونَ",
+              157: "أُو۟لَـٰٓئِكَ عَلَيْهِمْ صَلَوَٰتٌ مِّن رَّبِّهِمْ وَرَحْمَةٌ ۖ وَأُو۟لَـٰٓئِكَ هُمُ ٱلْمُهْتَدُونَ",
+          }
+
+          BAD_VISUAL_WORDS = {
+              "woman", "girl", "female", "lady", "bride", "bikini", "sexy", "nude",
+              "man", "men", "boy", "person", "people", "human", "face", "portrait",
+              "crowd", "blood", "corpse", "dead", "gore", "injury", "weapon",
+              "alcohol", "wine", "beer", "party", "dance", "music", "guitar",
+          }
+
+
+          def find_bold_font() -> str:
+              for p in (
+                  "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf",
+                  "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf",
+                  "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+              ):
+                  if os.path.exists(p):
+                      return p
+              r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
+              for line in r.stdout.splitlines():
+                  if os.path.exists(line.strip()):
+                      return line.strip()
+              raise RuntimeError("لم يُعثر على خط عربي")
+
+
+          def find_quran_font(cache_dir: Path, fallback_font: str) -> str:
+              dst = cache_dir / "AmiriQuran-Regular.ttf"
+              if dst.exists() and dst.stat().st_size > 50000:
+                  return str(dst)
+              for url in (
+                  "https://cdn.jsdelivr.net/gh/mohammed-2-5/islamic-library-data@master/fonts/AmiriQuran-Regular.ttf",
+                  "https://raw.githubusercontent.com/google/fonts/main/ofl/amiriquran/AmiriQuran-Regular.ttf",
+              ):
+                  try:
+                      r = requests.get(url, timeout=20)
+                      if r.status_code == 200 and len(r.content) > 50000:
+                          dst.write_bytes(r.content)
+                          return str(dst)
+                  except Exception:
+                      pass
+              for p in (
+                  "/usr/share/fonts/opentype/fonts-hosny-amiri/AmiriQuran.ttf",
+                  "/usr/share/fonts/truetype/hosny-amiri/AmiriQuran.ttf",
+              ):
+                  if os.path.exists(p):
+                      return p
+              return fallback_font
+
+
+          def fetch_baqarah_uthmani() -> dict[int, str]:
+              verses: dict[int, str] = {}
+              try:
+                  r = requests.get(
+                      "https://api.quran.com/api/v4/quran/verses/uthmani?chapter_number=2",
+                      timeout=15,
+                  )
+                  if r.status_code == 200:
+                      for item in r.json().get("verses", []):
+                          vk = str(item.get("verse_key", ""))
+                          if vk in ("2:155", "2:156", "2:157"):
+                              verses[int(vk.split(":")[1])] = (item.get("text_uthmani") or "").strip()
+              except Exception:
+                  pass
+              if len(verses) < 3:
+                  try:
+                      r = requests.get("https://api.alquran.cloud/v1/surah/2/quran-uthmani", timeout=15)
+                      if r.status_code == 200:
+                          for item in r.json().get("data", {}).get("ayahs", []):
+                              num = int(item.get("numberInSurah", 0))
+                              if num in (155, 156, 157) and num not in verses:
+                                  verses[num] = (item.get("text") or "").strip()
+                  except Exception:
+                      pass
+              for num, fb in UTHMANI_FALLBACK_BAQARAH.items():
+                  verses.setdefault(num, fb)
+              return verses
+
+
+          def get_dur(path: Path) -> float:
+              r = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                   "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                  capture_output=True, text=True,
+              )
+              return max(0.0, float(r.stdout.strip() or 0.0))
+
+
+          def synth_narration_wav(text: str, out_wav: Path, work_dir: Path, idx: int):
+              raw_mp3 = work_dir / f"nar_{idx}.mp3"
+              ok = False
+              if gemini_tts_with_pool is not None:
+                  try:
+                      gemini_tts_with_pool(text, str(raw_mp3), voice=TTS_VOICE)
+                      ok = raw_mp3.exists() and raw_mp3.stat().st_size > 1000
+                  except Exception as e:
+                      print(f"⚠️ Gemini TTS فشل ({e}) — التحويل للاحتياط Edge TTS", flush=True)
+              if not ok:
+                  import edge_tts
+                  async def _run():
+                      comm = edge_tts.Communicate(text, "ar-EG-ShakirNeural", rate="-6%")
+                      await comm.save(str(raw_mp3))
+                  asyncio.run(_run())
+
+              af = (
+                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                  "areverse,"
+                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                  "areverse,"
+                  "loudnorm=I=-16:TP=-1.5:LRA=11,"
+                  "alimiter=limit=0.95,"
+                  "afade=t=in:st=0:d=0.015"
+              )
+              subprocess.run(
+                  ["ffmpeg", "-y", "-i", str(raw_mp3), "-af", af,
+                   "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+                  check=True, capture_output=True,
+              )
+
+
+          def download_ayah_wav(surah: int, ayah: int, out_wav: Path, work_dir: Path):
+              mp3 = work_dir / f"ayah_{surah}_{ayah}.mp3"
+              url = f"https://everyayah.com/data/{RECITER_ID}/{surah:03d}{ayah:03d}.mp3"
+              r = requests.get(url, timeout=25)
+              if r.status_code != 200 or len(r.content) < 1000:
+                  url = f"https://everyayah.com/data/Alafasy_128kbps/{surah:03d}{ayah:03d}.mp3"
+                  r = requests.get(url, timeout=25)
+                  r.raise_for_status()
+              mp3.write_bytes(r.content)
+              af = (
+                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                  "areverse,"
+                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                  "areverse,"
+                  "loudnorm=I=-15:TP=-1.5:LRA=10,"
+                  "alimiter=limit=0.95,"
+                  "afade=t=in:st=0:d=0.015"
+              )
+              subprocess.run(
+                  ["ffmpeg", "-y", "-i", str(mp3), "-af", af,
+                   "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+                  check=True, capture_output=True,
+              )
+
+
+          def _tags_are_clean(tags: str) -> bool:
+              words = set(re.split(r"[^a-z]+", (tags or "").lower()))
+              return len(words & BAD_VISUAL_WORDS) == 0
+
+
+          def fetch_theme_media(queries: list[str], work_dir: Path, used_urls: set, idx: int, mood: str) -> Path:
+              if PIXABAY_KEY:
+                  for q in queries:
+                      try:
+                          r = requests.get(
+                              "https://pixabay.com/api/videos/",
+                              params={"key": PIXABAY_KEY, "q": q, "safesearch": "true", "per_page": 30, "min_width": 640},
+                              timeout=15,
+                          )
+                          if r.status_code == 200:
+                              hits = r.json().get("hits", [])
+                              random.shuffle(hits)
+                              for hit in hits:
+                                  if not _tags_are_clean(hit.get("tags", "")):
+                                      continue
+                                  vids = hit.get("videos", {})
+                                  url = vids.get("medium", {}).get("url") or vids.get("large", {}).get("url")
+                                  if not url or url in used_urls:
+                                      continue
+                                  out = work_dir / f"bg_{idx}_{hit['id']}.mp4"
+                                  with open(out, "wb") as f:
+                                      for ch in requests.get(url, timeout=45, stream=True).iter_content(16384):
+                                          f.write(ch)
+                                  if out.stat().st_size > 50000:
+                                      used_urls.add(url)
+                                      return out
+                      except Exception:
+                          pass
+                      try:
+                          r = requests.get(
+                              "https://pixabay.com/api/",
+                              params={"key": PIXABAY_KEY, "q": q, "image_type": "photo", "safesearch": "true", "per_page": 30, "min_width": 720},
+                              timeout=15,
+                          )
+                          if r.status_code == 200:
+                              hits = r.json().get("hits", [])
+                              random.shuffle(hits)
+                              for hit in hits:
+                                  if not _tags_are_clean(hit.get("tags", "")):
+                                      continue
+                                  url = hit.get("largeImageURL") or hit.get("webformatURL")
+                                  if not url or url in used_urls:
+                                      continue
+                                  resp = requests.get(url, timeout=25)
+                                  if resp.status_code == 200:
+                                      with Image.open(io.BytesIO(resp.content)) as im:
+                                          im = ImageOps.exif_transpose(im).convert("RGB")
+                                          if min(im.size) >= 480:
+                                              out = work_dir / f"bg_{idx}_{hit['id']}.jpg"
+                                              im.save(out, "JPEG", quality=92)
+                                              used_urls.add(url)
+                                              return out
+                      except Exception:
+                          pass
+
+              # بديل إجرائي سينمائي هادئ من وحي المشهد إذا تعذر الاتصال
+              fb = work_dir / f"bg_fallback_{idx}.jpg"
+              img = Image.new("RGB", (W, H), (10, 12, 18))
+              draw = ImageDraw.Draw(img)
+              for y in range(H):
+                  t = y / H
+                  if mood == "ember":
+                      r_c = int(14 + 55 * (t ** 2))
+                      g_c = int(12 + 22 * (t ** 2))
+                      b_c = int(16 + 10 * t)
+                  elif mood == "dawn":
+                      r_c = int(12 + 34 * (1 - abs(t - 0.65)))
+                      g_c = int(18 + 38 * (1 - abs(t - 0.65)))
+                      b_c = int(34 + 44 * (1 - abs(t - 0.55)))
+                  else:
+                      r_c = int(10 + 18 * t)
+                      g_c = int(14 + 22 * t)
+                      b_c = int(26 + 24 * t)
+                  draw.line([(0, y), (W, y)], fill=(min(255, r_c), min(255, g_c), min(255, b_c)))
+              rng = random.Random(100 + idx)
+              for _ in range(90):
+                  px, py = rng.randint(20, W - 20), rng.randint(int(H * 0.25), H - 40)
+                  pr = rng.randint(1, 3)
+                  col = (240, 145, 55) if mood == "ember" else (218, 195, 130)
+                  draw.ellipse([px - pr, py - pr, px + pr, py + pr], fill=col)
+              img = img.filter(ImageFilter.GaussianBlur(radius=1.5))
+              img.save(fb, "JPEG", quality=92)
+              return fb
+
+
+          def _load_font(path: str, size: int):
+              if HAS_RAQM:
+                  return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+              return ImageFont.truetype(path, size)
+
+
+          def _prep_txt(line: str) -> str:
+              return line if HAS_RAQM else bidi_display(arabic_reshaper.reshape(line))
+
+
+          def _bbox(draw, line: str, font):
+              txt = _prep_txt(line)
+              if HAS_RAQM:
+                  return draw.textbbox((0, 0), txt, font=font, direction="rtl")
+              return draw.textbbox((0, 0), txt, font=font)
+
+
+          def _draw_center(draw, y: int, line: str, font, fill):
+              txt = _prep_txt(line)
+              if HAS_RAQM:
+                  bb = draw.textbbox((0, 0), txt, font=font, direction="rtl")
+                  x = (W - (bb[2] - bb[0])) // 2 - bb[0]
+                  draw.text((x, y), txt, font=font, fill=fill, direction="rtl")
+              else:
+                  bb = draw.textbbox((0, 0), txt, font=font)
+                  x = (W - (bb[2] - bb[0])) // 2 - bb[0]
+                  draw.text((x, y), txt, font=font, fill=fill)
+
+
+          def _wrap_lines(text: str, font, max_w: int, draw) -> list[str]:
+              lines = []
+              for para in text.splitlines():
+                  words = para.split()
+                  cur = ""
+                  for w in words:
+                      trial = f"{cur} {w}".strip() if cur else w
+                      bb = _bbox(draw, trial, font)
+                      if (bb[2] - bb[0]) <= max_w:
+                          cur = trial
+                      else:
+                          if cur:
+                              lines.append(cur)
+                          cur = w
+                  if cur:
+                      lines.append(cur)
+              return lines
+
+
+          def _composite_halo(canvas: Image.Image, fg: Image.Image, outline_px: int = 2, shadow_blur: int = 3):
+              alpha = fg.getchannel("A")
+              zero = Image.new("L", canvas.size, 0)
+              if outline_px > 0:
+                  oa = alpha.filter(ImageFilter.MaxFilter(outline_px * 2 + 1))
+                  if shadow_blur > 0:
+                      sa = oa.filter(ImageFilter.GaussianBlur(shadow_blur))
+                      canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, sa)), dest=(0, 3))
+                  canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, oa)))
+              canvas.alpha_composite(fg)
+
+
+          def make_overlay_png(
+              out_png: Path,
+              body_text: str,
+              is_quran: bool,
+              bold_font_path: str,
+              quran_font_path: str,
+              ref_text: str = "",
+              reciter_label: str = "",
+          ):
+              overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+              scrim_draw = ImageDraw.Draw(overlay)
+              # تدرج مظلل علوي وسفلي لوضوح النص مع إبقاء المشهد مفتوحاً
+              for y in range(0, 140):
+                  a = int(145 * (1 - y / 140))
+                  scrim_draw.line([(0, y), (W, y)], fill=(0, 0, 0, a))
+              for y in range(H - 480, H):
+                  t = (y - (H - 480)) / 480
+                  a = int(190 * (t ** 1.25))
+                  scrim_draw.line([(0, y), (W, y)], fill=(0, 0, 0, a))
+              if is_quran:
+                  scrim_draw.rectangle([0, 0, W, H], fill=(0, 0, 0, 55))
+
+              body_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+              meta_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+              bdraw = ImageDraw.Draw(body_fg)
+              mdraw = ImageDraw.Draw(meta_fg)
+
+              top_font = _load_font(bold_font_path, 25)
+              _draw_center(mdraw, 42, "عَزَاءٌ مِنْ فِلَسْطِينَ وَسُورِيَا إِلَى أَهْلِنَا فِي مِصْرَ", top_font, "#E6C667")
+
+              dummy = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+              if is_quran:
+                  start_sz, min_sz, max_w, max_h, mult = 44, 32, W - 96, 680, 2.35
+                  fpath = quran_font_path
+                  color = "#FFE066"
+              else:
+                  start_sz, min_sz, max_w, max_h, mult = 40, 30, W - 100, 440, 1.75
+                  fpath = bold_font_path
+                  color = "#FFFFFF"
+
+              chosen_font = _load_font(min_sz, fpath)
+              chosen_lines = []
+              chosen_lh = int(min_sz * mult)
+              for sz in range(start_sz, min_sz - 1, -2):
+                  fnt = _load_font(sz, fpath)
+                  lines = _wrap_lines(body_text, fnt, max_w, dummy)
+                  gh = max((_bbox(dummy, ln, fnt)[3] - _bbox(dummy, ln, fnt)[1] for ln in lines), default=0)
+                  lh = max(int(sz * mult), gh + 14)
+                  if len(lines) * lh <= max_h:
+                      chosen_font, chosen_lines, chosen_lh = fnt, lines, lh
+                      break
+              if not chosen_lines:
+                  chosen_lines = _wrap_lines(body_text, chosen_font, max_w, dummy)
+
+              min_top = min((_bbox(bdraw, ln, chosen_font)[1] for ln in chosen_lines), default=0)
+              last_bot = _bbox(bdraw, chosen_lines[-1], chosen_font)[3] if chosen_lines else chosen_lh
+              total_h = len(chosen_lines) * chosen_lh
+
+              if is_quran:
+                  y = max(165 + max(0, -min_top), (H - total_h - 60) // 2)
+              else:
+                  # وضع السرد في النصف السفلي لترك مساحة واسعة للمشهد التمثيلي
+                  y = max(180 + max(0, -min_top), H - 175 - total_h)
+
+              for ln in chosen_lines:
+                  _draw_center(bdraw, y, ln, chosen_font, color)
+                  y += chosen_lh
+
+              if is_quran and ref_text:
+                  ref_font = _load_font(bold_font_path, 28)
+                  ref_y = max(y + 8, (y - chosen_lh) + last_bot + 20)
+                  _draw_center(mdraw, ref_y, ref_text, ref_font, "#D4AF37")
+
+              if is_quran and reciter_label:
+                  rec_font = _load_font(bold_font_path, 24)
+                  _draw_center(mdraw, H - 135, f"بصوت: الشيخ {reciter_label}", rec_font, "#E8D5A0")
+
+              wm_font = _load_font(bold_font_path, 26)
+              wm_txt = _prep_txt("ملاك المعرفة")
+              wbb = mdraw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl") if HAS_RAQM else mdraw.textbbox((0, 0), wm_txt, font=wm_font)
+              wx = W - (wbb[2] - wbb[0]) - 28 - wbb[0]
+              if HAS_RAQM:
+                  mdraw.text((wx, H - 62), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
+              else:
+                  mdraw.text((wx, H - 62), wm_txt, font=wm_font, fill="#D4AF37")
+
+              _composite_halo(overlay, body_fg, outline_px=2, shadow_blur=3)
+              _composite_halo(overlay, meta_fg, outline_px=1, shadow_blur=2)
+              overlay.save(out_png)
+
+
+          def build_scene_clip(bg_path: Path, ov_png: Path, dur: float, out_mp4: Path, fade_in: bool = False, fade_out: bool = False):
+              is_img = bg_path.suffix.lower() in (".jpg", ".jpeg", ".png")
+              if is_img:
+                  frames = max(24, int(dur * FPS) + 12)
+                  bg_in = ["-i", str(bg_path)]
+                  bg_flt = (
+                      f"[0:v]scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
+                      f"crop={W*2}:{H*2},"
+                      f"zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps={FPS},"
+                      f"eq=brightness=-0.15:contrast=1.08:saturation=0.90,vignette=PI/4[bg]"
+                  )
+              else:
+                  bg_in = ["-stream_loop", "-1", "-i", str(bg_path)]
+                  bg_flt = (
+                      f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+                      f"crop={W}:{H},fps={FPS},"
+                      f"eq=brightness=-0.15:contrast=1.08:saturation=0.90,vignette=PI/4[bg]"
+                  )
+
+              fades = []
+              if fade_in:
+                  fades.append("fade=t=in:st=0:d=0.40")
+              if fade_out and dur > 0.8:
+                  fades.append(f"fade=t=out:st={max(0.0, dur - 0.45):.3f}:d=0.45")
+              fade_str = ("," + ",".join(fades)) if fades else ""
+
+              fc = (
+                  f"{bg_flt};"
+                  f"[1:v]fps={FPS},format=rgba[ov];"
+                  f"[bg][ov]overlay=shortest=1{fade_str},format=yuv420p,setsar=1[v]"
+              )
+              subprocess.run(
+                  ["ffmpeg", "-y"] + bg_in + ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(ov_png),
+                   "-filter_complex", fc, "-map", "[v]", "-t", f"{dur:.3f}",
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(out_mp4)],
+                  check=True, capture_output=True,
+              )
+
+
+          def main():
+              work = Path(tempfile.mkdtemp(prefix="warraq_reel_"))
+              try:
+                  bold_font = find_bold_font()
+                  quran_font = find_quran_font(work, bold_font)
+                  verses = fetch_baqarah_uthmani()
+                  reciter_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
+
+                  timeline = [
+                      {
+                          "type": "narration",
+                          "text": "مِنْ قَلْبِ فِلَسْطِينَ وَسُورِيَا، إِلَى أَهْلِنَا وَأَحِبَّتِنَا فِي مِصْرَ الْحَبِيبَةِ؛",
+                          "queries": ["highway night", "night road lights", "dark road fog"],
+                          "mood": "night",
+                          "fade_in": True,
+                          "fade_out": False,
+                      },
+                      {
+                          "type": "narration",
+                          "text": "نُقَدِّمُ أَصْدَقَ التَّعَازِي وَالْمُوَاسَاةِ فِي فَاجِعَةِ حَرِيقِ الطَّرِيقِ الدَّائِرِيِّ بِالْوَرَّاقِ؛ لَيْلَةً قَاسِيَةً رَحَلَتْ فِيهَا أَرْوَاحٌ بَرِيئَةٌ، وَسُجِّلَتْ فِيهَا مَوَاقِفُ شَهَامَةٍ وَفِدَاءٍ لِإِنْقَاذِ الْعَابِرِينَ.",
+                          "queries": ["fire smoke night", "glowing embers dark", "black smoke fire"],
+                          "mood": "ember",
+                          "fade_in": False,
+                          "fade_out": False,
+                      },
+                      {
+                          "type": "narration",
+                          "text": "وَعِنْدَ ثِقَلِ الْمُصَابِ وَقَسْوَةِ الْفَقْدِ، لَا تَسْكُنُ الْقُلُوبُ إِلَّا بِوَعْدِ اللَّهِ وَبُشْرَاهُ لِلصَّابِرِينَ:",
+                          "queries": ["dark clouds night", "stormy clouds sky", "night clouds moon"],
+                          "mood": "night",
+                          "fade_in": False,
+                          "fade_out": True,
+                      },
+                      {
+                          "type": "quran",
+                          "surah": 2,
+                          "ayah": 155,
+                          "text": f"﴿ {verses[155]} ﴾",
+                          "ref": "[ سورة البقرة : 155 ]",
+                          "queries": ["clouds sunbeams dark", "dawn clouds rays", "misty sky light"],
+                          "mood": "dawn",
+                          "fade_in": True,
+                          "fade_out": False,
+                      },
+                      {
+                          "type": "quran",
+                          "surah": 2,
+                          "ayah": 156,
+                          "text": f"﴿ {verses[156]} ﴾",
+                          "ref": "[ سورة البقرة : 156 ]",
+                          "queries": ["golden clouds sunrise", "sunlight clouds sky", "serene dawn sky"],
+                          "mood": "dawn",
+                          "fade_in": False,
+                          "fade_out": False,
+                      },
+                      {
+                          "type": "quran",
+                          "surah": 2,
+                          "ayah": 157,
+                          "text": f"﴿ {verses[157]} ﴾",
+                          "ref": "[ سورة البقرة : 157 ]",
+                          "queries": ["sunbeams clouds heaven", "sunrise sky calm", "dawn light horizon"],
+                          "mood": "dawn",
+                          "fade_in": False,
+                          "fade_out": True,
+                      },
+                      {
+                          "type": "narration",
+                          "text": "اللَّهُمَّ اغْفِرْ لِلضَّحَايَا وَارْحَمْهُمْ وَتَقَبَّلْهُمْ عِنْدَكَ فِي الشُّهَدَاءِ، وَاشْفِ الْمُصَابِينَ شِفَاءً عَاجِلًا، وَارْبِطْ عَلَى قُلُوبِ أَهْلِهِمْ، وَاحْفَظْ مِصْرَ وَأَهْلَهَا مِنْ كُلِّ سُوءٍ.",
+                          "queries": ["mosque silhouette sunrise", "mosque dome dusk", "islamic lantern dark"],
+                          "mood": "dawn",
+                          "fade_in": True,
+                          "fade_out": True,
+                      },
+                  ]
+
+                  gap_short = work / "gap_030.wav"
+                  gap_end = work / "gap_070.wav"
+                  subprocess.run(
+                      ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                       "-t", "0.30", "-c:a", "pcm_s16le", str(gap_short)],
+                      check=True, capture_output=True,
+                  )
+                  subprocess.run(
+                      ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                       "-t", "0.70", "-c:a", "pcm_s16le", str(gap_end)],
+                      check=True, capture_output=True,
+                  )
+
+                  used_urls = set()
+                  audio_concat = []
+                  video_concat = []
+
+                  for i, item in enumerate(timeline):
+                      wav = work / f"seg_{i}.wav"
+                      if item["type"] == "quran":
+                          download_ayah_wav(item["surah"], item["ayah"], wav, work)
+                      else:
+                          synth_narration_wav(item["text"], wav, work, i)
+
+                      is_last = (i == len(timeline) - 1)
+                      pad_wav = gap_end if is_last else gap_short
+                      pad_dur = 0.70 if is_last else 0.30
+                      seg_dur = get_dur(wav) + pad_dur
+
+                      audio_concat.extend([wav, pad_wav])
+
+                      bg = fetch_theme_media(item["queries"], work, used_urls, i, item["mood"])
+                      ov = work / f"ov_{i}.png"
+                      make_overlay_png(
+                          out_png=ov,
+                          body_text=item["text"],
+                          is_quran=(item["type"] == "quran"),
+                          bold_font_path=bold_font,
+                          quran_font_path=quran_font,
+                          ref_text=item.get("ref", ""),
+                          reciter_label=reciter_label if item["type"] == "quran" else "",
+                      )
+                      clip_mp4 = work / f"clip_{i}.mp4"
+                      build_scene_clip(
+                          bg_path=bg,
+                          ov_png=ov,
+                          dur=seg_dur,
+                          out_mp4=clip_mp4,
+                          fade_in=item["fade_in"],
+                          fade_out=item["fade_out"],
+                      )
+                      video_concat.append(clip_mp4)
+                      print(f"✅ مشهد {i + 1}/{len(timeline)} جاهز ({seg_dur:.1f}s)", flush=True)
+
+                  a_list = work / "a_concat.txt"
+                  v_list = work / "v_concat.txt"
+                  a_list.write_text("\n".join(f"file '{p.resolve()}'" for p in audio_concat), encoding="utf-8")
+                  v_list.write_text("\n".join(f"file '{p.resolve()}'" for p in video_concat), encoding="utf-8")
+
+                  merged_wav = work / "full_audio.wav"
+                  subprocess.run(
+                      ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(a_list),
+                       "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(merged_wav)],
+                      check=True, capture_output=True,
+                  )
+
+                  final_mp4 = work / "al_warraq_condolence_reel.mp4"
+                  subprocess.run(
+                      [
+                          "ffmpeg", "-y",
+                          "-f", "concat", "-safe", "0", "-i", str(v_list),
+                          "-i", str(merged_wav),
+                          "-map", "0:v", "-map", "1:a",
+                          "-c:v", "libx264", "-preset", "slow", "-crf", "25",
+                          "-maxrate", "480k", "-bufsize", "960k",
+                          "-profile:v", "high", "-level:v", "4.0",
+                          "-g", str(FPS * 4), "-bf", "3", "-aq-mode", "3",
+                          "-pix_fmt", "yuv420p",
+                          "-c:a", "aac", "-ac", "1", "-b:a", "96k",
+                          "-movflags", "+faststart", "-shortest",
+                          str(final_mp4),
+                      ],
+                      check=True, capture_output=True,
+                  )
+
+                  size_mb = final_mp4.stat().st_size / 1024 / 1024
+                  total_sec = get_dur(final_mp4)
+                  print(f"🎬 الريلز جاهز: {size_mb:.2f} MB | {total_sec:.1f} ثانية", flush=True)
+
+                  tg_token = os.environ["TELEGRAM_BOT_TOKEN"]
+                  tg_chat = os.environ["TELEGRAM_CHAT_ID"]
+                  caption = (
+                      "🕯️ خالص العزاء والمواساة من الشعبين الفلسطيني والسوري إلى أهلنا وأحبتنا في مصر الشقيقة "
+                      "في فاجعة حريق الطريق الدائري بالوراق 🇵🇸 🇸🇾 🇪🇬\n\n"
+                      "﴿ الَّذِينَ إِذَا أَصَابَتْهُم مُّصِيبَةٌ قَالُوا إِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ ﴾\n"
+                      f"🎙️ التلاوة: الشيخ {reciter_label} | الحجم: {size_mb:.1f} MB"
+                  )
+                  with open(final_mp4, "rb") as vf:
+                      res = requests.post(
+                          f"https://api.telegram.org/bot{tg_token}/sendVideo",
+                          data={"chat_id": tg_chat, "caption": caption, "supports_streaming": "true"},
+                          files={"video": (final_mp4.name, vf, "video/mp4")},
+                          timeout=180,
+                      ).json()
+                  assert res.get("ok"), f"Telegram Error: {res}"
+                  print("✅ تم إرسال الريلز إلى تيليغرام بنجاح!", flush=True)
+              finally:
+                  shutil.rmtree(work, ignore_errors=True)
+
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+          python -u /tmp/warraq_reel.py
