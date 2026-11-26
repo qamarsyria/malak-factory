@@ -1,7 +1,8 @@
 """
 cinema_engine.py — محرك الواقعية السينمائية الشبيهة بالطبيعي (IMAX / UE5 / Shinkai Realism)
 - يمنع الكرتون المسطح وفلتر stylization تماماً، ويمنع الحيوانات ما لم تُذكر في القصة نفسها.
-- يدعم فيديوهات الطبيعة الحقيقية (Pixabay film) بجانب توليد FLUX / Juggernaut XL / RealVisXL + Depth 2.5D.
+- يدعم فيديوهات الطبيعة الحقيقية (Pixabay film) بجانب توليد Z-Image / FLUX / Juggernaut XL + Depth 2.5D.
+- يضيف أشعة نور روحانية علوية ناعمة (Volumetric Noor Shafts) ومؤثر خرير الماء الحلال مع كتم تام عند القرآن.
 - يربط Gemini Vision Guard بنص السرد العربي لرفض أي لقطة غير مطابقة للمعنى أو غير واقعية.
 """
 
@@ -73,7 +74,7 @@ _VISION_LOCK = threading.Lock()
 _LAST_VISION_TS = 0.0
 
 # ==============================================================================
-# الهوية البصرية الموحدة — واقعية سينمائية شبيهة بالطبيعي (بدون كرتون)
+# الهوية البصرية الموحدة — واقعية سينمائية روحانية شبيهة بالطبيعي (بدون كرتون)
 # ==============================================================================
 PHOTOREAL_NATURE_STYLE = (
     "breathtaking hyper-realistic cinematic photography, Unreal Engine 5 photorealistic nature "
@@ -130,6 +131,7 @@ MOOD_PALETTES = {
         "tint_bgr": (10, 4, -6),
         "contrast": 1.09,
         "ray_color": (135, 200, 255),
+        "ray_strength": 0.14,
         "default_particles": "gold_motes",
         "default_sfx": "desert_breeze",
     },
@@ -138,6 +140,7 @@ MOOD_PALETTES = {
         "tint_bgr": (-8, 3, 12),
         "contrast": 1.07,
         "ray_color": (120, 195, 255),
+        "ray_strength": 0.13,
         "default_particles": "gold_motes",
         "default_sfx": "wind",
     },
@@ -146,6 +149,7 @@ MOOD_PALETTES = {
         "tint_bgr": (12, 3, -6),
         "contrast": 1.12,
         "ray_color": (210, 215, 230),
+        "ray_strength": 0.08,
         "default_particles": "rain",
         "default_sfx": "rain_thunder",
     },
@@ -154,6 +158,7 @@ MOOD_PALETTES = {
         "tint_bgr": (8, 6, -3),
         "contrast": 1.05,
         "ray_color": (140, 215, 245),
+        "ray_strength": 0.16,
         "default_particles": "none",
         "default_sfx": "none",
     },
@@ -162,8 +167,9 @@ MOOD_PALETTES = {
         "tint_bgr": (-4, 4, 8),
         "contrast": 1.06,
         "ray_color": (130, 205, 255),
+        "ray_strength": 0.15,
         "default_particles": "gold_motes",
-        "default_sfx": "wind",
+        "default_sfx": "stream_water",
     },
 }
 
@@ -173,7 +179,7 @@ XFADE_TYPES = ("fade", "dissolve", "smoothleft", "smoothright")
 _DEFAULT_IMAGE_SPACES = [
     s.strip() for s in os.getenv(
         "HF_IMAGE_SPACES",
-        "black-forest-labs/FLUX.1-schnell,Tongyi-MAI/Z-Image-Turbo,black-forest-labs/FLUX.2-dev"
+        "Tongyi-MAI/Z-Image-Turbo,black-forest-labs/FLUX.1-schnell,black-forest-labs/FLUX.2-dev"
     ).split(",") if s.strip()
 ]
 
@@ -189,6 +195,7 @@ _RUNTIME_STATE = {
     "hf_token_invalid": False,
     "zerogpu_exhausted": False,
     "hf_inference_disabled": False,
+    "gemini_image_disabled": False,
     "horde_models": None,
     "bad_spaces": set(),
     "space_clients": {},
@@ -209,8 +216,7 @@ def _purge_invalid_hf_token(reason: str = "401"):
     with _STATE_LOCK:
         if not _RUNTIME_STATE["hf_token_invalid"]:
             print(
-                f"   🔓 HF_TOKEN مرفوض ({reason}) — التحويل التلقائي للوصول العام المجاني. "
-                f"(ملاحظة: لتسريع ZeroGPU تأكد أن HF_TOKEN من نوع Read بدون مسافات)",
+                f"   🔓 HF_TOKEN مرفوض ({reason}) — التحويل التلقائي للوصول العام المجاني.",
                 flush=True,
             )
         _RUNTIME_STATE["hf_token_invalid"] = True
@@ -523,7 +529,7 @@ def _enforce_shot_safety(shot: dict, c_text: str, stype: str, ep_title: str) -> 
     if is_quran:
         shot["sfx_type"] = "none"
         shot["particles"] = "none"
-    elif shot.get("sfx_type") not in ("wind", "desert_breeze", "ocean", "rain_thunder", "embers", "none"):
+    elif shot.get("sfx_type") not in ("wind", "desert_breeze", "ocean", "rain_thunder", "embers", "stream_water", "none"):
         shot["sfx_type"] = MOOD_PALETTES[shot["mood"]]["default_sfx"]
     return shot
 
@@ -533,7 +539,7 @@ def plan_episode_shots(meta: dict) -> dict:
     story_id = meta.get("story_id", "")
     segments = meta.get("segments", [])
 
-    plan_key = hashlib.md5(f"v3_real_{story_id}:{ep_title}:{len(segments)}".encode("utf-8")).hexdigest()[:10]
+    plan_key = hashlib.md5(f"v4_real_{story_id}:{ep_title}:{len(segments)}".encode("utf-8")).hexdigest()[:10]
     shared_plan_file = _cache_root() / f"cinema_plan_{plan_key}.json"
 
     cached_chunks_plan: dict[str, dict] = {}
@@ -614,7 +620,7 @@ Return ONLY valid JSON:
         "camera_move": "dolly_in|dolly_out|truck_left|truck_right|tilt_up",
         "mood": "cosmic_awe|ancient_civilization|storm_trial|serenity_quran|sacred_heritage",
         "particles": "gold_motes|embers|rain|snow|mist|none",
-        "sfx_type": "wind|desert_breeze|ocean|rain_thunder|embers|none",
+        "sfx_type": "wind|desert_breeze|ocean|rain_thunder|embers|stream_water|none",
         "allow_humans": false,
         "is_hero_climax": true,
         "duration": 5.5,
@@ -789,7 +795,7 @@ Return ONLY JSON:
 
 
 # ==============================================================================
-# 3) مولد اللوحات والفيديو الواقعي (FLUX ZeroGPU -> Juggernaut/RealVis AI Horde -> Pixabay Film)
+# 3) مولد اللوحات والفيديو الواقعي (Gemini Image -> ZeroGPU -> AI Horde -> Pixabay Film)
 # ==============================================================================
 def _get_hf_token() -> str | None:
     if _RUNTIME_STATE["hf_token_invalid"]:
@@ -809,7 +815,7 @@ def _get_gradio_client(space_id: str):
 
     for attempt_anon in (False, True):
         hf_token = None if attempt_anon else _get_hf_token()
-        if attempt_anon and not _RUNTIME_STATE["hf_token_invalid"]:
+        if attempt_anon and not hf_token and not _RUNTIME_STATE["hf_token_invalid"]:
             break
         try:
             sig = inspect.signature(GradioClient.__init__)
@@ -830,8 +836,8 @@ def _get_gradio_client(space_id: str):
             return client
         except Exception as e:
             msg = str(e)
-            if ("401" in msg or "403" in msg or "invalid" in msg.lower()) and not _RUNTIME_STATE["hf_token_invalid"]:
-                _purge_invalid_hf_token("Gradio 401")
+            if hf_token and ("401" in msg or "403" in msg or "invalid" in msg.lower() or "unexpected keyword" in msg.lower()):
+                _purge_invalid_hf_token("Gradio Auth/KW")
                 continue
             print(f"   ⚠️ تعذر فتح Space ({space_id}): {msg[:90]}", flush=True)
             with _STATE_LOCK:
@@ -883,7 +889,7 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
         return None, None
 
     ep_name = None
-    for candidate in ("/infer", "/generate", "/predict", "/generate_image", "/image_to_video"):
+    for candidate in ("/generate", "/infer", "/predict", "/generate_image", "/image_to_video"):
         if candidate in named:
             ep_name = candidate
             break
@@ -895,7 +901,7 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
     for p in params:
         pname = (p.get("parameter_name") or "").lower()
         pdefault = p.get("parameter_default")
-        if image_file is not None and pname in ("image", "input_image", "img", "first_frame"):
+        if image_file is not None and pname in ("image", "input_image", "img", "first_frame", "start_image", "input_img"):
             kwargs[p["parameter_name"]] = gradio_handle_file(str(image_file))
         elif pname in ("prompt", "positive_prompt", "caption"):
             kwargs[p["parameter_name"]] = prompt
@@ -929,6 +935,49 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
             kwargs[p["parameter_name"]] = pdefault
 
     return ep_name, kwargs
+
+
+def _call_gemini_image(prompt: str, out_path: Path) -> bool:
+    if _RUNTIME_STATE["gemini_image_disabled"]:
+        return False
+    raw_keys = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
+    keys = [k.strip() for k in re.split(r"[\s,;]+", raw_keys.strip()) if len(k.strip()) > 20]
+    if not keys:
+        _RUNTIME_STATE["gemini_image_disabled"] = True
+        return False
+
+    for model_id in ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview"):
+        for k in keys[:3]:
+            try:
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "responseModalities": ["IMAGE", "TEXT"],
+                            "imageConfig": {"aspectRatio": "9:16"},
+                        },
+                    },
+                    timeout=50,
+                )
+                if r.status_code == 200:
+                    parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+                    for p in parts:
+                        inline = p.get("inlineData") or p.get("inline_data")
+                        if inline and inline.get("data"):
+                            tmp = out_path.with_suffix(f".gem_{threading.get_ident()}.png")
+                            tmp.write_bytes(base64.b64decode(inline["data"]))
+                            ok = _normalize_generated_image(tmp, out_path, 720, 1280)
+                            tmp.unlink(missing_ok=True)
+                            if ok:
+                                return True
+                elif r.status_code in (403, 429) and "quota" in r.text.lower():
+                    _RUNTIME_STATE["gemini_image_disabled"] = True
+                    return False
+            except Exception:
+                continue
+    _RUNTIME_STATE["gemini_image_disabled"] = True
+    return False
 
 
 def _call_zerogpu_image(prompt: str, neg_prompt: str, seed: int, out_path: Path) -> bool:
@@ -1024,7 +1073,6 @@ def _get_photoreal_horde_models() -> list[str]:
                 for name, cnt in active.items():
                     if cnt >= 1 and p.lower() in str(name).lower() and name not in chosen:
                         chosen.append(name)
-            # إزالة أي نماذج كرتونية تماماً وإضافة أي نموذج XL نشط آخر
             if len(chosen) < 2:
                 for name, cnt in sorted(active.items(), key=lambda kv: -kv[1]):
                     nl = str(name).lower()
@@ -1049,7 +1097,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
     api_key = os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000"
     headers = {
         "apikey": api_key,
-        "Client-Agent": "MalakAlMarifa:3.0:github-actions",
+        "Client-Agent": "MalakAlMarifa:3.1:github-actions",
         "Content-Type": "application/json",
     }
     models = _get_photoreal_horde_models()
@@ -1060,7 +1108,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
             "sampler_name": "k_euler_a",
             "width": 576,
             "height": 1024,
-            "steps": 22,
+            "steps": 18,
             "cfg_scale": 6.5,
             "seed": str(seed),
             "n": 1,
@@ -1078,7 +1126,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
         if not job_id:
             return False
 
-        deadline = time.time() + 100
+        deadline = time.time() + 115
         while time.time() < deadline:
             time.sleep(4)
             chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
@@ -1132,15 +1180,8 @@ def _fallback_stock_media(
     out_vid_path: Path,
     used_urls: set,
 ) -> Path | None:
-    """
-    احتياط ذكي عالي الواقعية (بدون فلتر كرتون أبداً):
-    1) فيديوهات طبيعة حقيقية من Pixabay (video_type=film) عند عدم طلب بشر.
-    2) صور فوتوغرافية حقيقية فقط من Pixabay (image_type=photo) أو Openverse.
-    وكل مرشح يمر على Vision Guard للتحقق من مطابقته للسرد!
-    """
     safe_q = query if (is_safe_query(query, allow_ordinary_humans=allow_humans) and not _FORBIDDEN_STOCK_RE.search(query)) else "misty mountain sunrise"
 
-    # 1) فيديوهات طبيعة حقيقية من Pixabay
     if PIXABAY_KEY and not allow_humans:
         try:
             r = requests.get(
@@ -1189,7 +1230,6 @@ def _fallback_stock_media(
         except Exception:
             pass
 
-    # 2) صور فوتوغرافية حقيقية فقط من Pixabay (image_type="photo" — لا فيكتور ولا كليپ آرت!)
     candidates: list[str] = []
     if PIXABAY_KEY:
         try:
@@ -1225,7 +1265,7 @@ def _fallback_stock_media(
         try:
             with _STATE_LOCK:
                 used_urls.add(u)
-            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.0"}, timeout=25)
+            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.1"}, timeout=25)
             if resp.status_code == 200 and len(resp.content) > 12000:
                 tmp = out_img_path.with_suffix(f".stock_{threading.get_ident()}.raw")
                 tmp.write_bytes(resp.content)
@@ -1317,7 +1357,8 @@ def generate_and_guard_shot(
         full_prompt = f"{expected_scene}, {mood_desc}, {episode_anchor}, {style_suffix}{tighten}"
 
         generated = (
-            _call_zerogpu_image(full_prompt, neg_prompt, seed, out_img)
+            _call_gemini_image(full_prompt, out_img)
+            or _call_zerogpu_image(full_prompt, neg_prompt, seed, out_img)
             or _call_hf_inference_image(full_prompt, neg_prompt, out_img)
             or _call_ai_horde_image(full_prompt, neg_prompt, seed, out_img)
         )
@@ -1334,7 +1375,6 @@ def generate_and_guard_shot(
             print(f"   🛡️ Vision Guard رفض {shot_id} (محاولة {attempt+1}): {reason}", flush=True)
             out_img.unlink(missing_ok=True)
 
-        # في المحاولة 2 أو عند تعثر AI، نجرّب فيديو أو صورة حقيقية عالية الجودة من Pixabay متطابقة مع السرد
         stock_res = _fallback_stock_media(
             shot.get("fallback_query", "misty mountain sunrise"),
             allow_humans=allow_humans,
@@ -1431,7 +1471,7 @@ def try_upgrade_hero_i2v(
 
 
 # ==============================================================================
-# 5) محرك العمق Depth Anything V2 Small (ONNX/CPU) + تحريك كاميرا 3D حقيقي
+# 5) محرك العمق Depth Anything V2 Small + أشعة النور الروحانية + كاميرا 3D
 # ==============================================================================
 def _download_depth_onnx(depth_cache: Path) -> str | None:
     if HAS_HF_HUB:
@@ -1585,8 +1625,7 @@ def _init_particles(kind: str, W: int, H: int, seed: int):
             "rad": rng.integers(1, 3, count),
             "phase": rng.uniform(0, 6.28, count),
         }
-    # غبار ذهبي فائق النعومة غير مشتت
-    count = 16
+    count = 18
     return {
         "kind": "gold_motes",
         "x": rng.uniform(0, W, count),
@@ -1616,7 +1655,7 @@ def _step_and_draw_particles(frame_bgr: np.ndarray, pstate: dict | None, frame_i
     pstate["x"] = (pstate["x"] + pstate["vx"] + 0.25 * np.sin(frame_idx * 0.06 + pstate["phase"])) % W
     pstate["y"] = (pstate["y"] + pstate["vy"]) % H
     color = (95, 175, 255) if kind == "embers" else ((240, 245, 255) if kind == "snow" else (145, 215, 255))
-    blend = 0.22 if kind == "embers" else 0.14
+    blend = 0.22 if kind == "embers" else 0.15
     for i in range(len(pstate["x"])):
         cx, cy = int(pstate["x"][i]), int(pstate["y"][i])
         r = int(pstate["rad"][i])
@@ -1656,6 +1695,14 @@ def render_parallax_clip(
     ny = (yy - H * 0.5) / (H * 0.5)
     vig = np.clip(1.0 - 0.18 * (nx * nx + ny * ny), 0.70, 1.0)[..., None]
     base_img = np.clip(bgr_f * vig, 0, 255).astype(np.uint8)
+
+    # أشعة النور الروحانية العلوية (Volumetric Noor Shafts) — تضفي سكينة وهيبة فائقة
+    angle_grid = np.arctan2(yy + H * 0.14, xx - W * 0.62)
+    ray_wave = 0.5 + 0.5 * np.sin(angle_grid * 13.0 + 0.6)
+    ray_falloff = np.clip(1.0 - (yy / (H * 0.85)), 0.0, 1.0) ** 1.65
+    noor_mask = ((ray_wave ** 2.2) * ray_falloff)[..., None]
+    ray_strength = float(mood_cfg.get("ray_strength", 0.12))
+    noor_u8 = np.clip(noor_mask * np.array(mood_cfg["ray_color"], dtype=np.float32) * ray_strength, 0, 255).astype(np.uint8)
 
     depth_w = (0.18 + 0.82 * depth_map).astype(np.float32)
     cx, cy = W * 0.5, H * 0.5
@@ -1714,6 +1761,7 @@ def render_parallax_clip(
                 interpolation=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_REFLECT_101,
             )
+            warped = cv2.add(warped, noor_u8)
             if particles is not None:
                 warped = _step_and_draw_particles(warped, particles, f, W, H)
 
@@ -1933,6 +1981,10 @@ def _gen_natural_noise_texture(kind: str, n_samples: int, sr: int = 24000, seed:
     if kind == "rain_thunder":
         filt = np.exp(-((freqs - 1200.0) / 1400.0) ** 2) + 0.35 * np.exp(-(freqs / 160.0) ** 2)
         env = 0.78 + 0.22 * np.sin(2 * np.pi * np.linspace(0, n_samples / sr, n_samples) * 0.17)
+    elif kind == "stream_water":
+        filt = np.exp(-((freqs - 950.0) / 750.0) ** 2) + 0.30 * np.exp(-((freqs - 2600.0) / 1100.0) ** 2)
+        t = np.linspace(0, n_samples / sr, n_samples, dtype=np.float32)
+        env = 0.72 + 0.18 * np.sin(2 * np.pi * t * 0.31) + 0.10 * np.sin(2 * np.pi * t * 0.83)
     elif kind == "ocean":
         filt = 1.0 / np.maximum(1.0, (freqs / 140.0) ** 1.1)
         t = np.linspace(0, n_samples / sr, n_samples, dtype=np.float32)
