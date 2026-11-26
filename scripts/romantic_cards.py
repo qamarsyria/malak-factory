@@ -3,18 +3,15 @@
 scripts/romantic_cards.py
 =========================
 مولد الدفتر الصوفي القطني 8K والوسائد المخيطة لمشروع «همسات ملك» (1080×1920):
-- يولّد لوحة ماكرو فوتوغرافية حقيقية 8K بالذكاء الاصطناعي عبر:
-  1) Gemini Native Image (gemini-3.1-flash-image-preview / gemini-2.5-flash-image)
-  2) Hugging Face ZeroGPU (Z-Image-Turbo مع إصلاح استخراج Gallery / FLUX.1-schnell)
-  3) AI Horde النشط (Juggernaut XL / RealVisXL)
-- يفحص نظافة الوسط ويستخرج إحداثيات منطقة الكتابة الآمنة عبر Gemini Vision
-  بحيث لا يتصادم النص العربي أبداً مع القلب اللباد أو اليدين أو الكوبل أو الزهور.
-- يغرس الخط العربي داخل ألياف الصوف الحقيقية بدون تغميق اللوحة أو طمس الوبر.
+- يصلح تمرير التوكن في gradio_client (token / hf_token / public) لتشغيل Z-Image-Turbo و FLUX.1-schnell.
+- يدعم Gemini Native Image + ZeroGPU + AI Horde النشط.
+- يفحص نظافة الوسط عبر Gemini Vision، وإذا احتوى الوسط أثراً خفيفاً ينظفه برفق مع الحفاظ على كامل إبداع 8K حوله.
 """
 
 from __future__ import annotations
 
 import base64
+import inspect
 import io
 import json
 import os
@@ -52,6 +49,7 @@ _AR_DAYS = {
     5: "يوم سبت",
     6: "يوم أحد",
 }
+_AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 
 
 def _find_amiri_font() -> str:
@@ -128,6 +126,21 @@ def _check_valid_hf_token() -> str | None:
     return None
 
 
+def _open_gradio_client(space_id: str, tok: str | None):
+    """يفتح Gradio Client بتوافق كامل مع كل إصدارات gradio_client (token أو hf_token أو عام)."""
+    from gradio_client import Client as GradioClient
+    if tok:
+        try:
+            sig = inspect.signature(GradioClient.__init__).parameters
+            if "token" in sig:
+                return GradioClient(space_id, token=tok)
+            if "hf_token" in sig:
+                return GradioClient(space_id, hf_token=tok)
+        except Exception:
+            pass
+    return GradioClient(space_id)
+
+
 def _get_active_horde_models() -> list[str]:
     preferred = ["Juggernaut XL", "RealVisXL", "DreamShaper XL", "AlbedoBase XL (SDXL)", "ICBINP XL"]
     chosen: list[str] = []
@@ -158,7 +171,6 @@ def _get_gemini_keys() -> list[str]:
 
 
 def _extract_gradio_image_path(obj, work_dir: Path) -> str | None:
-    """يستخرج مسار الصورة من مخرجات Gradio مهما كان شكلها (list / Gallery / dict / URL)."""
     if not obj:
         return None
     if isinstance(obj, str):
@@ -190,11 +202,7 @@ def _extract_gradio_image_path(obj, work_dir: Path) -> str | None:
 
 
 def _vision_inspect_notebook(img_path: Path) -> tuple[bool, tuple[int, int, int, int]]:
-    """
-    يفحص عبر Gemini Vision أن القاعدة خالية من النصوص المشوهة ويحدد المساحة الفارغة الآمنة للكتابة
-    بنسبة 0..1000 حتى لا يركب الخط على القلب أو اليدين أو الزهور.
-    """
-    default_box = (130, 265, 920, 625)  # إحداثيات 0..1000 افتراضية آمنة
+    default_box = (130, 260, 920, 625)
     keys = _get_gemini_keys()
     if not keys:
         return True, default_box
@@ -211,8 +219,8 @@ def _vision_inspect_notebook(img_path: Path) -> tuple[bool, tuple[int, int, int,
 
     prompt = (
         "Inspect this vertical 9:16 plush wool notebook photo.\n"
-        "1) blank_clean: true ONLY if the center cream wool area is completely clean and free of scribbled gibberish text/letters.\n"
-        "2) box: [x0, y0, x1, y1] in 0..1000 normalized coordinates for the largest CLEAN EMPTY cream wool rectangle "
+        "1) blank_clean: true ONLY if the middle cream wool writing area is free of scribbled gibberish text/letters.\n"
+        "2) box: [x0, y0, x1, y1] in 0..1000 normalized coordinates for the largest CLEAN cream wool rectangle "
         "in the upper-middle of the page (BELOW the top heart/header, ABOVE any bottom hands/couple/flowers, "
         "and RIGHT of any left tulip/spiral rings).\n"
         'Return ONLY JSON: {"blank_clean": true, "box": [130, 260, 920, 620]}'
@@ -237,7 +245,7 @@ def _vision_inspect_notebook(img_path: Path) -> tuple[bool, tuple[int, int, int,
                     bx = res.get("box")
                     if isinstance(bx, list) and len(bx) == 4:
                         x0, y0, x1, y1 = [int(v) for v in bx]
-                        if 40 <= x0 < x1 <= 970 and 120 <= y0 < y1 <= 820 and (x1 - x0) >= 450 and (y1 - y0) >= 220:
+                        if 40 <= x0 < x1 <= 970 and 120 <= y0 < y1 <= 820 and (x1 - x0) >= 420 and (y1 - y0) >= 200:
                             return clean, (x0, y0, x1, y1)
                     return clean, default_box
         except Exception:
@@ -246,14 +254,14 @@ def _vision_inspect_notebook(img_path: Path) -> tuple[bool, tuple[int, int, int,
 
 
 def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
-    """توليد القاعدة الصوفية الواقعية 8K مباشرة عبر Gemini Image (Nano Banana)."""
     keys = _get_gemini_keys()
     if not keys:
         return False
 
-    models = ("gemini-3.1-flash-image-preview", "gemini-2.5-flash-image")
+    models = ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview")
+    logged_err = False
     for model_id in models:
-        for k in keys[:5]:
+        for k in keys[:4]:
             try:
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
@@ -264,9 +272,12 @@ def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
                             "imageConfig": {"aspectRatio": "9:16"},
                         },
                     },
-                    timeout=60,
+                    timeout=55,
                 )
                 if r.status_code != 200:
+                    if not logged_err:
+                        print(f"   ℹ️ [Cards Gemini Image {model_id}]: HTTP {r.status_code} ({r.text[:90]})", flush=True)
+                        logged_err = True
                     continue
                 parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
                 for p in parts:
@@ -279,25 +290,26 @@ def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
                         if out_path.exists() and out_path.stat().st_size > 30000:
                             print(f"   ✨ [Cards Gemini Image] تم توليد الدفتر القطني 8K عبر {model_id}", flush=True)
                             return True
-            except Exception:
+            except Exception as e:
+                if not logged_err:
+                    print(f"   ℹ️ [Cards Gemini Image]: {str(e)[:80]}", flush=True)
+                    logged_err = True
                 continue
     return False
 
 
 def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: int, H: int, seed: int) -> bool:
-    # 1) Gemini Native Image (الأعلى واقعية ومطابقة لصورة صدفة)
+    # 1) Gemini Native Image
     if _gemini_generate_image(prompt, out_path, W, H):
         return True
 
-    # 2) Hugging Face ZeroGPU (Z-Image-Turbo مع إصلاح Gallery ثم FLUX.1-schnell)
+    # 2) Hugging Face ZeroGPU (Z-Image-Turbo ثم FLUX.1-schnell) مع إصلاح token/hf_token
     try:
-        from gradio_client import Client as GradioClient
         tok = _check_valid_hf_token()
         tmp_dir = out_path.parent
         for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
             try:
-                kwargs = {"token": tok} if tok else {}
-                client = GradioClient(space_id, **kwargs)
+                client = _open_gradio_client(space_id, tok)
                 api = client.view_api(return_format="dict") or {}
                 named = api.get("named_endpoints", {})
                 ep_name = "/generate" if "/generate" in named else ("/infer" if "/infer" in named else next(iter(named.keys()), None))
@@ -331,7 +343,7 @@ def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: 
                         call_kw[p["parameter_name"]] = p.get("parameter_default")
 
                 with ThreadPoolExecutor(max_workers=1) as ex:
-                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=85)
+                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=90)
 
                 fpath = _extract_gradio_image_path(res, tmp_dir)
                 if fpath and os.path.exists(fpath):
@@ -341,19 +353,21 @@ def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: 
                     if out_path.exists() and out_path.stat().st_size > 25000:
                         print(f"   🧶 [Cards ZeroGPU] تم توليد الدفتر القطني 8K عبر {space_id}", flush=True)
                         return True
+                else:
+                    print(f"   ⚠️ [Cards ZeroGPU {space_id}] لم يُرجع مسار صورة: {str(res)[:80]}", flush=True)
             except Exception as e:
-                print(f"   ⚠️ [Cards ZeroGPU {space_id}]: {str(e)[:90]}", flush=True)
+                print(f"   ⚠️ [Cards ZeroGPU {space_id}]: {str(e)[:100]}", flush=True)
                 continue
     except Exception as e:
         print(f"   ⚠️ [Cards gradio unavailable]: {str(e)[:80]}", flush=True)
 
-    # 3) AI Horde الديناميكي
+    # 3) AI Horde الديناميكي (خطوات 18 لضمان السرعة والنجاح)
     try:
         models = _get_active_horde_models()
         print(f"   🧶 [Cards AI Horde] توليد الدفتر القطني عبر: {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "HamsatMalak:3.2:romantic-plush",
+            "Client-Agent": "HamsatMalak:3.3:romantic-plush",
             "Content-Type": "application/json",
         }
         payload = {
@@ -362,7 +376,7 @@ def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: 
                 "sampler_name": "k_euler_a",
                 "width": 576,
                 "height": 1024,
-                "steps": 22,
+                "steps": 18,
                 "cfg_scale": 6.5,
                 "seed": str(seed),
                 "n": 1,
@@ -374,12 +388,13 @@ def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: 
         }
         r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=20)
         if r.status_code not in (200, 202):
+            print(f"   ⚠️ [Cards Horde HTTP {r.status_code}]: {r.text[:90]}", flush=True)
             return False
         job_id = r.json().get("id")
         if not job_id:
             return False
 
-        deadline = time.time() + 145
+        deadline = time.time() + 160
         while time.time() < deadline:
             time.sleep(5)
             chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
@@ -387,6 +402,7 @@ def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: 
                 continue
             cdata = chk.json()
             if cdata.get("faulted"):
+                print("   ⚠️ [Cards Horde] faulted", flush=True)
                 return False
             if cdata.get("done"):
                 st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=20)
@@ -404,9 +420,35 @@ def _ai_generate_blank_romantic_plush(prompt: str, neg: str, out_path: Path, W: 
                             print("   ✅ [Cards Horde] تم توليد الدفتر القطني الواقعي بنجاح!", flush=True)
                             return True
                 return False
+        print("   ⏱️ [Cards Horde] تجاوز المهلة 160ث", flush=True)
     except Exception as e:
         print(f"   ⚠️ [Cards Horde error]: {str(e)[:90]}", flush=True)
     return False
+
+
+def _soft_clean_center_wool(img: Image.Image, norm_box: tuple[int, int, int, int]) -> Image.Image:
+    """
+    إذا رسم الـ AI بعض الخربشة الخفيفة في الوسط مع بقاء الحواف والقلب واليدين 8K مذهلة:
+    ينعم وينظف مربع الكتابة فقط بريشة ناعمة تحافظ على نسيج الصوف المحيط!
+    """
+    w, h = img.size
+    x0 = max(90, int(norm_box[0] * w / 1000) - 20)
+    y0 = max(240, int(norm_box[1] * h / 1000) - 20)
+    x1 = min(w - 70, int(norm_box[2] * w / 1000) + 20)
+    y1 = min(int(h * 0.72), int(norm_box[3] * h / 1000) + 20)
+
+    # أخذ متوسط لون الصوف الفاتح داخل الإطار
+    crop = img.crop((x0, y0, x1, y1)).filter(ImageFilter.GaussianBlur(36))
+    wool_noise = Image.effect_noise(crop.size, 11).convert("RGB")
+    clean_patch = ImageChops.soft_light(crop, wool_noise)
+
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([x0 + 18, y0 + 18, x1 - 18, y1 - 18], radius=42, fill=215)
+    mask = mask.filter(ImageFilter.GaussianBlur(26))
+
+    patch_full = img.copy()
+    patch_full.paste(clean_patch, (x0, y0))
+    return Image.composite(patch_full, img, mask)
 
 
 def _get_romantic_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, tuple[int, int, int, int]]:
@@ -419,8 +461,8 @@ def _get_romantic_template(kind: str, W: int, H: int) -> tuple[Image.Image | Non
 
     cache_dir = Path(tempfile.gettempdir()) / "whispers_plush_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = cache_dir / f"{kind}_v3_{W}x{H}.jpg"
-    box_cache = cache_dir / f"{kind}_v3_{W}x{H}_box.json"
+    cached = cache_dir / f"{kind}_v4_{W}x{H}.jpg"
+    box_cache = cache_dir / f"{kind}_v4_{W}x{H}_box.json"
 
     with _TPL_LOCK:
         if cached.exists() and cached.stat().st_size > 25000 and box_cache.exists():
@@ -464,15 +506,16 @@ def _get_romantic_template(kind: str, W: int, H: int) -> tuple[Image.Image | Non
                 "scribbles, ink lines, nudity, explicit, deformed hands, ugly faces, cartoon, flat 2d, angled camera"
             )
 
-        for attempt in range(2):
-            seed = 291026 + attempt * 733 + random.randint(1, 200)
-            if _ai_generate_blank_romantic_plush(prompt, neg, cached, W, H, seed):
-                is_clean, box = _vision_inspect_notebook(cached)
-                if is_clean or attempt == 1:
-                    box_cache.write_text(json.dumps(list(box)))
-                    with Image.open(cached) as im:
-                        return im.convert("RGB"), box
-                cached.unlink(missing_ok=True)
+        seed = 291026 + random.randint(1, 500)
+        if _ai_generate_blank_romantic_plush(prompt, neg, cached, W, H, seed):
+            is_clean, box = _vision_inspect_notebook(cached)
+            with Image.open(cached) as im:
+                rgb = im.convert("RGB")
+            if not is_clean:
+                rgb = _soft_clean_center_wool(rgb, box)
+                rgb.save(cached, "JPEG", quality=94)
+            box_cache.write_text(json.dumps(list(box)))
+            return rgb, box
     return None, default_box
 
 
@@ -480,11 +523,6 @@ def _embed_text_into_real_wool(
     base_rgb: Image.Image,
     items: list[tuple[int, int, str, object, tuple[int, int, int], str]],
 ) -> Image.Image:
-    """
-    يغرس الخط العربي داخل ألياف الصوف الحقيقية المولّدة بالذكاء الاصطناعي:
-    - لا يغمّق خلفية الدفتر إطلاقاً!
-    - يسرّب وبر الصوف المضيء داخل الحرف + ظل انغماس دقيق أسفل الحرف.
-    """
     w, h = base_rgb.size
     out = base_rgb.convert("RGBA")
 
@@ -516,11 +554,9 @@ def _embed_text_into_real_wool(
         soft_mask = mask.filter(ImageFilter.GaussianBlur(0.4))
         effective_alpha = ImageChops.subtract(soft_mask, fiber_bleed)
 
-        # إضاءة انغماس دقيقة أسفل الحرف (1.5px) توحي بضغط الحبر في الوبر
         rim = Image.new("RGBA", (w, h), (255, 252, 245, 0))
         rim.putalpha(mask.filter(ImageFilter.GaussianBlur(1.1)).point(lambda p: int(p * 0.34)))
 
-        # ظل ناعم غائر داخل ألياف الصوف
         halo = Image.new("RGBA", (w, h), (58, 38, 28, 0))
         halo.putalpha(mask.filter(ImageFilter.GaussianBlur(1.7)).point(lambda p: int(p * 0.18)))
 
@@ -534,20 +570,110 @@ def _embed_text_into_real_wool(
     return out
 
 
-def _make_clean_emergency_fallback(W: int, H: int, is_dua: bool) -> Image.Image:
-    """احتياط نظيف وهادئ جداً عند انقطاع كل محركات الـ AI (بدون أي رسومات كرتونية)."""
-    bg = Image.new("RGB", (W, H), (246, 236, 228) if not is_dua else (244, 240, 234))
-    d = ImageDraw.Draw(bg)
-    c_top = (252, 244, 238) if not is_dua else (248, 244, 236)
-    c_bot = (232, 212, 206) if not is_dua else (224, 216, 204)
+def _draw_stitched_pillows_fallback(
+    seg_texts: list[str],
+    valid_segs: list[dict],
+    title: str,
+    font_path: str,
+    base_png_path: Path,
+    W: int,
+    H: int,
+    total_dur: float,
+) -> list[tuple[Path, float]]:
+    """احتياط وسائد قطنية مخيطة 3D (نمط الصورة 1) إذا تعذّر الاتصال بكل محركات الـ AI في وضع الدعاء."""
+    fur = Image.new("RGB", (W, H), (236, 202, 210))
+    fd = ImageDraw.Draw(fur)
     for y in range(H):
         t = y / H
-        d.line([(0, y), (W, y)], fill=tuple(int(c_top[i] + (c_bot[i] - c_top[i]) * t) for i in range(3)))
-    noise = Image.effect_noise((W // 2, H // 2), 12).resize((W, H), Image.Resampling.BILINEAR).convert("RGB")
-    bg = ImageChops.soft_light(bg, noise)
-    d2 = ImageDraw.Draw(bg)
-    d2.rounded_rectangle([54, 160, W - 54, H - 170], radius=48, outline=(212, 186, 174), width=4)
-    return bg
+        fd.line([(0, y), (W, y)], fill=(int(242 - 18 * t), int(208 - 22 * t), int(215 - 16 * t)))
+    noise = Image.effect_noise((W // 2, H // 2), 18).resize((W, H), Image.Resampling.BILINEAR).convert("RGB")
+    fur = ImageChops.soft_light(fur, noise).convert("RGBA")
+
+    def _pillow(cv, box, fill_c, stitch_c, rad=40, gold=False):
+        x0, y0, x1, y1 = box
+        pw, ph = x1 - x0, y1 - y0
+        pad = 24
+        lw, lh = pw + pad * 2, ph + pad * 2
+        sh_m = Image.new("L", (lw, lh), 0)
+        ImageDraw.Draw(sh_m).rounded_rectangle([pad, pad + 7, pad + pw, pad + ph + 7], radius=rad, fill=130)
+        sh = Image.new("RGBA", (lw, lh), (72, 34, 46, 0))
+        sh.putalpha(sh_m.filter(ImageFilter.GaussianBlur(13)))
+        pm = Image.new("L", (lw, lh), 0)
+        ImageDraw.Draw(pm).rounded_rectangle([pad, pad, pad + pw, pad + ph], radius=rad, fill=255)
+        body = Image.new("RGBA", (lw, lh), (*fill_c, 255))
+        bd = ImageDraw.Draw(body)
+        for dy in range(ph):
+            t = dy / max(1, ph)
+            if t < 0.25:
+                bd.line([(pad, pad + dy), (pad + pw, pad + dy)], fill=(255, 252, 248, int(68 * (1 - t / 0.25))))
+            elif t > 0.72:
+                bd.line([(pad, pad + dy), (pad + pw, pad + dy)], fill=(116, 62, 74, int(55 * ((t - 0.72) / 0.28))))
+        body.putalpha(pm)
+        sd = ImageDraw.Draw(body)
+        for sx in range(pad + 14 + rad // 2, pad + pw - 14 - rad // 2, 18):
+            sd.line([(sx, pad + 14), (sx + 9, pad + 14)], fill=(*stitch_c, 180), width=3)
+            sd.line([(sx, pad + ph - 14), (sx + 9, pad + ph - 14)], fill=(*stitch_c, 180), width=3)
+        if gold:
+            sd.rounded_rectangle([pad + 2, pad + 2, pad + pw - 2, pad + ph - 2], radius=rad, outline=(212, 162, 84, 235), width=5)
+        out = cv.convert("RGBA")
+        out.alpha_composite(sh, dest=(x0 - pad, y0 - pad))
+        out.alpha_composite(body, dest=(x0 - pad, y0 - pad))
+        return out
+
+    fur = _pillow(fur, (150, 130, W - 150, 310), (250, 242, 234), (218, 178, 184), rad=60)
+    clean_title = re.sub(r"[a-zA-Z]", "", title or "دعاء لروحها").strip()
+    clean_title = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ك[\u064B-\u065F]*", "ملك", clean_title)
+    t_font = _load_font(font_path, 50)
+    fur = _embed_text_into_real_wool(fur.convert("RGB"), [(W // 2, 220, clean_title, t_font, (46, 30, 24), "center")]).convert("RGBA")
+
+    dummy_d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    shown = seg_texts[:5]
+    n_b = max(1, len(shown))
+    box_h = min(240, (1540 - 360 - 26 * (n_b - 1)) // n_b)
+    start_y = 360 + (1540 - 360 - (n_b * box_h + (n_b - 1) * 26)) // 2
+    outputs: list[tuple[Path, float]] = []
+    use_ts = all("start_sec" in s and "end_sec" in s for s in valid_segs)
+
+    for act_i in range(len(seg_texts)):
+        frame = fur.copy()
+        items: list[tuple[int, int, str, object, tuple[int, int, int], str]] = []
+        for bi, txt in enumerate(shown):
+            by0 = start_y + bi * (box_h + 26)
+            by1 = by0 + box_h
+            is_c = (bi % 2 == 0)
+            frame = _pillow(
+                frame,
+                (76, by0, W - 76, by1),
+                (250, 243, 235) if is_c else (228, 176, 186),
+                (208, 176, 168) if is_c else (188, 126, 138),
+                rad=40,
+                gold=(bi == min(act_i, n_b - 1)),
+            )
+            chosen_f = _load_font(font_path, 34)
+            lines = [txt]
+            for sz in range(46, 28, -2):
+                f = _load_font(font_path, sz)
+                lns = _wrap_text(txt, f, W - 260, dummy_d)
+                if len(lns) <= 4 and len(lns) * int(sz * 1.62) <= box_h - 24:
+                    chosen_f, lines = f, lns
+                    break
+            lh = int(chosen_f.size * 1.62)
+            cy_t = (by0 + by1) // 2 - ((len(lines) - 1) * lh) // 2
+            for ln in lines:
+                items.append((W // 2, cy_t, ln, chosen_f, (38, 22, 18), "center"))
+                cy_t += lh
+
+        items.append((W // 2, 1645, "همسات ملك", _load_font(font_path, 34), (118, 48, 62), "center"))
+        final_img = _embed_text_into_real_wool(frame.convert("RGB"), items).convert("RGB")
+        out_png = base_png_path.with_name(f"{base_png_path.stem}_pillow_{act_i}.png")
+        final_img.save(out_png)
+        dur = total_dur / len(seg_texts)
+        if use_ts and act_i < len(valid_segs):
+            s_obj = valid_segs[act_i]
+            nxt = float(valid_segs[act_i + 1]["start_sec"]) if act_i + 1 < len(valid_segs) else total_dur
+            dur = max(0.5, (total_dur - float(s_obj["start_sec"])) if act_i == len(valid_segs) - 1 else (nxt - float(s_obj["start_sec"])))
+        outputs.append((out_png, dur))
+    return outputs
 
 
 def render_romantic_notebook_slides(
@@ -570,10 +696,14 @@ def render_romantic_notebook_slides(
 
     ai_bg, norm_box = _get_romantic_template(tpl_kind, W, H)
     if ai_bg is None:
-        ai_bg = _make_clean_emergency_fallback(W, H, is_dua)
+        if is_dua:
+            return _draw_stitched_pillows_fallback(seg_texts, valid_segs, title, font_path, base_png_path, W, H, total_dur)
+        # احتياط دافئ مبطن
+        ai_bg = Image.new("RGB", (W, H), (246, 236, 228))
+        noise = Image.effect_noise((W // 2, H // 2), 14).resize((W, H), Image.Resampling.BILINEAR).convert("RGB")
+        ai_bg = ImageChops.soft_light(ai_bg, noise)
         norm_box = (120, 240, 880, 680)
 
-    # تحويل إحداثيات المساحة الفارغة الآمنة من 0..1000 إلى بكسل حقيقي
     bx0 = max(110, int(norm_box[0] * W / 1000))
     by0 = max(310, int(norm_box[1] * H / 1000))
     bx1 = min(W - 90, int(norm_box[2] * W / 1000))
@@ -592,7 +722,6 @@ def render_romantic_notebook_slides(
     grouped_lines: list[list[str]] = []
     lh = 76
 
-    # تباعد سطور واسع 1.80x حتى لا تتداخل الحركات والتشكيل أبداً
     for sz in range(58, 33, -2):
         f = _load_font(font_path, sz)
         grouped = [_wrap_text(txt, f, text_max_w, dummy_d) for txt in seg_texts]
@@ -609,7 +738,6 @@ def render_romantic_notebook_slides(
     total_text_h = total_lines * lh
     text_start_y = by0 + max(0, (text_max_h - total_text_h) // 2)
 
-    # كتابة العنوان والتاريخ وتوقيع همسات ملك في مواضع آمنة بعيدة عن الوسط
     now = datetime.now()
     date_str = now.strftime("%Y/%m/%d")
     day_str = _AR_DAYS.get(now.weekday(), "يوم سعيد")
