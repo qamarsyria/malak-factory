@@ -3,11 +3,12 @@
 scripts/whispers_video.py
 =========================
 المخرج السينمائي المحسّن لمشروع «همسات ملك» (1080×1920 @ 30fps):
-- يولّد لوحات رومانسية أو روحانية متطابقة مع السرد عبر (ZeroGPU FLUX/Z-Image -> AI Horde النشط -> Pixabay Film)
+- يولّد لوحات رومانسية أو روحانية متطابقة مع السرد عبر:
+  (Gemini Native Image -> ZeroGPU Z-Image-Turbo/FLUX -> AI Horde النشط -> Pixabay Film)
   مع فحص Gemini Vision وطباعة السجل بوضوح.
 - يضيف أجواءً رومانسية دافئة (غطاء مخملي عنابي-وردي، هالات بوكيه، وذرات نور ذهبية صاعدة).
 - يعرض الخط العربي بوضوح فائق (Amiri Bold + RAQM + MaxFilter Halo) في مساحة آمنة للواتساب،
-  وينتقل في ذروة الهمسة بسلاسة (dissolve) إلى الدفتر القطني الصوفي الرومانسي 3D الحيّ (romantic_cards.py).
+  وينتقل في ذروة الهمسة بسلاسة (dissolve) إلى الدفتر القطني الصوفي الرومانسي 8K (romantic_cards.py).
 - يضغط الفيديو بذكاء مع الحفاظ على حدة ألياف الصوف والخط العربي.
 """
 
@@ -253,6 +254,37 @@ def _make_whisper_overlay_png(
     overlay.save(out_png)
 
 
+def _extract_gradio_path(obj, work_dir: Path) -> str | None:
+    if not obj:
+        return None
+    if isinstance(obj, str):
+        if os.path.exists(obj):
+            return obj
+        if obj.startswith(("http://", "https://")):
+            try:
+                ir = requests.get(obj, timeout=30)
+                if ir.status_code == 200 and len(ir.content) > 8000:
+                    p = work_dir / f"gr_{random.randint(1000,9999)}.png"
+                    p.write_bytes(ir.content)
+                    return str(p)
+            except Exception:
+                return None
+        return None
+    if isinstance(obj, dict):
+        for key in ("path", "image", "url"):
+            if key in obj and obj[key]:
+                found = _extract_gradio_path(obj[key], work_dir)
+                if found:
+                    return found
+        return None
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = _extract_gradio_path(item, work_dir)
+            if found:
+                return found
+    return None
+
+
 def _vision_check_whisper_image(img_path: Path, category: str, scene_en: str) -> bool:
     raw_keys = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
     keys = [k.strip() for k in re.split(r"[\s,;]+", raw_keys.strip()) if len(k.strip()) > 20]
@@ -308,6 +340,44 @@ def _vision_check_whisper_image(img_path: Path, category: str, scene_en: str) ->
     return True
 
 
+def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
+    raw_keys = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
+    keys = [k.strip() for k in re.split(r"[\s,;]+", raw_keys.strip()) if len(k.strip()) > 20]
+    if not keys:
+        return False
+
+    for model_id in ("gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"):
+        for k in keys[:4]:
+            try:
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
+                    json={
+                        "contents": [{"parts": [{"text": full_prompt}]}],
+                        "generationConfig": {
+                            "responseModalities": ["IMAGE", "TEXT"],
+                            "imageConfig": {"aspectRatio": "9:16"},
+                        },
+                    },
+                    timeout=55,
+                )
+                if r.status_code != 200:
+                    continue
+                parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+                for p in parts:
+                    inline = p.get("inlineData") or p.get("inline_data")
+                    if inline and inline.get("data"):
+                        raw_bytes = base64.b64decode(inline["data"])
+                        with Image.open(io.BytesIO(raw_bytes)) as im:
+                            im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
+                            im.save(out_jpg, "JPEG", quality=93)
+                        if out_jpg.exists() and out_jpg.stat().st_size > 25000:
+                            print(f"   ✨ [Scene Gemini Image] تم الرسم عبر {model_id}", flush=True)
+                            return True
+            except Exception:
+                continue
+    return False
+
+
 def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, seed: int) -> bool:
     if category == "prayer_niqab":
         style = (
@@ -332,16 +402,21 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
 
     full_prompt = f"{scene_en}, {style}"
 
+    # 1) Gemini Native Image
+    if _gemini_scene_image(full_prompt, out_jpg) and _vision_check_whisper_image(out_jpg, category, scene_en):
+        return True
+
+    # 2) Hugging Face ZeroGPU (Z-Image-Turbo ثم FLUX.1-schnell)
     try:
         from gradio_client import Client as GradioClient
         tok = _check_valid_hf_token()
-        for space_id in ("black-forest-labs/FLUX.1-schnell", "Tongyi-MAI/Z-Image-Turbo"):
+        for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
             try:
                 kwargs = {"token": tok} if tok else {}
                 client = GradioClient(space_id, **kwargs)
                 api = client.view_api(return_format="dict") or {}
                 named = api.get("named_endpoints", {})
-                ep_name = "/infer" if "/infer" in named else ("/generate" if "/generate" in named else next(iter(named.keys()), None))
+                ep_name = "/generate" if "/generate" in named else ("/infer" if "/infer" in named else next(iter(named.keys()), None))
                 if not ep_name:
                     continue
                 params = named[ep_name].get("parameters", [])
@@ -361,21 +436,22 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                     elif pn == "height":
                         call_kw[p["parameter_name"]] = 1280
                     elif pn in ("num_inference_steps", "steps"):
-                        call_kw[p["parameter_name"]] = 4 if "schnell" in space_id else 8
+                        call_kw[p["parameter_name"]] = 8 if "Z-Image" in space_id else 4
                     elif pn == "resolution":
                         enums = (p.get("type") or {}).get("enum") or []
-                        call_kw[p["parameter_name"]] = next((e for e in enums if "9:16" in str(e) or "720x1280" in str(e)), p.get("parameter_default"))
+                        call_kw[p["parameter_name"]] = next(
+                            (e for e in enums if "9:16" in str(e) or "720x1280" in str(e) or "576x1024" in str(e)),
+                            p.get("parameter_default"),
+                        )
                     elif "parameter_default" in p and p.get("parameter_has_default", True):
                         call_kw[p["parameter_name"]] = p.get("parameter_default")
 
                 with ThreadPoolExecutor(max_workers=1) as ex:
-                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=75)
+                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=80)
 
-                fpath = res[0] if isinstance(res, (list, tuple)) else res
-                if isinstance(fpath, dict):
-                    fpath = fpath.get("path") or fpath.get("url")
-                if fpath and os.path.exists(str(fpath)):
-                    with Image.open(str(fpath)) as im:
+                fpath = _extract_gradio_path(res, out_jpg.parent)
+                if fpath and os.path.exists(fpath):
+                    with Image.open(fpath) as im:
                         im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
                         im.save(out_jpg, "JPEG", quality=93)
                     if out_jpg.exists() and out_jpg.stat().st_size > 25000 and _vision_check_whisper_image(out_jpg, category, scene_en):
@@ -387,12 +463,13 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
     except Exception:
         pass
 
+    # 3) AI Horde النشط ديناميكياً (مهلة 145 ثانية)
     try:
         models = _get_active_horde_models()
         print(f"   🎨 [Scene AI Horde] رسم '{scene_en[:45]}...' عبر {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "HamsatMalak:3.1:romantic-scene",
+            "Client-Agent": "HamsatMalak:3.2:romantic-scene",
             "Content-Type": "application/json",
         }
         payload = {
@@ -658,8 +735,9 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 )
                 clip_slots.append((seg_mp4, sdur))
 
+            # في الذروة نمرر المقطع الختامي فقط [segs[-1]] ليبقى الدفتر مهوىً وفخماً دون تزاحم أسطر
             card_slides = render_romantic_notebook_slides(
-                segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
+                [segs[-1]], title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
             climax_png = card_slides[-1][0]
             climax_mp4 = work / "seg_climax_notebook.mp4"
