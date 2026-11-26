@@ -34,11 +34,6 @@ on:
         default: 'Charon'
         type: choice
         options: [Charon, Orus, Algieba, Rasalgethi]
-      show_text:
-        description: 'إظهار الآيات والدعاء والعنوان على الفيديو؟'
-        required: true
-        default: true
-        type: boolean
       layout_mode:
         description: 'تكييف الأبعاد'
         required: true
@@ -46,11 +41,11 @@ on:
         type: choice
         options: [auto_vertical, fill_crop]
       video_size:
-        description: 'حجم وجودة الفيديو'
+        description: 'جودة وحجم النسخة المكتوبة'
         required: true
-        default: 'balanced_6mb'
+        default: 'balanced'
         type: choice
-        options: [balanced_6mb, tiny_4mb, high_10mb]
+        options: [balanced, compact, high]
 
 jobs:
   apply_dua_to_clip:
@@ -69,9 +64,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
-          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts
+          pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts numpy
 
-      - name: Build & Send 50s Exact Reel
+      - name: Build & Send Smooth 50s Reels
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -80,13 +75,13 @@ jobs:
           AYAH_SET: ${{ inputs.ayah_set }}
           RECITER_ID: ${{ inputs.reciter }}
           TTS_VOICE: ${{ inputs.tts_voice }}
-          SHOW_TEXT: ${{ inputs.show_text }}
           LAYOUT_MODE: ${{ inputs.layout_mode }}
           VIDEO_SIZE: ${{ inputs.video_size }}
         run: |
           python -u - <<'PYEOF'
           import asyncio, io, json, math, os, shutil, subprocess, sys, tempfile
           from pathlib import Path
+          import numpy as np
           import requests
           from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
           import arabic_reshaper
@@ -109,9 +104,8 @@ jobs:
           AYAH_SET = os.getenv("AYAH_SET", "qaf_19_20").strip()
           RECITER_ID = os.getenv("RECITER_ID", "Yasser_Ad-Dussary_128kbps").strip()
           TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
-          SHOW_TEXT = os.getenv("SHOW_TEXT", "true").strip().lower() == "true"
           LAYOUT_MODE = os.getenv("LAYOUT_MODE", "auto_vertical").strip()
-          VIDEO_SIZE = os.getenv("VIDEO_SIZE", "balanced_6mb").strip()
+          VIDEO_SIZE = os.getenv("VIDEO_SIZE", "balanced").strip()
 
           RECITER_LABELS = {
               "Yasser_Ad-Dussary_128kbps": "ياسر الدوسري",
@@ -191,8 +185,7 @@ jobs:
                   if r.status_code == 200:
                       for it in r.json().get("verses", []):
                           vk = str(it.get("verse_key", ""))
-                          if ":" in vk:
-                              v[int(vk.split(":")[1])] = (it.get("text_uthmani") or "").strip()
+                          if ":" in vk: v[int(vk.split(":")[1])] = (it.get("text_uthmani") or "").strip()
               except Exception:
                   pass
               for a_num, fb_txt in fallback_pairs:
@@ -239,12 +232,13 @@ jobs:
                   n, d = fps_str.split("/")
                   fps_val = float(n) / max(1.0, float(d))
               except Exception:
-                  fps_str, fps_val = "30", 30.0
-              if fps_val < 12 or fps_val > 65:
-                  fps_str, fps_val = "30", 30.0
+                  fps_val = 30.0
+              if fps_val < 12 or fps_val > 65: fps_val = 30.0
+              out_fps = min(30, max(24, round(fps_val)))
               dur = float(info["format"]["duration"])
-              print(f"📹 الأصلي: {vw}x{vh} | codec={st.get('codec_name')} | pix={st.get('pix_fmt')} | fps={fps_str} ({fps_val:.2f}) | {dur:.2f}s", flush=True)
-              return vw, vh, dur, fps_str, max(24, min(60, round(fps_val)))
+              codec = str(st.get("codec_name") or "")
+              print(f"📹 الأصلي: {vw}x{vh} | codec={codec} | pix={st.get('pix_fmt')} | src_fps={fps_val:.2f} -> {out_fps}fps | {dur:.2f}s", flush=True)
+              return vw, vh, dur, out_fps, codec
 
           def get_dur(path):
               r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True)
@@ -313,12 +307,12 @@ jobs:
               canvas.alpha_composite(Image.merge("RGBA", (z, z, z, oa)))
               canvas.alpha_composite(fg)
 
-          def make_overlay(out_png, body_text, is_quran, bold_p, quran_p, moon, ref_txt="", rec_label=""):
+          def make_overlay_arrays(body_text, is_quran, bold_p, quran_p, moon, ref_txt="", rec_label=""):
               ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
               sc = ImageDraw.Draw(ov)
               for y in range(130): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(145 * (1 - y / 130))))
               for y in range(H - 460, H): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(185 * (((y - (H - 460)) / 460) ** 1.25))))
-              if is_quran: sc.rectangle([0, 0, W, H], fill=(0, 0, 0, 60))
+              if is_quran: sc.rectangle([0, 0, W, H], fill=(0, 0, 0, 55))
 
               bfg, mfg = Image.new("RGBA", (W, H), (0, 0, 0, 0)), Image.new("RGBA", (W, H), (0, 0, 0, 0))
               bd, md = ImageDraw.Draw(bfg), ImageDraw.Draw(mfg)
@@ -363,16 +357,27 @@ jobs:
               z = Image.new("L", moon.size, 0)
               ov.alpha_composite(Image.merge("RGBA", (z, z, z, moon.getchannel("A").filter(ImageFilter.GaussianBlur(2)))), dest=(ix, iy + 2))
               ov.alpha_composite(moon, dest=(ix, iy))
-              ov.save(out_png)
+
+              arr = np.array(ov, dtype=np.uint16)
+              a = arr[:, :, 3:4]
+              return (255 - a), (arr[:, :, :3] * a)
+
+          def send_tg(mp4_path, caption, w=None, h=None):
+              data = {"chat_id": os.environ["TELEGRAM_CHAT_ID"], "caption": caption, "supports_streaming": "true"}
+              if w and h:
+                  data["width"], data["height"] = str(w), str(h)
+              with open(mp4_path, "rb") as vf:
+                  res = requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendVideo", data=data, files={"video": (mp4_path.name, vf, "video/mp4")}, timeout=180).json()
+              assert res.get("ok"), f"Telegram Error: {res}"
 
           def main():
               src = REPO_ROOT / VIDEO_PATH
               if not src.exists():
                   raise FileNotFoundError(f"❌ الفيديو غير موجود: {VIDEO_PATH}")
-              vw, vh, vdur, fps_str, fps_int = probe_video(src)
+              vw, vh, vdur, out_fps, codec = probe_video(src)
               target_total = min(50.0, vdur) if vdur > 5.0 else 50.0
 
-              work = Path(tempfile.mkdtemp(prefix="warraq_50s_"))
+              work = Path(tempfile.mkdtemp(prefix="warraq_numpy_"))
               try:
                   bold_p = find_bold_font()
                   quran_p = find_quran_font(work, bold_p)
@@ -382,44 +387,34 @@ jobs:
                   verses = fetch_uthmani_chapter(surah, pairs)
                   rec_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
 
-                  # 1) تحميل وقياس مدة الآيات أولاً (سرعة القارئ الأصلية محفوظة 100%)
                   q_items, q_dur_sum = [], 0.0
                   for idx, (a_num, _) in enumerate(pairs):
                       w = work / f"q_{idx}.wav"
                       download_ayah(surah, a_num, w, work)
-                      gap = 0.35 if idx == len(pairs) - 1 else 0.18
+                      gap = 0.40 if idx == len(pairs) - 1 else 0.20
                       d = get_dur(w)
                       q_items.append({"type": "quran", "wav": w, "dur": d, "gap": gap, "text": f"﴿ {verses[a_num]} ﴾", "ref": f"[ سورة {sname} : {a_num} ]"})
                       q_dur_sum += d + gap
-                  print(f"📖 مدة الآيات ({sname}): {q_dur_sum:.2f}s", flush=True)
 
-                  # 2) توليد جمل الدعاء وضبط سرعتها بلطف لتقع كلها ضمن الـ 50 ثانية بالضبط
-                  d_raw_wavs = []
-                  d_raw_sum = 0.0
+                  d_raw_wavs, d_raw_sum = [], 0.0
                   for idx, ln in enumerate(DUA_LINES):
                       w = work / f"draw_{idx}.wav"
                       synth_dua_raw(ln, w, work, idx)
                       d_raw_wavs.append(w)
                       d_raw_sum += get_dur(w)
 
-                  dua_gaps_sum = (len(DUA_LINES) - 1) * 0.30 + 0.50
-                  dua_budget = max(8.0, (target_total - 0.15) - q_dur_sum - dua_gaps_sum)
+                  dua_gaps_sum = (len(DUA_LINES) - 1) * 0.35 + 0.80
+                  dua_budget = max(8.0, (target_total - 0.10) - q_dur_sum - dua_gaps_sum)
                   tempo = max(0.95, min(1.28, d_raw_sum / dua_budget)) if d_raw_sum > dua_budget else 0.98
-                  print(f"🤲 مدة الدعاء الخام: {d_raw_sum:.2f}s | الميزانية المتبقية من 50s: {dua_budget:.2f}s | tempo={tempo:.3f}", flush=True)
 
                   d_items, d_dur_sum = [], 0.0
                   for idx, (ln, rw) in enumerate(zip(DUA_LINES, d_raw_wavs)):
                       w = work / f"d_{idx}.wav"
                       run_cmd(["ffmpeg", "-y", "-i", str(rw), "-af", f"atempo={tempo:.4f}", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(w)])
-                      gap = 0.50 if idx == len(DUA_LINES) - 1 else 0.30
+                      gap = 0.80 if idx == len(DUA_LINES) - 1 else 0.35
                       d = get_dur(w)
                       d_items.append({"type": "dua", "wav": w, "dur": d, "gap": gap, "text": ln})
                       d_dur_sum += d + gap
-
-                  # إذا بقي متسع بسيط قبل تمام الـ 50 ثانية نمدّد الصمت الختامي الهادئ ليملأ 50s بالضبط
-                  extra_tail = max(0.0, target_total - (q_dur_sum + d_dur_sum))
-                  if extra_tail > 0.05:
-                      d_items[-1]["gap"] += extra_tail
 
                   all_items = q_items + d_items
                   q_parts, d_parts, segs, cur = [], [], [], 0.0
@@ -444,53 +439,85 @@ jobs:
                   full_c.write_text(f"file '{q_wav.resolve()}'\nfile '{d_wav.resolve()}'\n", encoding="utf-8")
                   run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(full_c), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(full_wav)])
                   tdur = min(target_total, get_dur(full_wav))
-                  print(f"⏱️ المدة النهائية: {tdur:.2f}s (مطابقة للأصل {vdur:.2f}s)", flush=True)
+                  print(f"⏱️ المدة النهائية: {tdur:.2f}s (tempo الدعاء={tempo:.3f})", flush=True)
+
+                  # تجهيز مصفوفات النصوص في الذاكرة مرة واحدة
+                  ov_layers = [
+                      make_overlay_arrays(sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
+                      for sg in segs
+                  ]
 
                   if vw > vh and LAYOUT_MODE == "auto_vertical":
-                      base_fc = (
-                          f"[0:v]format=yuv420p,split=2[fg][bg];"
-                          f"[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,gblur=sigma=6,scale={W}:{H}:flags=bilinear,eq=brightness=-0.28,setsar=1[b];"
-                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[f];"
-                          f"[b][f]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1[vbase]"
+                      dec_fc = (
+                          f"[0:v]yadif=0:-1:1,fps={out_fps},split=2[fg][bg];"
+                          f"[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,gblur=sigma=6,scale={W}:{H}:flags=bilinear,eq=brightness=-0.28[b];"
+                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease:flags=lanczos[f];"
+                          f"[b][f]overlay=(W-w)/2:(H-h)/2:shortest=1,format=rgb24[v]"
                       )
                   else:
-                      base_fc = f"[0:v]format=yuv420p,scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},setsar=1[vbase]"
+                      dec_fc = f"[0:v]yadif=0:-1:1,fps={out_fps},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},format=rgb24[v]"
 
-                  if VIDEO_SIZE == "tiny_4mb":
-                      venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "26", "-maxrate", "750k", "-bufsize", "1500k"]
-                  elif VIDEO_SIZE == "high_10mb":
-                      venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "20", "-maxrate", "2000k", "-bufsize", "4000k"]
+                  if VIDEO_SIZE == "compact":
+                      venc = ["-c:v", "libx264", "-preset", "medium", "-crf", "24", "-maxrate", "1100k", "-bufsize", "2200k"]
+                  elif VIDEO_SIZE == "high":
+                      venc = ["-c:v", "libx264", "-preset", "medium", "-crf", "19", "-maxrate", "2500k", "-bufsize", "5000k"]
                   else:
-                      venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "23", "-maxrate", "1300k", "-bufsize", "2600k"]
+                      venc = ["-c:v", "libx264", "-preset", "medium", "-crf", "21", "-maxrate", "1700k", "-bufsize", "3400k"]
 
-                  fade_f = f"fade=t=in:st=0:d=0.40,fade=t=out:st={max(0.0, tdur - 0.80):.3f}:d=0.80"
-                  out_mp4 = work / "al_warraq_50s_reel.mp4"
+                  out_mp4 = work / "al_warraq_smooth_text.mp4"
+                  dec_proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(src), "-filter_complex", dec_fc, "-map", "[v]", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                  enc_proc = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{W}x{H}", "-pix_fmt", "rgb24", "-r", str(out_fps), "-i", "pipe:0", "-i", str(full_wav), "-map", "0:v:0", "-map", "1:a:0", "-t", f"{tdur:.3f}", *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "96k", "-movflags", "+faststart", "-shortest", str(out_mp4)], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
-                  if SHOW_TEXT:
-                      ov_in, ov_ch, prev = [], [], "vbase"
-                      for i, sg in enumerate(segs):
-                          png = work / f"ov_{i}.png"
-                          make_overlay(png, sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
-                          ov_in.extend(["-framerate", fps_str, "-loop", "1", "-t", f"{tdur + 1.5:.3f}", "-i", str(png)])
-                          cond = f"gte(t,{sg['t0']:.3f})" if i == len(segs) - 1 else f"gte(t,{sg['t0']:.3f})*lt(t,{sg['t1']:.3f})"
-                          ov_ch.append(f"[{i+2}:v]format=rgba[ov{i}];[{prev}][ov{i}]overlay=0:0:enable='{cond}':shortest=1[vt{i}]")
-                          prev = f"vt{i}"
-                      fc = f"{base_fc};" + ";".join(ov_ch) + f";[{prev}]{fade_f},format=yuv420p[vout]"
-                      cmd = ["ffmpeg", "-y", "-i", str(src), "-i", str(full_wav)] + ov_in
-                  else:
-                      fc = f"{base_fc};[vbase]{fade_f},format=yuv420p[vout]"
-                      cmd = ["ffmpeg", "-y", "-i", str(src), "-i", str(full_wav)]
+                  frame_bytes = W * H * 3
+                  total_frames = max(1, int(round(tdur * out_fps)))
+                  last_frame = None
+                  seg_idx = 0
 
-                  cmd += ["-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0", "-vsync", "cfr", "-r", fps_str, "-t", f"{tdur:.3f}", *venc, "-profile:v", "high", "-level:v", "4.0", "-g", str(fps_int * 2), "-bf", "2", "-aq-mode", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "80k", "-movflags", "+faststart", "-shortest", str(out_mp4)]
-                  run_cmd(cmd)
+                  for f_i in range(total_frames):
+                      raw = dec_proc.stdout.read(frame_bytes)
+                      if raw and len(raw) == frame_bytes:
+                          frame = np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3))
+                          last_frame = frame
+                      elif last_frame is not None:
+                          frame = last_frame
+                      else:
+                          break
 
-                  mb, dur = out_mp4.stat().st_size / 1024 / 1024, get_dur(out_mp4)
-                  print(f"🎬 جاهز: {mb:.2f} MB | {dur:.1f}s", flush=True)
-                  cap = f"{preset['caption']}\n\n🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، وأنزل السلوان على ذويهم.\nخالص العزاء من أهل الموصل بالعراق إلى أهلنا في مصر الحبيبة 🇮🇶 🇪🇬\nلاحول ولاقوة الا بالله 🌖\n📦 {mb:.1f} MB | {dur:.0f}s"
-                  with open(out_mp4, "rb") as vf:
-                      res = requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendVideo", data={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "caption": cap, "supports_streaming": "true"}, files={"video": (out_mp4.name, vf, "video/mp4")}, timeout=180).json()
-                  assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم الإرسال إلى تيليغرام!", flush=True)
+                      t = f_i / out_fps
+                      while seg_idx + 1 < len(segs) and t >= segs[seg_idx]["t1"]:
+                          seg_idx += 1
+                      inv_a, fg_p = ov_layers[seg_idx]
+                      comp = ((frame.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
+
+                      if t < 0.40:
+                          comp = (comp.astype(np.float32) * (t / 0.40)).astype(np.uint8)
+                      elif t > tdur - 0.80:
+                          comp = (comp.astype(np.float32) * max(0.0, (tdur - t) / 0.80)).astype(np.uint8)
+
+                      enc_proc.stdin.write(comp.tobytes())
+
+                  dec_proc.stdout.close()
+                  dec_proc.wait()
+                  enc_proc.stdin.close()
+                  enc_err = enc_proc.stderr.read().decode("utf-8", errors="ignore")
+                  if enc_proc.wait() != 0:
+                      raise RuntimeError(f"خطأ ترميز الفيديو:\n{enc_err[-800:]}")
+
+                  mb1, dur1 = out_mp4.stat().st_size / 1024 / 1024, get_dur(out_mp4)
+                  print(f"🎬 النسخة 1 (بالنصوص): {mb1:.2f} MB | {dur1:.1f}s", flush=True)
+                  cap1 = f"🎬 النسخة 1 (بالآيات والدعاء المكتوب)\n{preset['caption']}\n\n🤲 خالص العزاء من أهل الموصل بالعراق إلى أهلنا في مصر الحبيبة 🇮🇶 🇪🇬\nلاحول ولاقوة الا بالله 🌖\n📦 {mb1:.1f} MB | {dur1:.0f}s"
+                  send_tg(out_mp4, cap1, W, H)
+
+                  # نسخة 2 احتياطية: نسخ الفيديو الأصلي بدون إعادة ترميز (-c:v copy) مع الصوت الجديد فقط للمقارنة
+                  if codec == "h264":
+                      copy_mp4 = work / "al_warraq_raw_copy.mp4"
+                      run_cmd(["ffmpeg", "-y", "-i", str(src), "-i", str(full_wav), "-map", "0:v:0", "-map", "1:a:0", "-t", f"{tdur:.3f}", "-c:v", "copy", "-c:a", "aac", "-ac", "1", "-b:a", "96k", "-movflags", "+faststart", "-shortest", str(copy_mp4)])
+                      mb2, dur2 = copy_mp4.stat().st_size / 1024 / 1024, get_dur(copy_mp4)
+                      print(f"🎬 النسخة 2 (صورة الأصل 100%): {mb2:.2f} MB | {dur2:.1f}s", flush=True)
+                      cap2 = f"🎬 النسخة 2 (صورة الفيديو الأصلي 100% بدون تعديل أو كتابة — استبدال الصوت فقط)\n📦 {mb2:.1f} MB | {dur2:.0f}s"
+                      send_tg(copy_mp4, cap2)
+
+                  print("✅ تم إرسال النتائج إلى تيليغرام بنجاح!", flush=True)
               finally:
                   shutil.rmtree(work, ignore_errors=True)
 
