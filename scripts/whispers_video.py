@@ -145,7 +145,6 @@ def _make_floating_motes_png(out_png: Path, category: str):
         col = rng.choice(palette)
         for offset_y in (0, VIDEO_H):
             cy = my + offset_y
-            # هالة ناعمة حول كل ذرة نور
             d.ellipse([mx - mr * 2, cy - mr * 2, mx + mr * 2, cy + mr * 2], fill=(*col, max(12, alpha // 3)))
             d.ellipse([mx - mr, cy - mr, mx + mr, cy + mr], fill=(*col, alpha))
 
@@ -166,7 +165,6 @@ def _make_whisper_overlay_png(
     scrim = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(scrim)
 
-    # ألوان غطاء دافئة بدل السواد الكئيب
     scrim_rgb = (18, 20, 36) if category == "prayer_niqab" else (36, 10, 22)
 
     if show_title:
@@ -181,7 +179,6 @@ def _make_whisper_overlay_png(
         sd.line([(0, y), (VIDEO_W, y)], fill=(*scrim_rgb, alpha))
     overlay.alpha_composite(scrim)
 
-    # هالات بوكيه رومانسية ناعمة في الأطراف
     bokeh = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     bd_b = ImageDraw.Draw(bokeh)
     bokeh_spots = (
@@ -210,7 +207,6 @@ def _make_whisper_overlay_png(
         else:
             md.text((tx, 150), pt, font=t_font, fill=title_col)
 
-        # خط زخرفي ذهبي رفيع تحت العنوان
         line_y = 228
         md.line([(VIDEO_W // 2 - 140, line_y), (VIDEO_W // 2 + 140, line_y)], fill=(246, 206, 148, 165), width=2)
         md.ellipse([VIDEO_W // 2 - 5, line_y - 5, VIDEO_W // 2 + 5, line_y + 5], fill=(255, 224, 170, 220))
@@ -336,7 +332,6 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
 
     full_prompt = f"{scene_en}, {style}"
 
-    # 1) Hugging Face ZeroGPU (FLUX.1-schnell ثم Z-Image-Turbo)
     try:
         from gradio_client import Client as GradioClient
         tok = _check_valid_hf_token()
@@ -392,7 +387,6 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
     except Exception:
         pass
 
-    # 2) AI Horde النشط ديناميكياً (مهلة 145 ثانية)
     try:
         models = _get_active_horde_models()
         print(f"   🎨 [Scene AI Horde] رسم '{scene_en[:45]}...' عبر {models[:3]}", flush=True)
@@ -634,7 +628,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                         f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
                         f"[1:v]fps={FPS},format=rgba[motes];"
                         f"[2:v]fps={FPS},format=rgba[ov];"
-                        f"[bg][motes]overlay=x=0:y='-mod(t*26\\,{VIDEO_H})':shortest=1[bgm];"
+                        f"[bg][motes]overlay=x=0:y='-mod(t*26,{VIDEO_H})':shortest=1[bgm];"
                         f"[bgm][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
                     in_flags = ["-loop", "1", "-t", f"{render_dur:.3f}"]
@@ -645,7 +639,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                         f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
                         f"[1:v]fps={FPS},format=rgba[motes];"
                         f"[2:v]fps={FPS},format=rgba[ov];"
-                        f"[bg][motes]overlay=x=0:y='-mod(t*26\\,{VIDEO_H})':shortest=1[bgm];"
+                        f"[bg][motes]overlay=x=0:y='-mod(t*26,{VIDEO_H})':shortest=1[bgm];"
                         f"[bgm][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
                     in_flags = ["-stream_loop", "-1", "-t", f"{render_dur:.3f}"]
@@ -664,7 +658,6 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 )
                 clip_slots.append((seg_mp4, sdur))
 
-            # مشهد الذروة في الدفتر الصوفي القطني أو الوسائد المخيطة (بحركة ماكرو ناعمة وذرات نور)
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
@@ -677,7 +670,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 f"d={climax_frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
                 f"eq=contrast=1.03:saturation=1.06,format=yuv420p[nb];"
                 f"[1:v]fps={FPS},format=rgba[motes];"
-                f"[nb][motes]overlay=x=0:y='-mod(t*22\\,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
+                f"[nb][motes]overlay=x=0:y='-mod(t*22,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
             )
             subprocess.run(
                 [
@@ -696,7 +689,6 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
 
             _concat_clips_with_xfade(clip_slots, total_dur, work / "vid_only.mp4")
 
-        # التصدير النهائي بالضغط الذكي مع إبقاء ألياف الصوف والخط حادين
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
@@ -733,7 +725,6 @@ def _concat_clips_with_xfade(clip_slots: list[tuple[Path, float]], total_dur: fl
     for k in range(n_trans):
         offset += float(clip_slots[k][1])
         out_tag = "[vout]" if k == n_trans - 1 else f"[vx{k}]"
-        # انتقال ناعم (dissolve) عند الدخول إلى الدفتر الصوفي في الذروة
         tr = "dissolve" if k == n_trans - 1 else "fade"
         filters.append(f"{last_tag}[{k+1}:v]xfade=transition={tr}:duration={XFADE_DUR:.3f}:offset={offset:.3f}{out_tag}")
         last_tag = out_tag
@@ -767,7 +758,7 @@ def _render_slides_with_fade(
                 f"zoompan=z='min(zoom+0.00035,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
                 f"d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p[nb];"
                 f"[1:v]fps={FPS},format=rgba[motes];"
-                f"[nb][motes]overlay=x=0:y='-mod(t*22\\,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
+                f"[nb][motes]overlay=x=0:y='-mod(t*22,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
             )
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
@@ -781,3 +772,51 @@ def _render_slides_with_fade(
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-loop", "1", "-t", f"{dur:.3f}", "-i", str(card_slides[0][0]),
                 "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(out_mp4),
+            ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        return
+
+    min_d = min(d for _, d in card_slides)
+    fade_d = min(0.45, min_d * 0.35)
+    inputs = []
+    filters = []
+    for i, (p, d) in enumerate(card_slides):
+        in_d = d + (fade_d if i < len(card_slides) - 1 else 0.0)
+        inputs.extend(["-loop", "1", "-t", f"{in_d:.3f}", "-i", str(p)])
+        filters.append(f"[{i}:v]scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1[c{i}]")
+
+    last_tag = "[c0]"
+    offset = 0.0
+    for k in range(len(card_slides) - 1):
+        offset += float(card_slides[k][1])
+        is_last = (k == len(card_slides) - 2)
+        out_tag = "[vbase]" if (is_last and motes_png and motes_png.exists()) else ("[vout]" if is_last else f"[cx{k}]")
+        filters.append(f"{last_tag}[c{k+1}]xfade=transition=dissolve:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}")
+        last_tag = out_tag
+
+    if motes_png and motes_png.exists():
+        mote_idx = len(card_slides)
+        inputs.extend(["-loop", "1", "-t", f"{total_dur:.3f}", "-i", str(motes_png)])
+        filters.append(f"[{mote_idx}:v]fps={FPS},format=rgba[motes]")
+        filters.append(f"[vbase][motes]overlay=x=0:y='-mod(t*22,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[vout]")
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            *inputs,
+            "-filter_complex", ";".join(filters),
+            "-map", "[vout]",
+            "-t", f"{total_dur:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+            str(out_mp4),
+        ],
+        check=True, capture_output=True, timeout=240,
+    )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        print("Usage: python scripts/whispers_video.py <audio.mp3> <episode.json> <out.mp4>")
+        sys.exit(1)
+    build_whisper_video(sys.argv[1], sys.argv[2], sys.argv[3])
