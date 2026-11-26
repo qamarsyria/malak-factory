@@ -3,10 +3,9 @@
 scripts/generate_whispers.py
 ============================
 المحرّك الأدبي واللغوي لمشروع «همسات ملك»:
-- ينتج خواطر وجدانية عذبة وأدعية خاشعة ورسائل حنين صادقة بلغة إنسانية قريبة من القلب
-  (دون تكلّف القوافي المصطنعة أو الألفاظ القاموسية الغريبة).
+- ينتج خواطر وجدانية عذبة وأدعية خاشعة ورسائل حنين صادقة بلغة إنسانية قريبة من القلب.
 - يحافظ على إيجاز رشيق (32-46 كلمة) يناسب الدفتر القطني الرومانسي بوضوح وجمال.
-- المرحلة 2 تراجع السلاسة والمعنى أولاً ثم تضبط التشكيل والإعراب 100%.
+- يفرض صيغة المؤنث حصراً عند مخاطبة (ملك / مريم / ملاك) برمجياً ولغوياً مع صون ضمائر الدعاء لله.
 """
 
 from __future__ import annotations
@@ -90,6 +89,50 @@ LITERARY_FORMS = [
 
 _HARAKAT_CLASS = r"\u064B-\u065F\u0670\u0640"
 _PUNCT_CHARS = "،؛؟!.:«»\"'()[]-…"
+
+_DIVINE_CLAUSE_RE = re.compile(
+    r"(?:اللهم|اللَّهُمَّ|يا\s*رب|يَا\s*رَبِّ|إلهي|إِلَهِي|سبحانك|سُبْحَانَكَ|أسألك|أَسْأَلُكَ|بحفظك|بِحِفْظِكَ|رحمتك|رَحْمَتَكَ|بفضلك|بِفَضْلِكَ|لطفك|لُطْفَكَ|الله|اللَّه)"
+)
+
+
+def _enforce_feminine_address(text: str, speaker: str = "he") -> str:
+    """يضمن بقاء خطاب الأنثى (ملك/مريم/ملاك) مكسوراً للمؤنث دون المساس بضمائر الدعاء لله."""
+    if not text or speaker == "she":
+        return text
+
+    parts = re.split(r"([،؛؟!.\n]+)", text)
+    fixed_parts: list[str] = []
+    fem_verbs = (
+        "بَقِيت", "كُنْت", "صِرْت", "أَصْبَحْت", "سَكَنْت", "زَرَعْت",
+        "غَرَسْت", "مَلَأْت", "أَشْرَقْت", "جِئْت", "أَقْبَلْت", "حَفِظْت",
+    )
+    fem_verb_re = re.compile(rf"\b({'|'.join(fem_verbs)})َ\b")
+    prep_re = re.compile(r"\b(لَك|بِك|فِيك|عَنْك|مِنْك|إِلَيْك|عَلَيْك|مَعَك)َ\b")
+    noun_kaf_re = re.compile(
+        r"\b((?:عَهْد|قَلْب|رُوح|عَيْن|اسْم|بِاسْم|طَيْف|قُرْب|حُضُور|غِيَاب|حُبّ?|وُجُود|صَوْت|وَقْت|دَرْب|يَوْم|حَيَات)[َُِ]ك)َ\b"
+    )
+
+    for seg in parts:
+        if not seg or re.fullmatch(r"[،؛؟!.\s\n]+", seg):
+            fixed_parts.append(seg)
+            continue
+        if _DIVINE_CLAUSE_RE.search(seg):
+            fixed_parts.append(seg)
+            continue
+
+        s = re.sub(r"\bأَنْتَ\b", "أَنْتِ", seg)
+        s = fem_verb_re.sub(r"\1ِ", s)
+        s = prep_re.sub(r"\1ِ", s)
+        s = noun_kaf_re.sub(r"\1ِ", s)
+        # معالجة ذكية لـ (اسمك/قلبك/عهدك + فتحة نهائية) حتى مع تفاوت الحركات الداخلية
+        s = re.sub(
+            r"([\u0621-\u064A\u064B-\u0652]{2,}(?:ك|كِ))َ(?=$|\s|[،؛؟!.])",
+            lambda m: m.group(0)[:-1] + "ِ",
+            s,
+        )
+        fixed_parts.append(s)
+
+    return "".join(fixed_parts)
 
 
 class GeminiKeyPool:
@@ -415,15 +458,24 @@ def _build_pass1_prompt(
     else:
         chosen_name = random.choice(["ملك", "ملك", "مريم", "ملاك"])
         names_instruction = (
-            f"وجّه الهمسة لاسم «{chosen_name}» برقة وعفوية (مثل: يا {chosen_name}، في قلبِ {chosen_name}، دعائي لكِ يا {chosen_name})."
+            f"وجّه الهمسة إلى الأنثى الغالية «{chosen_name}» برقة وعفوية (مثل: يا {chosen_name}، في قلبِ {chosen_name}، دعائي لكِ يا {chosen_name})."
         )
 
     if speaker_mode == "duet":
-        speaker_rule = "الوضع: ثنائي دافئ (duet) من 3 جمل/مقاطع قصيرة متبادلة بين \"he\" و\"she\" (يبدأ \"he\" وترد \"she\" ويختم \"he\")."
+        speaker_rule = (
+            "الوضع: ثنائي دافئ (duet) من 3 مقاطع: يبدأ \"he\" بمخاطبة «ملك/مريم/ملاك» (أنثى بصيغة كِ/أنتِ)، "
+            "وترد \"she\" بضمير المتكلم الجمع (نحن/قلوبنا/معاً) أو بالدعاء لله، ويختم \"he\" بمخاطبتها بصيغة المؤنث."
+        )
     elif speaker_mode == "she":
-        speaker_rule = "الوضع: بصوتها (she) في 3 جمل قصيرة تفيض حناناً وصدقاً ودعاءً."
+        speaker_rule = (
+            "الوضع: بصوتها (she) في 3 جمل قصيرة تفيض بالمشاعر الصادقة والدعاء لله أو الحديث عن الأمان والوفاء "
+            "(تجنبي أي ضمير مذكر منفرد على الشاشة، واستخدمي ضمير الجمع نا/معاً أو خطاب الخالق في الدعاء)."
+        )
     else:
-        speaker_rule = "الوضع: بصوته (he) في 3 جمل قصيرة دافئة صادقة تمس القلب."
+        speaker_rule = (
+            "الوضع: بصوته (he) في 3 جمل قصيرة دافئة صادقة تخاطب الأنثى الحبيبة (ملك/مريم/ملاك) "
+            "بصيغة المؤنث دائماً (أنتِ، عهدكِ، قلبكِ، بقيتِ)."
+        )
 
     avoid_block = ""
     if recent_titles or recent_openings:
@@ -449,10 +501,9 @@ def _build_pass1_prompt(
 {avoid_block}
 
 قواعد صارمة جداً لجمال النص ووضوحه:
-1. **الطول الإجمالي قصير ورشيق: 32 إلى 46 كلمة فقط** موزعة على 3 مقاطع متناسقة (كل مقطع 10-16 كلمة).
-2. **ممنوع منعاً باتاً** كتابة قوافٍ شعرية متكلّفة أو استعارات قاموسية غريبة غير مفهومة (مثل: سنابك الشوق، الميالا، قد هلالا، فيء ظلالها). اكتب لغة عربية فصحى عذبة واضحة ومؤثرة يفهمها القلب من أول كلمة!
-3. مثال على البساطة والعمق المطلوب (للاستلهام دون نسخ):
-   "الحب ليس أن نقول أحبك فقط، الحب أن تبقى الأمان في تعبي، والسند في ضعفي، والسكينة التي يطمئن بها قلبي كلما اشتد الضجيج."
+1. **تذكير قاطع بجنس الشخصية**: ملك ومريم وملاك **أنثى** دائماً! يُمنع منعاً باتاً مخاطبتها بصيغة المذكر (ممنوع: عهدكَ، بقيتَ، أنتَ، لكَ، اسمكَ). يجب استخدام صيغة المؤنث المكسورة (`عهدكِ، بقيتِ، أنتِ، لكِ، اسمكِ`).
+2. **الطول الإجمالي قصير ورشيق: 32 إلى 46 كلمة فقط** موزعة على 3 مقاطع متناسقة (كل مقطع 10-16 كلمة).
+3. **ممنوع منعاً باتاً** كتابة قوافٍ شعرية متكلّفة أو استعارات قاموسية غريبة غير مفهومة (مثل: سنابك الشوق، الميالا، قد هلالا، فيء ظلالها).
 4. يُمنع استخدام كلمة (مَلِك / مُلْك) بمعنى الحكم؛ كلمة «ملك» هي اسمها الشخصي فقط.
 5. أرفق لكل مقطع `scene_prompt_en` بالإنجليزية يصف مشهداً يطابق معنى المقطع حرفياً. ({scene_rule})
 
@@ -482,13 +533,14 @@ def _build_pass2_grammar_prompt(draft: dict) -> str:
 {json.dumps(segs_slim, ensure_ascii=False, indent=2)}
 
 المهمة على مرحلتين:
-1. **مراجعة البلاغة والسلاسة**: إذا وجدت أي عبارة ركيكة أو غريبة أو متكلّفة أو فيها كلمة قاموسية ثقيلة (مثل سنابك، ميالا، هلالا، الكبرى)، فأصلح الصياغة في `clean_text` لتصبح عذبة واضحة صادقة دون إطالة.
-2. **التشكيل الكامل والدقيق (100% مع الشدّة `ّ`)** لـ `clean_text` داخل `diacritized_text`:
+1. **مراجعة البلاغة والسلاسة**: إذا وجدت أي عبارة ركيكة أو غريبة أو متكلّفة (مثل سنابك، ميالا، هلالا، الكبرى)، فأصلح الصياغة في `clean_text` لتصبح عذبة واضحة صادقة دون إطالة.
+2. **التأنيث الإلزامي والتشكيل الكامل (100% مع الشدّة `ّ`)** لـ `clean_text` داخل `diacritized_text`:
+   - 🔴 **قاعدة التأنيث المطلقة**: المخاطَبة هنا أنثى (ملك / مريم / ملاك)؛ لذلك فإن كل ضمير يعود عليها يجب أن يكون **مؤنثاً مكسوراً (`كِ` و`تِ` و`أَنْتِ`)** مثل: `عَهْدَكِ، بَقِيتِ، اسْمِكِ، قَلْبِكِ، لَكِ، فِيكِ، أَنْتِ`. يُمنع نهائياً فتحها للمذكر (`عَهْدَكَ / بَقِيتَ / أَنْتَ`).
+   - 🟢 **استثناء الدعاء لله**: عند مخاطبة الله عز وجل في الدعاء (`اللهم أسألكَ، بحفظكَ، برحمتكَ`) تبقى كاف خطاب الخالق مفتوحةً (`كَ`) احتراماً وصحةً.
    - الممنوع من الصرف للأسماء الثلاثة:
      * «مَلَك»: بفتح الميم واللام بلا تنوين (قَلْبَ مَلَكَ)، وعند الوقف (مَلَكْ).
      * «مَرْيَم»: بلا تنوين (لِـمَرْيَمَ)، وعند الوقف (مَرْيَمْ).
      * «مَلَاك»: بلا تنوين (مَلَاكَ)، وعند الوقف (مَلَاكْ).
-   - اضبط أواخر الكلمات إعرابياً وضع الشدّة على كل حرف مشدد.
 
 أعد JSON فقط:
 {{
@@ -497,7 +549,7 @@ def _build_pass2_grammar_prompt(draft: dict) -> str:
       "index": 0,
       "rewritten": false,
       "clean_text": "النص النظيف الفصيح السلس...",
-      "diacritized_text": "النص النظيف نفسه مضبوطاً بالتشكيل الكامل 100%..."
+      "diacritized_text": "النص النظيف نفسه مضبوطاً بالتشكيل الكامل والتأنيث الدقيق 100%..."
     }}
   ]
 }}"""
@@ -584,7 +636,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         if not raw_segs:
             raise RuntimeError("مسودة فارغة")
 
-        print("📚 [2/3] مراجعة السلاسة البلاغية والتشكيل الكامل...", flush=True)
+        print("📚 [2/3] مراجعة السلاسة البلاغية والتأنيث والتشكيل الكامل...", flush=True)
         try:
             audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft), temp=0.15)
             aud_map = {int(a.get("index", i)): a for i, a in enumerate(audit.get("segments_audit") or [])}
@@ -595,7 +647,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         draft = _fallback_from_bank(theme, speaker_mode)
 
     raw_segs = draft.get("segments") or []
-    print("🔒 [3/3] التحقق من كثافة التشكيل + قفل نطق الأسماء...", flush=True)
+    print("🔒 [3/3] التحقق من التأنيث وكثافة التشكيل + قفل نطق الأسماء...", flush=True)
     final_segments = []
     all_names_found = set()
 
@@ -603,6 +655,10 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         raw_text = re.sub(r"\s+", " ", (seg.get("raw_text") or "").strip())
         if not raw_text:
             continue
+
+        spk = str(seg.get("speaker", "he")).strip().lower()
+        if spk not in ("he", "she"):
+            spk = "he"
 
         aud = aud_map.get(idx, {})
         base_clean = re.sub(r"\s+", " ", (aud.get("clean_text") or raw_text).strip()) or raw_text
@@ -614,7 +670,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             print(f"   ⚠️ كثافة التشكيل منخفضة بالمقطع {idx} ({ratio:.2f})، إعادة التشكيل...", flush=True)
             try:
                 pool_retry = GeminiKeyPool()
-                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"raw_text": base_clean}]}), temp=0.10)
+                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"speaker": spk, "raw_text": base_clean}]}), temp=0.10)
                 a2 = (r2.get("segments_audit") or [{}])[0]
                 c2_base = (a2.get("clean_text") or base_clean).strip()
                 c2_diac = (a2.get("diacritized_text") or "").strip()
@@ -626,10 +682,11 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
 
         if ratio < 0.30:
             print(f"   🚨 تعذر تشكيل المقطع {idx}، استبداله بمقطع مشكول من البنك.", flush=True)
-            fb = _fallback_from_bank(theme, seg.get("speaker", "he"))["segments"][0]
+            fb = _fallback_from_bank(theme, spk)["segments"][0]
             merged_diac = fb["diacritized_override"]
             ratio = _diacritic_ratio(merged_diac)
 
+        merged_diac = _enforce_feminine_address(merged_diac, speaker=spk)
         display_text = _strip_malak_for_display(merged_diac)
         tts_text = _lock_names_for_tts(merged_diac)
 
@@ -641,10 +698,6 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
                 if base not in seg_names:
                     seg_names.append(base)
                 all_names_found.add(base)
-
-        spk = str(seg.get("speaker", "he")).strip().lower()
-        if spk not in ("he", "she"):
-            spk = "he"
 
         scene_en = re.sub(r"[^\x20-\x7E]", " ", str(seg.get("scene_prompt_en", ""))).strip()
         if not scene_en:
