@@ -8,6 +8,26 @@ on:
         required: true
         default: 'warraq_clip.mp4'
         type: string
+      ayah_set:
+        description: 'مجموعة الآيات في بداية الفيديو'
+        required: true
+        default: 'alfajr_27_30'
+        type: choice
+        options:
+          - alfajr_27_30
+          - taghabun_11
+          - qaf_19_20
+      reciter:
+        description: 'القارئ المؤثر للآيات'
+        required: true
+        default: 'Yasser_Ad-Dussary_128kbps'
+        type: choice
+        options:
+          - Yasser_Ad-Dussary_128kbps
+          - Nasser_Alqatami_128kbps
+          - Minshawy_Murattal_128kbps
+          - Alafasy_128kbps
+          - Ghamadi_40kbps
       tts_voice:
         description: 'نبرة صوت الدعاء (هادئة ووقورة بدون مبالغة)'
         required: true
@@ -15,7 +35,7 @@ on:
         type: choice
         options: [Charon, Orus, Algieba, Rasalgethi]
       show_text:
-        description: 'إظهار الدعاء والعنوان مكتوباً على الفيديو؟'
+        description: 'إظهار الآيات والدعاء والعنوان على الفيديو؟'
         required: true
         default: true
         type: boolean
@@ -25,12 +45,12 @@ on:
         default: 'auto_vertical'
         type: choice
         options: [auto_vertical, fill_crop]
-      video_quality:
-        description: 'جودة الفيديو'
+      video_size:
+        description: 'حجم وجودة الفيديو (balanced_6mb الافتراضي ~6MB | tiny_4mb ~4MB)'
         required: true
-        default: 'high_clean'
+        default: 'balanced_6mb'
         type: choice
-        options: [high_clean, compact]
+        options: [balanced_6mb, tiny_4mb, high_10mb]
 
 jobs:
   apply_dua_to_clip:
@@ -51,16 +71,18 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
           pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts
 
-      - name: Build & Send Dua Reel
+      - name: Build & Send Dua + Quran Reel
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VIDEO_PATH: ${{ inputs.video_path }}
+          AYAH_SET: ${{ inputs.ayah_set }}
+          RECITER_ID: ${{ inputs.reciter }}
           TTS_VOICE: ${{ inputs.tts_voice }}
           SHOW_TEXT: ${{ inputs.show_text }}
           LAYOUT_MODE: ${{ inputs.layout_mode }}
-          VIDEO_QUALITY: ${{ inputs.video_quality }}
+          VIDEO_SIZE: ${{ inputs.video_size }}
         run: |
           python -u - <<'PYEOF'
           import asyncio, io, json, math, os, shutil, subprocess, sys, tempfile
@@ -84,20 +106,53 @@ jobs:
           W, H = 720, 1280
           HAS_RAQM = features.check("raqm")
           VIDEO_PATH = os.getenv("VIDEO_PATH", "warraq_clip.mp4").strip()
+          AYAH_SET = os.getenv("AYAH_SET", "alfajr_27_30").strip()
+          RECITER_ID = os.getenv("RECITER_ID", "Yasser_Ad-Dussary_128kbps").strip()
           TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
           SHOW_TEXT = os.getenv("SHOW_TEXT", "true").strip().lower() == "true"
           LAYOUT_MODE = os.getenv("LAYOUT_MODE", "auto_vertical").strip()
-          VIDEO_QUALITY = os.getenv("VIDEO_QUALITY", "high_clean").strip()
+          VIDEO_SIZE = os.getenv("VIDEO_SIZE", "balanced_6mb").strip()
+
+          RECITER_LABELS = {
+              "Yasser_Ad-Dussary_128kbps": "ياسر الدوسري",
+              "Nasser_Alqatami_128kbps": "ناصر القطامي",
+              "Minshawy_Murattal_128kbps": "محمد صديق المنشاوي",
+              "Alafasy_128kbps": "مشاري راشد العفاسي",
+              "Ghamadi_40kbps": "سعد الغامدي",
+          }
+
+          AYAH_PRESETS = {
+              "alfajr_27_30": {
+                  "surah": 89, "sname": "الفجر",
+                  "ayahs": [
+                      (27, "يَـٰٓأَيَّتُهَا ٱلنَّفْسُ ٱلْمُطْمَئِنَّةُ"),
+                      (28, "ٱرْجِعِىٓ إِلَىٰ رَبِّكِ رَاضِيَةً مَّرْضِيَّةً"),
+                      (29, "فَٱدْخُلِى فِى عِبَـٰدِى"),
+                      (30, "وَٱدْخُلِى جَنَّتِى"),
+                  ],
+              },
+              "taghabun_11": {
+                  "surah": 64, "sname": "التغابن",
+                  "ayahs": [
+                      (11, "مَآ أَصَابَ مِن مُّصِيبَةٍ إِلَّا بِإِذْنِ ٱللَّهِ ۗ وَمَن يُؤْمِنۢ بِٱللَّهِ يَهْدِ قَلْبَهُۥ ۚ وَٱللَّهُ بِكُلِّ شَىْءٍ عَلِيمٌ"),
+                  ],
+              },
+              "qaf_19_20": {
+                  "surah": 50, "sname": "ق",
+                  "ayahs": [
+                      (19, "وَجَآءَتْ سَكْرَةُ ٱلْمَوْتِ بِٱلْحَقِّ ۖ ذَٰلِكَ مَا كُنتَ مِنْهُ تَحِيدُ"),
+                      (20, "وَنُفِخَ فِى ٱلصُّورِ ۚ ذَٰلِكَ يَوْمُ ٱلْوَعِيدِ"),
+                  ],
+              },
+          }
 
           ACCOUNT_NAME = "لاحول ولاقوة الا بالله"
           HEADER_TEXT = "عَزَاءٌ وَدُعَاءٌ مِنْ أَهْلِ الْمَوْصِلِ بِالْعِرَاقِ إِلَى أَهْلِنَا فِي مِصْرَ"
           DUA_LINES = [
-              "اللَّهُمَّ رَبَّنَا وَمَوْلَانَا، يَا مَنْ بِيَدِهِ مَلَكُوتُ كُلِّ شَيْءٍ، إِلَيْكَ نَرْفَعُ أَكُفَّ الضَّرَاعَةِ وَالدُّعَاءِ فِي مُصَابِ أَهْلِنَا بِمِصْرَ فِي فَاجِعَةِ الْوَرَّاقِ.",
-              "اللَّهُمَّ تَغَمَّدِ الضَّحَايَا بِوَاسِعِ رَحْمَتِكَ، وَتَقَبَّلْهُمْ عِنْدَكَ فِي الشُّهَدَاءِ، وَاجْعَلِ النَّارَ عَلَيْهِمْ بَرْدًا وَسَلَامًا، وَأَبْدِلْهُمْ دَارًا خَيْرًا مِنْ دَارِهِمْ.",
-              "اللَّهُمَّ الطُفْ بِالْمُصَابِينَ وَالْجَرْحَى، وَأَنْزِلْ عَلَيْهِمْ شِفَاءَكَ الْعَاجِلَ، وَرُدَّهُمْ إِلَى أَهْلِهِمْ سَالِمِينَ غَانِمِينَ بِعَافِيَتِكَ.",
-              "اللَّهُمَّ أَفْرِغْ عَلَى قُلُوبِ ذَوِيهِمْ صَبْرًا وَسَكِينَةً، وَاجْبُرْ كَسْرَهُمْ، وَثَبِّتْ قُلُوبَهُمْ عِنْدَ الصَّدْمَةِ الْأُولَى.",
-              "اللَّهُمَّ هَذَا دُعَاؤُنَا وَعَزَاؤُنَا الصَّادِقُ مِنْ قُلُوبِ أَهْلِ الْمَوْصِلِ فِي الْعِرَاقِ إِلَى أَحِبَّتِنَا فِي مِصْرَ الْعَزِيزَةِ، فَاحْفَظْ مِصْرَ وَأَهْلَهَا مِنْ كُلِّ مَكْرُوهٍ.",
-              "وَلَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللَّهِ الْعَلِيِّ الْعَظِيمِ، وَإِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ.",
+              "يَا حَيُّ يَا قَيُّومُ، يَا مَنْ لَا يَعْزُبُ عَنْ عِلْمِهِ دَمْعَةُ مَفْجُوعٍ وَلَا أَنِينُ مُصَابٍ؛ نَسْأَلُكَ اللُّطْفَ وَالرَّحْمَةَ لِإِخْوَتِنَا فِي مِصْرَ بَعْدَ هَذِهِ الْفَاجِعَةِ الْمُوجِعَةِ بِالْوَرَّاقِ.",
+              "يَا وَاسِعَ الْمَغْفِرَةِ، آنِسْ وَحْشَةَ مَنْ فُقِدُوا فِي هَذَا الْبَلَاءِ، وَاجْعَلِ الْجَنَّةَ نُزُلَهُمْ وَمَأْوَاهُمْ، وَاكْتُبْ لَهُمْ أَجْرَ الشَّهَادَةِ وَرِضْوَانَكَ الْأَكْبَرَ.",
+              "يَا شَافِيَ الْأَسْقَامِ، امْسَحْ بِيَدِ الرَّحْمَةِ عَلَى كُلِّ جُرْحٍ وَأَلَمٍ، وَأَنْزِلِ السَّلْوَانَ وَالثَّبَاتَ عَلَى بُيُوتٍ بَاتَتْ مَكْسُورَةَ الْخَاطِرِ.",
+              "مِنْ أَهْلِ الْمَوْصِلِ فِي الْعِرَاقِ إِلَى مِصْرَ وَشَعْبِهَا الْأَصِيلِ: قُلُوبُنَا مَعَكُمْ، وَنَسْأَلُ اللَّهَ أَنْ يَقِيَ مِصْرَ وَبِلَادَ الْمُسْلِمِينَ كُلَّ كَرْبٍ وَشَرٍّ، آمِينَ.",
           ]
 
           def run_cmd(cmd):
@@ -106,24 +161,45 @@ jobs:
                   raise RuntimeError(f"فشل {' '.join(cmd[:4])}:\n{res.stderr[-800:]}")
 
           def find_bold_font():
-              for p in (
-                  "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf",
-                  "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf",
-                  "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
-              ):
-                  if os.path.exists(p):
-                      return p
+              for p in ("/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf"):
+                  if os.path.exists(p): return p
               r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
               for ln in r.stdout.splitlines():
-                  if os.path.exists(ln.strip()):
-                      return ln.strip()
+                  if os.path.exists(ln.strip()): return ln.strip()
               raise RuntimeError("لم يُعثر على خط عربي")
 
+          def find_quran_font(cache_dir, fb):
+              dst = cache_dir / "AmiriQuran-Regular.ttf"
+              for url in ("https://cdn.jsdelivr.net/gh/mohammed-2-5/islamic-library-data@master/fonts/AmiriQuran-Regular.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/amiriquran/AmiriQuran-Regular.ttf"):
+                  try:
+                      r = requests.get(url, timeout=20)
+                      if r.status_code == 200 and len(r.content) > 50000:
+                          dst.write_bytes(r.content)
+                          return str(dst)
+                  except Exception:
+                      pass
+              for p in ("/usr/share/fonts/opentype/fonts-hosny-amiri/AmiriQuran.ttf", "/usr/share/fonts/truetype/hosny-amiri/AmiriQuran.ttf"):
+                  if os.path.exists(p): return p
+              return fb
+
+          def fetch_uthmani_chapter(surah, fallback_pairs):
+              v = {}
+              try:
+                  r = requests.get(f"https://api.quran.com/api/v4/quran/verses/uthmani?chapter_number={surah}", timeout=15)
+                  if r.status_code == 200:
+                      for it in r.json().get("verses", []):
+                          vk = str(it.get("verse_key", ""))
+                          if ":" in vk:
+                              v[int(vk.split(":")[1])] = (it.get("text_uthmani") or "").strip()
+              except Exception:
+                  pass
+              for a_num, fb_txt in fallback_pairs:
+                  if not v.get(a_num):
+                      v[a_num] = fb_txt
+              return v
+
           def load_moon_icon(size=27):
-              for url in (
-                  "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/emoji_u1f316.png",
-                  "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f316.png",
-              ):
+              for url in ("https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/emoji_u1f316.png", "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f316.png"):
                   try:
                       r = requests.get(url, timeout=15)
                       if r.status_code == 200 and len(r.content) > 500:
@@ -144,12 +220,7 @@ jobs:
               return im.resize((size, size), Image.Resampling.LANCZOS)
 
           def probe_video(path):
-              r = subprocess.run(
-                  ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                   "-show_entries", "stream=width,height,r_frame_rate,side_data_list:stream_tags=rotate",
-                   "-show_entries", "format=duration", "-of", "json", str(path)],
-                  capture_output=True, text=True, check=True,
-              )
+              r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,side_data_list:stream_tags=rotate", "-show_entries", "format=duration", "-of", "json", str(path)], capture_output=True, text=True, check=True)
               info = json.loads(r.stdout)
               st = info["streams"][0]
               vw, vh = int(st["width"]), int(st["height"])
@@ -161,12 +232,14 @@ jobs:
                   if "rotation" in sd:
                       try: rot = abs(int(float(sd["rotation"])))
                       except Exception: pass
-              if rot in (90, 270):
-                  vw, vh = vh, vw
+              if rot in (90, 270): vw, vh = vh, vw
+              fps_str = st.get("avg_frame_rate") or st.get("r_frame_rate") or "30/1"
               try:
-                  n, d = str(st.get("r_frame_rate") or "30/1").split("/")
+                  n, d = str(fps_str).split("/")
                   src_fps = float(n) / max(1.0, float(d))
               except Exception:
+                  src_fps = 30.0
+              if src_fps < 15 or src_fps > 120:
                   src_fps = 30.0
               return vw, vh, float(info["format"]["duration"]), max(24, min(30, round(src_fps)))
 
@@ -174,26 +247,30 @@ jobs:
               r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True)
               return max(0.0, float(r.stdout.strip() or 0.0))
 
-          def synth_dua_sentence(text, out_wav, work_dir, idx):
-              raw_mp3 = work_dir / f"dua_{idx}.mp3"
+          def synth_dua(text, out_wav, work_dir, idx):
+              raw = work_dir / f"dua_{idx}.mp3"
               ok = False
               if gemini_tts_with_pool is not None:
                   try:
-                      gemini_tts_with_pool(text, str(raw_mp3), voice=TTS_VOICE)
-                      ok = raw_mp3.exists() and raw_mp3.stat().st_size > 1000
+                      gemini_tts_with_pool(text, str(raw), voice=TTS_VOICE)
+                      ok = raw.exists() and raw.stat().st_size > 1000
                   except Exception as e:
                       print(f"⚠️ Gemini فشل ({e}) — Edge احتياطي", flush=True)
               if not ok:
                   import edge_tts
-                  asyncio.run(edge_tts.Communicate(text, "ar-EG-ShakirNeural", rate="-8%").save(str(raw_mp3)))
-              af = (
-                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,"
-                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,"
-                  "atempo=0.95,highpass=f=80,lowpass=f=9500,"
-                  "equalizer=f=220:t=q:w=1.2:g=2.5,equalizer=f=4800:t=q:w=1.5:g=-1.5,"
-                  "loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95"
-              )
-              run_cmd(["ffmpeg", "-y", "-i", str(raw_mp3), "-af", af, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)])
+                  asyncio.run(edge_tts.Communicate(text, "ar-EG-ShakirNeural", rate="-8%").save(str(raw)))
+              af = "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,atempo=0.95,highpass=f=80,lowpass=f=9500,equalizer=f=220:t=q:w=1.2:g=2.5,equalizer=f=4800:t=q:w=1.5:g=-1.5,loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95"
+              run_cmd(["ffmpeg", "-y", "-i", str(raw), "-af", af, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)])
+
+          def download_ayah(surah, ayah, out_wav, work_dir):
+              mp3 = work_dir / f"q_{surah}_{ayah}.mp3"
+              r = requests.get(f"https://everyayah.com/data/{RECITER_ID}/{surah:03d}{ayah:03d}.mp3", timeout=25)
+              if r.status_code != 200 or len(r.content) < 1000:
+                  r = requests.get(f"https://everyayah.com/data/Alafasy_128kbps/{surah:03d}{ayah:03d}.mp3", timeout=25)
+                  r.raise_for_status()
+              mp3.write_bytes(r.content)
+              af = "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,areverse,loudnorm=I=-15:TP=-1.5:LRA=10,alimiter=limit=0.95,afade=t=in:st=0:d=0.015"
+              run_cmd(["ffmpeg", "-y", "-i", str(mp3), "-af", af, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)])
 
           def _font(p, sz):
               return ImageFont.truetype(p, sz, layout_engine=ImageFont.Layout.RAQM) if HAS_RAQM else ImageFont.truetype(p, sz)
@@ -208,8 +285,7 @@ jobs:
               txt = _prep(s)
               bb = draw.textbbox((0, 0), txt, font=f, direction="rtl") if HAS_RAQM else draw.textbbox((0, 0), txt, font=f)
               x = (W - (bb[2] - bb[0])) // 2 - bb[0]
-              kw = {"direction": "rtl"} if HAS_RAQM else {}
-              draw.text((x, y), txt, font=f, fill=fill, **kw)
+              draw.text((x, y), txt, font=f, fill=fill, **({"direction": "rtl"} if HAS_RAQM else {}))
 
           def _wrap(txt, f, mw, draw):
               lines = []
@@ -218,8 +294,7 @@ jobs:
                   for w in para.split():
                       t = f"{cur} {w}".strip() if cur else w
                       bb = _bb(draw, t, f)
-                      if (bb[2] - bb[0]) <= mw:
-                          cur = t
+                      if (bb[2] - bb[0]) <= mw: cur = t
                       else:
                           if cur: lines.append(cur)
                           cur = w
@@ -235,50 +310,55 @@ jobs:
               canvas.alpha_composite(Image.merge("RGBA", (z, z, z, oa)))
               canvas.alpha_composite(fg)
 
-          def make_overlay(out_png, body_text, font_p, moon):
+          def make_overlay(out_png, body_text, is_quran, bold_p, quran_p, moon, ref_txt="", rec_label=""):
               ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
               sc = ImageDraw.Draw(ov)
-              for y in range(140): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(150 * (1 - y / 140))))
-              for y in range(H - 470, H): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(195 * (((y - (H - 470)) / 470) ** 1.25))))
+              for y in range(130): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(145 * (1 - y / 130))))
+              for y in range(H - 460, H): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(185 * (((y - (H - 460)) / 460) ** 1.25))))
+              if is_quran: sc.rectangle([0, 0, W, H], fill=(0, 0, 0, 60))
 
               bfg, mfg = Image.new("RGBA", (W, H), (0, 0, 0, 0)), Image.new("RGBA", (W, H), (0, 0, 0, 0))
               bd, md = ImageDraw.Draw(bfg), ImageDraw.Draw(mfg)
-              _draw_c(md, 42, HEADER_TEXT, _font(font_p, 23), "#E6C667")
+              _draw_c(md, 40, HEADER_TEXT, _font(bold_p, 22), "#E6C667")
 
               dummy = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-              cf, cl, clh = _font(font_p, 30), [], int(30 * 1.75)
-              for sz in range(38, 28, -2):
-                  f = _font(font_p, sz)
+              fpath = quran_p if is_quran else bold_p
+              ssz, msz, mh, mult = (44, 32, 620, 2.35) if is_quran else (38, 28, 380, 1.75)
+              cf, cl, clh = _font(fpath, msz), [], int(msz * mult)
+              for sz in range(ssz, msz - 1, -2):
+                  f = _font(fpath, sz)
                   ls = _wrap(body_text, f, W - 96, dummy)
                   gh = max((_bb(dummy, ln, f)[3] - _bb(dummy, ln, f)[1] for ln in ls), default=0)
-                  lh = max(int(sz * 1.75), gh + 14)
-                  if len(ls) * lh <= 390:
+                  lh = max(int(sz * mult), gh + 14)
+                  if len(ls) * lh <= mh:
                       cf, cl, clh = f, ls, lh
                       break
               if not cl: cl = _wrap(body_text, cf, W - 96, dummy)
 
               mtop = min((_bb(bd, ln, cf)[1] for ln in cl), default=0)
-              y = max(220 + max(0, -mtop), H - 155 - len(cl) * clh)
+              lbot = _bb(bd, cl[-1], cf)[3] if cl else clh
+              y = max(175 + max(0, -mtop), (H - len(cl) * clh - 50) // 2) if is_quran else max(220 + max(0, -mtop), H - 155 - len(cl) * clh)
               for ln in cl:
-                  _draw_c(bd, y, ln, cf, "#FFFFFF")
+                  _draw_c(bd, y, ln, cf, "#FFE066" if is_quran else "#FFFFFF")
                   y += clh
 
-              wf = _font(font_p, 25)
+              if is_quran and ref_txt:
+                  _draw_c(md, max(y + 8, (y - clh) + lbot + 18), ref_txt, _font(bold_p, 26), "#D4AF37")
+              if is_quran and rec_label:
+                  _draw_c(md, H - 130, f"بصوت: الشيخ {rec_label}", _font(bold_p, 23), "#E8D5A0")
+
+              wf = _font(bold_p, 25)
               wtxt = _prep(ACCOUNT_NAME)
               wbb = md.textbbox((0, 0), wtxt, font=wf, direction="rtl") if HAS_RAQM else md.textbbox((0, 0), wtxt, font=wf)
-              wy = H - 60
-              wx_vis = W - (wbb[2] - wbb[0]) - 28
-              kw = {"direction": "rtl"} if HAS_RAQM else {}
-              md.text((wx_vis - wbb[0], wy), wtxt, font=wf, fill="#F5E6B3", **kw)
+              wy, wx_vis = H - 60, W - (wbb[2] - wbb[0]) - 28
+              md.text((wx_vis - wbb[0], wy), wtxt, font=wf, fill="#F5E6B3", **({"direction": "rtl"} if HAS_RAQM else {}))
 
               _halo(ov, bfg, 2, 3)
               _halo(ov, mfg, 1, 2)
 
-              ix = max(12, wx_vis - moon.width - 7)
-              iy = wy + wbb[1] + ((wbb[3] - wbb[1]) - moon.height) // 2
+              ix, iy = max(12, wx_vis - moon.width - 7), wy + wbb[1] + ((wbb[3] - wbb[1]) - moon.height) // 2
               z = Image.new("L", moon.size, 0)
-              sh = moon.getchannel("A").filter(ImageFilter.GaussianBlur(2))
-              ov.alpha_composite(Image.merge("RGBA", (z, z, z, sh)), dest=(ix, iy + 2))
+              ov.alpha_composite(Image.merge("RGBA", (z, z, z, moon.getchannel("A").filter(ImageFilter.GaussianBlur(2)))), dest=(ix, iy + 2))
               ov.alpha_composite(moon, dest=(ix, iy))
               ov.save(out_png)
 
@@ -289,78 +369,80 @@ jobs:
               vw, vh, vdur, fps = probe_video(src)
               print(f"📹 الأصلي: {vw}x{vh} | {fps}fps | {vdur:.2f}s", flush=True)
 
-              work = Path(tempfile.mkdtemp(prefix="warraq_dua_"))
+              preset = AYAH_PRESETS.get(AYAH_SET, AYAH_PRESETS["alfajr_27_30"])
+              surah, sname, pairs = preset["surah"], preset["sname"], preset["ayahs"]
+
+              work = Path(tempfile.mkdtemp(prefix="warraq_v3_"))
               try:
-                  font_p, moon = find_bold_font(), load_moon_icon(27)
-                  g_mid, g_end = work / "g055.wav", work / "g125.wav"
-                  run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "0.55", "-c:a", "pcm_s16le", str(g_mid)])
-                  run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "1.25", "-c:a", "pcm_s16le", str(g_end)])
+                  bold_p = find_bold_font()
+                  quran_p = find_quran_font(work, bold_p)
+                  moon = load_moon_icon(27)
+                  verses = fetch_uthmani_chapter(surah, pairs)
+                  rec_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
 
-                  parts, timings, cur = [], [], 0.0
-                  for i, line in enumerate(DUA_LINES):
-                      w = work / f"s_{i}.wav"
-                      synth_dua_sentence(line, w, work, i)
-                      last = (i == len(DUA_LINES) - 1)
-                      dur = get_dur(w) + (1.25 if last else 0.55)
-                      parts.extend([w, g_end if last else g_mid])
-                      timings.append((line, cur, cur + dur))
+                  timeline = [
+                      {"type": "quran", "surah": surah, "ayah": a_num, "text": f"﴿ {verses[a_num]} ﴾", "ref": f"[ سورة {sname} : {a_num} ]"}
+                      for a_num, _ in pairs
+                  ] + [{"type": "dua", "text": ln} for ln in DUA_LINES]
+
+                  g_q, g_mid, g_end = work / "g025.wav", work / "g045.wav", work / "g110.wav"
+                  run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "0.25", "-c:a", "pcm_s16le", str(g_q)])
+                  run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "0.45", "-c:a", "pcm_s16le", str(g_mid)])
+                  run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "1.10", "-c:a", "pcm_s16le", str(g_end)])
+
+                  q_parts, d_parts, segs, cur = [], [], [], 0.0
+                  for i, it in enumerate(timeline):
+                      w = work / f"seg_{i}.wav"
+                      is_q = (it["type"] == "quran")
+                      if is_q:
+                          download_ayah(it["surah"], it["ayah"], w, work)
+                      else:
+                          synth_dua(it["text"], w, work, i)
+
+                      last = (i == len(timeline) - 1)
+                      if last:
+                          pad_w, pad_d = g_end, 1.10
+                      elif is_q and i + 1 < len(timeline) and timeline[i + 1]["type"] == "quran":
+                          pad_w, pad_d = g_q, 0.25
+                      else:
+                          pad_w, pad_d = g_mid, 0.45
+
+                      dur = get_dur(w) + pad_d
+                      (q_parts if is_q else d_parts).extend([w, pad_w])
+                      segs.append({**it, "t0": cur, "dur": dur})
                       cur += dur
-                      print(f"🎙️ جملة {i + 1}/{len(DUA_LINES)} ({dur:.2f}s)", flush=True)
+                      print(f"🎙️ مقطع {i + 1}/{len(timeline)} ({dur:.2f}s)", flush=True)
 
-                  ac = work / "ac.txt"
-                  ac.write_text("\n".join(f"file '{p.resolve()}'" for p in parts), encoding="utf-8")
-                  dry = work / "dry.wav"
-                  run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(ac), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(dry)])
+                  qc, dc = work / "qc.txt", work / "dc.txt"
+                  qc.write_text("\n".join(f"file '{p.resolve()}'" for p in q_parts), encoding="utf-8")
+                  dc.write_text("\n".join(f"file '{p.resolve()}'" for p in d_parts), encoding="utf-8")
+                  q_wav, d_dry, d_wav = work / "q.wav", work / "ddry.wav", work / "d.wav"
+                  run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(qc), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(q_wav)])
+                  run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(dc), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(d_dry)])
+                  ddur = get_dur(d_dry)
+                  run_cmd(["ffmpeg", "-y", "-i", str(d_dry), "-af", f"aecho=0.88:0.86:50|110|175:0.20|0.10|0.04,loudnorm=I=-15:TP=-1.5:LRA=10,alimiter=limit=0.95,afade=t=out:st={max(0.0, ddur - 0.8):.3f}:d=0.8", "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(d_wav)])
 
-                  tdur = get_dur(dry)
-                  final_dua = work / "dua.wav"
-                  af_rev = f"aecho=0.88:0.86:50|110|175:0.22|0.12|0.05,loudnorm=I=-15:TP=-1.5:LRA=10,alimiter=limit=0.95,afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, tdur - 0.9):.3f}:d=0.9"
-                  run_cmd(["ffmpeg", "-y", "-i", str(dry), "-af", af_rev, "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(final_dua)])
+                  full_c, full_wav = work / "fc.txt", work / "full.wav"
+                  full_c.write_text(f"file '{q_wav.resolve()}'\nfile '{d_wav.resolve()}'\n", encoding="utf-8")
+                  run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(full_c), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(full_wav)])
+                  tdur = get_dur(full_wav)
 
-                  pts = f",setpts={tdur / vdur:.5f}*PTS,fps={fps}" if (tdur > vdur and vdur > 0.5) else ""
-                  pre = f"[0:v]format=yuv420p,fps={fps}{pts}"
+                  norm_vid = work / "norm_intra.mp4"
+                  pts = f",setpts={tdur / vdur:.5f}*PTS" if (tdur > vdur and vdur > 0.5) else ""
                   if vw > vh and LAYOUT_MODE == "auto_vertical":
-                      base_fc = (
-                          f"{pre},split=2[bg][fg];"
-                          f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},gblur=sigma=24,eq=brightness=-0.20:saturation=0.88,setsar=1[b];"
-                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease,setsar=1[f];"
-                          f"[b][f]overlay=(W-w)/2:(H-h)/2,eq=brightness=-0.05:contrast=1.06:saturation=0.92,vignette=PI/4,tpad=stop_mode=clone:stop_duration=1.5,format=yuv420p,setsar=1[vbase]"
-                      )
+                      nfc = f"[0:v]format=yuv420p,fps={fps}{pts},fps={fps},split=2[bg][fg];[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},gblur=sigma=20,eq=brightness=-0.20,setsar=1[b];[fg]scale={W}:-2:force_original_aspect_ratio=decrease,setsar=1[f];[b][f]overlay=(W-w)/2:(H-h)/2,tpad=stop_mode=clone:stop_duration=2,setsar=1,format=yuv420p[v]"
                   else:
-                      base_fc = f"{pre},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},eq=brightness=-0.05:contrast=1.06:saturation=0.92,vignette=PI/4,tpad=stop_mode=clone:stop_duration=1.5,format=yuv420p,setsar=1[vbase]"
+                      nfc = f"[0:v]format=yuv420p,fps={fps}{pts},fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},tpad=stop_mode=clone:stop_duration=2,setsar=1,format=yuv420p[v]"
+                  run_cmd(["ffmpeg", "-y", "-i", str(src), "-filter_complex", nfc, "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-g", "1", "-pix_fmt", "yuv420p", str(norm_vid)])
 
-                  venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "23", "-maxrate", "1400k", "-bufsize", "2800k"] if VIDEO_QUALITY == "compact" else ["-c:v", "libx264", "-preset", "slow", "-crf", "21", "-maxrate", "2200k", "-bufsize", "4400k"]
-                  fade_f = f"fade=t=in:st=0:d=0.45,fade=t=out:st={max(0.0, tdur - 0.9):.3f}:d=0.9"
-                  out_mp4 = work / "al_warraq_mosul_dua_reel.mp4"
-
-                  if SHOW_TEXT:
-                      ov_in, ov_ch, prev = [], [], "vbase"
-                      for i, (ln, t0, t1) in enumerate(timings):
+                  clips = []
+                  for i, sg in enumerate(segs):
+                      c_mp4 = work / f"clip_{i}.mp4"
+                      fades = []
+                      if i == 0: fades.append("fade=t=in:st=0:d=0.40")
+                      if i == len(segs) - 1: fades.append(f"fade=t=out:st={max(0.0, sg['dur'] - 0.8):.3f}:d=0.80")
+                      f_str = ("," + ",".join(fades)) if fades else ""
+                      if SHOW_TEXT:
                           png = work / f"ov_{i}.png"
-                          make_overlay(png, ln, font_p, moon)
-                          ov_in.extend(["-framerate", str(fps), "-loop", "1", "-t", f"{tdur:.3f}", "-i", str(png)])
-                          cond = f"gte(t,{t0:.3f})" if i == len(timings) - 1 else f"gte(t,{t0:.3f})*lt(t,{t1:.3f})"
-                          ov_ch.append(f"[{i+2}:v]format=rgba[ov{i}];[{prev}][ov{i}]overlay=0:0:enable='{cond}':shortest=1[vt{i}]")
-                          prev = f"vt{i}"
-                      fc = f"{base_fc};" + ";".join(ov_ch) + f";[{prev}]{fade_f},format=yuv420p[vout]"
-                      cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-i", str(src), "-i", str(final_dua)] + ov_in
-                  else:
-                      fc = f"{base_fc};[vbase]{fade_f},format=yuv420p[vout]"
-                      cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-i", str(src), "-i", str(final_dua)]
-
-                  cmd += ["-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0", "-t", f"{tdur:.3f}", *venc, "-profile:v", "high", "-level:v", "4.0", "-g", str(fps*3), "-bf", "2", "-aq-mode", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "96k", "-movflags", "+faststart", "-shortest", str(out_mp4)]
-                  run_cmd(cmd)
-
-                  mb, dur = out_mp4.stat().st_size / 1024 / 1024, get_dur(out_mp4)
-                  print(f"🎬 جاهز: {mb:.2f} MB | {dur:.1f}s", flush=True)
-                  cap = f"🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، واربط على قلوب ذويهم.\n\nخالص العزاء والمواساة من أهل الموصل بالعراق إلى أهلنا وأحبتنا في مصر الحبيبة 🇮🇶 🇪🇬\nلاحول ولاقوة الا بالله 🌖\n📦 الحجم: {mb:.1f} MB | المدة: {dur:.0f} ثانية"
-                  with open(out_mp4, "rb") as vf:
-                      res = requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendVideo", data={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "caption": cap, "supports_streaming": "true"}, files={"video": (out_mp4.name, vf, "video/mp4")}, timeout=180).json()
-                  assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم الإرسال إلى تيليغرام!", flush=True)
-              finally:
-                  shutil.rmtree(work, ignore_errors=True)
-
-          if __name__ == "__main__":
-              main()
-          PYEOF
+                          make_overlay(png, sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
+                          run_cmd(["ffmpeg", "-y", "-ss", f"{sg['t0']:.3f}", "-t", f"{sg['dur']:.3f}", "-i", str(norm_vid), "-loop", "1", "-t", f"{sg['dur']:.3f}", "-i", str(png), "-filter_complex", f"[0:v][1:v]overlay=0:0:shortest=1{f_str},format=yuv420p,setsar=1[v]", "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-c
