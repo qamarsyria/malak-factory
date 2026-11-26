@@ -1,8 +1,18 @@
-name: 🕯️ ريلز حادث الوراق (إنشاء واقعي 50ث)
+name: 🕯️ ريلز حادث الوراق (30ث حقيقي + 20ث تكملة)
 
 on:
   workflow_dispatch:
     inputs:
+      video_path:
+        description: 'اسم/مسار فيديوك ذو الـ 30 ثانية داخل المستودع'
+        required: true
+        default: 'warraq_30s.mp4'
+        type: string
+      video_url:
+        description: 'اختياري: رابط مباشر للفيديو بدل مسار المستودع (اتركه فارغاً لاستخدام الملف المرفوع)'
+        required: false
+        default: ''
+        type: string
       ayah_set:
         description: 'الآيات في بداية الفيديو'
         required: true
@@ -29,6 +39,12 @@ on:
         default: 'Charon'
         type: choice
         options: [Charon, Orus, Algieba, Rasalgethi]
+      layout_mode:
+        description: 'تكييف أبعاد فيديوك (auto_vertical يحفظ كامل العرضي بخلفية مموهة)'
+        required: true
+        default: 'auto_vertical'
+        type: choice
+        options: [auto_vertical, fill_crop]
       video_size:
         description: 'جودة وحجم الفيديو'
         required: true
@@ -37,9 +53,9 @@ on:
         options: [balanced, compact, high]
 
 jobs:
-  build_realistic_reel:
+  build_hybrid_reel:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -55,15 +71,18 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
           pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts numpy
 
-      - name: Generate Vision-Verified Realistic 50s Al-Warraq Reel
+      - name: Build 50s Hybrid Reel (Silent Original + 20s AI Verified)
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VIDEO_PATH: ${{ inputs.video_path }}
+          VIDEO_URL: ${{ inputs.video_url }}
           AYAH_SET: ${{ inputs.ayah_set }}
           RECITER_ID: ${{ inputs.reciter }}
           TTS_VOICE: ${{ inputs.tts_voice }}
+          LAYOUT_MODE: ${{ inputs.layout_mode }}
           VIDEO_SIZE: ${{ inputs.video_size }}
         run: |
           python -u - <<'PYEOF'
@@ -93,9 +112,12 @@ jobs:
           W, H, FPS = 720, 1280, 30
           HAS_RAQM = features.check("raqm")
           PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "").strip()
+          VIDEO_PATH = os.getenv("VIDEO_PATH", "warraq_30s.mp4").strip()
+          VIDEO_URL = os.getenv("VIDEO_URL", "").strip()
           AYAH_SET = os.getenv("AYAH_SET", "qaf_19_20").strip()
           RECITER_ID = os.getenv("RECITER_ID", "Yasser_Ad-Dussary_128kbps").strip()
           TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
+          LAYOUT_MODE = os.getenv("LAYOUT_MODE", "auto_vertical").strip()
           VIDEO_SIZE = os.getenv("VIDEO_SIZE", "balanced").strip()
 
           RECITER_LABELS = {
@@ -151,49 +173,25 @@ jobs:
               "face", "portrait", "crowd", "wedding", "party", "concert", "dance", "bikini",
           }
 
-          # 7 مشاهد موجهة بدقة ومفحوصة بالرؤية لتحاكي حريق صهريج الوراق وإحراق السيارات
-          STORYBOARD_SHOTS = [
+          # 3 مشاهد واقعية مكملة للـ 20 ثانية الأخيرة (مفحوصة بلوحة مجمعة بـ Gemini Vision)
+          COMPLEMENTARY_SHOTS = [
               {
-                  "name": "الطريق السريع ليلاً وشاحنة البترول",
-                  "queries": ["tanker truck highway", "highway traffic night", "semi truck night"],
-                  "wiki_queries": ["tanker truck highway", "highway night traffic"],
-                  "req": "Dark nighttime highway overpass with traffic lights OR a large fuel tanker / semi truck driving on an asphalt highway road.",
+                  "name": "إطفاء وإسعاف وطوارئ ليلية",
+                  "px_vids": ["fire truck night emergency", "emergency flashing lights night"],
+                  "wiki": ["firefighters car fire night", "firefighter burning vehicle hose", "fire truck night fire"],
+                  "req": "Real firefighters fighting a vehicle/road fire or fire truck / ambulance emergency lights at night (NO campfires, NO fireworks, NO insects).",
               },
               {
-                  "name": "انفجار صهريج الوقود ونار واصلة للسماء",
-                  "queries": ["oil fire explosion", "huge fire flames night", "gas explosion fire", "building fire night"],
-                  "wiki_queries": ["fuel tanker fire", "tanker explosion fire", "massive oil fire flames"],
-                  "req": "Terrifying massive towering fire explosion with gigantic flames reaching high into the sky and heavy disaster fire (NOT a campfire, NOT fireworks, NOT candles).",
-              },
-              {
-                  "name": "سيارات تحترق بنص الطريق",
-                  "queries": ["car fire flames", "burning car road", "vehicle fire", "burning car night"],
-                  "wiki_queries": ["car fire highway", "burning cars road accident", "vehicle fire flames"],
-                  "req": "Real cars or trucks burning / engulfed in fierce orange flames and smoke on an asphalt road or highway accident.",
-              },
-              {
-                  "name": "دخان أسود كثيف يملأ السماء",
-                  "queries": ["black smoke fire disaster", "thick black smoke burning", "industrial fire smoke"],
-                  "wiki_queries": ["black smoke fire highway", "massive fire black smoke plume"],
-                  "req": "Apocalyptic thick black smoke clouds billowing violently into the sky from a catastrophic oil/vehicle fire.",
-              },
-              {
-                  "name": "سيارات الإطفاء والإسعاف بالليل",
-                  "queries": ["fire truck night emergency", "firefighter burning", "ambulance flashing lights night"],
-                  "wiki_queries": ["firefighters car fire night", "fire truck emergency lights night"],
-                  "req": "Real firefighters with hoses fighting a huge fire OR fire truck / ambulance with emergency flashing lights on a road at night.",
-              },
-              {
-                  "name": "آثار الحريق وسيارات محروقة",
-                  "queries": ["burned car wreck", "firefighter smoke", "car accident night fire"],
-                  "wiki_queries": ["burned cars highway wreck", "charred vehicles fire aftermath"],
-                  "req": "Charred / burned-out vehicles or heavy smoke aftermath on a road after a major fire accident.",
+                  "name": "دخان أسود كثيف وسيارات محترقة",
+                  "px_vids": ["black smoke fire rising", "dark smoke burning"],
+                  "wiki": ["burned car wreck fire", "black smoke car fire", "charred vehicles fire aftermath"],
+                  "req": "Thick black disaster fire smoke or burned-out charred vehicle wreckage on road (NO campfires, NO cozy scenes, NO insects).",
               },
               {
                   "name": "مسجد ليلاً للدعاء لمصر",
-                  "queries": ["mosque night cairo", "mosque dome night", "islamic mosque dusk"],
-                  "wiki_queries": ["Cairo mosque night", "mosque minaret night sky"],
-                  "req": "Respectful serene mosque dome and minaret at night or dusk for prayer.",
+                  "px_vids": ["mosque night", "mosque dawn"],
+                  "wiki": ["Cairo mosque night", "Al-Azhar mosque night"],
+                  "req": "Serene respectful mosque dome and minaret at night or dawn for prayer.",
               },
           ]
 
@@ -212,221 +210,134 @@ jobs:
                               ms.append(bm)
                   except Exception:
                       pass
-              for fb in ("gemini-3.8-flash", "gemini-2.5-flash", "gemini-3.8-flash-lite"):
-                  if fb not in ms:
-                      ms.append(fb)
-              return ms[:6]
+              for fb in ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.8-flash-lite"):
+                  if fb not in ms: ms.append(fb)
+              return ms[:2]
 
-          def vision_inspect(frame_bytes_list: list[bytes], req: str) -> tuple[bool, int, str]:
-              if get_pool is None or not frame_bytes_list:
-                  return True, 7, "no_pool"
-              pool = get_pool()
-              models = _vision_models()
+          def pick_best_from_sheet(candidates, req, scene_idx):
+              if not candidates:
+                  return None
+              if len(candidates) == 1 or get_pool is None:
+                  return candidates[0]
+              cols, rows = 3, math.ceil(len(candidates) / 3)
+              tw, th = 360, 240
+              sheet = Image.new("RGB", (cols * tw, rows * th), (15, 15, 18))
+              draw = ImageDraw.Draw(sheet)
+              try:
+                  nf = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 34)
+              except Exception:
+                  nf = ImageFont.load_default()
+              for idx, cand in enumerate(candidates):
+                  r_i, c_i = divmod(idx, cols)
+                  sheet.paste(ImageOps.fit(cand["thumb"], (tw, th), method=Image.Resampling.LANCZOS), (c_i * tw, r_i * th))
+                  x0, y0 = c_i * tw + 8, r_i * th + 8
+                  draw.rectangle([x0, y0, x0 + 46, y0 + 42], fill=(0, 0, 0))
+                  draw.text((x0 + 12, y0 + 4), str(idx + 1), fill=(255, 220, 40), font=nf)
+
+              buf = io.BytesIO()
+              sheet.save(buf, "JPEG", quality=85)
+              b64 = base64.b64encode(buf.getvalue()).decode("ascii")
               prompt = (
-                  f"You are a strict documentary video editor for a tragic fuel-tanker highway fire disaster Reel.\n"
-                  f"Target scene requirement: {req}\n\n"
-                  "Inspect the attached image(s) strictly:\n"
-                  "- ACCEPT (accept=true) ONLY if the visual genuinely depicts the catastrophic disaster/emergency/mosque requirement cleanly and realistically.\n"
-                  "- STRICTLY REJECT (accept=false, score=1) if it shows ANY of: fireworks/celebrations, small cozy campfires/bonfires/fireplaces/candles/stoves/BBQ, insects/flies/animals/berries/plants/peaceful forests, cartoons/3D renders, close-up smiling people/women faces, OR giant TV news channel logos/text banners.\n"
-                  'Reply JSON only: {"accept": true, "score": 8, "reason": "short english description"}'
+                  f"Selecting realistic documentary footage for a tragic highway fuel-tanker fire disaster Reel.\n"
+                  f"Target scene: {req}\n"
+                  f"Pick tile 1..{len(candidates)} that best matches realistically. STRICTLY AVOID fireworks, campfires, candles, insects/animals, cartoons, smiling faces, or giant TV logos.\n"
+                  'Reply JSON only: {"best_tile": 1, "score": 8, "reason": "short description"}'
               )
-              parts = [{"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(b).decode("ascii")}} for b in frame_bytes_list]
-              parts.append({"text": prompt})
-
-              for model in models:
-                  for _ in range(2):
-                      try:
-                          key = pool.get_current()
-                          if not key:
-                              return True, 6, "no_key"
-                          url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                          r = requests.post(
-                              url,
-                              json={"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300, "responseMimeType": "application/json"}},
-                              timeout=25,
-                          )
-                          if r.status_code == 200:
-                              cands = r.json().get("candidates") or []
-                              if not cands:
-                                  break
+              pool = get_pool()
+              for model in _vision_models():
+                  try:
+                      key = pool.get_current()
+                      if not key: break
+                      r = requests.post(
+                          f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                          json={"contents": [{"parts": [{"inlineData": {"mimeType": "image/jpeg", "data": b64}}, {"text": prompt}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 250, "responseMimeType": "application/json"}},
+                          timeout=25,
+                      )
+                      if r.status_code == 200:
+                          cands = r.json().get("candidates") or []
+                          if cands:
                               txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", []) if not p.get("thought"))
                               s, e = txt.find("{"), txt.rfind("}")
                               if s != -1 and e > s:
                                   obj = json.loads(txt[s:e + 1])
+                                  pick = int(obj.get("best_tile", 1))
                                   if hasattr(pool, "_advance"): pool._advance()
-                                  return bool(obj.get("accept", False)), int(obj.get("score", 5)), str(obj.get("reason", ""))[:80]
-                              break
-                          elif r.status_code in (401, 403):
-                              pool.mark_dead(f"HTTP {r.status_code}")
-                          elif r.status_code == 429:
-                              pool.mark_failed(60)
-                              time.sleep(1)
-                          else:
-                              break
-                      except Exception:
-                          break
-              return True, 5, "vision_fallback"
-
-          def extract_video_frames_bytes(vid_path: Path) -> list[bytes]:
-              dur = get_dur(vid_path)
-              t1 = max(0.3, dur * 0.25)
-              t2 = max(0.8, dur * 0.65)
-              out_frames = []
-              for idx, ts in enumerate((t1, t2)):
-                  jp = vid_path.with_name(f"{vid_path.stem}_vf{idx}.jpg")
-                  res = subprocess.run(
-                      ["ffmpeg", "-y", "-v", "error", "-ss", f"{ts:.2f}", "-i", str(vid_path), "-frames:v", "1", "-vf", "scale=512:-1", "-q:v", "5", str(jp)],
-                      capture_output=True,
-                  )
-                  if res.returncode == 0 and jp.exists():
-                      out_frames.append(jp.read_bytes())
-                      jp.unlink(missing_ok=True)
-              return out_frames
+                                  if 1 <= pick <= len(candidates):
+                                      print(f"   👁️ اختيار اللوحة #{pick}/{len(candidates)} ({obj.get('score')}/10): {str(obj.get('reason',''))[:80]}", flush=True)
+                                      return candidates[pick - 1]
+                      elif r.status_code in (401, 403):
+                          pool.mark_dead(f"HTTP {r.status_code}")
+                      elif r.status_code == 429:
+                          if hasattr(pool, "_advance"): pool._advance()
+                          time.sleep(1)
+                  except Exception:
+                      if hasattr(pool, "_advance"): pool._advance()
+                      continue
+              return candidates[0]
 
           def _clean_tags(tags):
-              words = set(re.split(r"[^a-z0-9]+", (tags or "").lower()))
-              return len(words & BAD_TAGS) == 0
+              return len(set(re.split(r"[^a-z0-9]+", (tags or "").lower())) & BAD_TAGS) == 0
 
-          def fetch_verified_shot(shot_cfg, work_dir, used_urls, idx):
-              req = shot_cfg["req"]
-              best_media, best_score, best_reason = None, -1, ""
-
-              # 1) فحص فيديوهات Pixabay الواقعية بعين Gemini Vision
-              if PIXABAY_KEY:
-                  for q in shot_cfg["queries"]:
-                      try:
-                          r = requests.get(
-                              "https://pixabay.com/api/videos/",
-                              params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 20, "min_width": 640},
-                              timeout=15,
-                          )
-                          if r.status_code != 200:
-                              continue
-                          hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", "")) and h.get("duration", 0) >= 4]
-                          for h in hits[:5]:
-                              vids = h.get("videos", {})
-                              url = vids.get("medium", {}).get("url") or vids.get("large", {}).get("url")
-                              if not url or url in used_urls:
-                                  continue
-                              cand = work_dir / f"cand_v_{idx}_{h['id']}.mp4"
-                              with open(cand, "wb") as f:
-                                  for ch in requests.get(url, timeout=35, stream=True).iter_content(16384): f.write(ch)
-                              if cand.stat().st_size < 60000:
-                                  cand.unlink(missing_ok=True)
-                                  continue
-                              fbytes = extract_video_frames_bytes(cand)
-                              ok, score, reason = vision_inspect(fbytes, req)
-                              print(f"   👁️ [فيديو {idx + 1} | {q}] accept={ok} ({score}/10): {reason}", flush=True)
-                              if ok and score > best_score:
-                                  if best_media and best_media.exists(): best_media.unlink(missing_ok=True)
-                                  best_media, best_score, best_reason = cand, score, reason
-                                  used_urls.add(url)
-                                  if score >= 8:
-                                      return best_media
-                              else:
-                                  cand.unlink(missing_ok=True)
-                      except Exception:
-                          pass
-
-              if best_media and best_score >= 7:
-                  return best_media
-
-              # 2) البحث في صور Wikimedia Commons الحقيقية (صور حوادث صهاريج واحتراق سيارات حقيقية!)
-              for wq in shot_cfg.get("wiki_queries", []):
+          def gather_candidates(shot_cfg, used_urls):
+              candidates = []
+              for wq in shot_cfg.get("wiki", []):
+                  if len(candidates) >= 6: break
                   try:
                       r = requests.get(
                           "https://commons.wikimedia.org/w/api.php",
                           headers={"User-Agent": "AlWarraqDocBot/1.0 (https://github.com/qamarsyria/malak-factory)"},
-                          params={
-                              "action": "query", "generator": "search", "gsrsearch": f"{wq} filetype:bitmap",
-                              "gsrnamespace": "6", "gsrlimit": "8", "prop": "imageinfo",
-                              "iiprop": "url|size|mime", "iiurlwidth": "1280", "format": "json",
-                          },
-                          timeout=15,
+                          params={"action": "query", "generator": "search", "gsrsearch": f"{wq} filetype:bitmap", "gsrnamespace": "6", "gsrlimit": "6", "prop": "imageinfo", "iiprop": "url|size|mime", "iiurlwidth": "960", "format": "json"},
+                          timeout=12,
                       )
-                      if r.status_code != 200:
-                          continue
-                      pages = list((r.json().get("query") or {}).get("pages", {}).values())
-                      for p in pages[:6]:
+                      if r.status_code != 200: continue
+                      for p in list((r.json().get("query") or {}).get("pages", {}).values())[:4]:
                           ii = (p.get("imageinfo") or [{}])[0]
-                          mime = str(ii.get("mime", ""))
-                          if mime not in ("image/jpeg", "image/png"):
-                              continue
+                          if str(ii.get("mime", "")) not in ("image/jpeg", "image/png"): continue
                           url = ii.get("thumburl") or ii.get("url")
-                          if not url or url in used_urls:
-                              continue
-                          resp = requests.get(url, headers={"User-Agent": "AlWarraqDocBot/1.0"}, timeout=20)
-                          if resp.status_code != 200:
-                              continue
+                          if not url or url in used_urls: continue
+                          resp = requests.get(url, headers={"User-Agent": "AlWarraqDocBot/1.0"}, timeout=15)
+                          if resp.status_code != 200: continue
                           with Image.open(io.BytesIO(resp.content)) as im:
                               im = ImageOps.exif_transpose(im).convert("RGB")
-                              if min(im.size) < 420:
-                                  continue
-                              buf = io.BytesIO()
-                              im.resize((min(640, im.width), int(im.height * min(640, im.width) / im.width))).save(buf, "JPEG", quality=82)
-                              ok, score, reason = vision_inspect([buf.getvalue()], req)
-                              print(f"   👁️ [أرشيف {idx + 1} | {wq}] accept={ok} ({score}/10): {reason}", flush=True)
-                              if ok and score > best_score:
-                                  if best_media and best_media.exists(): best_media.unlink(missing_ok=True)
-                                  cand = work_dir / f"cand_w_{idx}_{p.get('pageid', 0)}.jpg"
-                                  im.save(cand, "JPEG", quality=92)
-                                  best_media, best_score, best_reason = cand, score, reason
-                                  used_urls.add(url)
-                                  if score >= 8:
-                                      return best_media
+                              if min(im.size) < 380: continue
+                              candidates.append({"kind": "image", "url": url, "image": im.copy(), "thumb": im.copy()})
+                              if len(candidates) >= 6: break
                   except Exception:
                       pass
-
-              # 3) فحص صور Pixabay الواقعية كاحتياط مفحوص بالرؤية أيضاً
-              if PIXABAY_KEY and best_score < 7:
-                  for q in shot_cfg["queries"]:
+              if PIXABAY_KEY and len(candidates) < 6:
+                  for q in shot_cfg.get("px_vids", []):
+                      if len(candidates) >= 6: break
                       try:
-                          r = requests.get(
-                              "https://pixabay.com/api/",
-                              params={"key": PIXABAY_KEY, "q": q, "image_type": "photo", "safesearch": "true", "per_page": 15, "min_width": 720},
-                              timeout=15,
-                          )
-                          if r.status_code != 200:
-                              continue
-                          hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", ""))]
-                          for h in hits[:5]:
-                              url = h.get("largeImageURL") or h.get("webformatURL")
-                              if not url or url in used_urls:
-                                  continue
-                              resp = requests.get(url, timeout=20)
-                              if resp.status_code != 200:
-                                  continue
-                              with Image.open(io.BytesIO(resp.content)) as im:
-                                  im = ImageOps.exif_transpose(im).convert("RGB")
-                                  if min(im.size) < 480:
-                                      continue
-                                  buf = io.BytesIO()
-                                  im.resize((min(640, im.width), int(im.height * min(640, im.width) / im.width))).save(buf, "JPEG", quality=82)
-                                  ok, score, reason = vision_inspect([buf.getvalue()], req)
-                                  print(f"   👁️ [صورة {idx + 1} | {q}] accept={ok} ({score}/10): {reason}", flush=True)
-                                  if ok and score > best_score:
-                                      if best_media and best_media.exists(): best_media.unlink(missing_ok=True)
-                                      cand = work_dir / f"cand_p_{idx}_{h['id']}.jpg"
-                                      im.save(cand, "JPEG", quality=92)
-                                      best_media, best_score, best_reason = cand, score, reason
-                                      used_urls.add(url)
-                                      if score >= 8:
-                                          return best_media
+                          r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 10, "min_width": 640}, timeout=12)
+                          if r.status_code != 200: continue
+                          hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", "")) and h.get("duration", 0) >= 4]
+                          for h in hits[:3]:
+                              vids = h.get("videos", {})
+                              full_url = vids.get("medium", {}).get("url") or vids.get("large", {}).get("url")
+                              tiny_url = vids.get("tiny", {}).get("url") or full_url
+                              if not full_url or full_url in used_urls: continue
+                              tmp_v, tmp_j = Path(tempfile.gettempdir()) / f"px_t_{h['id']}.mp4", Path(tempfile.gettempdir()) / f"px_t_{h['id']}.jpg"
+                              with open(tmp_v, "wb") as f:
+                                  for ch in requests.get(tiny_url, timeout=15, stream=True).iter_content(16384): f.write(ch)
+                              subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "1.0", "-i", str(tmp_v), "-frames:v", "1", "-q:v", "4", str(tmp_j)], capture_output=True)
+                              if tmp_j.exists():
+                                  with Image.open(tmp_j) as im:
+                                      candidates.append({"kind": "video", "url": full_url, "thumb": im.convert("RGB").copy()})
+                              tmp_v.unlink(missing_ok=True); tmp_j.unlink(missing_ok=True)
+                              if len(candidates) >= 6: break
                       except Exception:
                           pass
+              return candidates
 
-              if best_media:
-                  print(f"   ✅ اعتُمد للقطة {idx + 1} (تقييم {best_score}/10): {best_reason}", flush=True)
-                  return best_media
-
-              fb = work_dir / f"shot_fb_{idx}.jpg"
-              im = Image.new("RGB", (W, H), (14, 12, 16))
-              dr = ImageDraw.Draw(im)
-              for y in range(H):
-                  t = y / H
-                  dr.line([(0, y), (W, y)], fill=(int(20 + 75 * (t ** 2)), int(14 + 26 * (t ** 2)), 16))
-              im.save(fb, "JPEG", quality=92)
-              return fb
+          def materialize_winner(cand, work_dir, idx):
+              if cand["kind"] == "image":
+                  out = work_dir / f"win_{idx}.jpg"
+                  cand["image"].save(out, "JPEG", quality=92)
+                  return out
+              out = work_dir / f"win_{idx}.mp4"
+              with open(out, "wb") as f:
+                  for ch in requests.get(cand["url"], timeout=45, stream=True).iter_content(16384): f.write(ch)
+              return out
 
           def find_bold_font():
               for p in ("/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf"):
@@ -484,6 +395,28 @@ jobs:
                           term = 0.28 * math.sqrt(max(0.0, rad * rad - dy * dy))
                           px[p_x, py] = (250, 206, 72, a) if dx <= term else (58, 62, 76, a)
               return im.resize((size, size), Image.Resampling.LANCZOS)
+
+          def probe_video_info(path):
+              r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,side_data_list:stream_tags=rotate", "-show_entries", "format=duration", "-of", "json", str(path)], capture_output=True, text=True)
+              if r.returncode != 0:
+                  raise RuntimeError(f"❌ ملف الفيديو غير صالح أو تالف: {path.name}")
+              info = json.loads(r.stdout)
+              if not info.get("streams"):
+                  raise RuntimeError(f"❌ لا يوجد مسار فيديو صالح داخل {path.name}")
+              st = info["streams"][0]
+              vw, vh = int(st["width"]), int(st["height"])
+              rot = 0
+              if "rotate" in (st.get("tags") or {}):
+                  try: rot = abs(int(float(st["tags"]["rotate"])))
+                  except Exception: pass
+              for sd in st.get("side_data_list") or []:
+                  if "rotation" in sd:
+                      try: rot = abs(int(float(sd["rotation"])))
+                      except Exception: pass
+              if rot in (90, 270): vw, vh = vh, vw
+              dur = float(info["format"].get("duration") or 0.0)
+              print(f"📹 الفيديو المرفوع: {vw}x{vh} | codec={st.get('codec_name')} | المدة المعلنة={dur:.2f}s (سيُزال صوته 100%)", flush=True)
+              return vw, vh, dur
 
           def get_dur(path):
               r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True)
@@ -610,11 +543,11 @@ jobs:
           def read_shot_frames(media_path, n_frames):
               is_img = media_path.suffix.lower() in (".jpg", ".jpeg", ".png")
               if is_img:
-                  vf = f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},zoompan=z='min(zoom+0.0010,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={n_frames + 10}:s={W}x{H}:fps={FPS},eq=brightness=-0.06:contrast=1.10:saturation=0.88,format=rgb24"
+                  vf = f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},zoompan=z='min(zoom+0.0010,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={n_frames + 10}:s={W}x{H}:fps={FPS},eq=brightness=-0.05:contrast=1.08:saturation=0.90,format=rgb24"
                   cmd = ["ffmpeg", "-v", "error", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
               else:
-                  vf = f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},eq=brightness=-0.06:contrast=1.10:saturation=0.88,format=rgb24"
-                  cmd = ["ffmpeg", "-v", "error", "-stream_loop", "-1", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+                  vf = f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},eq=brightness=-0.05:contrast=1.08:saturation=0.90,format=rgb24"
+                  cmd = ["ffmpeg", "-v", "error", "-an", "-stream_loop", "-1", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
 
               proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
               fbytes = W * H * 3
@@ -631,8 +564,23 @@ jobs:
               return frames
 
           def main():
-              work = Path(tempfile.mkdtemp(prefix="warraq_vision_"))
+              work = Path(tempfile.mkdtemp(prefix="warraq_hybrid_"))
               try:
+                  # 1) تجهيز الفيديو المرفوع (ذو الـ 30 ثانية) وفحص سلامته + كتم صوته نهائياً (-an)
+                  if VIDEO_URL:
+                      src_clip = work / "uploaded_clip.mp4"
+                      print("⬇️ تحميل الفيديو من الرابط المباشر...", flush=True)
+                      with open(src_clip, "wb") as f:
+                          for ch in requests.get(VIDEO_URL, timeout=90, stream=True).iter_content(16384): f.write(ch)
+                  else:
+                      src_clip = REPO_ROOT / VIDEO_PATH
+                      if not src_clip.exists():
+                          raise FileNotFoundError(f"❌ لم يُعثر على الفيديو في المسار '{VIDEO_PATH}'. ارفعه أولاً بنفس الاسم أو ضع رابطاً في video_url.")
+
+                  vw, vh, clip_dur = probe_video_info(src_clip)
+                  if clip_dur < 3.0:
+                      raise RuntimeError(f"❌ الفيديو المرفوع قصير جداً أو معطوب ({clip_dur:.2f}s).")
+
                   bold_p = find_bold_font()
                   quran_p = find_quran_font(work, bold_p)
                   moon = load_moon_icon(27)
@@ -641,6 +589,7 @@ jobs:
                   verses = fetch_uthmani_chapter(surah, pairs)
                   rec_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
 
+                  # 2) بناء الصوت الكامل (سورة قاف 19-20 بالدوسري + الدعاء الهادئ <= 49.5s)
                   q_items, q_dur_sum = [], 0.0
                   for idx, (a_num, _) in enumerate(pairs):
                       w = work / f"q_{idx}.wav"
@@ -693,14 +642,7 @@ jobs:
                   run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(full_c), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(full_wav)])
                   tdur = min(49.8, get_dur(full_wav))
                   total_frames = max(1, int(round(tdur * FPS)))
-                  print(f"⏱️ المدة الكلية: {tdur:.2f}s ({total_frames} إطار) | tempo الدعاء={tempo:.3f}", flush=True)
-
-                  print("👁️ البحث عن 7 مشاهد كوارث حريق طرقات وسيارات وإطفاء مع الفحص البصري لجميني...", flush=True)
-                  used_urls = set()
-                  shot_files = []
-                  for i, sc in enumerate(STORYBOARD_SHOTS):
-                      print(f"🔎 المشهد {i + 1}/{len(STORYBOARD_SHOTS)}: {sc['name']}", flush=True)
-                      shot_files.append(fetch_verified_shot(sc, work, used_urls, i))
+                  print(f"⏱️ المدة الإجمالية المستهدفة: {tdur:.2f}s ({total_frames} إطار)", flush=True)
 
                   ov_layers = [
                       make_overlay_arrays(sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
@@ -714,46 +656,113 @@ jobs:
                   else:
                       venc = ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-maxrate", "1500k", "-bufsize", "3000k"]
 
-                  out_mp4 = work / "al_warraq_realistic_50s.mp4"
+                  out_mp4 = work / "al_warraq_50s_hybrid.mp4"
                   enc_proc = subprocess.Popen(
                       ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{W}x{H}", "-pix_fmt", "rgb24", "-r", str(FPS), "-i", "pipe:0", "-i", str(full_wav),
                        "-map", "0:v:0", "-map", "1:a:0", "-t", f"{tdur:.3f}", *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "96k", "-movflags", "+faststart", "-shortest", str(out_mp4)],
                       stdin=subprocess.PIPE, stderr=subprocess.PIPE,
                   )
 
-                  n_shots = len(shot_files)
-                  xfade_frames = 9
-                  base_len = total_frames // n_shots
-                  rem = total_frames % n_shots
-                  shot_counts = [base_len + (1 if k < rem else 0) for k in range(n_shots)]
+                  # 3) المرحلة الأولى من الصورة: بث الفيديوهات الحقيقية الـ 30 ثانية الخاصة بك (بدون صوته -an)
+                  if vw > vh and LAYOUT_MODE == "auto_vertical":
+                      dec_fc = (
+                          f"[0:v]yadif=0:-1:1,fps={FPS},split=2[fg][bg];"
+                          f"[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,gblur=sigma=6,scale={W}:{H}:flags=bilinear,eq=brightness=-0.28[b];"
+                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease:flags=lanczos[f];"
+                          f"[b][f]overlay=(W-w)/2:(H-h)/2:shortest=1,format=rgb24[v]"
+                      )
+                  else:
+                      dec_fc = f"[0:v]yadif=0:-1:1,fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},format=rgb24[v]"
 
-                  global_f, seg_idx, prev_tail = 0, 0, []
-                  for k, sf in enumerate(shot_files):
-                      cnt = shot_counts[k]
-                      extra = xfade_frames if k < n_shots - 1 else 0
-                      frames_k = read_shot_frames(sf, cnt + extra)
+                  dec_proc = subprocess.Popen(
+                      ["ffmpeg", "-v", "error", "-an", "-i", str(src_clip), "-filter_complex", dec_fc, "-map", "[v]", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  )
 
-                      for j in range(cnt):
-                          bg = frames_k[j]
-                          if k > 0 and j < len(prev_tail):
-                              w = j / float(len(prev_tail))
-                              bg = (prev_tail[j].astype(np.float32) * (1.0 - w) + bg.astype(np.float32) * w).astype(np.uint8)
+                  fbytes = W * H * 3
+                  global_f, seg_idx = 0, 0
+                  last_user_frame = None
+                  max_user_frames = total_frames  # لا يتجاوز 50 ثانية بأي حال
 
-                          t = global_f / float(FPS)
-                          while seg_idx + 1 < len(segs) and t >= segs[seg_idx]["t1"]:
-                              seg_idx += 1
-                          inv_a, fg_p = ov_layers[seg_idx]
-                          comp = ((bg.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
+                  while global_f < max_user_frames:
+                      raw = dec_proc.stdout.read(fbytes)
+                      if not raw or len(raw) < fbytes:
+                          break
+                      bg = np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3)).copy()
+                      last_user_frame = bg
 
-                          if t < 0.40:
-                              comp = (comp.astype(np.float32) * (t / 0.40)).astype(np.uint8)
-                          elif t > tdur - 0.80:
-                              comp = (comp.astype(np.float32) * max(0.0, (tdur - t) / 0.80)).astype(np.uint8)
+                      t = global_f / float(FPS)
+                      while seg_idx + 1 < len(segs) and t >= segs[seg_idx]["t1"]:
+                          seg_idx += 1
+                      inv_a, fg_p = ov_layers[seg_idx]
+                      comp = ((bg.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
+                      if t < 0.40:
+                          comp = (comp.astype(np.float32) * (t / 0.40)).astype(np.uint8)
+                      elif t > tdur - 0.80:
+                          comp = (comp.astype(np.float32) * max(0.0, (tdur - t) / 0.80)).astype(np.uint8)
+                      enc_proc.stdin.write(comp.tobytes())
+                      global_f += 1
 
-                          enc_proc.stdin.write(comp.tobytes())
-                          global_f += 1
+                  dec_proc.stdout.close()
+                  dec_err = dec_proc.stderr.read().decode("utf-8", errors="ignore")
+                  dec_proc.wait()
 
-                      prev_tail = frames_k[cnt:] if extra > 0 else []
+                  decoded_sec = global_f / float(FPS)
+                  print(f"🎬 تم فك تشفير فيديوك: {global_f} إطار ({decoded_sec:.2f}s من أصل {clip_dur:.2f}s)", flush=True)
+                  if decoded_sec < clip_dur - 1.5 and global_f < max_user_frames:
+                      print(f"⚠️ تنبيه: انقطع الفك مبكراً عند {decoded_sec:.1f}s — stderr: {dec_err[:300]}", flush=True)
+                  if global_f == 0:
+                      raise RuntimeError("❌ تعذر قراءة أي إطار من الفيديو المرفوع — تأكد أن الملف سليم على GitHub!")
+
+                  # 4) المرحلة الثانية: تكملة الـ ~20 ثانية المتبقية بـ 3 لقطات مفحوصة بـ Gemini Vision
+                  rem_frames = total_frames - global_f
+                  if rem_frames > 0:
+                      print(f"🔎 جاري إكمال {rem_frames / FPS:.1f}s المتبقية بـ 3 مشاهد مفحوصة بالرؤية...", flush=True)
+                      used_urls = set()
+                      comp_files = []
+                      for i, sc in enumerate(COMPLEMENTARY_SHOTS):
+                          print(f"   📌 مشهد تكميلي {i + 1}/3: {sc['name']}", flush=True)
+                          cands = gather_candidates(sc, used_urls)
+                          winner = pick_best_from_sheet(cands, sc["req"], i)
+                          if winner:
+                              used_urls.add(winner["url"])
+                              comp_files.append(materialize_winner(winner, work, i))
+                          else:
+                              fb = work / f"fb_{i}.jpg"
+                              Image.new("RGB", (W, H), (14, 12, 16)).save(fb, "JPEG")
+                              comp_files.append(fb)
+
+                      n_comp = len(comp_files)
+                      xfade_frames = 10
+                      base_len = rem_frames // n_comp
+                      rem_mod = rem_frames % n_comp
+                      counts = [base_len + (1 if k < rem_mod else 0) for k in range(n_comp)]
+                      prev_tail = [last_user_frame] * min(xfade_frames, counts[0]) if last_user_frame is not None else []
+
+                      for k, sf in enumerate(comp_files):
+                          cnt = counts[k]
+                          if cnt <= 0:
+                              continue
+                          extra = xfade_frames if k < n_comp - 1 else 0
+                          frames_k = read_shot_frames(sf, cnt + extra)
+
+                          for j in range(cnt):
+                              bg = frames_k[j]
+                              if j < len(prev_tail):
+                                  w = j / float(len(prev_tail))
+                                  bg = (prev_tail[j].astype(np.float32) * (1.0 - w) + bg.astype(np.float32) * w).astype(np.uint8)
+
+                              t = global_f / float(FPS)
+                              while seg_idx + 1 < len(segs) and t >= segs[seg_idx]["t1"]:
+                                  seg_idx += 1
+                              inv_a, fg_p = ov_layers[seg_idx]
+                              comp = ((bg.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
+                              if t > tdur - 0.80:
+                                  comp = (comp.astype(np.float32) * max(0.0, (tdur - t) / 0.80)).astype(np.uint8)
+                              enc_proc.stdin.write(comp.tobytes())
+                              global_f += 1
+
+                          prev_tail = frames_k[cnt:] if extra > 0 else []
 
                   enc_proc.stdin.close()
                   enc_err = enc_proc.stderr.read().decode("utf-8", errors="ignore")
@@ -761,7 +770,7 @@ jobs:
                       raise RuntimeError(f"خطأ الترميز:\n{enc_err[-800:]}")
 
                   mb, dur = out_mp4.stat().st_size / 1024 / 1024, get_dur(out_mp4)
-                  print(f"🎬 الفيديو جاهز: {mb:.2f} MB | {dur:.1f}s", flush=True)
+                  print(f"🎬 جاهز: {mb:.2f} MB | المدة: {dur:.1f}s (30ث حقيقي + تكملة الكود)", flush=True)
 
                   cap = (
                       f"{preset['caption']}\n\n"
@@ -778,7 +787,7 @@ jobs:
                           timeout=180,
                       ).json()
                   assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم إرسال الريلز الواقعي المفحوص بصرياً إلى تيليغرام!", flush=True)
+                  print("✅ تم إرسال الريلز إلى تيليغرام بنجاح!", flush=True)
               finally:
                   shutil.rmtree(work, ignore_errors=True)
 
