@@ -78,7 +78,9 @@ jobs:
         run: |
           cat <<'PYEOF' > /tmp/warraq_dua_clip.py
           import asyncio
+          import io
           import json
+          import math
           import os
           import subprocess
           import sys
@@ -110,13 +112,16 @@ jobs:
           LAYOUT_MODE = os.getenv("LAYOUT_MODE", "auto_vertical").strip()
           VIDEO_QUALITY = os.getenv("VIDEO_QUALITY", "high_clean").strip()
 
+          ACCOUNT_NAME = "لاحول ولاقوة الا بالله"
+          HEADER_TEXT = "عَزَاءٌ وَدُعَاءٌ مِنْ أَهْلِ الْمَوْصِلِ بِالْعِرَاقِ إِلَى أَهْلِنَا فِي مِصْرَ"
+
           DUA_LINES = [
-              "اللَّهُمَّ يَا أَرْحَمَ الرَّاحِمِينَ، إِلَيْكَ نَشْكُو ضَعْفَنَا وَأَلَمَ قُلُوبِنَا فِي مُصَابِ أَهْلِنَا بِمِصْرَ فِي فَاجِعَةِ الْوَرَّاقِ.",
-              "اللَّهُمَّ اغْفِرْ لِمَنْ رَحَلُوا فِي هَذَا الْحَرِيقِ الْأَلِيمِ، وَتَقَبَّلْهُمْ عِنْدَكَ فِي الشُّهَدَاءِ، وَبَدِّلْ حَرَّ النَّارِ بَرْدًا وَسَلَامًا وَنَعِيمًا مُقِيمًا.",
-              "اللَّهُمَّ اشْفِ الْمُصَابِينَ شِفَاءً لَا يُغَادِرُ سَقَمًا، وَخَفِّفْ عَنْهُمُ الْأَلَمَ، وَأَلْبِسْهُمْ ثَوْبَ الْعَافِيَةِ.",
-              "اللَّهُمَّ ارْبِطْ عَلَى قُلُوبِ أُمَّهَاتِهِمْ وَذَوِيهِمْ، وَآجِرْهُمْ فِي مُصِيبَتِهِمْ، وَاخْلُفْهُمْ خَيْرًا مِنْهَا يَا كَرِيمُ.",
-              "اللَّهُمَّ هَذَا دُعَاؤُنَا وَعَزَاؤُنَا مِنْ قُلُوبِ أَهْلِكُمْ فِي فِلَسْطِينَ وَسُورِيَا إِلَى مِصْرَ الْحَبِيبَةِ، فَاحْفَظْ مِصْرَ وَأَهْلَهَا مِنْ كُلِّ سُوءٍ.",
-              "رَبَّنَا تَقَبَّلْ دُعَاءَنَا، وَإِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ.",
+              "اللَّهُمَّ رَبَّنَا وَمَوْلَانَا، يَا مَنْ بِيَدِهِ مَلَكُوتُ كُلِّ شَيْءٍ، إِلَيْكَ نَرْفَعُ أَكُفَّ الضَّرَاعَةِ وَالدُّعَاءِ فِي مُصَابِ أَهْلِنَا بِمِصْرَ فِي فَاجِعَةِ الْوَرَّاقِ.",
+              "اللَّهُمَّ تَغَمَّدِ الضَّحَايَا بِوَاسِعِ رَحْمَتِكَ، وَتَقَبَّلْهُمْ عِنْدَكَ فِي الشُّهَدَاءِ، وَاجْعَلِ النَّارَ عَلَيْهِمْ بَرْدًا وَسَلَامًا، وَأَبْدِلْهُمْ دَارًا خَيْرًا مِنْ دَارِهِمْ.",
+              "اللَّهُمَّ الطُفْ بِالْمُصَابِينَ وَالْجَرْحَى، وَأَنْزِلْ عَلَيْهِمْ شِفَاءَكَ الْعَاجِلَ، وَرُدَّهُمْ إِلَى أَهْلِهِمْ سَالِمِينَ غَانِمِينَ بِعَافِيَتِكَ.",
+              "اللَّهُمَّ أَفْرِغْ عَلَى قُلُوبِ ذَوِيهِمْ صَبْرًا وَسَكِينَةً، وَاجْبُرْ كَسْرَهُمْ، وَثَبِّتْ قُلُوبَهُمْ عِنْدَ الصَّدْمَةِ الْأُولَى.",
+              "اللَّهُمَّ هَذَا دُعَاؤُنَا وَعَزَاؤُنَا الصَّادِقُ مِنْ قُلُوبِ أَهْلِ الْمَوْصِلِ فِي الْعِرَاقِ إِلَى أَحِبَّتِنَا فِي مِصْرَ الْعَزِيزَةِ، فَاحْفَظْ مِصْرَ وَأَهْلَهَا مِنْ كُلِّ مَكْرُوهٍ.",
+              "وَلَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللَّهِ الْعَلِيِّ الْعَظِيمِ، وَإِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ.",
           ]
 
 
@@ -141,6 +146,40 @@ jobs:
               raise RuntimeError("لم يُعثر على خط عربي")
 
 
+          def load_moon_icon(size: int = 28) -> Image.Image:
+              # تحميل إيموجي القمر الملون (Noto/Twemoji 1f316 مطابق لصورة الحساب) مع بديل متجهي نقي
+              for url in (
+                  "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/emoji_u1f316.png",
+                  "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f316.png",
+              ):
+                  try:
+                      r = requests.get(url, timeout=15)
+                      if r.status_code == 200 and len(r.content) > 500:
+                          im = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                          return im.resize((size, size), Image.Resampling.LANCZOS)
+                  except Exception:
+                      pass
+
+              # بديل إجرائي 128x128 لقمر مضيء يساراً ومظلل يميناً
+              hi = 128
+              cx, cy, rad = 64.0, 64.0, 56.0
+              im = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
+              px = im.load()
+              for py in range(hi):
+                  for p_x in range(hi):
+                      dx = p_x - cx
+                      dy = py - cy
+                      d = math.hypot(dx, dy)
+                      if d <= rad + 1.0:
+                          alpha = 255 if d <= rad - 0.5 else int(max(0, min(255, (rad + 1.0 - d) * 170)))
+                          term = 0.28 * math.sqrt(max(0.0, rad * rad - dy * dy))
+                          if dx <= term:
+                              px[p_x, py] = (250, 206, 72, alpha)
+                          else:
+                              px[p_x, py] = (58, 62, 76, alpha)
+              return im.resize((size, size), Image.Resampling.LANCZOS)
+
+
           def probe_video(path: Path) -> tuple[int, int, float, int]:
               r = subprocess.run(
                   ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -153,7 +192,6 @@ jobs:
               st = info["streams"][0]
               vw, vh = int(st["width"]), int(st["height"])
 
-              # تصحيح العرض والطول إذا كان ملف الموبايل يحمل وسم دوران 90/270
               rot = 0
               tags = st.get("tags") or {}
               if "rotate" in tags:
@@ -170,7 +208,6 @@ jobs:
               if rot in (90, 270):
                   vw, vh = vh, vw
 
-              # حساب معدل الإطارات الحقيقي والحفاظ على سلاسة حتى 30fps
               fps_raw = str(st.get("r_frame_rate") or "30/1")
               try:
                   num, den = fps_raw.split("/")
@@ -252,273 +289,3 @@ jobs:
               else:
                   bb = draw.textbbox((0, 0), txt, font=font)
                   x = (W - (bb[2] - bb[0])) // 2 - bb[0]
-                  draw.text((x, y), txt, font=font, fill=fill)
-
-
-          def _wrap_lines(text: str, font, max_w: int, draw) -> list[str]:
-              lines = []
-              for para in text.splitlines():
-                  words = para.split()
-                  cur = ""
-                  for w in words:
-                      trial = f"{cur} {w}".strip() if cur else w
-                      bb = _bbox(draw, trial, font)
-                      if (bb[2] - bb[0]) <= max_w:
-                          cur = trial
-                      else:
-                          if cur:
-                              lines.append(cur)
-                          cur = w
-                  if cur:
-                      lines.append(cur)
-              return lines
-
-
-          def _composite_halo(canvas: Image.Image, fg: Image.Image, outline_px: int = 2, shadow_blur: int = 3):
-              alpha = fg.getchannel("A")
-              zero = Image.new("L", canvas.size, 0)
-              if outline_px > 0:
-                  oa = alpha.filter(ImageFilter.MaxFilter(outline_px * 2 + 1))
-                  if shadow_blur > 0:
-                      sa = oa.filter(ImageFilter.GaussianBlur(shadow_blur))
-                      canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, sa)), dest=(0, 3))
-                  canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, oa)))
-              canvas.alpha_composite(fg)
-
-
-          def make_dua_overlay_png(out_png: Path, body_text: str, bold_font_path: str):
-              overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-              scrim = ImageDraw.Draw(overlay)
-              for y in range(0, 140):
-                  a = int(150 * (1 - y / 140))
-                  scrim.line([(0, y), (W, y)], fill=(0, 0, 0, a))
-              for y in range(H - 470, H):
-                  t = (y - (H - 470)) / 470
-                  a = int(195 * (t ** 1.25))
-                  scrim.line([(0, y), (W, y)], fill=(0, 0, 0, a))
-
-              body_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-              meta_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-              bdraw = ImageDraw.Draw(body_fg)
-              mdraw = ImageDraw.Draw(meta_fg)
-
-              top_font = _load_font(bold_font_path, 24)
-              _draw_center(mdraw, 42, "عَزَاءٌ وَدُعَاءٌ مِنْ فِلَسْطِينَ وَسُورِيَا إِلَى أَهْلِنَا فِي مِصْرَ", top_font, "#E6C667")
-
-              dummy = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-              chosen_font = _load_font(bold_font_path, 30)
-              chosen_lines = []
-              chosen_lh = int(30 * 1.75)
-              for sz in range(38, 28, -2):
-                  fnt = _load_font(bold_font_path, sz)
-                  lines = _wrap_lines(body_text, fnt, W - 96, dummy)
-                  gh = max((_bbox(dummy, ln, fnt)[3] - _bbox(dummy, ln, fnt)[1] for ln in lines), default=0)
-                  lh = max(int(sz * 1.75), gh + 14)
-                  if len(lines) * lh <= 390:
-                      chosen_font, chosen_lines, chosen_lh = fnt, lines, lh
-                      break
-              if not chosen_lines:
-                  chosen_lines = _wrap_lines(body_text, chosen_font, W - 96, dummy)
-
-              min_top = min((_bbox(bdraw, ln, chosen_font)[1] for ln in chosen_lines), default=0)
-              total_h = len(chosen_lines) * chosen_lh
-              y = max(220 + max(0, -min_top), H - 155 - total_h)
-
-              for ln in chosen_lines:
-                  _draw_center(bdraw, y, ln, chosen_font, "#FFFFFF")
-                  y += chosen_lh
-
-              wm_font = _load_font(bold_font_path, 25)
-              wm_txt = _prep_txt("ملاك المعرفة")
-              wbb = mdraw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl") if HAS_RAQM else mdraw.textbbox((0, 0), wm_txt, font=wm_font)
-              wx = W - (wbb[2] - wbb[0]) - 28 - wbb[0]
-              if HAS_RAQM:
-                  mdraw.text((wx, H - 58), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
-              else:
-                  mdraw.text((wx, H - 58), wm_txt, font=wm_font, fill="#D4AF37")
-
-              _composite_halo(overlay, body_fg, outline_px=2, shadow_blur=3)
-              _composite_halo(overlay, meta_fg, outline_px=1, shadow_blur=2)
-              overlay.save(out_png)
-
-
-          def main():
-              src_video = REPO_ROOT / VIDEO_PATH
-              if not src_video.exists():
-                  raise FileNotFoundError(
-                      f"❌ لم يُعثر على الفيديو في المسار '{VIDEO_PATH}'."
-                  )
-
-              vw, vh, vdur, target_fps = probe_video(src_video)
-              print(f"📹 الفيديو الأصلي: {vw}x{vh} | {target_fps}fps | المدة: {vdur:.2f}s (صامت 100%)", flush=True)
-
-              work = Path(tempfile.mkdtemp(prefix="warraq_dua_"))
-              try:
-                  bold_font = find_bold_font()
-
-                  gap_mid = work / "gap_055.wav"
-                  gap_end = work / "gap_125.wav"
-                  run_cmd([
-                      "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-                      "-t", "0.55", "-c:a", "pcm_s16le", str(gap_mid),
-                  ])
-                  run_cmd([
-                      "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-                      "-t", "1.25", "-c:a", "pcm_s16le", str(gap_end),
-                  ])
-
-                  audio_parts = []
-                  seg_timings = []
-                  cur_t = 0.0
-                  for i, line in enumerate(DUA_LINES):
-                      wav = work / f"dua_seg_{i}.wav"
-                      synth_dua_sentence(line, wav, work, i)
-                      is_last = (i == len(DUA_LINES) - 1)
-                      pad_wav = gap_end if is_last else gap_mid
-                      pad_dur = 1.25 if is_last else 0.55
-                      seg_dur = get_dur(wav) + pad_dur
-                      audio_parts.extend([wav, pad_wav])
-                      seg_timings.append((line, cur_t, cur_t + seg_dur))
-                      cur_t += seg_dur
-                      print(f"🎙️ جملة {i + 1}/{len(DUA_LINES)} جاهزة ({seg_dur:.2f}s)", flush=True)
-
-                  a_list = work / "a_concat.txt"
-                  a_list.write_text("\n".join(f"file '{p.resolve()}'" for p in audio_parts), encoding="utf-8")
-                  merged_dry = work / "dua_dry.wav"
-                  run_cmd([
-                      "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(a_list),
-                      "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(merged_dry),
-                  ])
-
-                  total_dua_dur = get_dur(merged_dry)
-                  final_dua = work / "dua_final.wav"
-                  fade_out_st = max(0.0, total_dua_dur - 0.90)
-                  af_reverb = (
-                      "aecho=0.88:0.86:50|110|175:0.22|0.12|0.05,"
-                      "loudnorm=I=-15:TP=-1.5:LRA=10,"
-                      "alimiter=limit=0.95,"
-                      f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_st:.3f}:d=0.90"
-                  )
-                  run_cmd([
-                      "ffmpeg", "-y", "-i", str(merged_dry), "-af", af_reverb,
-                      "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(final_dua),
-                  ])
-                  print(f"🤲 مدة الدعاء الكاملة: {total_dua_dur:.2f}s", flush=True)
-
-                  # تحويل مستقر وموحد لإطارات وألوان الفيديو الأصلي بدون إسقاط فريمات مزعج
-                  pts_step = ""
-                  if total_dua_dur > vdur and vdur > 0.5:
-                      slow_ratio = total_dua_dur / vdur
-                      pts_step = f",setpts={slow_ratio:.5f}*PTS,fps={target_fps}"
-                      print(f"🐢 تبطيء سينمائي خفيف ({slow_ratio:.2f}x) لتغطية الدعاء", flush=True)
-
-                  prep_prefix = f"[0:v]format=yuv420p,fps={target_fps}{pts_step}"
-                  if vw > vh and LAYOUT_MODE == "auto_vertical":
-                      base_fc = (
-                          f"{prep_prefix},split=2[bg][fg];"
-                          f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-                          f"gblur=sigma=24,eq=brightness=-0.20:saturation=0.88,setsar=1[b];"
-                          f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease,setsar=1[f];"
-                          f"[b][f]overlay=(W-w)/2:(H-h)/2,"
-                          f"eq=brightness=-0.05:contrast=1.06:saturation=0.92,vignette=PI/4,"
-                          f"tpad=stop_mode=clone:stop_duration=1.5,format=yuv420p,setsar=1[vbase]"
-                      )
-                  else:
-                      base_fc = (
-                          f"{prep_prefix},"
-                          f"scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,"
-                          f"crop={W}:{H},"
-                          f"eq=brightness=-0.05:contrast=1.06:saturation=0.92,vignette=PI/4,"
-                          f"tpad=stop_mode=clone:stop_duration=1.5,format=yuv420p,setsar=1[vbase]"
-                      )
-
-                  if VIDEO_QUALITY == "compact":
-                      v_encode = ["-c:v", "libx264", "-preset", "slow", "-crf", "23", "-maxrate", "1400k", "-bufsize", "2800k"]
-                  else:
-                      v_encode = ["-c:v", "libx264", "-preset", "slow", "-crf", "21", "-maxrate", "2200k", "-bufsize", "4400k"]
-
-                  final_mp4 = work / "al_warraq_dua_reel.mp4"
-                  fade_vid_filter = f"fade=t=in:st=0:d=0.45,fade=t=out:st={max(0.0, total_dua_dur - 0.90):.3f}:d=0.90"
-
-                  if SHOW_TEXT:
-                      ov_inputs = []
-                      ov_chain = []
-                      prev_lbl = "vbase"
-                      n_segs = len(seg_timings)
-                      for idx, (line, t_start, t_end) in enumerate(seg_timings):
-                          png = work / f"ov_{idx}.png"
-                          make_dua_overlay_png(png, line, bold_font)
-                          ov_inputs.extend(["-framerate", str(target_fps), "-loop", "1", "-t", f"{total_dua_dur:.3f}", "-i", str(png)])
-                          in_idx = idx + 2
-                          out_lbl = f"vt{idx}"
-                          cond = f"gte(t,{t_start:.3f})" if idx == n_segs - 1 else f"gte(t,{t_start:.3f})*lt(t,{t_end:.3f})"
-                          ov_chain.append(f"[{in_idx}:v]format=rgba[ov{idx}]")
-                          ov_chain.append(f"[{prev_lbl}][ov{idx}]overlay=0:0:enable='{cond}':shortest=1[{out_lbl}]")
-                          prev_lbl = out_lbl
-
-                      full_fc = (
-                          f"{base_fc};"
-                          + ";".join(ov_chain)
-                          + f";[{prev_lbl}]{fade_vid_filter},format=yuv420p[vout]"
-                      )
-                      cmd = (
-                          ["ffmpeg", "-y", "-fflags", "+genpts", "-i", str(src_video), "-i", str(final_dua)]
-                          + ov_inputs
-                          + [
-                              "-filter_complex", full_fc,
-                              "-map", "[vout]", "-map", "1:a:0",
-                              "-t", f"{total_dua_dur:.3f}",
-                              *v_encode,
-                              "-profile:v", "high", "-level:v", "4.0",
-                              "-g", str(target_fps * 3), "-bf", "2", "-aq-mode", "2",
-                              "-pix_fmt", "yuv420p",
-                              "-c:a", "aac", "-ac", "1", "-b:a", "96k",
-                              "-movflags", "+faststart", "-shortest",
-                              str(final_mp4),
-                          ]
-                      )
-                  else:
-                      full_fc = f"{base_fc};[vbase]{fade_vid_filter},format=yuv420p[vout]"
-                      cmd = [
-                          "ffmpeg", "-y", "-fflags", "+genpts", "-i", str(src_video), "-i", str(final_dua),
-                          "-filter_complex", full_fc,
-                          "-map", "[vout]", "-map", "1:a:0",
-                          "-t", f"{total_dua_dur:.3f}",
-                          *v_encode,
-                          "-profile:v", "high", "-level:v", "4.0",
-                          "-g", str(target_fps * 3), "-bf", "2", "-aq-mode", "2",
-                          "-pix_fmt", "yuv420p",
-                          "-c:a", "aac", "-ac", "1", "-b:a", "96k",
-                          "-movflags", "+faststart", "-shortest",
-                          str(final_mp4),
-                      ]
-
-                  run_cmd(cmd)
-                  size_mb = final_mp4.stat().st_size / 1024 / 1024
-                  out_dur = get_dur(final_mp4)
-                  print(f"🎬 الفيديو جاهز: {size_mb:.2f} MB | {target_fps}fps | المدة: {out_dur:.1f}s", flush=True)
-
-                  tg_token = os.environ["TELEGRAM_BOT_TOKEN"]
-                  tg_chat = os.environ["TELEGRAM_CHAT_ID"]
-                  caption = (
-                      "🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، واربط على قلوب ذويهم.\n\n"
-                      "خالص العزاء والمواساة من الشعبين الفلسطيني والسوري إلى أهلنا وأحبتنا في مصر الحبيبة 🇵🇸 🇸🇾 🇪🇬\n"
-                      f"📦 الحجم: {size_mb:.1f} MB | المدة: {out_dur:.0f} ثانية"
-                  )
-                  with open(final_mp4, "rb") as vf:
-                      res = requests.post(
-                          f"https://api.telegram.org/bot{tg_token}/sendVideo",
-                          data={"chat_id": tg_chat, "caption": caption, "supports_streaming": "true"},
-                          files={"video": (final_mp4.name, vf, "video/mp4")},
-                          timeout=180,
-                      ).json()
-                  assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم إرسال الفيديو إلى تيليغرام بنجاح!", flush=True)
-              finally:
-                  shutil.rmtree(work, ignore_errors=True)
-
-
-          if __name__ == "__main__":
-              main()
-          PYEOF
-          python -u /tmp/warraq_dua_clip.py
