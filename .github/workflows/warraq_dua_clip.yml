@@ -1,18 +1,23 @@
-name: 🕯️ ريلز حادث الوراق (30ث حقيقي + 20ث تكملة)
+name: 🕯️ ريلز حادث الوراق (فيديوك المبطّأ + مؤثرات)
 
 on:
   workflow_dispatch:
     inputs:
       video_path:
-        description: 'اسم/مسار فيديوك ذو الـ 30 ثانية داخل المستودع'
+        description: 'مسار فيديوك داخل المستودع'
         required: true
         default: 'warraq_30s.mp4'
         type: string
-      video_url:
-        description: 'اختياري: رابط مباشر للفيديو بدل مسار المستودع (اتركه فارغاً لاستخدام الملف المرفوع)'
-        required: false
-        default: ''
-        type: string
+      effect_style:
+        description: 'المؤثر السينمائي على الفيديو'
+        required: true
+        default: 'bw_with_negative'
+        type: choice
+        options:
+          - bw_with_negative
+          - selective_fire
+          - bw_noir
+          - negative_dark
       ayah_set:
         description: 'الآيات في بداية الفيديو'
         required: true
@@ -40,7 +45,7 @@ on:
         type: choice
         options: [Charon, Orus, Algieba, Rasalgethi]
       layout_mode:
-        description: 'تكييف أبعاد فيديوك (auto_vertical يحفظ كامل العرضي بخلفية مموهة)'
+        description: 'تكييف الأبعاد'
         required: true
         default: 'auto_vertical'
         type: choice
@@ -53,7 +58,7 @@ on:
         options: [balanced, compact, high]
 
 jobs:
-  build_hybrid_reel:
+  build_styled_reel:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -71,14 +76,13 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
           pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts numpy
 
-      - name: Build 50s Hybrid Reel (Silent Original + 20s AI Verified)
+      - name: Build Slow-Mo + FX Al-Warraq Reel
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VIDEO_PATH: ${{ inputs.video_path }}
-          VIDEO_URL: ${{ inputs.video_url }}
+          EFFECT_STYLE: ${{ inputs.effect_style }}
           AYAH_SET: ${{ inputs.ayah_set }}
           RECITER_ID: ${{ inputs.reciter }}
           TTS_VOICE: ${{ inputs.tts_voice }}
@@ -86,11 +90,11 @@ jobs:
           VIDEO_SIZE: ${{ inputs.video_size }}
         run: |
           python -u - <<'PYEOF'
-          import asyncio, base64, io, json, math, os, re, shutil, subprocess, sys, tempfile, time
+          import asyncio, io, json, math, os, shutil, subprocess, sys, tempfile
           from pathlib import Path
           import numpy as np
           import requests
-          from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, features
+          from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
           import arabic_reshaper
 
           try:
@@ -101,19 +105,14 @@ jobs:
           REPO_ROOT = Path.cwd()
           sys.path.insert(0, str(REPO_ROOT / "scripts"))
           try:
-              from gemini_tts_pool import gemini_tts_with_pool, get_pool
+              from gemini_tts_pool import gemini_tts_with_pool
           except Exception:
-              gemini_tts_with_pool, get_pool = None, None
-          try:
-              from model_discovery import discover_and_cache
-          except Exception:
-              discover_and_cache = None
+              gemini_tts_with_pool = None
 
           W, H, FPS = 720, 1280, 30
           HAS_RAQM = features.check("raqm")
-          PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "").strip()
           VIDEO_PATH = os.getenv("VIDEO_PATH", "warraq_30s.mp4").strip()
-          VIDEO_URL = os.getenv("VIDEO_URL", "").strip()
+          EFFECT_STYLE = os.getenv("EFFECT_STYLE", "bw_with_negative").strip()
           AYAH_SET = os.getenv("AYAH_SET", "qaf_19_20").strip()
           RECITER_ID = os.getenv("RECITER_ID", "Yasser_Ad-Dussary_128kbps").strip()
           TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
@@ -164,180 +163,10 @@ jobs:
               "عَزَاؤُنَا مِنْ أَهْلِ الْمَوْصِلِ بِالْعِرَاقِ إِلَى أَهْلِنَا فِي مِصْرَ، حَفِظَ اللَّهُ مِصْرَ وَأَهْلَهَا، آمِينَ.",
           ]
 
-          BAD_TAGS = {
-              "animation", "cartoon", "3d", "cgi", "illustration", "drawing", "abstract",
-              "fireplace", "campfire", "bonfire", "candle", "candles", "birthday", "bbq",
-              "grill", "cooking", "kitchen", "fireworks", "sparkler", "sparklers", "lighter",
-              "insect", "bug", "fly", "bee", "berry", "fruit", "food", "macro", "flower",
-              "woman", "girl", "female", "man", "men", "boy", "person", "people", "human",
-              "face", "portrait", "crowd", "wedding", "party", "concert", "dance", "bikini",
-          }
-
-          # 3 مشاهد واقعية مكملة للـ 20 ثانية الأخيرة (مفحوصة بلوحة مجمعة بـ Gemini Vision)
-          COMPLEMENTARY_SHOTS = [
-              {
-                  "name": "إطفاء وإسعاف وطوارئ ليلية",
-                  "px_vids": ["fire truck night emergency", "emergency flashing lights night"],
-                  "wiki": ["firefighters car fire night", "firefighter burning vehicle hose", "fire truck night fire"],
-                  "req": "Real firefighters fighting a vehicle/road fire or fire truck / ambulance emergency lights at night (NO campfires, NO fireworks, NO insects).",
-              },
-              {
-                  "name": "دخان أسود كثيف وسيارات محترقة",
-                  "px_vids": ["black smoke fire rising", "dark smoke burning"],
-                  "wiki": ["burned car wreck fire", "black smoke car fire", "charred vehicles fire aftermath"],
-                  "req": "Thick black disaster fire smoke or burned-out charred vehicle wreckage on road (NO campfires, NO cozy scenes, NO insects).",
-              },
-              {
-                  "name": "مسجد ليلاً للدعاء لمصر",
-                  "px_vids": ["mosque night", "mosque dawn"],
-                  "wiki": ["Cairo mosque night", "Al-Azhar mosque night"],
-                  "req": "Serene respectful mosque dome and minaret at night or dawn for prayer.",
-              },
-          ]
-
           def run_cmd(cmd):
               res = subprocess.run(cmd, capture_output=True, text=True)
               if res.returncode != 0:
                   raise RuntimeError(f"فشل {' '.join(cmd[:4])}:\n{res.stderr[-800:]}")
-
-          def _vision_models():
-              ms = []
-              if discover_and_cache is not None:
-                  try:
-                      for m in discover_and_cache(force=False):
-                          bm = m.removeprefix("models/").strip()
-                          if bm and not any(x in bm.lower() for x in ("tts", "embedding", "imagen", "nano", "omni", "live")):
-                              ms.append(bm)
-                  except Exception:
-                      pass
-              for fb in ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.8-flash-lite"):
-                  if fb not in ms: ms.append(fb)
-              return ms[:2]
-
-          def pick_best_from_sheet(candidates, req, scene_idx):
-              if not candidates:
-                  return None
-              if len(candidates) == 1 or get_pool is None:
-                  return candidates[0]
-              cols, rows = 3, math.ceil(len(candidates) / 3)
-              tw, th = 360, 240
-              sheet = Image.new("RGB", (cols * tw, rows * th), (15, 15, 18))
-              draw = ImageDraw.Draw(sheet)
-              try:
-                  nf = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 34)
-              except Exception:
-                  nf = ImageFont.load_default()
-              for idx, cand in enumerate(candidates):
-                  r_i, c_i = divmod(idx, cols)
-                  sheet.paste(ImageOps.fit(cand["thumb"], (tw, th), method=Image.Resampling.LANCZOS), (c_i * tw, r_i * th))
-                  x0, y0 = c_i * tw + 8, r_i * th + 8
-                  draw.rectangle([x0, y0, x0 + 46, y0 + 42], fill=(0, 0, 0))
-                  draw.text((x0 + 12, y0 + 4), str(idx + 1), fill=(255, 220, 40), font=nf)
-
-              buf = io.BytesIO()
-              sheet.save(buf, "JPEG", quality=85)
-              b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-              prompt = (
-                  f"Selecting realistic documentary footage for a tragic highway fuel-tanker fire disaster Reel.\n"
-                  f"Target scene: {req}\n"
-                  f"Pick tile 1..{len(candidates)} that best matches realistically. STRICTLY AVOID fireworks, campfires, candles, insects/animals, cartoons, smiling faces, or giant TV logos.\n"
-                  'Reply JSON only: {"best_tile": 1, "score": 8, "reason": "short description"}'
-              )
-              pool = get_pool()
-              for model in _vision_models():
-                  try:
-                      key = pool.get_current()
-                      if not key: break
-                      r = requests.post(
-                          f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
-                          json={"contents": [{"parts": [{"inlineData": {"mimeType": "image/jpeg", "data": b64}}, {"text": prompt}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 250, "responseMimeType": "application/json"}},
-                          timeout=25,
-                      )
-                      if r.status_code == 200:
-                          cands = r.json().get("candidates") or []
-                          if cands:
-                              txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", []) if not p.get("thought"))
-                              s, e = txt.find("{"), txt.rfind("}")
-                              if s != -1 and e > s:
-                                  obj = json.loads(txt[s:e + 1])
-                                  pick = int(obj.get("best_tile", 1))
-                                  if hasattr(pool, "_advance"): pool._advance()
-                                  if 1 <= pick <= len(candidates):
-                                      print(f"   👁️ اختيار اللوحة #{pick}/{len(candidates)} ({obj.get('score')}/10): {str(obj.get('reason',''))[:80]}", flush=True)
-                                      return candidates[pick - 1]
-                      elif r.status_code in (401, 403):
-                          pool.mark_dead(f"HTTP {r.status_code}")
-                      elif r.status_code == 429:
-                          if hasattr(pool, "_advance"): pool._advance()
-                          time.sleep(1)
-                  except Exception:
-                      if hasattr(pool, "_advance"): pool._advance()
-                      continue
-              return candidates[0]
-
-          def _clean_tags(tags):
-              return len(set(re.split(r"[^a-z0-9]+", (tags or "").lower())) & BAD_TAGS) == 0
-
-          def gather_candidates(shot_cfg, used_urls):
-              candidates = []
-              for wq in shot_cfg.get("wiki", []):
-                  if len(candidates) >= 6: break
-                  try:
-                      r = requests.get(
-                          "https://commons.wikimedia.org/w/api.php",
-                          headers={"User-Agent": "AlWarraqDocBot/1.0 (https://github.com/qamarsyria/malak-factory)"},
-                          params={"action": "query", "generator": "search", "gsrsearch": f"{wq} filetype:bitmap", "gsrnamespace": "6", "gsrlimit": "6", "prop": "imageinfo", "iiprop": "url|size|mime", "iiurlwidth": "960", "format": "json"},
-                          timeout=12,
-                      )
-                      if r.status_code != 200: continue
-                      for p in list((r.json().get("query") or {}).get("pages", {}).values())[:4]:
-                          ii = (p.get("imageinfo") or [{}])[0]
-                          if str(ii.get("mime", "")) not in ("image/jpeg", "image/png"): continue
-                          url = ii.get("thumburl") or ii.get("url")
-                          if not url or url in used_urls: continue
-                          resp = requests.get(url, headers={"User-Agent": "AlWarraqDocBot/1.0"}, timeout=15)
-                          if resp.status_code != 200: continue
-                          with Image.open(io.BytesIO(resp.content)) as im:
-                              im = ImageOps.exif_transpose(im).convert("RGB")
-                              if min(im.size) < 380: continue
-                              candidates.append({"kind": "image", "url": url, "image": im.copy(), "thumb": im.copy()})
-                              if len(candidates) >= 6: break
-                  except Exception:
-                      pass
-              if PIXABAY_KEY and len(candidates) < 6:
-                  for q in shot_cfg.get("px_vids", []):
-                      if len(candidates) >= 6: break
-                      try:
-                          r = requests.get("https://pixabay.com/api/videos/", params={"key": PIXABAY_KEY, "q": q, "video_type": "film", "safesearch": "true", "per_page": 10, "min_width": 640}, timeout=12)
-                          if r.status_code != 200: continue
-                          hits = [h for h in r.json().get("hits", []) if _clean_tags(h.get("tags", "")) and h.get("duration", 0) >= 4]
-                          for h in hits[:3]:
-                              vids = h.get("videos", {})
-                              full_url = vids.get("medium", {}).get("url") or vids.get("large", {}).get("url")
-                              tiny_url = vids.get("tiny", {}).get("url") or full_url
-                              if not full_url or full_url in used_urls: continue
-                              tmp_v, tmp_j = Path(tempfile.gettempdir()) / f"px_t_{h['id']}.mp4", Path(tempfile.gettempdir()) / f"px_t_{h['id']}.jpg"
-                              with open(tmp_v, "wb") as f:
-                                  for ch in requests.get(tiny_url, timeout=15, stream=True).iter_content(16384): f.write(ch)
-                              subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "1.0", "-i", str(tmp_v), "-frames:v", "1", "-q:v", "4", str(tmp_j)], capture_output=True)
-                              if tmp_j.exists():
-                                  with Image.open(tmp_j) as im:
-                                      candidates.append({"kind": "video", "url": full_url, "thumb": im.convert("RGB").copy()})
-                              tmp_v.unlink(missing_ok=True); tmp_j.unlink(missing_ok=True)
-                              if len(candidates) >= 6: break
-                      except Exception:
-                          pass
-              return candidates
-
-          def materialize_winner(cand, work_dir, idx):
-              if cand["kind"] == "image":
-                  out = work_dir / f"win_{idx}.jpg"
-                  cand["image"].save(out, "JPEG", quality=92)
-                  return out
-              out = work_dir / f"win_{idx}.mp4"
-              with open(out, "wb") as f:
-                  for ch in requests.get(cand["url"], timeout=45, stream=True).iter_content(16384): f.write(ch)
-              return out
 
           def find_bold_font():
               for p in ("/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf", "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf"):
@@ -399,10 +228,8 @@ jobs:
           def probe_video_info(path):
               r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,side_data_list:stream_tags=rotate", "-show_entries", "format=duration", "-of", "json", str(path)], capture_output=True, text=True)
               if r.returncode != 0:
-                  raise RuntimeError(f"❌ ملف الفيديو غير صالح أو تالف: {path.name}")
+                  raise RuntimeError(f"❌ ملف الفيديو غير صالح: {path.name}")
               info = json.loads(r.stdout)
-              if not info.get("streams"):
-                  raise RuntimeError(f"❌ لا يوجد مسار فيديو صالح داخل {path.name}")
               st = info["streams"][0]
               vw, vh = int(st["width"]), int(st["height"])
               rot = 0
@@ -415,7 +242,7 @@ jobs:
                       except Exception: pass
               if rot in (90, 270): vw, vh = vh, vw
               dur = float(info["format"].get("duration") or 0.0)
-              print(f"📹 الفيديو المرفوع: {vw}x{vh} | codec={st.get('codec_name')} | المدة المعلنة={dur:.2f}s (سيُزال صوته 100%)", flush=True)
+              print(f"📹 الفيديو الأصلي: {vw}x{vh} | المدة={dur:.2f}s (سيُزال صوته 100%)", flush=True)
               return vw, vh, dur
 
           def get_dur(path):
@@ -489,16 +316,16 @@ jobs:
               ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
               sc = ImageDraw.Draw(ov)
               for y in range(135): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(155 * (1 - y / 135))))
-              for y in range(H - 460, H): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(195 * (((y - (H - 460)) / 460) ** 1.25))))
-              if is_quran: sc.rectangle([0, 0, W, H], fill=(0, 0, 0, 50))
+              for y in range(H - 480, H): sc.line([(0, y), (W, y)], fill=(0, 0, 0, int(195 * (((y - (H - 480)) / 480) ** 1.25))))
+              if is_quran: sc.rectangle([0, 0, W, H], fill=(0, 0, 0, 48))
 
               bfg, mfg = Image.new("RGBA", (W, H), (0, 0, 0, 0)), Image.new("RGBA", (W, H), (0, 0, 0, 0))
               bd, md = ImageDraw.Draw(bfg), ImageDraw.Draw(mfg)
-              _draw_c(md, 40, HEADER_TEXT, _font(bold_p, 22), "#E6C667")
+              _draw_c(md, 42, HEADER_TEXT, _font(bold_p, 22), "#E6C667")
 
               dummy = ImageDraw.Draw(Image.new("RGB", (10, 10)))
               fpath = quran_p if is_quran else bold_p
-              ssz, msz, mh, mult = (44, 32, 620, 2.35) if is_quran else (38, 28, 380, 1.75)
+              ssz, msz, mh, mult = (44, 32, 600, 2.35) if is_quran else (38, 28, 360, 1.75)
               cf, cl, clh = _font(fpath, msz), [], int(msz * mult)
               for sz in range(ssz, msz - 1, -2):
                   f = _font(fpath, sz)
@@ -512,7 +339,7 @@ jobs:
 
               mtop = min((_bb(bd, ln, cf)[1] for ln in cl), default=0)
               lbot = _bb(bd, cl[-1], cf)[3] if cl else clh
-              y = max(175 + max(0, -mtop), (H - len(cl) * clh - 50) // 2) if is_quran else max(220 + max(0, -mtop), H - 155 - len(cl) * clh)
+              y = max(175 + max(0, -mtop), (H - len(cl) * clh - 60) // 2) if is_quran else max(220 + max(0, -mtop), H - 185 - len(cl) * clh)
               for ln in cl:
                   _draw_c(bd, y, ln, cf, "#FFE066" if is_quran else "#FFFFFF")
                   y += clh
@@ -520,12 +347,12 @@ jobs:
               if is_quran and ref_txt:
                   _draw_c(md, max(y + 8, (y - clh) + lbot + 18), ref_txt, _font(bold_p, 26), "#D4AF37")
               if is_quran and rec_label:
-                  _draw_c(md, H - 130, f"بصوت: الشيخ {rec_label}", _font(bold_p, 23), "#E8D5A0")
+                  _draw_c(md, H - 150, f"بصوت: الشيخ {rec_label}", _font(bold_p, 23), "#E8D5A0")
 
               wf = _font(bold_p, 25)
               wtxt = _prep(ACCOUNT_NAME)
               wbb = md.textbbox((0, 0), wtxt, font=wf, direction="rtl") if HAS_RAQM else md.textbbox((0, 0), wtxt, font=wf)
-              wy, wx_vis = H - 60, W - (wbb[2] - wbb[0]) - 28
+              wy, wx_vis = H - 85, W - (wbb[2] - wbb[0]) - 28
               md.text((wx_vis - wbb[0], wy), wtxt, font=wf, fill="#F5E6B3", **({"direction": "rtl"} if HAS_RAQM else {}))
 
               _halo(ov, bfg, 2, 3)
@@ -540,47 +367,67 @@ jobs:
               a = arr[:, :, 3:4]
               return (255 - a), (arr[:, :, :3] * a)
 
-          def read_shot_frames(media_path, n_frames):
-              is_img = media_path.suffix.lower() in (".jpg", ".jpeg", ".png")
-              if is_img:
-                  vf = f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},zoompan=z='min(zoom+0.0010,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={n_frames + 10}:s={W}x{H}:fps={FPS},eq=brightness=-0.05:contrast=1.08:saturation=0.90,format=rgb24"
-                  cmd = ["ffmpeg", "-v", "error", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-              else:
-                  vf = f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},eq=brightness=-0.05:contrast=1.08:saturation=0.90,format=rgb24"
-                  cmd = ["ffmpeg", "-v", "error", "-an", "-stream_loop", "-1", "-i", str(media_path), "-vf", vf, "-frames:v", str(n_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+          def make_vignette_mask():
+              yy = np.linspace(-1.0, 1.0, H, dtype=np.float32)[:, None]
+              xx = np.linspace(-1.0, 1.0, W, dtype=np.float32)[None, :]
+              r2 = xx * xx + yy * yy
+              mask = np.clip(1.04 - 0.28 * r2, 0.58, 1.0)
+              return mask[:, :, None]
 
-              proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-              fbytes = W * H * 3
-              frames = []
-              for _ in range(n_frames):
-                  raw = proc.stdout.read(fbytes)
-                  if not raw or len(raw) < fbytes:
-                      frames.append(frames[-1] if frames else np.zeros((H, W, 3), dtype=np.uint8))
+          def apply_cinematic_fx(frame_rgb: np.ndarray, style: str, vig: np.ndarray, seg_idx: int, seg_t: float, seg_dur: float) -> np.ndarray:
+              f = frame_rgb.astype(np.float32)
+              r, g, b = f[:, :, 0], f[:, :, 1], f[:, :, 2]
+              gray = 0.299 * r + 0.587 * g + 0.114 * b
+              gray_c = np.clip((gray - 128.0) * 1.18 + 122.0, 0.0, 255.0)
+
+              if style == "selective_fire":
+                  # أبيض وأسود سينمائي مع إبقاء لون النار والوهج البرتقالي/الأحمر فقط!
+                  fire_m = np.clip((r - np.maximum(g, b) - 18.0) / 40.0, 0.0, 1.0) * np.clip((r - 75.0) / 50.0, 0.0, 1.0)
+                  fire_rgb = np.stack([np.clip(r * 1.12, 0, 255), np.clip(g * 1.02, 0, 255), np.clip(b * 0.85, 0, 255)], axis=-1)
+                  bw_rgb = np.stack([gray_c, gray_c, gray_c], axis=-1)
+                  m = fire_m[:, :, None]
+                  out = (bw_rgb * (1.0 - m) + fire_rgb * m) * vig
+              elif style == "negative_dark":
+                  neg = (255.0 - gray_c) * 0.84
+                  out = np.stack([neg, neg, neg], axis=-1) * vig
+              elif style == "bw_with_negative":
+                  # أبيض وأسود مع تحول نيجاتيف درامي ناعم أثناء الآية الثانية (أو ذروة البداية)
+                  neg_w = 0.0
+                  if seg_idx == 1:
+                      fade_in = min(1.0, seg_t / 0.55)
+                      fade_out = min(1.0, max(0.0, (seg_dur - seg_t) / 0.55))
+                      neg_w = 0.88 * min(fade_in, fade_out)
+                  if neg_w > 0.01:
+                      neg = (255.0 - gray_c) * 0.84
+                      val = gray_c * (1.0 - neg_w) + neg * neg_w
                   else:
-                      frames.append(np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3)).copy())
-              proc.stdout.close()
-              proc.terminate()
-              proc.wait()
-              return frames
+                      val = gray_c
+                  out = np.stack([val, val, val], axis=-1) * vig
+              else:
+                  # bw_noir
+                  out = np.stack([gray_c, gray_c, gray_c], axis=-1) * vig
+
+              return np.clip(out, 0.0, 255.0).astype(np.uint8)
 
           def main():
-              work = Path(tempfile.mkdtemp(prefix="warraq_hybrid_"))
+              src_clip = REPO_ROOT / VIDEO_PATH
+              if not src_clip.exists():
+                  raise FileNotFoundError(f"❌ لم يُعثر على الفيديو في المسار '{VIDEO_PATH}'.")
+
+              vw, vh, clip_dur = probe_video_info(src_clip)
+              if clip_dur < 3.0:
+                  raise RuntimeError(f"❌ الفيديو قصير جداً أو معطوب ({clip_dur:.2f}s).")
+
+              # فحص اختياري لمجلد صور محلية إن رفعها المستخدم في warraq_photos/ (بدون أي بحث في الإنترنت)
+              photos_dir = REPO_ROOT / "warraq_photos"
+              local_photos = []
+              if photos_dir.exists():
+                  local_photos = sorted(p for p in photos_dir.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))
+                  if local_photos:
+                      print(f"🖼️ عُثر على {len(local_photos)} صورة محلية في warraq_photos/ — ستُدمج بعد الفيديو.", flush=True)
+
+              work = Path(tempfile.mkdtemp(prefix="warraq_fx_"))
               try:
-                  # 1) تجهيز الفيديو المرفوع (ذو الـ 30 ثانية) وفحص سلامته + كتم صوته نهائياً (-an)
-                  if VIDEO_URL:
-                      src_clip = work / "uploaded_clip.mp4"
-                      print("⬇️ تحميل الفيديو من الرابط المباشر...", flush=True)
-                      with open(src_clip, "wb") as f:
-                          for ch in requests.get(VIDEO_URL, timeout=90, stream=True).iter_content(16384): f.write(ch)
-                  else:
-                      src_clip = REPO_ROOT / VIDEO_PATH
-                      if not src_clip.exists():
-                          raise FileNotFoundError(f"❌ لم يُعثر على الفيديو في المسار '{VIDEO_PATH}'. ارفعه أولاً بنفس الاسم أو ضع رابطاً في video_url.")
-
-                  vw, vh, clip_dur = probe_video_info(src_clip)
-                  if clip_dur < 3.0:
-                      raise RuntimeError(f"❌ الفيديو المرفوع قصير جداً أو معطوب ({clip_dur:.2f}s).")
-
                   bold_p = find_bold_font()
                   quran_p = find_quran_font(work, bold_p)
                   moon = load_moon_icon(27)
@@ -589,7 +436,7 @@ jobs:
                   verses = fetch_uthmani_chapter(surah, pairs)
                   rec_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
 
-                  # 2) بناء الصوت الكامل (سورة قاف 19-20 بالدوسري + الدعاء الهادئ <= 49.5s)
+                  # 1) بناء الصوت: سورة قاف 19-20 بالدوسري + الدعاء <= 49.5s
                   q_items, q_dur_sum = [], 0.0
                   for idx, (a_num, _) in enumerate(pairs):
                       w = work / f"q_{idx}.wav"
@@ -625,7 +472,7 @@ jobs:
                       run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", f"{it['gap']:.3f}", "-c:a", "pcm_s16le", str(gw)])
                       (q_parts if it["type"] == "quran" else d_parts).extend([it["wav"], gw])
                       seg_dur = it["dur"] + it["gap"]
-                      segs.append({**it, "t0": cur, "t1": cur + seg_dur})
+                      segs.append({**it, "t0": cur, "t1": cur + seg_dur, "seg_dur": seg_dur})
                       cur += seg_dur
 
                   qc, dc = work / "qc.txt", work / "dc.txt"
@@ -642,12 +489,13 @@ jobs:
                   run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(full_c), "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(full_wav)])
                   tdur = min(49.8, get_dur(full_wav))
                   total_frames = max(1, int(round(tdur * FPS)))
-                  print(f"⏱️ المدة الإجمالية المستهدفة: {tdur:.2f}s ({total_frames} إطار)", flush=True)
+                  print(f"⏱️ زمن الصوت والريلز: {tdur:.2f}s ({total_frames} إطار) | المؤثر={EFFECT_STYLE}", flush=True)
 
                   ov_layers = [
                       make_overlay_arrays(sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
                       for sg in segs
                   ]
+                  vig = make_vignette_mask()
 
                   if VIDEO_SIZE == "compact":
                       venc = ["-c:v", "libx264", "-preset", "medium", "-crf", "24", "-maxrate", "1100k", "-bufsize", "2200k"]
@@ -656,46 +504,57 @@ jobs:
                   else:
                       venc = ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-maxrate", "1500k", "-bufsize", "3000k"]
 
-                  out_mp4 = work / "al_warraq_50s_hybrid.mp4"
+                  out_mp4 = work / "al_warraq_fx_reel.mp4"
                   enc_proc = subprocess.Popen(
                       ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{W}x{H}", "-pix_fmt", "rgb24", "-r", str(FPS), "-i", "pipe:0", "-i", str(full_wav),
                        "-map", "0:v:0", "-map", "1:a:0", "-t", f"{tdur:.3f}", *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "96k", "-movflags", "+faststart", "-shortest", str(out_mp4)],
                       stdin=subprocess.PIPE, stderr=subprocess.PIPE,
                   )
 
-                  # 3) المرحلة الأولى من الصورة: بث الفيديوهات الحقيقية الـ 30 ثانية الخاصة بك (بدون صوته -an)
+                  # 2) تبطيء ناعم بمزج الإطارات (framerate) إذا لم توجد صور محلية، أو 30ث فيديو + صورك المحلية
+                  video_target_dur = clip_dur if local_photos else tdur
+                  slow_ratio = max(1.0, video_target_dur / clip_dur)
+                  pts_flt = f",setpts={slow_ratio:.5f}*PTS,framerate=fps={FPS}:interp_start=15:interp_end=240:scene=8.2" if slow_ratio > 1.01 else f",fps={FPS}"
+                  if slow_ratio > 1.01:
+                      print(f"🐢 تبطيء سينمائي ناعم بمعدل {1.0/slow_ratio:.2f}x ليغطي كامل الـ {tdur:.1f}s بسلاسة", flush=True)
+
                   if vw > vh and LAYOUT_MODE == "auto_vertical":
                       dec_fc = (
-                          f"[0:v]yadif=0:-1:1,fps={FPS},split=2[fg][bg];"
+                          f"[0:v]yadif=0:-1:1,format=yuv420p{pts_flt},split=2[fg][bg];"
                           f"[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,gblur=sigma=6,scale={W}:{H}:flags=bilinear,eq=brightness=-0.28[b];"
                           f"[fg]scale={W}:-2:force_original_aspect_ratio=decrease:flags=lanczos[f];"
                           f"[b][f]overlay=(W-w)/2:(H-h)/2:shortest=1,format=rgb24[v]"
                       )
                   else:
-                      dec_fc = f"[0:v]yadif=0:-1:1,fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},format=rgb24[v]"
+                      dec_fc = f"[0:v]yadif=0:-1:1,format=yuv420p{pts_flt},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},format=rgb24[v]"
 
                   dec_proc = subprocess.Popen(
                       ["ffmpeg", "-v", "error", "-an", "-i", str(src_clip), "-filter_complex", dec_fc, "-map", "[v]", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                   )
 
                   fbytes = W * H * 3
                   global_f, seg_idx = 0, 0
-                  last_user_frame = None
-                  max_user_frames = total_frames  # لا يتجاوز 50 ثانية بأي حال
+                  last_frame = None
+                  max_vid_frames = int(round(video_target_dur * FPS)) if local_photos else total_frames
 
-                  while global_f < max_user_frames:
+                  while global_f < max_vid_frames:
                       raw = dec_proc.stdout.read(fbytes)
                       if not raw or len(raw) < fbytes:
-                          break
-                      bg = np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3)).copy()
-                      last_user_frame = bg
+                          if local_photos or last_frame is None:
+                              break
+                          bg_raw = last_frame
+                      else:
+                          bg_raw = np.frombuffer(raw, dtype=np.uint8).reshape((H, W, 3)).copy()
+                          last_frame = bg_raw
 
                       t = global_f / float(FPS)
                       while seg_idx + 1 < len(segs) and t >= segs[seg_idx]["t1"]:
                           seg_idx += 1
+
+                      styled = apply_cinematic_fx(bg_raw, EFFECT_STYLE, vig, seg_idx, t - segs[seg_idx]["t0"], segs[seg_idx]["seg_dur"])
                       inv_a, fg_p = ov_layers[seg_idx]
-                      comp = ((bg.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
+                      comp = ((styled.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
                       if t < 0.40:
                           comp = (comp.astype(np.float32) * (t / 0.40)).astype(np.uint8)
                       elif t > tdur - 0.80:
@@ -704,65 +563,43 @@ jobs:
                       global_f += 1
 
                   dec_proc.stdout.close()
-                  dec_err = dec_proc.stderr.read().decode("utf-8", errors="ignore")
+                  dec_proc.terminate()
                   dec_proc.wait()
 
-                  decoded_sec = global_f / float(FPS)
-                  print(f"🎬 تم فك تشفير فيديوك: {global_f} إطار ({decoded_sec:.2f}s من أصل {clip_dur:.2f}s)", flush=True)
-                  if decoded_sec < clip_dur - 1.5 and global_f < max_user_frames:
-                      print(f"⚠️ تنبيه: انقطع الفك مبكراً عند {decoded_sec:.1f}s — stderr: {dec_err[:300]}", flush=True)
-                  if global_f == 0:
-                      raise RuntimeError("❌ تعذر قراءة أي إطار من الفيديو المرفوع — تأكد أن الملف سليم على GitHub!")
-
-                  # 4) المرحلة الثانية: تكملة الـ ~20 ثانية المتبقية بـ 3 لقطات مفحوصة بـ Gemini Vision
+                  # إذا رفع المستخدم صوراً حقيقية في warraq_photos/، تُعرض بالمتبقي بعد الفيديو
                   rem_frames = total_frames - global_f
-                  if rem_frames > 0:
-                      print(f"🔎 جاري إكمال {rem_frames / FPS:.1f}s المتبقية بـ 3 مشاهد مفحوصة بالرؤية...", flush=True)
-                      used_urls = set()
-                      comp_files = []
-                      for i, sc in enumerate(COMPLEMENTARY_SHOTS):
-                          print(f"   📌 مشهد تكميلي {i + 1}/3: {sc['name']}", flush=True)
-                          cands = gather_candidates(sc, used_urls)
-                          winner = pick_best_from_sheet(cands, sc["req"], i)
-                          if winner:
-                              used_urls.add(winner["url"])
-                              comp_files.append(materialize_winner(winner, work, i))
-                          else:
-                              fb = work / f"fb_{i}.jpg"
-                              Image.new("RGB", (W, H), (14, 12, 16)).save(fb, "JPEG")
-                              comp_files.append(fb)
-
-                      n_comp = len(comp_files)
-                      xfade_frames = 10
-                      base_len = rem_frames // n_comp
-                      rem_mod = rem_frames % n_comp
-                      counts = [base_len + (1 if k < rem_mod else 0) for k in range(n_comp)]
-                      prev_tail = [last_user_frame] * min(xfade_frames, counts[0]) if last_user_frame is not None else []
-
-                      for k, sf in enumerate(comp_files):
-                          cnt = counts[k]
-                          if cnt <= 0:
-                              continue
-                          extra = xfade_frames if k < n_comp - 1 else 0
-                          frames_k = read_shot_frames(sf, cnt + extra)
+                  if rem_frames > 0 and local_photos:
+                      n_ph = len(local_photos)
+                      per_ph = rem_frames // n_ph
+                      rem_m = rem_frames % n_ph
+                      prev_tail = [last_frame] * min(9, per_ph or rem_frames) if last_frame is not None else []
+                      for p_i, p_path in enumerate(local_photos):
+                          cnt = per_ph + (1 if p_i < rem_m else 0)
+                          extra = 9 if p_i < n_ph - 1 else 0
+                          vf_p = f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},zoompan=z='min(zoom+0.0010,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={cnt+extra+10}:s={W}x{H}:fps={FPS},format=rgb24"
+                          p_proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(p_path), "-vf", vf_p, "-frames:v", str(cnt + extra), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                          p_frames = []
+                          for _ in range(cnt + extra):
+                              rb = p_proc.stdout.read(fbytes)
+                              p_frames.append(np.frombuffer(rb, dtype=np.uint8).reshape((H, W, 3)).copy() if (rb and len(rb) == fbytes) else (p_frames[-1] if p_frames else np.zeros((H, W, 3), dtype=np.uint8)))
+                          p_proc.stdout.close(); p_proc.terminate(); p_proc.wait()
 
                           for j in range(cnt):
-                              bg = frames_k[j]
+                              bg_raw = p_frames[j]
                               if j < len(prev_tail):
                                   w = j / float(len(prev_tail))
-                                  bg = (prev_tail[j].astype(np.float32) * (1.0 - w) + bg.astype(np.float32) * w).astype(np.uint8)
-
+                                  bg_raw = (prev_tail[j].astype(np.float32) * (1.0 - w) + bg_raw.astype(np.float32) * w).astype(np.uint8)
                               t = global_f / float(FPS)
                               while seg_idx + 1 < len(segs) and t >= segs[seg_idx]["t1"]:
                                   seg_idx += 1
+                              styled = apply_cinematic_fx(bg_raw, EFFECT_STYLE, vig, seg_idx, t - segs[seg_idx]["t0"], segs[seg_idx]["seg_dur"])
                               inv_a, fg_p = ov_layers[seg_idx]
-                              comp = ((bg.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
+                              comp = ((styled.astype(np.uint16) * inv_a + fg_p) // 255).astype(np.uint8)
                               if t > tdur - 0.80:
                                   comp = (comp.astype(np.float32) * max(0.0, (tdur - t) / 0.80)).astype(np.uint8)
                               enc_proc.stdin.write(comp.tobytes())
                               global_f += 1
-
-                          prev_tail = frames_k[cnt:] if extra > 0 else []
+                          prev_tail = p_frames[cnt:] if extra > 0 else []
 
                   enc_proc.stdin.close()
                   enc_err = enc_proc.stderr.read().decode("utf-8", errors="ignore")
@@ -770,24 +607,12 @@ jobs:
                       raise RuntimeError(f"خطأ الترميز:\n{enc_err[-800:]}")
 
                   mb, dur = out_mp4.stat().st_size / 1024 / 1024, get_dur(out_mp4)
-                  print(f"🎬 جاهز: {mb:.2f} MB | المدة: {dur:.1f}s (30ث حقيقي + تكملة الكود)", flush=True)
-
-                  cap = (
-                      f"{preset['caption']}\n\n"
-                      "🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، وأنزل السلوان على ذويهم.\n"
-                      "خالص العزاء والمواساة من أهل الموصل بالعراق إلى أهلنا في مصر الحبيبة 🇮🇶 🇪🇬\n"
-                      "لاحول ولاقوة الا بالله 🌖\n"
-                      f"📦 {mb:.1f} MB | {dur:.0f} ثانية"
-                  )
+                  print(f"🎬 جاهز: {mb:.2f} MB | المدة: {dur:.1f}s", flush=True)
+                  cap = f"{preset['caption']}\n\n🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، وأنزل السلوان على ذويهم.\nخالص العزاء والمواساة من أهل الموصل بالعراق إلى أهلنا في مصر الحبيبة 🇮🇶 🇪🇬\nلاحول ولاقوة الا بالله 🌖\n📦 {mb:.1f} MB | {dur:.0f} ثانية"
                   with open(out_mp4, "rb") as vf:
-                      res = requests.post(
-                          f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendVideo",
-                          data={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "caption": cap, "supports_streaming": "true", "width": str(W), "height": str(H)},
-                          files={"video": (out_mp4.name, vf, "video/mp4")},
-                          timeout=180,
-                      ).json()
+                      res = requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendVideo", data={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "caption": cap, "supports_streaming": "true", "width": str(W), "height": str(H)}, files={"video": (out_mp4.name, vf, "video/mp4")}, timeout=180).json()
                   assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم إرسال الريلز إلى تيليغرام بنجاح!", flush=True)
+                  print("✅ تم الإرسال إلى تيليغرام!", flush=True)
               finally:
                   shutil.rmtree(work, ignore_errors=True)
 
