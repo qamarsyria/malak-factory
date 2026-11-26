@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       reciter:
-        description: 'القارئ لآيات الصبر (البقرة 155-157)'
+        description: 'القارئ البشري للمقطع الأول (البقرة 155-157)'
         required: true
         default: 'Minshawy_Murattal_128kbps'
         type: choice
@@ -23,6 +23,15 @@ on:
           - Charon
           - Rasalgethi
           - Algieba
+      quran_gemini_voice:
+        description: 'صوت تلاوة جميني للمقطع الثاني'
+        required: true
+        default: 'Algieba'
+        type: choice
+        options:
+          - Algieba
+          - Charon
+          - Orus
 
 jobs:
   build_condolence_reel:
@@ -49,7 +58,7 @@ jobs:
         run: |
           pip install -q requests==2.32.3 "Pillow>=10.0.0,<11.0.0" arabic-reshaper==3.0.0 python-bidi==0.6.3 edge-tts
 
-      - name: Build & Send Al-Warraq Condolence Reel
+      - name: Build & Send 2 Al-Warraq Condolence Reels
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -57,11 +66,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RECITER_ID: ${{ inputs.reciter }}
           TTS_VOICE: ${{ inputs.tts_voice }}
+          QURAN_GEMINI_VOICE: ${{ inputs.quran_gemini_voice }}
         run: |
           cat <<'PYEOF' > /tmp/warraq_reel.py
           import asyncio
           import io
-          import json
           import os
           import random
           import re
@@ -69,6 +78,7 @@ jobs:
           import subprocess
           import sys
           import tempfile
+          import time
           from pathlib import Path
           import requests
           from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, features
@@ -92,6 +102,7 @@ jobs:
           PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "").strip()
           RECITER_ID = os.getenv("RECITER_ID", "Minshawy_Murattal_128kbps").strip()
           TTS_VOICE = os.getenv("TTS_VOICE", "Charon").strip()
+          QURAN_GEMINI_VOICE = os.getenv("QURAN_GEMINI_VOICE", "Algieba").strip()
 
           RECITER_LABELS = {
               "Minshawy_Murattal_128kbps": "محمد صديق المنشاوي",
@@ -107,12 +118,24 @@ jobs:
               157: "أُو۟لَـٰٓئِكَ عَلَيْهِمْ صَلَوَٰتٌ مِّن رَّبِّهِمْ وَرَحْمَةٌ ۖ وَأُو۟لَـٰٓئِكَ هُمُ ٱلْمُهْتَدُونَ",
           }
 
+          SIMPLE_FALLBACK_BAQARAH = {
+              155: "وَلَنَبْلُوَنَّكُمْ بِشَيْءٍ مِنَ الْخَوْفِ وَالْجُوعِ وَنَقْصٍ مِنَ الْأَمْوَالِ وَالْأَنْفُسِ وَالثَّمَرَاتِ ، وَبَشِّرِ الصَّابِرِينَ",
+              156: "الَّذِينَ إِذَا أَصَابَتْهُمْ مُصِيبَةٌ قَالُوا إِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ",
+              157: "أُولَائِكَ عَلَيْهِمْ صَلَوَاتٌ مِنْ رَبِّهِمْ وَرَحْمَةٌ ، وَأُولَائِكَ هُمُ الْمُهْتَدُونَ",
+          }
+
           BAD_VISUAL_WORDS = {
               "woman", "girl", "female", "lady", "bride", "bikini", "sexy", "nude",
               "man", "men", "boy", "person", "people", "human", "face", "portrait",
               "crowd", "blood", "corpse", "dead", "gore", "injury", "weapon",
               "alcohol", "wine", "beer", "party", "dance", "music", "guitar",
           }
+
+
+          def run_cmd(cmd: list[str]):
+              res = subprocess.run(cmd, capture_output=True, text=True)
+              if res.returncode != 0:
+                  raise RuntimeError(f"فشل الأمر {' '.join(cmd[:4])}:\n{res.stderr[-800:]}")
 
 
           def find_bold_font() -> str:
@@ -183,6 +206,28 @@ jobs:
               return verses
 
 
+          def fetch_baqarah_simple_for_tts() -> dict[int, str]:
+              verses: dict[int, str] = {}
+              try:
+                  r = requests.get("https://api.alquran.cloud/v1/surah/2/quran-simple", timeout=15)
+                  if r.status_code == 200:
+                      for item in r.json().get("data", {}).get("ayahs", []):
+                          num = int(item.get("numberInSurah", 0))
+                          if num in (155, 156, 157):
+                              t = (item.get("text") or "").strip()
+                              # تحويل علامات الوقف إلى فاصلة وقفة طبيعية لجميني
+                              t = re.sub(r"[\u06D6-\u06DC]", " ، ", t)
+                              t = re.sub(r"[\u06DD-\u06ED۞۩]", "", t)
+                              t = t.replace("ٱ", "ا").replace("\u06E1", "\u0652").replace("ٰ", "ا")
+                              t = re.sub(r"[^\u0621-\u064A\u064B-\u065F\s،؛؟!.:]", " ", t)
+                              verses[num] = re.sub(r"\s+", " ", t).strip()
+              except Exception:
+                  pass
+              for num, fb in SIMPLE_FALLBACK_BAQARAH.items():
+                  verses.setdefault(num, fb)
+              return verses
+
+
           def get_dur(path: Path) -> float:
               r = subprocess.run(
                   ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -192,22 +237,25 @@ jobs:
               return max(0.0, float(r.stdout.strip() or 0.0))
 
 
-          def synth_narration_wav(text: str, out_wav: Path, work_dir: Path, idx: int):
-              raw_mp3 = work_dir / f"nar_{idx}.mp3"
+          def synth_tts_to_mp3(text: str, out_mp3: Path, voice: str):
               ok = False
               if gemini_tts_with_pool is not None:
                   try:
-                      gemini_tts_with_pool(text, str(raw_mp3), voice=TTS_VOICE)
-                      ok = raw_mp3.exists() and raw_mp3.stat().st_size > 1000
+                      gemini_tts_with_pool(text, str(out_mp3), voice=voice)
+                      ok = out_mp3.exists() and out_mp3.stat().st_size > 1000
                   except Exception as e:
                       print(f"⚠️ Gemini TTS فشل ({e}) — التحويل للاحتياط Edge TTS", flush=True)
               if not ok:
                   import edge_tts
                   async def _run():
-                      comm = edge_tts.Communicate(text, "ar-EG-ShakirNeural", rate="-6%")
-                      await comm.save(str(raw_mp3))
+                      comm = edge_tts.Communicate(text, "ar-EG-ShakirNeural", rate="-7%")
+                      await comm.save(str(out_mp3))
                   asyncio.run(_run())
 
+
+          def synth_narration_wav(text: str, out_wav: Path, work_dir: Path, idx: int):
+              raw_mp3 = work_dir / f"nar_{idx}.mp3"
+              synth_tts_to_mp3(text, raw_mp3, TTS_VOICE)
               af = (
                   "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
                   "areverse,"
@@ -217,15 +265,45 @@ jobs:
                   "alimiter=limit=0.95,"
                   "afade=t=in:st=0:d=0.015"
               )
-              subprocess.run(
-                  ["ffmpeg", "-y", "-i", str(raw_mp3), "-af", af,
-                   "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
-                  check=True, capture_output=True,
+              run_cmd([
+                  "ffmpeg", "-y", "-i", str(raw_mp3), "-af", af,
+                  "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav),
+              ])
+
+
+          def synth_gemini_ayah_wav(tts_text: str, surah: int, ayah: int, out_wav: Path, work_dir: Path):
+              raw_mp3 = work_dir / f"gem_ayah_{surah}_{ayah}.mp3"
+              dry_wav = work_dir / f"gem_ayah_{surah}_{ayah}_dry.wav"
+              synth_tts_to_mp3(tts_text, raw_mp3, QURAN_GEMINI_VOICE)
+              af_dry = (
+                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                  "areverse,"
+                  "silenceremove=start_periods=1:start_duration=0:start_threshold=-48dB,"
+                  "areverse,"
+                  "loudnorm=I=-16:TP=-1.5:LRA=11,"
+                  "alimiter=limit=0.95"
               )
+              run_cmd([
+                  "ffmpeg", "-y", "-i", str(raw_mp3), "-af", af_dry,
+                  "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(dry_wav),
+              ])
+              af_reverb = (
+                  "apad=pad_dur=0.55,"
+                  "highpass=f=85,lowpass=f=7800,"
+                  "equalizer=f=240:t=q:w=1.2:g=2.5,"
+                  "aecho=0.86:0.84:55|115|185:0.22|0.12|0.05,"
+                  "loudnorm=I=-15:TP=-1.5:LRA=10,"
+                  "alimiter=limit=0.95,"
+                  "afade=t=in:st=0:d=0.02"
+              )
+              run_cmd([
+                  "ffmpeg", "-y", "-i", str(dry_wav), "-af", af_reverb,
+                  "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav),
+              ])
 
 
-          def download_ayah_wav(surah: int, ayah: int, out_wav: Path, work_dir: Path):
-              mp3 = work_dir / f"ayah_{surah}_{ayah}.mp3"
+          def download_human_ayah_wav(surah: int, ayah: int, out_wav: Path, work_dir: Path):
+              mp3 = work_dir / f"hum_ayah_{surah}_{ayah}.mp3"
               url = f"https://everyayah.com/data/{RECITER_ID}/{surah:03d}{ayah:03d}.mp3"
               r = requests.get(url, timeout=25)
               if r.status_code != 200 or len(r.content) < 1000:
@@ -242,11 +320,10 @@ jobs:
                   "alimiter=limit=0.95,"
                   "afade=t=in:st=0:d=0.015"
               )
-              subprocess.run(
-                  ["ffmpeg", "-y", "-i", str(mp3), "-af", af,
-                   "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
-                  check=True, capture_output=True,
-              )
+              run_cmd([
+                  "ffmpeg", "-y", "-i", str(mp3), "-af", af,
+                  "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(out_wav),
+              ])
 
 
           def _tags_are_clean(tags: str) -> bool:
@@ -309,7 +386,6 @@ jobs:
                       except Exception:
                           pass
 
-              # بديل إجرائي سينمائي هادئ من وحي المشهد إذا تعذر الاتصال
               fb = work_dir / f"bg_fallback_{idx}.jpg"
               img = Image.new("RGB", (W, H), (10, 12, 18))
               draw = ImageDraw.Draw(img)
@@ -410,7 +486,6 @@ jobs:
           ):
               overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
               scrim_draw = ImageDraw.Draw(overlay)
-              # تدرج مظلل علوي وسفلي لوضوح النص مع إبقاء المشهد مفتوحاً
               for y in range(0, 140):
                   a = int(145 * (1 - y / 140))
                   scrim_draw.line([(0, y), (W, y)], fill=(0, 0, 0, a))
@@ -439,11 +514,11 @@ jobs:
                   fpath = bold_font_path
                   color = "#FFFFFF"
 
-              chosen_font = _load_font(min_sz, fpath)
+              chosen_font = _load_font(fpath, min_sz)
               chosen_lines = []
               chosen_lh = int(min_sz * mult)
               for sz in range(start_sz, min_sz - 1, -2):
-                  fnt = _load_font(sz, fpath)
+                  fnt = _load_font(fpath, sz)
                   lines = _wrap_lines(body_text, fnt, max_w, dummy)
                   gh = max((_bbox(dummy, ln, fnt)[3] - _bbox(dummy, ln, fnt)[1] for ln in lines), default=0)
                   lh = max(int(sz * mult), gh + 14)
@@ -460,7 +535,6 @@ jobs:
               if is_quran:
                   y = max(165 + max(0, -min_top), (H - total_h - 60) // 2)
               else:
-                  # وضع السرد في النصف السفلي لترك مساحة واسعة للمشهد التمثيلي
                   y = max(180 + max(0, -min_top), H - 175 - total_h)
 
               for ln in chosen_lines:
@@ -521,12 +595,63 @@ jobs:
                   f"[1:v]fps={FPS},format=rgba[ov];"
                   f"[bg][ov]overlay=shortest=1{fade_str},format=yuv420p,setsar=1[v]"
               )
-              subprocess.run(
+              run_cmd(
                   ["ffmpeg", "-y"] + bg_in + ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(ov_png),
                    "-filter_complex", fc, "-map", "[v]", "-t", f"{dur:.3f}",
                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(out_mp4)],
-                  check=True, capture_output=True,
               )
+
+
+          def export_and_send(work: Path, tag: str, out_name: str, audio_list: list[Path], video_list: list[Path], caption_head: str):
+              a_list = work / f"a_concat_{tag}.txt"
+              v_list = work / f"v_concat_{tag}.txt"
+              a_list.write_text("\n".join(f"file '{p.resolve()}'" for p in audio_list), encoding="utf-8")
+              v_list.write_text("\n".join(f"file '{p.resolve()}'" for p in video_list), encoding="utf-8")
+
+              merged_wav = work / f"full_audio_{tag}.wav"
+              run_cmd([
+                  "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(a_list),
+                  "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(merged_wav),
+              ])
+
+              final_mp4 = work / out_name
+              run_cmd([
+                  "ffmpeg", "-y",
+                  "-f", "concat", "-safe", "0", "-i", str(v_list),
+                  "-i", str(merged_wav),
+                  "-map", "0:v", "-map", "1:a",
+                  "-c:v", "libx264", "-preset", "slow", "-crf", "25",
+                  "-maxrate", "480k", "-bufsize", "960k",
+                  "-profile:v", "high", "-level:v", "4.0",
+                  "-g", str(FPS * 4), "-bf", "3", "-aq-mode", "3",
+                  "-pix_fmt", "yuv420p",
+                  "-c:a", "aac", "-ac", "1", "-b:a", "96k",
+                  "-movflags", "+faststart", "-shortest",
+                  str(final_mp4),
+              ])
+
+              size_mb = final_mp4.stat().st_size / 1024 / 1024
+              total_sec = get_dur(final_mp4)
+              print(f"🎬 [{tag}] جاهز: {size_mb:.2f} MB | {total_sec:.1f} ثانية", flush=True)
+
+              tg_token = os.environ["TELEGRAM_BOT_TOKEN"]
+              tg_chat = os.environ["TELEGRAM_CHAT_ID"]
+              caption = (
+                  f"{caption_head}\n\n"
+                  "🕯️ خالص العزاء والمواساة من الشعبين الفلسطيني والسوري إلى أهلنا وأحبتنا في مصر الشقيقة "
+                  "في فاجعة حريق الطريق الدائري بالوراق 🇵🇸 🇸🇾 🇪🇬\n"
+                  "﴿ الَّذِينَ إِذَا أَصَابَتْهُم مُّصِيبَةٌ قَالُوا إِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ ﴾\n"
+                  f"📦 الحجم: {size_mb:.1f} MB | المدة: {total_sec:.0f} ثانية"
+              )
+              with open(final_mp4, "rb") as vf:
+                  res = requests.post(
+                      f"https://api.telegram.org/bot{tg_token}/sendVideo",
+                      data={"chat_id": tg_chat, "caption": caption, "supports_streaming": "true"},
+                      files={"video": (final_mp4.name, vf, "video/mp4")},
+                      timeout=180,
+                  ).json()
+              assert res.get("ok"), f"Telegram Error ({tag}): {res}"
+              print(f"✅ [{tag}] تم الإرسال إلى تيليغرام بنجاح!", flush=True)
 
 
           def main():
@@ -535,6 +660,7 @@ jobs:
                   bold_font = find_bold_font()
                   quran_font = find_quran_font(work, bold_font)
                   verses = fetch_baqarah_uthmani()
+                  simple_verses = fetch_baqarah_simple_for_tts()
                   reciter_label = RECITER_LABELS.get(RECITER_ID, RECITER_ID)
 
                   timeline = [
@@ -607,110 +733,106 @@ jobs:
 
                   gap_short = work / "gap_030.wav"
                   gap_end = work / "gap_070.wav"
-                  subprocess.run(
-                      ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-                       "-t", "0.30", "-c:a", "pcm_s16le", str(gap_short)],
-                      check=True, capture_output=True,
-                  )
-                  subprocess.run(
-                      ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-                       "-t", "0.70", "-c:a", "pcm_s16le", str(gap_end)],
-                      check=True, capture_output=True,
-                  )
+                  run_cmd([
+                      "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                      "-t", "0.30", "-c:a", "pcm_s16le", str(gap_short),
+                  ])
+                  run_cmd([
+                      "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                      "-t", "0.70", "-c:a", "pcm_s16le", str(gap_end),
+                  ])
 
                   used_urls = set()
-                  audio_concat = []
-                  video_concat = []
+                  hum_audio_concat, hum_video_concat = [], []
+                  gem_audio_concat, gem_video_concat = [], []
 
                   for i, item in enumerate(timeline):
-                      wav = work / f"seg_{i}.wav"
-                      if item["type"] == "quran":
-                          download_ayah_wav(item["surah"], item["ayah"], wav, work)
-                      else:
-                          synth_narration_wav(item["text"], wav, work, i)
-
                       is_last = (i == len(timeline) - 1)
                       pad_wav = gap_end if is_last else gap_short
                       pad_dur = 0.70 if is_last else 0.30
-                      seg_dur = get_dur(wav) + pad_dur
-
-                      audio_concat.extend([wav, pad_wav])
-
                       bg = fetch_theme_media(item["queries"], work, used_urls, i, item["mood"])
-                      ov = work / f"ov_{i}.png"
-                      make_overlay_png(
-                          out_png=ov,
-                          body_text=item["text"],
-                          is_quran=(item["type"] == "quran"),
-                          bold_font_path=bold_font,
-                          quran_font_path=quran_font,
-                          ref_text=item.get("ref", ""),
-                          reciter_label=reciter_label if item["type"] == "quran" else "",
-                      )
-                      clip_mp4 = work / f"clip_{i}.mp4"
-                      build_scene_clip(
-                          bg_path=bg,
-                          ov_png=ov,
-                          dur=seg_dur,
-                          out_mp4=clip_mp4,
-                          fade_in=item["fade_in"],
-                          fade_out=item["fade_out"],
-                      )
-                      video_concat.append(clip_mp4)
-                      print(f"✅ مشهد {i + 1}/{len(timeline)} جاهز ({seg_dur:.1f}s)", flush=True)
 
-                  a_list = work / "a_concat.txt"
-                  v_list = work / "v_concat.txt"
-                  a_list.write_text("\n".join(f"file '{p.resolve()}'" for p in audio_concat), encoding="utf-8")
-                  v_list.write_text("\n".join(f"file '{p.resolve()}'" for p in video_concat), encoding="utf-8")
+                      if item["type"] == "narration":
+                          wav = work / f"nar_{i}.wav"
+                          synth_narration_wav(item["text"], wav, work, i)
+                          seg_dur = get_dur(wav) + pad_dur
 
-                  merged_wav = work / "full_audio.wav"
-                  subprocess.run(
-                      ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(a_list),
-                       "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(merged_wav)],
-                      check=True, capture_output=True,
+                          ov = work / f"ov_shared_{i}.png"
+                          make_overlay_png(
+                              out_png=ov,
+                              body_text=item["text"],
+                              is_quran=False,
+                              bold_font_path=bold_font,
+                              quran_font_path=quran_font,
+                          )
+                          clip_mp4 = work / f"clip_shared_{i}.mp4"
+                          build_scene_clip(bg, ov, seg_dur, clip_mp4, item["fade_in"], item["fade_out"])
+
+                          hum_audio_concat.extend([wav, pad_wav])
+                          hum_video_concat.append(clip_mp4)
+                          gem_audio_concat.extend([wav, pad_wav])
+                          gem_video_concat.append(clip_mp4)
+                          print(f"✅ مشهد سرد مشترك {i + 1}/{len(timeline)} ({seg_dur:.1f}s)", flush=True)
+                      else:
+                          s_num, a_num = item["surah"], item["ayah"]
+
+                          # 1) نسخة التلاوة البشرية
+                          hum_wav = work / f"hum_seg_{i}.wav"
+                          download_human_ayah_wav(s_num, a_num, hum_wav, work)
+                          hum_dur = get_dur(hum_wav) + pad_dur
+                          ov_hum = work / f"ov_hum_{i}.png"
+                          make_overlay_png(
+                              out_png=ov_hum,
+                              body_text=item["text"],
+                              is_quran=True,
+                              bold_font_path=bold_font,
+                              quran_font_path=quran_font,
+                              ref_text=item["ref"],
+                              reciter_label=reciter_label,
+                          )
+                          clip_hum = work / f"clip_hum_{i}.mp4"
+                          build_scene_clip(bg, ov_hum, hum_dur, clip_hum, item["fade_in"], item["fade_out"])
+                          hum_audio_concat.extend([hum_wav, pad_wav])
+                          hum_video_concat.append(clip_hum)
+
+                          # 2) نسخة تلاوة Gemini الهادئة + صدى مسجد
+                          gem_wav = work / f"gem_seg_{i}.wav"
+                          synth_gemini_ayah_wav(simple_verses[a_num], s_num, a_num, gem_wav, work)
+                          gem_dur = get_dur(gem_wav) + pad_dur
+                          ov_gem = work / f"ov_gem_{i}.png"
+                          make_overlay_png(
+                              out_png=ov_gem,
+                              body_text=item["text"],
+                              is_quran=True,
+                              bold_font_path=bold_font,
+                              quran_font_path=quran_font,
+                              ref_text=item["ref"],
+                              reciter_label="",
+                          )
+                          clip_gem = work / f"clip_gem_{i}.mp4"
+                          build_scene_clip(bg, ov_gem, gem_dur, clip_gem, item["fade_in"], item["fade_out"])
+                          gem_audio_concat.extend([gem_wav, pad_wav])
+                          gem_video_concat.append(clip_gem)
+
+                          print(f"✅ مشهد قرآن {i + 1}/{len(timeline)} | بشري={hum_dur:.1f}s | جميني={gem_dur:.1f}s", flush=True)
+                          time.sleep(0.4)
+
+                  export_and_send(
+                      work=work,
+                      tag="human",
+                      out_name="al_warraq_condolence_human.mp4",
+                      audio_list=hum_audio_concat,
+                      video_list=hum_video_concat,
+                      caption_head=f"🎙️ النسخة 1 — تلاوة الشيخ {reciter_label}",
                   )
-
-                  final_mp4 = work / "al_warraq_condolence_reel.mp4"
-                  subprocess.run(
-                      [
-                          "ffmpeg", "-y",
-                          "-f", "concat", "-safe", "0", "-i", str(v_list),
-                          "-i", str(merged_wav),
-                          "-map", "0:v", "-map", "1:a",
-                          "-c:v", "libx264", "-preset", "slow", "-crf", "25",
-                          "-maxrate", "480k", "-bufsize", "960k",
-                          "-profile:v", "high", "-level:v", "4.0",
-                          "-g", str(FPS * 4), "-bf", "3", "-aq-mode", "3",
-                          "-pix_fmt", "yuv420p",
-                          "-c:a", "aac", "-ac", "1", "-b:a", "96k",
-                          "-movflags", "+faststart", "-shortest",
-                          str(final_mp4),
-                      ],
-                      check=True, capture_output=True,
+                  export_and_send(
+                      work=work,
+                      tag="gemini",
+                      out_name="al_warraq_condolence_gemini.mp4",
+                      audio_list=gem_audio_concat,
+                      video_list=gem_video_concat,
+                      caption_head=f"🕌 النسخة 2 — تلاوة Gemini ({QURAN_GEMINI_VOICE}) + صدى مسجد",
                   )
-
-                  size_mb = final_mp4.stat().st_size / 1024 / 1024
-                  total_sec = get_dur(final_mp4)
-                  print(f"🎬 الريلز جاهز: {size_mb:.2f} MB | {total_sec:.1f} ثانية", flush=True)
-
-                  tg_token = os.environ["TELEGRAM_BOT_TOKEN"]
-                  tg_chat = os.environ["TELEGRAM_CHAT_ID"]
-                  caption = (
-                      "🕯️ خالص العزاء والمواساة من الشعبين الفلسطيني والسوري إلى أهلنا وأحبتنا في مصر الشقيقة "
-                      "في فاجعة حريق الطريق الدائري بالوراق 🇵🇸 🇸🇾 🇪🇬\n\n"
-                      "﴿ الَّذِينَ إِذَا أَصَابَتْهُم مُّصِيبَةٌ قَالُوا إِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ ﴾\n"
-                      f"🎙️ التلاوة: الشيخ {reciter_label} | الحجم: {size_mb:.1f} MB"
-                  )
-                  with open(final_mp4, "rb") as vf:
-                      res = requests.post(
-                          f"https://api.telegram.org/bot{tg_token}/sendVideo",
-                          data={"chat_id": tg_chat, "caption": caption, "supports_streaming": "true"},
-                          files={"video": (final_mp4.name, vf, "video/mp4")},
-                          timeout=180,
-                      ).json()
-                  assert res.get("ok"), f"Telegram Error: {res}"
-                  print("✅ تم إرسال الريلز إلى تيليغرام بنجاح!", flush=True)
               finally:
                   shutil.rmtree(work, ignore_errors=True)
 
