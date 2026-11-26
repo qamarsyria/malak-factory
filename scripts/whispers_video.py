@@ -5,9 +5,10 @@ scripts/whispers_video.py
 المخرج السينمائي المحسّن لمشروع «همسات ملك» (1080×1920 @ 30fps):
 - يولّد لوحات رومانسية أو روحانية متطابقة مع السرد عبر (ZeroGPU FLUX/Z-Image -> AI Horde النشط -> Pixabay Film)
   مع فحص Gemini Vision وطباعة السجل بوضوح.
+- يضيف أجواءً رومانسية دافئة (غطاء مخملي عنابي-وردي، هالات بوكيه، وذرات نور ذهبية صاعدة).
 - يعرض الخط العربي بوضوح فائق (Amiri Bold + RAQM + MaxFilter Halo) في مساحة آمنة للواتساب،
-  وينتقل في ذروة الهمسة بسلاسة إلى الدفتر القطني الصوفي الرومانسي 3D (romantic_cards.py).
-- يضغط الفيديو بذكاء (~3.5-4.5 MB للدقيقة بدلاً من 13 MB) مع بقاء النصوص والملمس حادّين.
+  وينتقل في ذروة الهمسة بسلاسة (dissolve) إلى الدفتر القطني الصوفي الرومانسي 3D الحيّ (romantic_cards.py).
+- يضغط الفيديو بذكاء مع الحفاظ على حدة ألياف الصوف والخط العربي.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ from romantic_cards import (
 VIDEO_W = 1080
 VIDEO_H = 1920
 FPS = 30
-XFADE_DUR = 0.60
+XFADE_DUR = 0.72
 
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 HAS_RAQM = features.check("raqm")
@@ -58,9 +59,9 @@ HAS_RAQM = features.check("raqm")
 FINAL_WHISPER_ENCODE = [
     "-c:v", "libx264",
     "-preset", "slow",
-    "-crf", "27",
-    "-maxrate", "480k",
-    "-bufsize", "960k",
+    "-crf", "25",
+    "-maxrate", "680k",
+    "-bufsize", "1360k",
     "-profile:v", "high",
     "-level:v", "4.0",
     "-g", str(FPS * 4),
@@ -121,10 +122,42 @@ def _composite_halo(canvas: Image.Image, fg_layer: Image.Image, outline_px: int 
     canvas.alpha_composite(fg_layer)
 
 
+def _make_floating_motes_png(out_png: Path, category: str):
+    """
+    يصنع ورقة ذرات نور ذهبية-وردية ناعمة مكررة عمودياً (1080×3840)
+    لتصعد بانسيابية تامة بدون أي انقطاع أو فواصل داخل FFmpeg.
+    """
+    sheet = Image.new("RGBA", (VIDEO_W, VIDEO_H * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(sheet)
+    rng = random.Random(2026)
+
+    palette = (
+        [(255, 232, 168), (255, 244, 214), (242, 206, 142)]
+        if category == "prayer_niqab"
+        else [(255, 218, 178), (255, 192, 208), (255, 240, 224)]
+    )
+
+    for _ in range(38):
+        mx = rng.randint(45, VIDEO_W - 45)
+        my = rng.randint(30, VIDEO_H - 30)
+        mr = rng.randint(4, 15)
+        alpha = rng.randint(34, 86)
+        col = rng.choice(palette)
+        for offset_y in (0, VIDEO_H):
+            cy = my + offset_y
+            # هالة ناعمة حول كل ذرة نور
+            d.ellipse([mx - mr * 2, cy - mr * 2, mx + mr * 2, cy + mr * 2], fill=(*col, max(12, alpha // 3)))
+            d.ellipse([mx - mr, cy - mr, mx + mr, cy + mr], fill=(*col, alpha))
+
+    sheet = sheet.filter(ImageFilter.GaussianBlur(3.2))
+    sheet.save(out_png)
+
+
 def _make_whisper_overlay_png(
     text: str,
     title: str,
     show_title: bool,
+    category: str,
     font_path: str,
     out_png: Path,
 ):
@@ -132,17 +165,33 @@ def _make_whisper_overlay_png(
 
     scrim = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(scrim)
-    if show_title:
-        for y in range(90, 290):
-            a = int(115 * (1.0 - abs(y - 180) / 110.0))
-            sd.line([(0, y), (VIDEO_W, y)], fill=(8, 4, 14, max(0, a)))
 
-    start_y = int(VIDEO_H * 0.56)
+    # ألوان غطاء دافئة بدل السواد الكئيب
+    scrim_rgb = (18, 20, 36) if category == "prayer_niqab" else (36, 10, 22)
+
+    if show_title:
+        for y in range(85, 305):
+            a = int(108 * (1.0 - abs(y - 185) / 120.0))
+            sd.line([(0, y), (VIDEO_W, y)], fill=(*scrim_rgb, max(0, a)))
+
+    start_y = int(VIDEO_H * 0.54)
     for y in range(start_y, VIDEO_H):
         ratio = (y - start_y) / max(1, VIDEO_H - start_y)
-        alpha = int(195 * (ratio ** 1.25))
-        sd.line([(0, y), (VIDEO_W, y)], fill=(8, 4, 14, alpha))
+        alpha = int(178 * (ratio ** 1.28))
+        sd.line([(0, y), (VIDEO_W, y)], fill=(*scrim_rgb, alpha))
     overlay.alpha_composite(scrim)
+
+    # هالات بوكيه رومانسية ناعمة في الأطراف
+    bokeh = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
+    bd_b = ImageDraw.Draw(bokeh)
+    bokeh_spots = (
+        [(170, 340, 80, (255, 226, 162, 28)), (910, 480, 95, (236, 212, 168, 24)), (850, 1080, 75, (255, 232, 185, 24))]
+        if category == "prayer_niqab"
+        else [(165, 320, 82, (255, 198, 178, 34)), (905, 450, 96, (255, 218, 168, 30)), (215, 1170, 88, (246, 168, 192, 32)), (865, 1020, 72, (255, 212, 152, 28))]
+    )
+    for bx, by, br, bcol in bokeh_spots:
+        bd_b.ellipse([bx - br, by - br, bx + br, by + br], fill=bcol)
+    overlay.alpha_composite(bokeh.filter(ImageFilter.GaussianBlur(30)))
 
     fg_body = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     fg_meta = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
@@ -150,15 +199,21 @@ def _make_whisper_overlay_png(
     md = ImageDraw.Draw(fg_meta)
 
     if show_title and title:
-        t_font = _load_font(font_path, 48)
+        t_font = _load_font(font_path, 50)
         clean_t = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ك[\u064B-\u065F]*", "ملك", title)
         pt = _prep_txt(clean_t)
         bb = _measure(md, clean_t, t_font)
         tx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
+        title_col = (255, 228, 166, 248) if category == "prayer_niqab" else (255, 222, 184, 248)
         if HAS_RAQM:
-            md.text((tx, 155), pt, font=t_font, fill=(255, 224, 156, 245), direction="rtl")
+            md.text((tx, 150), pt, font=t_font, fill=title_col, direction="rtl")
         else:
-            md.text((tx, 155), pt, font=t_font, fill=(255, 224, 156, 245))
+            md.text((tx, 150), pt, font=t_font, fill=title_col)
+
+        # خط زخرفي ذهبي رفيع تحت العنوان
+        line_y = 228
+        md.line([(VIDEO_W // 2 - 140, line_y), (VIDEO_W // 2 + 140, line_y)], fill=(246, 206, 148, 165), width=2)
+        md.ellipse([VIDEO_W // 2 - 5, line_y - 5, VIDEO_W // 2 + 5, line_y + 5], fill=(255, 224, 170, 220))
 
     clean_text = (text or "").strip()
     if clean_text:
@@ -176,25 +231,26 @@ def _make_whisper_overlay_png(
             lines = _wrap_text(clean_text, chosen_font, VIDEO_W - 140, bd)[:4]
 
         block_h = len(lines) * lh
-        cur_y = 1610 - block_h
+        cur_y = 1605 - block_h
         for ln in lines:
             pt = _prep_txt(ln)
             bb = _measure(bd, ln, chosen_font)
             lx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
             if HAS_RAQM:
-                bd.text((lx, cur_y), pt, font=chosen_font, fill=(252, 246, 238, 255), direction="rtl")
+                bd.text((lx, cur_y), pt, font=chosen_font, fill=(255, 248, 240, 255), direction="rtl")
             else:
-                bd.text((lx, cur_y), pt, font=chosen_font, fill=(252, 246, 238, 255))
+                bd.text((lx, cur_y), pt, font=chosen_font, fill=(255, 248, 240, 255))
             cur_y += lh
 
     wm_font = _load_font(font_path, 34)
     wm = "همسات ملك"
     bb = _measure(md, wm, wm_font)
     wx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
+    wm_col = (242, 208, 138, 232) if category == "prayer_niqab" else (246, 198, 168, 232)
     if HAS_RAQM:
-        md.text((wx, 1735), _prep_txt(wm), font=wm_font, fill=(238, 200, 128, 225), direction="rtl")
+        md.text((wx, 1735), _prep_txt(wm), font=wm_font, fill=wm_col, direction="rtl")
     else:
-        md.text((wx, 1735), _prep_txt(wm), font=wm_font, fill=(238, 200, 128, 225))
+        md.text((wx, 1735), _prep_txt(wm), font=wm_font, fill=wm_col)
 
     _composite_halo(overlay, fg_body, outline_px=3)
     _composite_halo(overlay, fg_meta, outline_px=2)
@@ -269,9 +325,9 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
         )
     else:
         style = (
-            "luminous Makoto Shinkai and photorealistic 8k romantic cinema fusion, dreamy golden-rose "
-            "hour volumetric lighting, warm glowing bokeh, soft rain or petals, tasteful modest attire, "
-            "vertical 9:16 portrait composition, no text, no watermark"
+            "luminous Makoto Shinkai and photorealistic 8k romantic cinema fusion, dreamy warm rose-gold "
+            "candlelight hour volumetric glow, dreamy glowing bokeh, soft petals or gentle rain, "
+            "tasteful modest tender atmosphere, vertical 9:16 portrait composition, no text, no watermark"
         )
         neg = (
             "nudity, explicit, bikini, lingerie, cheap 2d cartoon, stick figure, clipart, ugly faces, "
@@ -441,7 +497,7 @@ def _fetch_pixabay_film(category: str, work_dir: Path, used_urls: set[str]) -> P
 def _make_romantic_gradient_bg(out_jpg: Path, category: str):
     img = Image.new("RGB", (VIDEO_W, VIDEO_H))
     d = ImageDraw.Draw(img)
-    c1, c2 = ((16, 26, 48), (64, 42, 68)) if category == "prayer_niqab" else ((34, 14, 34), (112, 48, 72))
+    c1, c2 = ((18, 26, 52), (68, 44, 72)) if category == "prayer_niqab" else ((48, 16, 38), (138, 56, 82))
     for y in range(VIDEO_H):
         t = y / VIDEO_H
         d.line([(0, y), (VIDEO_W, y)], fill=tuple(int(c1[k] + (c2[k] - c1[k]) * t) for k in range(3)))
@@ -520,11 +576,14 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
 
     work = Path(tempfile.mkdtemp(prefix="whisper_vid_"))
     try:
+        motes_png = work / "floating_motes.png"
+        _make_floating_motes_png(motes_png, category)
+
         if notebook_mode == "full_notebook" or len(segs) <= 1:
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=total_dur
             )
-            _render_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4")
+            _render_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4", motes_png=motes_png)
         else:
             scene_segs = segs[:-1]
             scene_durs = seg_durs[:-1]
@@ -559,6 +618,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                     s.get("display_text") or s.get("text") or "",
                     title=title,
                     show_title=(idx == 0),
+                    category=category,
                     font_path=font_path,
                     out_png=ov_png,
                 )
@@ -571,18 +631,22 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                         f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
                         f"crop={VIDEO_W*2}:{VIDEO_H*2},"
                         f"zoompan=z='{z_expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
-                        f"eq=contrast=1.05:saturation=1.10,vignette=PI/6,format=yuv420p[bg];"
-                        f"[1:v]fps={FPS},format=rgba[ov];"
-                        f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                        f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
+                        f"[1:v]fps={FPS},format=rgba[motes];"
+                        f"[2:v]fps={FPS},format=rgba[ov];"
+                        f"[bg][motes]overlay=x=0:y='-mod(t*26\\,{VIDEO_H})':shortest=1[bgm];"
+                        f"[bgm][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
                     in_flags = ["-loop", "1", "-t", f"{render_dur:.3f}"]
                 else:
                     fc = (
                         f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
                         f"crop={VIDEO_W}:{VIDEO_H},fps={FPS},"
-                        f"eq=contrast=1.05:saturation=1.10,vignette=PI/6,format=yuv420p[bg];"
-                        f"[1:v]fps={FPS},format=rgba[ov];"
-                        f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                        f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
+                        f"[1:v]fps={FPS},format=rgba[motes];"
+                        f"[2:v]fps={FPS},format=rgba[ov];"
+                        f"[bg][motes]overlay=x=0:y='-mod(t*26\\,{VIDEO_H})':shortest=1[bgm];"
+                        f"[bgm][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
                     in_flags = ["-stream_loop", "-1", "-t", f"{render_dur:.3f}"]
 
@@ -590,6 +654,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                     [
                         "ffmpeg", "-y", "-loglevel", "error",
                         *in_flags, "-i", str(media_p),
+                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(motes_png),
                         "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
                         "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
@@ -599,16 +664,28 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 )
                 clip_slots.append((seg_mp4, sdur))
 
+            # مشهد الذروة في الدفتر الصوفي القطني أو الوسائد المخيطة (بحركة ماكرو ناعمة وذرات نور)
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
             climax_png = card_slides[-1][0]
             climax_mp4 = work / "seg_climax_notebook.mp4"
+            climax_frames = max(30, int(round(climax_dur * FPS)) + 15)
+            climax_fc = (
+                f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
+                f"zoompan=z='min(zoom+0.00042,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"d={climax_frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
+                f"eq=contrast=1.03:saturation=1.06,format=yuv420p[nb];"
+                f"[1:v]fps={FPS},format=rgba[motes];"
+                f"[nb][motes]overlay=x=0:y='-mod(t*22\\,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
+            )
             subprocess.run(
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(climax_png),
-                    "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
+                    "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(motes_png),
+                    "-filter_complex", climax_fc,
+                    "-map", "[v]",
                     "-t", f"{climax_dur:.3f}",
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
                     str(climax_mp4),
@@ -619,7 +696,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
 
             _concat_clips_with_xfade(clip_slots, total_dur, work / "vid_only.mp4")
 
-        # التصدير النهائي بالضغط الذكي (~3.5-4.5 MB للدقيقة)
+        # التصدير النهائي بالضغط الذكي مع إبقاء ألياف الصوف والخط حادين
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
@@ -652,10 +729,13 @@ def _concat_clips_with_xfade(clip_slots: list[tuple[Path, float]], total_dur: fl
     filters = []
     last_tag = "[0:v]"
     offset = 0.0
-    for k in range(len(clip_slots) - 1):
+    n_trans = len(clip_slots) - 1
+    for k in range(n_trans):
         offset += float(clip_slots[k][1])
-        out_tag = "[vout]" if k == len(clip_slots) - 2 else f"[vx{k}]"
-        filters.append(f"{last_tag}[{k+1}:v]xfade=transition=fade:duration={XFADE_DUR:.3f}:offset={offset:.3f}{out_tag}")
+        out_tag = "[vout]" if k == n_trans - 1 else f"[vx{k}]"
+        # انتقال ناعم (dissolve) عند الدخول إلى الدفتر الصوفي في الذروة
+        tr = "dissolve" if k == n_trans - 1 else "fade"
+        filters.append(f"{last_tag}[{k+1}:v]xfade=transition={tr}:duration={XFADE_DUR:.3f}:offset={offset:.3f}{out_tag}")
         last_tag = out_tag
 
     subprocess.run(
@@ -672,52 +752,32 @@ def _concat_clips_with_xfade(clip_slots: list[tuple[Path, float]], total_dur: fl
     )
 
 
-def _render_slides_with_fade(card_slides: list[tuple[Path, float]], total_dur: float, out_mp4: Path):
+def _render_slides_with_fade(
+    card_slides: list[tuple[Path, float]],
+    total_dur: float,
+    out_mp4: Path,
+    motes_png: Path | None = None,
+):
     if len(card_slides) == 1:
-        subprocess.run(
-            [
+        dur = total_dur
+        frames = max(30, int(round(dur * FPS)) + 15)
+        if motes_png and motes_png.exists():
+            fc = (
+                f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
+                f"zoompan=z='min(zoom+0.00035,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p[nb];"
+                f"[1:v]fps={FPS},format=rgba[motes];"
+                f"[nb][motes]overlay=x=0:y='-mod(t*22\\,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
+            )
+            cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
-                "-loop", "1", "-t", f"{total_dur:.3f}", "-i", str(card_slides[0][0]),
-                "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
+                "-loop", "1", "-t", f"{dur:.3f}", "-i", str(card_slides[0][0]),
+                "-loop", "1", "-t", f"{dur:.3f}", "-i", str(motes_png),
+                "-filter_complex", fc, "-map", "[v]", "-t", f"{dur:.3f}",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(out_mp4),
-            ],
-            check=True, capture_output=True, timeout=180,
-        )
-        return
-
-    min_d = min(d for _, d in card_slides)
-    fade_d = min(0.35, min_d * 0.35)
-    inputs = []
-    filters = []
-    for i, (p, d) in enumerate(card_slides):
-        in_d = d + (fade_d if i < len(card_slides) - 1 else 0.0)
-        inputs.extend(["-loop", "1", "-t", f"{in_d:.3f}", "-i", str(p)])
-        filters.append(f"[{i}:v]scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1[c{i}]")
-
-    last_tag = "[c0]"
-    offset = 0.0
-    for k in range(len(card_slides) - 1):
-        offset += float(card_slides[k][1])
-        out_tag = "[vout]" if k == len(card_slides) - 2 else f"[cx{k}]"
-        filters.append(f"{last_tag}[c{k+1}]xfade=transition=fade:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}")
-        last_tag = out_tag
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            *inputs,
-            "-filter_complex", ";".join(filters),
-            "-map", "[vout]",
-            "-t", f"{total_dur:.3f}",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
-            str(out_mp4),
-        ],
-        check=True, capture_output=True, timeout=240,
-    )
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        print("Usage: python scripts/whispers_video.py <audio.mp3> <episode.json> <out.mp4>")
-        sys.exit(1)
-    build_whisper_video(sys.argv[1], sys.argv[2], sys.argv[3])
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-loop", "1", "-t", f"{dur:.3f}", "-i", str(card_slides[0][0]),
+                "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
