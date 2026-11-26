@@ -3,11 +3,10 @@
 scripts/generate_whispers.py
 ============================
 المحرّك الأدبي واللغوي لمشروع «همسات ملك»:
-- ينوّع تلقائياً بين 6 أشكال أدبية (شعر موزون مقفّى، نثر رومانسي دافئ، مناجاة ودعاء خاشع،
-  رسائل حنين ليلية، حوار وجداني ثنائي، ثلاثية الأسماء).
-- يفصل الإبداع الأدبي (المرحلة 1) عن التشكيل والإعراب الكامل (المرحلة 2) لتخرج الأشعار
-  والأدعية عميقة ومؤثرة ومضبوطة النطق 100%.
-- يولّد وصف مشهد رومانسي متطابق مع كل بيت/مقطع ليحوله whispers_video إلى رسومات حقيقية ودفتر قطني.
+- ينتج خواطر وجدانية عذبة وأدعية خاشعة ورسائل حنين صادقة بلغة إنسانية قريبة من القلب
+  (دون تكلّف القوافي المصطنعة أو الألفاظ القاموسية الغريبة).
+- يحافظ على إيجاز رشيق (32-46 كلمة) يناسب الدفتر القطني الرومانسي بوضوح وجمال.
+- المرحلة 2 تراجع السلاسة والمعنى أولاً ثم تضبط التشكيل والإعراب 100%.
 """
 
 from __future__ import annotations
@@ -34,38 +33,38 @@ MALAK_LAM_MODE = os.environ.get("MALAK_LAM_MODE", "fatha").strip().lower()
 THEMES = [
     {
         "id": "modest_love",
-        "label": "أشعار وغرام عفيف وحب دافئ",
+        "label": "خواطر الحب الصادق والمواقف الدافئة",
         "scene_category": "modest_love",
         "music_mood": "romantic_strings",
         "ambient_mood": "night_rain",
         "default_speaker_mode": "he",
         "writing_guide": (
-            "اكتب نصاً غرامياً عفيفاً عميق المشاعر مليئاً بالحنين والدفء والوفاء، "
-            "يصف أثر حضورها في القلب والروح بصور جمالية حية دافئة."
+            "اكتب خاطرة رومانسية صادقة وإنسانية جداً عن معنى الحب الحقيقي: الأمان، والوفاء في التعب "
+            "قبل الفرح، والاهتمام بالتفاصيل الصغيرة، بلغة بسيطة عذبة تدخل القلب فوراً دون تعقيد."
         ),
     },
     {
         "id": "prayer_niqab",
-        "label": "أدعية مؤثرة ومناجاة روحانية",
+        "label": "أدعية مؤثرة ومناجاة خاشعة",
         "scene_category": "prayer_niqab",
         "music_mood": "spiritual_warm",
         "ambient_mood": "spiritual_calm",
         "default_speaker_mode": "he",
         "writing_guide": (
-            "اكتب مناجاة قلبية خاشعة ودعاءً صادقاً مؤثراً يرتجف له الوجدان، "
-            "تستودع فيه الله قلبها وحفظها وسعادتها، وتدعو الله أن يجمعكما على الطهر والخير والبركة."
+            "اكتب دعاءً صادقاً يمسّ شغاف القلب: تناجي فيه الله أن يحفظ قلبها من كل هم، "
+            "ويزرع السكينة في أيامها، ويجمعكما على الطهر والخير والبركة في الدنيا والآخرة."
         ),
     },
     {
         "id": "fantasy_fairies",
-        "label": "شوق وهيام وأشعار حالمة",
+        "label": "رسائل شوق وحنين ليلية دافئة",
         "scene_category": "fantasy_fairies",
         "music_mood": "dreamy_piano",
         "ambient_mood": "starlight_magic",
         "default_speaker_mode": "duet",
         "writing_guide": (
-            "اكتب أبياتاً شعرية موزونة مقفّاة أو نثراً شاعرياً حالماً يمزج الشوق بضوء القمر "
-            "والمطر والورود وأمسيات الحنين الصادق."
+            "اكتب رسالة حنين ليلية رقيقة مليئة بالدفء والشوق العفيف تحت أضواء السكون والمطر، "
+            "تعبر عن الاشتياق والسكينة حين تخطر على البال."
         ),
     },
     {
@@ -76,19 +75,17 @@ THEMES = [
         "ambient_mood": "starlight_magic",
         "default_speaker_mode": "duet",
         "writing_guide": (
-            "اكتب قصيدة وجدانية أو همسة تجمع بين الغزل العفيف والدعاء الصادق، "
-            "وتلتقي في ذروتها أسماؤها الثلاثة (ملك، ومريم، وملاك) بترابط شاعري بديع غير متكلف."
+            "اكتب خاطرة وجدانية ناعمة تلتقي فيها أسماؤها الثلاثة (ملك، ومريم، وملاك) بعفوية رقيقة: "
+            "طهر الدعاء ودفء الحب ونقاء الروح، بدون ألقاب غريبة."
         ),
     },
 ]
 
 LITERARY_FORMS = [
-    "قصيدة شعرية موزونة مقفّاة من 4 أبيات عذبة متناغمة الجرس والإيقاع، ينبض كل بيت منها بالشوق والوفاء.",
-    "رسالة حنين ليلية دافئة بلسان عاشق صادق يكتب لها تحت ضوء القمر والمطر بأسلوب وجداني مؤثر.",
-    "مناجاة روحانية ودعاء قلبي خاشع ممزوج بالمحبة الصادقة والسكينة والإخلاص في الطاعة والوفاء.",
-    "همسة نثرية شعرية رقيقة تصف كيف غيّرت تفاصيلها الصغيرة معنى الأمان والسكينة في حياته.",
-    "حوار قلبي دافئ تتعانق فيه الكلمات بين الشوق والدعاء والتمني باللقاء الحلال المبارك.",
-    "لوحة أدبية قصيرة مليئة بالصور الحسية الراقية (الورود، المطر، الدفء، القرب) مع خاتمة تخطف القلب.",
+    "خاطرة نثرية إنسانية عميقة تبدأ بتعريف مؤثر للحب أو الوفاء ثم تُهدى لها بصدق ورقة.",
+    "مناجاة ودعاء خاشع يبدأ بـ (اللهم) ويفيض بالمحبة الصادقة والرجاء بأن يحفظها الله ويجمعكما بخير.",
+    "رسالة شوق مسائية رقيقة تخاطب قلبها مباشرةً بعبارات بسيطة دافئة خالية من التعقيد.",
+    "حوار وجداني قصير وعذب (هو وهي) يتبادلان فيه عهد البقاء والوفاء في الشدة قبل الرخاء.",
 ]
 
 _HARAKAT_CLASS = r"\u064B-\u065F\u0670\u0640"
@@ -413,61 +410,61 @@ def _build_pass1_prompt(
 ) -> str:
     if theme["id"] == "trinity_names":
         names_instruction = (
-            "اجمع في هذه القطعة أسماءها الثلاثة (ملك، ومريم، وملاك) بصورة شعرية مترابطة عذبة، "
-            "مع التركيز على دفء القرب والوفاء."
+            "اجمع في النص أسماءها الثلاثة (ملك، ومريم، وملاك) بعفوية رقيقة وبسيطة — وممنوع تماماً وضع ألقاب غريبة مثل 'مريم الكبرى'."
         )
     else:
         chosen_name = random.choice(["ملك", "ملك", "مريم", "ملاك"])
         names_instruction = (
-            f"وجّه الهمسة إلى «{chosen_name}» بعذوبة وصدق (مثل: يا {chosen_name}، في قلبِ {chosen_name}، لعينَيْ {chosen_name}) دون تكرار آلي."
+            f"وجّه الهمسة لاسم «{chosen_name}» برقة وعفوية (مثل: يا {chosen_name}، في قلبِ {chosen_name}، دعائي لكِ يا {chosen_name})."
         )
 
     if speaker_mode == "duet":
-        speaker_rule = "الوضع: حوار ثنائي (duet) من 3 مقاطع متبادلة بين \"he\" و\"she\" (يبدأ \"he\" وترد \"she\" ويختم \"he\")."
+        speaker_rule = "الوضع: ثنائي دافئ (duet) من 3 جمل/مقاطع قصيرة متبادلة بين \"he\" و\"she\" (يبدأ \"he\" وترد \"she\" ويختم \"he\")."
     elif speaker_mode == "she":
-        speaker_rule = "الوضع: بصوتها (she) في 3 مقاطع رقيقة تفيض شوقاً ودعاءً وحنيناً."
+        speaker_rule = "الوضع: بصوتها (she) في 3 جمل قصيرة تفيض حناناً وصدقاً ودعاءً."
     else:
-        speaker_rule = "الوضع: بصوته (he) في 3 مقاطع شاعرية دافئة تفيض غزلاً عفيفاً وشوقاً أو دعاءً عميقاً."
+        speaker_rule = "الوضع: بصوته (he) في 3 جمل قصيرة دافئة صادقة تمس القلب."
 
     avoid_block = ""
     if recent_titles or recent_openings:
         avoid_block = (
-            "\n🚫 ممنوع تماماً تكرار أو محاكاة أي عنوان أو بداية من الحلقات السابقة:\n"
+            "\n🚫 ممنوع تكرار أي عنوان أو افتتاحية مما سبق:\n"
             f"- عناوين سابقة: {', '.join(recent_titles[-12:])}\n"
             f"- افتتاحيات سابقة: {' | '.join(recent_openings[-10:])}\n"
         )
 
     scene_rule = (
-        "المشاهد الإنجليزية الموصوفة يجب أن تكون **دينية محتشمة وقورة فقط** (مسجد مضاء، قمر ونجوم، ورد أبيض، فوانيس دافئة، أو امرأة منتقبة تدعو بخشوع — بدون أي مشاهد عاطفية جريئة)."
+        "المشاهد الإنجليزية يجب أن تكون **دينية وقورة ومحتشمة فقط** (فانوس دافئ، مسجد مضاء وقت الفجر، ورد أبيض، سماء نجوم، أو منتقبة تدعو بخشوع)."
         if theme["id"] == "prayer_niqab"
-        else "المشاهد الإنجليزية الموصوفة يجب أن تكون **رومانسية شاعرية راقية ومحتشمة** (زوجان محبان يمشيان في غابة خريفية ذهبية، نافذة مطر دافئة على أضواء الشموع والورود الحمراء، أو سماء مرصعة بالنجوم والمروج المزهرة، مع كتابة المشهد الأخير بأسلوب الدفتر القطني الرومانسي)."
+        else "المشاهد الإنجليزية يجب أن تكون **رومانسية دافئة ومحتشمة** (شخصان محبان يسيران بوقار بين أزهار الخريف، نافذة مطر على ضوء شمعة دافئ وورد أحمر، حديقة متألقة وقت الغروب)."
     )
 
-    return f"""أنت شاعر وأديب عربي مبدع تكتب مقاطع قصيرة آسرة لقناة «همسات ملك» (45 إلى 65 كلمة إجمالاً).
+    return f"""أنت كاتب خواطر عربية معاصر تكتب بأسلوب دافئ وصادق وقريب جداً من القلب (مثل خواطر الحب الراقية البسيطة التي يفهمها الجميع ويتأثر بها فوراً).
 
 - المحور: {theme['label']}
 - التوجيه: {theme['writing_guide']}
-- القالب الأدبي المطلوب لهذه الحلقة تحديداً: **{literary_form}**
+- القالب المطلوب: **{literary_form}**
 - {names_instruction}
 - {speaker_rule}
 {avoid_block}
 
-قواعد الإبداع وجودة الأسلوب:
-1. لا تبدأ بمقدمات مكررة مثل "إلى ملك يا من سكنت القلب..."؛ ابتكر صورة شعرية أو افتتاحية جديدة ومفاجئة في جمالها!
-2. استخدم تشبيهات شعرية حية رقيقة ومشاعر صادقة حقيقية (شوق، حنين، أمان، دعاء خاشع، وفاء، غزل راقٍ)، وابتعد عن الجمل الروبوتية المتشابهة.
-3. يُمنع استخدام كلمة (مَلِك / مُلْك) بمعنى الحكم؛ كلمة «ملك» هي اسمها الشخصي فقط.
-4. قسّم النص إلى 3 مقاطع متناسقة: المقطع الأول والثاني يتكاملان مع المشاهد الرومانسية/الروحانية، والمقطع الأخير هو ذروة الهمسة أو بيت القصيد (`is_climax: true`).
-5. أرفق مع كل مقطع وصفاً بصرياً بالإنجليزية (`scene_prompt_en`) يترجم معنى المقطع حرفياً لينرسم له مشهد مطابق! ({scene_rule})
+قواعد صارمة جداً لجمال النص ووضوحه:
+1. **الطول الإجمالي قصير ورشيق: 32 إلى 46 كلمة فقط** موزعة على 3 مقاطع متناسقة (كل مقطع 10-16 كلمة).
+2. **ممنوع منعاً باتاً** كتابة قوافٍ شعرية متكلّفة أو استعارات قاموسية غريبة غير مفهومة (مثل: سنابك الشوق، الميالا، قد هلالا، فيء ظلالها). اكتب لغة عربية فصحى عذبة واضحة ومؤثرة يفهمها القلب من أول كلمة!
+3. مثال على البساطة والعمق المطلوب (للاستلهام دون نسخ):
+   "الحب ليس أن نقول أحبك فقط، الحب أن تبقى الأمان في تعبي، والسند في ضعفي، والسكينة التي يطمئن بها قلبي كلما اشتد الضجيج."
+4. يُمنع استخدام كلمة (مَلِك / مُلْك) بمعنى الحكم؛ كلمة «ملك» هي اسمها الشخصي فقط.
+5. أرفق لكل مقطع `scene_prompt_en` بالإنجليزية يصف مشهداً يطابق معنى المقطع حرفياً. ({scene_rule})
 
 أعد JSON فقط:
 {{
-  "title": "عنوان شاعري متجدد (2-4 كلمات)",
+  "title": "عنوان رقيق بسيط (2-4 كلمات)",
   "segments": [
     {{
       "speaker": "he أو she",
-      "pause_after_ms": 450,
-      "raw_text": "المقطع الأول (شعر أو نثر دافئ أو دعاء)...",
-      "scene_prompt_en": "romantic visual scene matching this exact Arabic verse in English (15-25 words)",
+      "pause_after_ms": 420,
+      "raw_text": "نص عربي عذب وبليغ ومفهوم...",
+      "scene_prompt_en": "visual scene matching this sentence in English (15-24 words)",
       "is_climax": false
     }}
   ]
@@ -479,29 +476,28 @@ def _build_pass2_grammar_prompt(draft: dict) -> str:
         {"index": i, "speaker": s.get("speaker", "he"), "raw_text": s.get("raw_text", "")}
         for i, s in enumerate(draft.get("segments", []))
     ]
-    return f"""أنت عالم لغوي متخصص في النحو والصرف والعروض العربي وضبط النطق الجَهري (TTS).
+    return f"""أنت مدقق أدبي ولغوي خبير تراجع نصاً وجدانياً قبل عرضه على الشاشة وقراءته صوتياً.
 
-راجع المقاطع الشعرية/النثرية التالية واضبطها بالتشكيل الكامل (100% مع الشدّة `ّ` وجوباً):
-
+النص المقترح:
 {json.dumps(segs_slim, ensure_ascii=False, indent=2)}
 
-قواعد الإعراب والصرف:
-1. اضبط أواخر الكلمات إعرابياً حسب موقعها وحسب الوزن الشعري إن كان شعراً.
-2. الممنوع من الصرف للأسماء الثلاثة:
-   - «مَلَك»: بفتح الميم واللام بلا تنوين (لِـمَلَكَ)، وعند الوقف (مَلَكْ).
-   - «مَرْيَم»: بلا تنوين (لِـمَرْيَمَ)، وعند الوقف (مَرْيَمْ).
-   - «مَلَاك»: بلا تنوين (لِـمَلَاكَ)، وعند الوقف (مَلَاكْ).
-3. ضع الشدّة على كل حرف مشدد واللام الشمسية.
-4. حافظ على جميع الكلمات والترقيم كما هي دون زيادة أو حذف.
+المهمة على مرحلتين:
+1. **مراجعة البلاغة والسلاسة**: إذا وجدت أي عبارة ركيكة أو غريبة أو متكلّفة أو فيها كلمة قاموسية ثقيلة (مثل سنابك، ميالا، هلالا، الكبرى)، فأصلح الصياغة في `clean_text` لتصبح عذبة واضحة صادقة دون إطالة.
+2. **التشكيل الكامل والدقيق (100% مع الشدّة `ّ`)** لـ `clean_text` داخل `diacritized_text`:
+   - الممنوع من الصرف للأسماء الثلاثة:
+     * «مَلَك»: بفتح الميم واللام بلا تنوين (قَلْبَ مَلَكَ)، وعند الوقف (مَلَكْ).
+     * «مَرْيَم»: بلا تنوين (لِـمَرْيَمَ)، وعند الوقف (مَرْيَمْ).
+     * «مَلَاك»: بلا تنوين (مَلَاكَ)، وعند الوقف (مَلَاكْ).
+   - اضبط أواخر الكلمات إعرابياً وضع الشدّة على كل حرف مشدد.
 
 أعد JSON فقط:
 {{
   "segments_audit": [
     {{
       "index": 0,
-      "sentence_irab": "خلاصة الإعراب",
-      "word_irab": [],
-      "diacritized_text": "النص مضبوطاً بالشكل الكامل 100%..."
+      "rewritten": false,
+      "clean_text": "النص النظيف الفصيح السلس...",
+      "diacritized_text": "النص النظيف نفسه مضبوطاً بالتشكيل الكامل 100%..."
     }}
   ]
 }}"""
@@ -517,18 +513,18 @@ def _fallback_from_bank(theme: dict, speaker_mode: str) -> dict:
         chosen = random.choice(pool)
     except Exception:
         chosen = {
-            "display_text": "أَنْتِ الْقَصِيدَةُ حِينَ يَصْمُتُ بَوْحُنَا، وَأَنْتِ السَّكِينَةُ يَا ملك فِي خَافِقِي.",
-            "tts_text": "أَنْتِ الْقَصِيدَةُ حِينَ يَصْمُتُ بَوْحُنَا، وَأَنْتِ السَّكِينَةُ يَا مَلَكْ فِي خَافِقِي.",
+            "display_text": "اَللَّهُمَّ إِنِّي أَسْتَوْدِعُكَ قَلْبَ ملك، وَأَسْأَلُكَ سَكِينَةً لِرُوحِ مَرْيَمَ، وَفَرَحًا لَا يُفَارِقُ أَيَّامَ مَلَاكَ.",
+            "tts_text": "اَللَّهُمَّ إِنِّي أَسْتَوْدِعُكَ قَلْبَ مَلَكْ، وَأَسْأَلُكَ سَكِينَةً لِرُوحِ مَرْيَمْ، وَفَرَحًا لَا يُفَارِقُ أَيَّامَ مَلَاكْ.",
         }
     spk = "she" if speaker_mode == "she" else "he"
     return {
-        "title": "نَبْضُ الحَنِينِ",
+        "title": "أَمَانُ الرُّوحِ",
         "segments": [{
             "speaker": spk,
-            "pause_after_ms": 450,
+            "pause_after_ms": 420,
             "raw_text": chosen.get("display_text", ""),
             "diacritized_override": chosen.get("tts_text") or chosen.get("display_text", ""),
-            "scene_prompt_en": chosen.get("scene_prompt_en", "warm twilight garden with soft roses and glowing lantern light"),
+            "scene_prompt_en": chosen.get("scene_prompt_en", "warm twilight rose garden with soft candlelight"),
             "is_climax": True,
         }],
     }
@@ -582,15 +578,15 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         draft = call_gemini_json(
             pool,
             _build_pass1_prompt(theme, literary_form, speaker_mode, recent_titles, recent_openings),
-            temp=0.82,
+            temp=0.78,
         )
         raw_segs = draft.get("segments") or []
         if not raw_segs:
             raise RuntimeError("مسودة فارغة")
 
-        print("📚 [2/3] التدقيق النحوي والعروضي والتشكيل الكامل...", flush=True)
+        print("📚 [2/3] مراجعة السلاسة البلاغية والتشكيل الكامل...", flush=True)
         try:
-            audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft), temp=0.12)
+            audit = call_gemini_json(pool, _build_pass2_grammar_prompt(draft), temp=0.15)
             aud_map = {int(a.get("index", i)): a for i, a in enumerate(audit.get("segments_audit") or [])}
         except Exception as e:
             print(f"   ⚠️ تعذر التدقيق الثاني ({str(e)[:60]})، متابعة التصحيح الفردي...", flush=True)
@@ -609,18 +605,21 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             continue
 
         aud = aud_map.get(idx, {})
-        diac_cand = re.sub(r"\s+", " ", (aud.get("diacritized_text") or seg.get("diacritized_override") or raw_text).strip())
-        merged_diac = _merge_diacritics_safely(raw_text, diac_cand)
+        base_clean = re.sub(r"\s+", " ", (aud.get("clean_text") or raw_text).strip()) or raw_text
+        diac_cand = re.sub(r"\s+", " ", (aud.get("diacritized_text") or seg.get("diacritized_override") or base_clean).strip())
+        merged_diac = _merge_diacritics_safely(base_clean, diac_cand)
         ratio = _diacritic_ratio(merged_diac)
 
         if ratio < 0.42:
             print(f"   ⚠️ كثافة التشكيل منخفضة بالمقطع {idx} ({ratio:.2f})، إعادة التشكيل...", flush=True)
             try:
                 pool_retry = GeminiKeyPool()
-                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"raw_text": raw_text}]}), temp=0.10)
-                cand2 = (r2.get("segments_audit") or [{}])[0].get("diacritized_text", "").strip()
-                if cand2:
-                    merged_diac = _merge_diacritics_safely(raw_text, cand2)
+                r2 = call_gemini_json(pool_retry, _build_pass2_grammar_prompt({"segments": [{"raw_text": base_clean}]}), temp=0.10)
+                a2 = (r2.get("segments_audit") or [{}])[0]
+                c2_base = (a2.get("clean_text") or base_clean).strip()
+                c2_diac = (a2.get("diacritized_text") or "").strip()
+                if c2_diac:
+                    merged_diac = _merge_diacritics_safely(c2_base, c2_diac)
                     ratio = _diacritic_ratio(merged_diac)
             except Exception:
                 pass
@@ -649,15 +648,15 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
 
         scene_en = re.sub(r"[^\x20-\x7E]", " ", str(seg.get("scene_prompt_en", ""))).strip()
         if not scene_en:
-            scene_en = "romantic twilight rose garden in warm soft candlelight"
+            scene_en = "warm golden candlelight by rainy window with red roses"
 
         final_segments.append({
             "index": idx,
             "speaker": spk,
             "style": "warm and unhurried, gentle natural reading",
             "tag_before": "",
-            "pause_after_ms": int(seg.get("pause_after_ms") or 450),
-            "raw_text": raw_text,
+            "pause_after_ms": int(seg.get("pause_after_ms") or 420),
+            "raw_text": base_clean,
             "display_text": display_text,
             "tts_text": tts_text,
             "scene_prompt_en": scene_en,
@@ -665,8 +664,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
             "featured_names": seg_names,
             "is_climax": bool(seg.get("is_climax", idx == len(raw_segs) - 1)),
             "grammar_audit": {
-                "sentence_irab": aud.get("sentence_irab", ""),
-                "word_irab": aud.get("word_irab", []),
+                "rewritten": bool(aud.get("rewritten", False)),
             },
         })
         print(f"   ✓ مقطع {idx} ({spk}) | تشكيل: {ratio:.2f} | العرض: {display_text}", flush=True)
@@ -682,7 +680,7 @@ def generate_episode(theme_override: str | None = None, speaker_override: str | 
         "episode_id": ep_id,
         "episode_number": ep_num,
         "created_utc": datetime.datetime.utcnow().isoformat() + "Z",
-        "title": draft.get("title", "همسة لروحها"),
+        "title": draft.get("title", "أمان الروح"),
         "theme_id": theme["id"],
         "theme_label": theme["label"],
         "literary_form": literary_form,
