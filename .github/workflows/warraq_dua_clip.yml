@@ -445,4 +445,34 @@ jobs:
                       if SHOW_TEXT:
                           png = work / f"ov_{i}.png"
                           make_overlay(png, sg["text"], sg["type"] == "quran", bold_p, quran_p, moon, sg.get("ref", ""), rec_label if sg["type"] == "quran" else "")
-                          run_cmd(["ffmpeg", "-y", "-ss", f"{sg['t0']:.3f}", "-t", f"{sg['dur']:.3f}", "-i", str(norm_vid), "-loop", "1", "-t", f"{sg['dur']:.3f}", "-i", str(png), "-filter_complex", f"[0:v][1:v]overlay=0:0:shortest=1{f_str},format=yuv420p,setsar=1[v]", "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-c
+                          run_cmd(["ffmpeg", "-y", "-ss", f"{sg['t0']:.3f}", "-t", f"{sg['dur']:.3f}", "-i", str(norm_vid), "-loop", "1", "-t", f"{sg['dur']:.3f}", "-i", str(png), "-filter_complex", f"[0:v][1:v]overlay=0:0:shortest=1{f_str},format=yuv420p,setsar=1[v]", "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", str(c_mp4)])
+                      else:
+                          run_cmd(["ffmpeg", "-y", "-ss", f"{sg['t0']:.3f}", "-t", f"{sg['dur']:.3f}", "-i", str(norm_vid), "-vf", f"format=yuv420p,setsar=1{f_str}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", str(c_mp4)])
+                      clips.append(c_mp4)
+
+                  vc = work / "vc.txt"
+                  vc.write_text("\n".join(f"file '{p.resolve()}'" for p in clips), encoding="utf-8")
+
+                  if VIDEO_SIZE == "tiny_4mb":
+                      venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "26", "-maxrate", "750k", "-bufsize", "1500k"]
+                  elif VIDEO_SIZE == "high_10mb":
+                      venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "21", "-maxrate", "1800k", "-bufsize", "3600k"]
+                  else:
+                      venc = ["-c:v", "libx264", "-preset", "slow", "-crf", "24", "-maxrate", "1050k", "-bufsize", "2100k"]
+
+                  out_mp4 = work / "al_warraq_mosul_dua_reel.mp4"
+                  run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(vc), "-i", str(full_wav), "-map", "0:v", "-map", "1:a", *venc, "-profile:v", "high", "-level:v", "4.0", "-g", str(fps*3), "-bf", "2", "-aq-mode", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "80k", "-movflags", "+faststart", "-shortest", str(out_mp4)])
+
+                  mb, dur = out_mp4.stat().st_size / 1024 / 1024, get_dur(out_mp4)
+                  print(f"🎬 جاهز: {mb:.2f} MB | {fps}fps | {dur:.1f}s", flush=True)
+                  cap = f"﴿ يَا أَيَّتُهَا النَّفْسُ الْمُطْمَئِنَّةُ ۝ ارْجِعِي إِلَىٰ رَبِّكِ رَاضِيَةً مَّرْضِيَّةً ﴾\n\n🤲 اللهم ارحم ضحايا فاجعة الوراق وتقبّلهم في الشهداء، واشفِ المصابين، وأنزل السلوان على ذويهم.\nخالص العزاء من أهل الموصل بالعراق إلى أهلنا في مصر الحبيبة 🇮🇶 🇪🇬\nلاحول ولاقوة الا بالله 🌖\n📦 {mb:.1f} MB | {dur:.0f}s"
+                  with open(out_mp4, "rb") as vf:
+                      res = requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendVideo", data={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "caption": cap, "supports_streaming": "true"}, files={"video": (out_mp4.name, vf, "video/mp4")}, timeout=180).json()
+                  assert res.get("ok"), f"Telegram Error: {res}"
+                  print("✅ تم الإرسال إلى تيليغرام!", flush=True)
+              finally:
+                  shutil.rmtree(work, ignore_errors=True)
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
