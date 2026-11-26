@@ -1,8 +1,8 @@
 """
 story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
 - يدعم وضع الأنيميشن/الواقعية السينمائية (CINEMA_ANIME_MODE=1) لمقاطع السرد والملخص والتشويق.
-- يفعّل نمط الدفاتر والبطاقات الإسلامية المطرّزة (islamic_cards.py) لمقاطع الحديث والفقه والأذكار والتشجيع (CTA/Outro).
-- يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) وتوافق اليوميات (daily_*).
+- يفعّل نمط الدفاتر والوسائد الإسلامية المطرّزة 8K (islamic_cards.py) لمقاطع الحديث والفقه والأذكار والتشجيع (CTA/Outro).
+- يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) مع تأطير ذهبي روحاني للآيات وتوافق اليوميات (daily_*).
 """
 
 import io
@@ -72,9 +72,9 @@ ENCODE_ARGS = [
 FINAL_ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "slow",
-    "-crf", "27",
-    "-maxrate", "340k",
-    "-bufsize", "680k",
+    "-crf", "25",
+    "-maxrate", "480k",
+    "-bufsize", "960k",
     "-profile:v", "high",
     "-level:v", "4.0",
     "-g", str(VIDEO_FPS * 4),
@@ -774,18 +774,47 @@ def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int)
     scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(scrim)
     if is_quran:
-        draw.rectangle([0, 0, W, H], fill=(4, 10, 18, 128))
+        # غطاء زمردي-ليلي روحاني هادئ يبرز نور الآيات
+        draw.rectangle([0, 0, W, H], fill=(4, 14, 18, 130))
+        # إضاءة ذهبية خفيفة في الوسط خلف الآية الكريمة
+        glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse([W // 2 - 260, H // 2 - 300, W // 2 + 260, H // 2 + 260], fill=(212, 175, 55, 22))
+        scrim.alpha_composite(glow.filter(ImageFilter.GaussianBlur(70)))
     else:
         for y in range(0, 105):
             alpha = int(115 * (1.0 - y / 105.0))
-            draw.line([(0, y), (W, y)], fill=(4, 8, 15, alpha))
+            draw.line([(0, y), (W, y)], fill=(4, 10, 16, alpha))
         start_y = int(H * 0.60)
         span = H - start_y
         for y in range(start_y, H):
             ratio = (y - start_y) / max(1, span)
             alpha = int(198 * (ratio ** 1.35))
-            draw.line([(0, y), (W, y)], fill=(4, 8, 15, alpha))
+            draw.line([(0, y), (W, y)], fill=(4, 10, 16, alpha))
     overlay.alpha_composite(scrim)
+
+
+def _draw_quran_ornate_accents(draw: ImageDraw.ImageDraw, W: int, H: int, top_y: int, bot_y: int):
+    """إطار وفواصل ذهبية رقيقة تشبه زخرفة المصاحف حول الآية الكريمة."""
+    gold = (212, 175, 55, 185)
+    gold_soft = (232, 200, 108, 120)
+    # خطوط فاصلة ذهبية أعلى وأسفل الآية
+    draw.line([(W // 2 - 150, top_y), (W // 2 + 150, top_y)], fill=gold_soft, width=2)
+    draw.ellipse([W // 2 - 5, top_y - 5, W // 2 + 5, top_y + 5], fill=gold)
+    draw.line([(W // 2 - 150, bot_y), (W // 2 + 150, bot_y)], fill=gold_soft, width=2)
+    draw.ellipse([W // 2 - 5, bot_y - 5, W // 2 + 5, bot_y + 5], fill=gold)
+
+    # زوايا ذهبية إسلامية لطيفة
+    m = 24
+    arm = 38
+    for (cx, cy, dx, dy) in [
+        (m, m, 1, 1),
+        (W - m, m, -1, 1),
+        (m, H - m, 1, -1),
+        (W - m, H - m, -1, -1),
+    ]:
+        draw.line([(cx, cy), (cx + dx * arm, cy)], fill=gold_soft, width=2)
+        draw.line([(cx, cy), (cx, cy + dy * arm)], fill=gold_soft, width=2)
 
 
 def _wrap_logical(text: str, font, max_w: int, draw) -> list[str]:
@@ -902,7 +931,7 @@ def make_caption_slides(
         slide_dur = max(0.3, c_dur * (slide_chars / total_chars)) if len(slides_lines) > 1 else c_dur
 
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        if cinematic_subtitles:
+        if cinematic_subtitles or is_quran:
             _apply_cinematic_scrim(overlay, is_quran=is_quran, W=W, H=H)
 
         body_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -924,14 +953,20 @@ def make_caption_slides(
             total_h = len(lines) * lh + ref_extra
             y = max(145 + max(0, -min_top), (H - total_h) // 2)
 
+        quran_top_orn = y - 22
         text_color = "#FFE066" if is_quran else "#FFFFFF"
         for line in lines:
             _draw_centered(body_draw, y, line, font, text_color, W)
             y += lh
 
-        if is_quran and display_ref:
+        if is_quran:
             ref_y = max(y + 8, (y - lh) + last_bottom + 20)
-            _draw_centered(meta_draw, ref_y, display_ref, ref_font, "#D4AF37", W)
+            if display_ref:
+                _draw_centered(meta_draw, ref_y, display_ref, ref_font, "#D4AF37", W)
+                quran_bot_orn = ref_y + 52
+            else:
+                quran_bot_orn = y + 18
+            _draw_quran_ornate_accents(meta_draw, W, H, max(105, quran_top_orn), min(H - 180, quran_bot_orn))
 
         if is_quran and reciter_name and show_reciter:
             _draw_centered(meta_draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", W)
@@ -962,15 +997,22 @@ def make_caption_slides(
 
 
 def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: float, W: int, H: int, out_chunk: Path):
-    """يحوّل شرائح البطاقة/الدفتر الإسلامي إلى مقطع سلس مع انتقال ذهبي ناعم بين العبارات."""
+    """يحوّل شرائح البطاقة/الدفتر الإسلامي إلى مقطع حيّ مع تقريب هادئ وانتقال dissolve ناعم."""
     n = len(card_slides)
     if n == 1:
         png_path, _ = card_slides[0]
+        frames = max(24, int(round(c_dur * VIDEO_FPS)) + 12)
+        vf = (
+            f"scale={W*2}:{H*2}:flags=lanczos,"
+            f"zoompan=z='min(zoom+0.00035,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"d={frames}:s={W}x{H}:fps={VIDEO_FPS},format=yuv420p,setsar=1"
+        )
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-loop", "1", "-t", f"{c_dur:.3f}", "-i", str(png_path),
-                "-vf", f"scale={W}:{H},fps={VIDEO_FPS},format=yuv420p,setsar=1",
+                "-vf", vf,
+                "-t", f"{c_dur:.3f}",
                 *ENCODE_ARGS, str(out_chunk),
             ],
             check=True, capture_output=True, timeout=120,
@@ -978,7 +1020,7 @@ def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: floa
         return
 
     min_s = min(d for _, d in card_slides)
-    fade_d = min(0.28, min_s * 0.35)
+    fade_d = min(0.32, min_s * 0.35)
     inputs = []
     filters = []
     for i, (png_path, s_dur) in enumerate(card_slides):
@@ -992,7 +1034,7 @@ def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: floa
         offset += float(card_slides[k][1])
         out_tag = "[vout]" if k == n - 2 else f"[cx{k}]"
         filters.append(
-            f"{last_tag}[c{k+1}]xfade=transition=fade:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}"
+            f"{last_tag}[c{k+1}]xfade=transition=dissolve:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}"
         )
         last_tag = out_tag
 
@@ -1170,7 +1212,6 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             c_text = chunk_data.get("text", "")
             out_chunk = work_dir / f"chunk_{seg_idx}_{c_idx}.mp4"
 
-            # نمط الدفتر/البطاقات المطرّزة للأحاديث والنصوص والـ CTA
             if is_card_seg and c_text.strip():
                 if not use_cinema and (seg_idx, c_idx) in chunk_to_scene:
                     scene_offsets[chunk_to_scene[(seg_idx, c_idx)]] += c_dur
