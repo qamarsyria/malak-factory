@@ -2,14 +2,12 @@
 """
 scripts/whispers_video.py
 =========================
-المخرج السينمائي المحسّن لمشروع «همسات ملك» (1080×1920 @ 30fps):
-- يولّد لوحات رومانسية أو روحانية متطابقة مع السرد عبر:
-  (Gemini Native Image -> ZeroGPU Z-Image-Turbo/FLUX عبر _open_gradio_client -> AI Horde النشط -> Pixabay Film)
-  مع فحص Gemini Vision وطباعة السجل بوضوح.
-- يضيف أجواءً رومانسية دافئة (غطاء مخملي عنابي-وردي، هالات بوكيه، وذرات نور ذهبية صاعدة).
-- يعرض الخط العربي بوضوح فائق (Amiri Bold + RAQM + MaxFilter Halo) في مساحة آمنة للواتساب،
-  وينتقل في ذروة الهمسة بسلاسة (dissolve) إلى الدفتر القطني الصوفي الرومانسي 8K (romantic_cards.py).
-- يضغط الفيديو بذكاء مع الحفاظ على حدة ألياف الصوف والخط العربي.
+المخرج السينمائي 8D لمشروع «همسات ملك» (1080×1920 @ 30fps):
+- يولّد لوحات رومانسية أو روحانية عبر (Gemini Native Image -> ZeroGPU Z-Image-Turbo/FLUX -> AI Horde -> Pixabay Film)
+  مع فحص Gemini Vision.
+- يحوّل كل اللوحات والدفتر الصوفي القطني 8K إلى أنيميشن 8D مجاني على CPU عبر fx_8d.py
+  (3 طبقات عمق + ملء الفراغات + كاميرا مدارية 6-DOF + Rack Focus + أشعة نور + جزيئات بوكيه 3D)
+  بدون الحاجة لـ Cloudflare أو حصص فيديو خارجية.
 """
 
 from __future__ import annotations
@@ -49,6 +47,7 @@ from romantic_cards import (
     _get_active_horde_models,
     _open_gradio_client,
 )
+from fx_8d import render_8d_animation_clip
 
 VIDEO_W = 1080
 VIDEO_H = 1920
@@ -124,36 +123,6 @@ def _composite_halo(canvas: Image.Image, fg_layer: Image.Image, outline_px: int 
     canvas.alpha_composite(fg_layer)
 
 
-def _make_floating_motes_png(out_png: Path, category: str):
-    """
-    يصنع ورقة ذرات نور ذهبية-وردية ناعمة مكررة عمودياً (1080×3840)
-    لتصعد بانسيابية تامة بدون أي انقطاع أو فواصل داخل FFmpeg.
-    """
-    sheet = Image.new("RGBA", (VIDEO_W, VIDEO_H * 2), (0, 0, 0, 0))
-    d = ImageDraw.Draw(sheet)
-    rng = random.Random(2026)
-
-    palette = (
-        [(255, 232, 168), (255, 244, 214), (242, 206, 142)]
-        if category == "prayer_niqab"
-        else [(255, 218, 178), (255, 192, 208), (255, 240, 224)]
-    )
-
-    for _ in range(38):
-        mx = rng.randint(45, VIDEO_W - 45)
-        my = rng.randint(30, VIDEO_H - 30)
-        mr = rng.randint(4, 15)
-        alpha = rng.randint(34, 86)
-        col = rng.choice(palette)
-        for offset_y in (0, VIDEO_H):
-            cy = my + offset_y
-            d.ellipse([mx - mr * 2, cy - mr * 2, mx + mr * 2, cy + mr * 2], fill=(*col, max(12, alpha // 3)))
-            d.ellipse([mx - mr, cy - mr, mx + mr, cy + mr], fill=(*col, alpha))
-
-    sheet = sheet.filter(ImageFilter.GaussianBlur(3.2))
-    sheet.save(out_png)
-
-
 def _make_whisper_overlay_png(
     text: str,
     title: str,
@@ -163,7 +132,6 @@ def _make_whisper_overlay_png(
     out_png: Path,
 ):
     overlay = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
-
     scrim = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(scrim)
 
@@ -180,17 +148,6 @@ def _make_whisper_overlay_png(
         alpha = int(178 * (ratio ** 1.28))
         sd.line([(0, y), (VIDEO_W, y)], fill=(*scrim_rgb, alpha))
     overlay.alpha_composite(scrim)
-
-    bokeh = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
-    bd_b = ImageDraw.Draw(bokeh)
-    bokeh_spots = (
-        [(170, 340, 80, (255, 226, 162, 28)), (910, 480, 95, (236, 212, 168, 24)), (850, 1080, 75, (255, 232, 185, 24))]
-        if category == "prayer_niqab"
-        else [(165, 320, 82, (255, 198, 178, 34)), (905, 450, 96, (255, 218, 168, 30)), (215, 1170, 88, (246, 168, 192, 32)), (865, 1020, 72, (255, 212, 152, 28))]
-    )
-    for bx, by, br, bcol in bokeh_spots:
-        bd_b.ellipse([bx - br, by - br, bx + br, by + br], fill=bcol)
-    overlay.alpha_composite(bokeh.filter(ImageFilter.GaussianBlur(30)))
 
     fg_body = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
     fg_meta = Image.new("RGBA", (VIDEO_W, VIDEO_H), (0, 0, 0, 0))
@@ -347,9 +304,8 @@ def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
     if not keys:
         return False
 
-    logged = False
     for model_id in ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview"):
-        for k in keys[:4]:
+        for k in keys[:3]:
             try:
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
@@ -360,12 +316,9 @@ def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
                             "imageConfig": {"aspectRatio": "9:16"},
                         },
                     },
-                    timeout=55,
+                    timeout=50,
                 )
                 if r.status_code != 200:
-                    if not logged:
-                        print(f"   ℹ️ [Scene Gemini Image {model_id}]: HTTP {r.status_code} ({r.text[:90]})", flush=True)
-                        logged = True
                     continue
                 parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
                 for p in parts:
@@ -378,10 +331,7 @@ def _gemini_scene_image(full_prompt: str, out_jpg: Path) -> bool:
                         if out_jpg.exists() and out_jpg.stat().st_size > 25000:
                             print(f"   ✨ [Scene Gemini Image] تم الرسم عبر {model_id}", flush=True)
                             return True
-            except Exception as e:
-                if not logged:
-                    print(f"   ℹ️ [Scene Gemini Image]: {str(e)[:80]}", flush=True)
-                    logged = True
+            except Exception:
                 continue
     return False
 
@@ -410,72 +360,61 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
 
     full_prompt = f"{scene_en}, {style}"
 
-    # 1) Gemini Native Image
     if _gemini_scene_image(full_prompt, out_jpg) and _vision_check_whisper_image(out_jpg, category, scene_en):
         return True
 
-    # 2) Hugging Face ZeroGPU (Z-Image-Turbo ثم FLUX.1-schnell عبر _open_gradio_client)
     try:
         tok = _check_valid_hf_token()
+        # Z-Image-Turbo بالاستدعاء الدقيق ثم FLUX.1-schnell
         for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
-            try:
-                client = _open_gradio_client(space_id, tok)
-                api = client.view_api(return_format="dict") or {}
-                named = api.get("named_endpoints", {})
-                ep_name = "/generate" if "/generate" in named else ("/infer" if "/infer" in named else next(iter(named.keys()), None))
-                if not ep_name:
-                    continue
-                params = named[ep_name].get("parameters", [])
-                call_kw = {}
-                for p in params:
-                    pn = (p.get("parameter_name") or "").lower()
-                    if pn in ("prompt", "positive_prompt"):
-                        call_kw[p["parameter_name"]] = full_prompt
-                    elif pn in ("negative_prompt", "neg_prompt"):
-                        call_kw[p["parameter_name"]] = neg
-                    elif pn == "seed":
-                        call_kw[p["parameter_name"]] = int(seed)
-                    elif pn in ("randomize_seed", "random_seed"):
-                        call_kw[p["parameter_name"]] = False
-                    elif pn == "width":
-                        call_kw[p["parameter_name"]] = 720
-                    elif pn == "height":
-                        call_kw[p["parameter_name"]] = 1280
-                    elif pn in ("num_inference_steps", "steps"):
-                        call_kw[p["parameter_name"]] = 8 if "Z-Image" in space_id else 4
-                    elif pn == "resolution":
-                        enums = (p.get("type") or {}).get("enum") or []
-                        call_kw[p["parameter_name"]] = next(
-                            (e for e in enums if "9:16" in str(e) or "720x1280" in str(e) or "576x1024" in str(e)),
-                            p.get("parameter_default"),
+            for try_tok in ([tok, None] if tok else [None]):
+                try:
+                    client = _open_gradio_client(space_id, try_tok)
+                    if "Z-Image" in space_id:
+                        call_fn = lambda: client.predict(
+                            prompt=full_prompt,
+                            resolution="720x1280 ( 9:16 )",
+                            seed=int(seed),
+                            steps=8,
+                            shift=3.0,
+                            random_seed=False,
+                            api_name="/generate",
                         )
-                    elif "parameter_default" in p and p.get("parameter_has_default", True):
-                        call_kw[p["parameter_name"]] = p.get("parameter_default")
+                    else:
+                        call_fn = lambda: client.predict(
+                            prompt=full_prompt,
+                            seed=int(seed),
+                            randomize_seed=False,
+                            width=720,
+                            height=1280,
+                            num_inference_steps=4,
+                            api_name="/infer",
+                        )
 
-                with ThreadPoolExecutor(max_workers=1) as ex:
-                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=85)
+                    with ThreadPoolExecutor(max_workers=1) as ex:
+                        res = ex.submit(call_fn).result(timeout=85)
 
-                fpath = _extract_gradio_path(res, out_jpg.parent)
-                if fpath and os.path.exists(fpath):
-                    with Image.open(fpath) as im:
-                        im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
-                        im.save(out_jpg, "JPEG", quality=93)
-                    if out_jpg.exists() and out_jpg.stat().st_size > 25000 and _vision_check_whisper_image(out_jpg, category, scene_en):
-                        print(f"   ✅ [Scene ZeroGPU] تم الرسم عبر {space_id}", flush=True)
-                        return True
-            except Exception as e:
-                print(f"   ⚠️ [Scene ZeroGPU {space_id}]: {str(e)[:95]}", flush=True)
-                continue
+                    fpath = _extract_gradio_path(res, out_jpg.parent)
+                    if fpath and os.path.exists(fpath):
+                        with Image.open(fpath) as im:
+                            im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (VIDEO_W, VIDEO_H), Image.Resampling.LANCZOS)
+                            im.save(out_jpg, "JPEG", quality=93)
+                        if out_jpg.exists() and out_jpg.stat().st_size > 25000 and _vision_check_whisper_image(out_jpg, category, scene_en):
+                            print(f"   ✅ [Scene ZeroGPU] تم الرسم عبر {space_id}", flush=True)
+                            return True
+                except Exception as e:
+                    print(f"   ⚠️ [Scene ZeroGPU {space_id}]: {str(e)[:90]}", flush=True)
+                    if "quota" not in str(e).lower() and "401" not in str(e):
+                        break
     except Exception:
         pass
 
-    # 3) AI Horde النشط ديناميكياً
     try:
         models = _get_active_horde_models()
         print(f"   🎨 [Scene AI Horde] رسم '{scene_en[:45]}...' عبر {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "HamsatMalak:3.3:romantic-scene",
+            "Client-Agent": "HamsatMalak:4.0:8d-scene",
             "Content-Type": "application/json",
         }
         payload = {
@@ -496,13 +435,12 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
         }
         r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=20)
         if r.status_code not in (200, 202):
-            print(f"   ⚠️ [Scene Horde HTTP {r.status_code}]", flush=True)
             return False
         job_id = r.json().get("id")
         if not job_id:
             return False
 
-        deadline = time.time() + 150
+        deadline = time.time() + 145
         while time.time() < deadline:
             time.sleep(5)
             chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
@@ -527,7 +465,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
                             print("   ✅ [Scene Horde] تم توليد اللوحة الرومانسية بنجاح!", flush=True)
                             return True
                 return False
-        print("   ⏱️ [Scene Horde] تجاوز المهلة 150ث", flush=True)
+        print("   ⏱️ [Scene Horde] تجاوز المهلة 145ث", flush=True)
     except Exception as e:
         print(f"   ⚠️ [Scene Horde error]: {str(e)[:85]}", flush=True)
     return False
@@ -648,19 +586,18 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
     font_path = _find_amiri_font()
     seg_durs = _extract_segment_durations(segs, total_dur)
     notebook_mode = os.environ.get("WHISPERS_NOTEBOOK_MODE", "climax").strip().lower()
+    mood_8d = "spiritual_noor" if category == "prayer_niqab" else "warm_romance"
+    moves_8d = ("orbit_in", "orbit_left", "orbit_out", "orbit_right")
 
-    print(f"⏱️ مدة الصوت: {total_dur:.2f} ث | المحور: {category} | الوضع: {notebook_mode}", flush=True)
+    print(f"⏱️ مدة الصوت: {total_dur:.2f} ث | المحور: {category} | الوضع: {notebook_mode} | المحرك: 8D مجاني", flush=True)
 
-    work = Path(tempfile.mkdtemp(prefix="whisper_vid_"))
+    work = Path(tempfile.mkdtemp(prefix="whisper_8d_"))
     try:
-        motes_png = work / "floating_motes.png"
-        _make_floating_motes_png(motes_png, category)
-
         if notebook_mode == "full_notebook" or len(segs) <= 1:
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=total_dur
             )
-            _render_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4", motes_png=motes_png)
+            _render_8d_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4", mood_8d)
         else:
             scene_segs = segs[:-1]
             scene_durs = seg_durs[:-1]
@@ -702,71 +639,75 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 seg_mp4 = work / f"seg_clip_{idx}.mp4"
                 is_img = media_p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
                 if is_img:
-                    frames = max(30, int(round(render_dur * FPS)) + 15)
-                    z_expr = "min(zoom+0.0005,1.10)" if idx % 2 == 0 else "max(1.10-0.0005*on,1.0)"
-                    fc = (
-                        f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
-                        f"crop={VIDEO_W*2}:{VIDEO_H*2},"
-                        f"zoompan=z='{z_expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
-                        f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
-                        f"[1:v]fps={FPS},format=rgba[motes];"
-                        f"[2:v]fps={FPS},format=rgba[ov];"
-                        f"[bg][motes]overlay=x=0:y='-mod(t*26,{VIDEO_H})':shortest=1[bgm];"
-                        f"[bgm][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                    bg_8d = work / f"bg_8d_{idx}.mp4"
+                    render_8d_animation_clip(
+                        img_path=media_p,
+                        out_mp4=bg_8d,
+                        duration=render_dur,
+                        W=VIDEO_W,
+                        H=VIDEO_H,
+                        fps=FPS,
+                        mood=mood_8d,
+                        particles="gold_motes",
+                        move=moves_8d[idx % len(moves_8d)],
+                        is_notebook=False,
+                        seed=1000 + idx * 77,
                     )
-                    in_flags = ["-loop", "1", "-t", f"{render_dur:.3f}"]
+                    fc = (
+                        f"[0:v]fps={FPS},format=yuv420p[bg];"
+                        f"[1:v]fps={FPS},format=rgba[ov];"
+                        f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                    )
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-loglevel", "error",
+                            "-i", str(bg_8d),
+                            "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
+                            "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                            str(seg_mp4),
+                        ],
+                        check=True, capture_output=True, timeout=180,
+                    )
                 else:
                     fc = (
                         f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
                         f"crop={VIDEO_W}:{VIDEO_H},fps={FPS},"
                         f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
-                        f"[1:v]fps={FPS},format=rgba[motes];"
-                        f"[2:v]fps={FPS},format=rgba[ov];"
-                        f"[bg][motes]overlay=x=0:y='-mod(t*26,{VIDEO_H})':shortest=1[bgm];"
-                        f"[bgm][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
+                        f"[1:v]fps={FPS},format=rgba[ov];"
+                        f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
-                    in_flags = ["-stream_loop", "-1", "-t", f"{render_dur:.3f}"]
-
-                subprocess.run(
-                    [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        *in_flags, "-i", str(media_p),
-                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(motes_png),
-                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
-                        "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
-                        str(seg_mp4),
-                    ],
-                    check=True, capture_output=True, timeout=180,
-                )
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-loglevel", "error",
+                            "-stream_loop", "-1", "-t", f"{render_dur:.3f}", "-i", str(media_p),
+                            "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
+                            "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                            str(seg_mp4),
+                        ],
+                        check=True, capture_output=True, timeout=180,
+                    )
                 clip_slots.append((seg_mp4, sdur))
 
+            # مشهد الذروة في الدفتر الصوفي بتحريك 8D ناعم يحافظ على حدة الحروف 100%
             card_slides = render_romantic_notebook_slides(
                 [segs[-1]], title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
             climax_png = card_slides[-1][0]
             climax_mp4 = work / "seg_climax_notebook.mp4"
-            climax_frames = max(30, int(round(climax_dur * FPS)) + 15)
-            climax_fc = (
-                f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
-                f"zoompan=z='min(zoom+0.00042,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                f"d={climax_frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
-                f"eq=contrast=1.03:saturation=1.06,format=yuv420p[nb];"
-                f"[1:v]fps={FPS},format=rgba[motes];"
-                f"[nb][motes]overlay=x=0:y='-mod(t*22,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
-            )
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(climax_png),
-                    "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(motes_png),
-                    "-filter_complex", climax_fc,
-                    "-map", "[v]",
-                    "-t", f"{climax_dur:.3f}",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
-                    str(climax_mp4),
-                ],
-                check=True, capture_output=True, timeout=180,
+            render_8d_animation_clip(
+                img_path=climax_png,
+                out_mp4=climax_mp4,
+                duration=climax_dur,
+                W=VIDEO_W,
+                H=VIDEO_H,
+                fps=FPS,
+                mood=mood_8d,
+                particles="gold_motes",
+                move="orbit_in",
+                is_notebook=True,
+                seed=9090,
             )
             clip_slots.append((climax_mp4, climax_dur))
 
@@ -787,7 +728,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
             check=True, capture_output=True, timeout=360,
         )
         size_mb = out_p.stat().st_size / (1024 * 1024)
-        print(f"✅ تم إخراج فيديو همسات ملك: {out_p.name} ({size_mb:.2f} MB)", flush=True)
+        print(f"✅ تم إخراج فيديو همسات ملك 8D: {out_p.name} ({size_mb:.2f} MB)", flush=True)
         return True
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -826,63 +767,54 @@ def _concat_clips_with_xfade(clip_slots: list[tuple[Path, float]], total_dur: fl
     )
 
 
-def _render_slides_with_fade(
-    card_slides: list[tuple[Path, float]],
-    total_dur: float,
-    out_mp4: Path,
-    motes_png: Path | None = None,
-):
+def _render_8d_slides_with_fade(card_slides: list[tuple[Path, float]], total_dur: float, out_mp4: Path, mood_8d: str):
     if len(card_slides) == 1:
-        dur = total_dur
-        frames = max(30, int(round(dur * FPS)) + 15)
-        if motes_png and motes_png.exists():
-            fc = (
-                f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
-                f"zoompan=z='min(zoom+0.00035,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                f"d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p[nb];"
-                f"[1:v]fps={FPS},format=rgba[motes];"
-                f"[nb][motes]overlay=x=0:y='-mod(t*22,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[v]"
-            )
-            cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-loop", "1", "-t", f"{dur:.3f}", "-i", str(card_slides[0][0]),
-                "-loop", "1", "-t", f"{dur:.3f}", "-i", str(motes_png),
-                "-filter_complex", fc, "-map", "[v]", "-t", f"{dur:.3f}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(out_mp4),
-            ]
-        else:
-            cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-loop", "1", "-t", f"{dur:.3f}", "-i", str(card_slides[0][0]),
-                "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(out_mp4),
-            ]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        render_8d_animation_clip(
+            img_path=card_slides[0][0],
+            out_mp4=out_mp4,
+            duration=total_dur,
+            W=VIDEO_W,
+            H=VIDEO_H,
+            fps=FPS,
+            mood=mood_8d,
+            particles="gold_motes",
+            move="orbit_in",
+            is_notebook=True,
+            seed=707,
+        )
         return
 
     min_d = min(d for _, d in card_slides)
     fade_d = min(0.45, min_d * 0.35)
     inputs = []
     filters = []
+    tmp_dir = card_slides[0][0].parent
     for i, (p, d) in enumerate(card_slides):
         in_d = d + (fade_d if i < len(card_slides) - 1 else 0.0)
-        inputs.extend(["-loop", "1", "-t", f"{in_d:.3f}", "-i", str(p)])
-        filters.append(f"[{i}:v]scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1[c{i}]")
+        sl_mp4 = tmp_dir / f"nb_8d_{i}.mp4"
+        render_8d_animation_clip(
+            img_path=p,
+            out_mp4=sl_mp4,
+            duration=in_d,
+            W=VIDEO_W,
+            H=VIDEO_H,
+            fps=FPS,
+            mood=mood_8d,
+            particles="gold_motes",
+            move="orbit_in" if i % 2 == 0 else "orbit_out",
+            is_notebook=True,
+            seed=700 + i * 33,
+        )
+        inputs.extend(["-i", str(sl_mp4)])
+        filters.append(f"[{i}:v]fps={FPS},format=yuv420p,setsar=1[c{i}]")
 
     last_tag = "[c0]"
     offset = 0.0
     for k in range(len(card_slides) - 1):
         offset += float(card_slides[k][1])
-        is_last = (k == len(card_slides) - 2)
-        out_tag = "[vbase]" if (is_last and motes_png and motes_png.exists()) else ("[vout]" if is_last else f"[cx{k}]")
+        out_tag = "[vout]" if k == len(card_slides) - 2 else f"[cx{k}]"
         filters.append(f"{last_tag}[c{k+1}]xfade=transition=dissolve:duration={fade_d:.3f}:offset={offset:.3f}{out_tag}")
         last_tag = out_tag
-
-    if motes_png and motes_png.exists():
-        mote_idx = len(card_slides)
-        inputs.extend(["-loop", "1", "-t", f"{total_dur:.3f}", "-i", str(motes_png)])
-        filters.append(f"[{mote_idx}:v]fps={FPS},format=rgba[motes]")
-        filters.append(f"[vbase][motes]overlay=x=0:y='-mod(t*22,{VIDEO_H})':shortest=1,format=yuv420p,setsar=1[vout]")
 
     subprocess.run(
         [
