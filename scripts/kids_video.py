@@ -2,12 +2,10 @@
 """
 scripts/kids_video.py
 =====================
-مخرج قصص الأطفال الكرتونية 3D + 8D لمشروع «مَلَاكُ المَعْرِفَةِ» (720×1280 @ 24fps):
+مخرج قصص الأطفال الكرتونية 3D لمشروع «مَلَاكُ المَعْرِفَةِ» (720×1280 @ 24fps):
 - يولّد مشاهد 3D Pixar Storybook متناسقة لشخصيتي عِمَاد ومَرْيَم عبر:
   (Gemini Native Image -> ZeroGPU Z-Image-Turbo / FLUX.1-schnell -> AI Horde) مع فحص Gemini Vision.
-- يحرّك كل مشهد إلى أنيميشن 8D حقيقي عبر fx_8d.py (3 طبقات عمق + كاميرا مدارية + جزيئات سحر 3D).
-- يضيف شارات المتحدثين الملوّنة (عِمَاد / مَرْيَم / الحكواتي) وترجمة كرتونية واضحة ومبهجة للأطفال.
-- يختتم القصة ببطاقة الحكمة في دفتر قصص أطفال ملوّن 3D متحرك 8D.
+- يحرّك المشاهد بنعومة وصفاء تام عبر FFmpeg zoompan ويدمج شارات المتحدثين وبطاقة حكمة القصة في النهاية.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, features
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, features
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,7 +44,6 @@ from romantic_cards import (
     _check_valid_hf_token,
     _open_gradio_client,
 )
-from fx_8d import render_8d_animation_clip
 
 VIDEO_W = 720
 VIDEO_H = 1280
@@ -296,7 +293,7 @@ def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
         print(f"   🎨 [Kids AI Horde] {models[:2]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "MalakKids:1.0:pixar-8d",
+            "Client-Agent": "MalakKids:1.1:pixar-clean",
             "Content-Type": "application/json",
         }
         payload = {
@@ -385,7 +382,6 @@ def _make_kids_overlay_png(text: str, speaker: str, title: str, show_title: bool
 
         d.rounded_rectangle([32, box_y0, VIDEO_W - 32, box_y1], radius=28, fill=(18, 24, 46, 198), outline=(255, 222, 138, 195), width=2)
 
-        # شارة المتحدث الملوّنة فوق الصندوق
         sp_font = _load_font(font_path, 24)
         sbb = _measure(d, sp_label, sp_font)
         sw = (sbb[2] - sbb[0]) + 46
@@ -420,7 +416,6 @@ def _make_kids_overlay_png(text: str, speaker: str, title: str, show_title: bool
 
 
 def _make_kids_moral_storybook_card(moral_text: str, title: str, font_path: str, out_png: Path):
-    """يصنع بطاقة حكمة القصة للأطفال على دفتر قصص صوفي ملوّن مبهج 3D."""
     prompt = (
         "Top-down flat-lay macro studio photograph of an open thick puffy cream-ivory quilted wool "
         "children's storybook lying flat on a warm bright sunlit oak table, cute 3D felt stars and "
@@ -489,9 +484,8 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
     total_dur = float(ep.get("total_duration") or 30.0)
     font_path = _find_amiri_font()
 
-    work = Path(tempfile.mkdtemp(prefix="kids_vid_8d_"))
+    work = Path(tempfile.mkdtemp(prefix="kids_vid_"))
     try:
-        # توليد صور المشاهد بالتوازي (آخر مشهد على بطاقة الحكمة إذا وجدت)
         def _prep_img(i_s):
             idx, s = i_s
             out_img = work / f"ksc_{idx}.jpg"
@@ -503,66 +497,55 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
         with ThreadPoolExecutor(max_workers=2) as ex:
             scene_imgs = list(ex.map(_prep_img, list(enumerate(segs))))
 
-        moves = ("orbit_in", "orbit_left", "orbit_out", "orbit_right")
         clip_slots: list[tuple[Path, float]] = []
 
         for idx, (s, img_p) in enumerate(zip(segs, scene_imgs)):
             sdur = float(s["duration"])
             is_last = (idx == len(segs) - 1)
             render_dur = sdur + (0.0 if is_last else XFADE_DUR)
+            frames = max(24, int(round(render_dur * FPS)) + 12)
 
-            ov_png = work / f"kov_{idx}.png"
-            _make_kids_overlay_png(
-                s["text"],
-                speaker=s.get("speaker", "narrator"),
-                title=title,
-                show_title=(idx == 0),
-                font_path=font_path,
-                out_png=ov_png,
-            )
-
-            bg_8d = work / f"k8d_{idx}.mp4"
             if is_last and moral:
-                # نصف المدة الأخيرة مشهد كرتوني والنصف الأخير بطاقة حكمة القصة
                 moral_png = work / "moral_card.png"
                 _make_kids_moral_storybook_card(moral, title, font_path, moral_png)
-                render_8d_animation_clip(
-                    img_path=moral_png,
-                    out_mp4=bg_8d,
-                    duration=render_dur,
-                    W=VIDEO_W,
-                    H=VIDEO_H,
-                    fps=FPS,
-                    mood="spiritual_noor",
-                    particles="gold_motes",
-                    move="orbit_in",
-                    is_notebook=True,
-                    seed=777,
+                vf = (
+                    f"scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
+                    f"zoompan=z='min(zoom+0.0003,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p,setsar=1"
                 )
-                shutil.copy2(bg_8d, work / f"kclip_{idx}.mp4")
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(moral_png),
+                        "-vf", vf, "-t", f"{render_dur:.3f}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                        str(work / f"kclip_{idx}.mp4"),
+                    ],
+                    check=True, capture_output=True, timeout=180,
+                )
             else:
-                render_8d_animation_clip(
-                    img_path=img_p,
-                    out_mp4=bg_8d,
-                    duration=render_dur,
-                    W=VIDEO_W,
-                    H=VIDEO_H,
-                    fps=FPS,
-                    mood="warm_romance",
-                    particles="gold_motes",
-                    move=moves[idx % len(moves)],
-                    is_notebook=False,
-                    seed=500 + idx * 41,
+                ov_png = work / f"kov_{idx}.png"
+                _make_kids_overlay_png(
+                    s["text"],
+                    speaker=s.get("speaker", "narrator"),
+                    title=title,
+                    show_title=(idx == 0),
+                    font_path=font_path,
+                    out_png=ov_png,
                 )
+                z_expr = "min(zoom+0.0005,1.09)" if idx % 2 == 0 else "max(1.09-0.0005*on,1.0)"
                 fc = (
-                    f"[0:v]fps={FPS},format=yuv420p[bg];"
+                    f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
+                    f"crop={VIDEO_W*2}:{VIDEO_H*2},"
+                    f"zoompan=z='{z_expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
+                    f"eq=contrast=1.03:saturation=1.08,format=yuv420p[bg];"
                     f"[1:v]fps={FPS},format=rgba[ov];"
                     f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                 )
                 subprocess.run(
                     [
                         "ffmpeg", "-y", "-loglevel", "error",
-                        "-i", str(bg_8d),
+                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(img_p),
                         "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
                         "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
@@ -605,7 +588,7 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
             check=True, capture_output=True, timeout=240,
         )
         mb = out_p.stat().st_size / (1024 * 1024)
-        print(f"✅ اكتمل فيديو قصص الأطفال 3D/8D: {out_p.name} ({mb:.2f} MB)", flush=True)
+        print(f"✅ اكتمل فيديو قصص الأطفال 3D: {out_p.name} ({mb:.2f} MB)", flush=True)
         return True
     finally:
         shutil.rmtree(work, ignore_errors=True)
