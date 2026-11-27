@@ -1,8 +1,7 @@
 """
 story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
-- يدعم وضع الأنيميشن/الواقعية السينمائية (CINEMA_ANIME_MODE=1) لمقاطع السرد والملخص والتشويق.
-- يفعّل نمط الدفاتر والوسائد الإسلامية المطرّزة 8K (islamic_cards.py) لمقاطع الحديث والفقه والأذكار والتشجيع (CTA/Outro).
-- ينقّي مشاهد اليوميات الكلاسيكية من اللقطات العشوائية (كالنسور والبراكين) ليقتصر على الطبيعة الهادئة والعمارة الإسلامية.
+- يجهّز قالب الدفتر الصوفي 8K مسبقاً (warmup) قبل استهلاك ZeroGPU على لقطات القصة.
+- يدعم وضع الواقعية السينمائية (CINEMA_ANIME_MODE=1) والدفتر الصوفي الإسلامي 8K (islamic_cards.py).
 - يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) مع تأطير ذهبي روحاني للآيات.
 """
 
@@ -45,10 +44,11 @@ except Exception as _ce:
     print(f"ℹ️ الوضع الكلاسيكي للخلفيات (cinema_engine غير متاح: {_ce})", flush=True)
 
 try:
-    from islamic_cards import render_islamic_card_slides
+    from islamic_cards import render_islamic_card_slides, warmup_islamic_notebook_template
     CARDS_AVAILABLE = True
 except Exception as _ice:
     CARDS_AVAILABLE = False
+    warmup_islamic_notebook_template = None
     print(f"ℹ️ بطاقات النصوص المطرّزة غير متاحة: {_ice}", flush=True)
 
 CARD_SEG_TYPES = {"cta", "outro", "hadith", "fiqh", "adhkar"}
@@ -1132,6 +1132,12 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
 
     card_mode = CARDS_AVAILABLE and (os.getenv("USE_ISLAMIC_CARDS", "1") == "1")
 
+    # تجهيز قالب الدفتر الصوفي 8K مسبقاً قبل أن تستهلك لقطات القصة حصة ZeroGPU!
+    if card_mode and warmup_islamic_notebook_template is not None:
+        has_card_seg = any(s.get("type") in CARD_SEG_TYPES for s in segments)
+        if has_card_seg:
+            warmup_islamic_notebook_template(W=W, H=H)
+
     chunk_bg_map: dict[tuple[int, int], Path] = {}
     chunk_to_scene = {}
     scene_bg_videos = {}
@@ -1139,7 +1145,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     final_audio_input = audio_path
 
     if use_cinema:
-        print("🎥 تفعيل مخرج الواقعية السينمائية 3D + الدفاتر الإسلامية المطرّزة", flush=True)
+        print("🎥 تفعيل مخرج الواقعية السينمائية 3D + الدفتر الصوفي الإسلامي 8K", flush=True)
         cinema_meta = meta
         if card_mode:
             cinema_meta = {
