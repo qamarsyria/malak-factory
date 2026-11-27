@@ -1,6 +1,6 @@
 {
-  "run_count": 14,
-  "adhkar_slot_idx": 1,
+  "run_count": 15,
+  "adhkar_slot_idx": 2,
   "used_ids": {
     "fiqh": [
       "binbaz-12467",
@@ -23,7 +23,10 @@
     "adhkar": [
       "adhkar-sabah-0024",
       "adhkar-sabah-0003",
-      "adhkar-sabah-0007"
+      "adhkar-sabah-0007",
+      "adhkar-masaa-0040",
+      "adhkar-masaa-0047",
+      "adhkar-masaa-0050"
     ]
   }
 }
