@@ -1,9 +1,10 @@
 """
-cinema_engine.py — محرك الواقعية السينمائية الشبيهة بالطبيعي (IMAX / UE5 / Shinkai Realism)
-- يمنع الكرتون المسطح وفلتر stylization تماماً، ويمنع الحيوانات ما لم تُذكر في القصة نفسها.
-- يدعم فيديوهات الطبيعة الحقيقية (Pixabay film) بجانب توليد Z-Image / FLUX / Juggernaut XL + Depth 2.5D.
-- يضيف أشعة نور روحانية علوية ناعمة (Volumetric Noor Shafts) ومؤثر خرير الماء الحلال مع كتم تام عند القرآن.
-- يربط Gemini Vision Guard بنص السرد العربي لرفض أي لقطة غير مطابقة للمعنى أو غير واقعية.
+cinema_engine.py — محرك الواقعية السينمائية الشبيهة بالطبيعي (Story Bible + Environmental POV)
+- يبني هوية بصرية موحدة لكل قصة (Story Visual Bible) حتى تكون اللقطات من وحي القصة وتسلسلها.
+- يسمح بتصوير البشر العاديين بلباس تاريخي محتشم في قصص العِبر والتاريخ، ويمنع منعاً باتاً:
+  تشبيه الذات الإلهية، والأنبياء والمرسلين، والملائكة، والصحابة والمبشرين بالجنة، والنساء المسلمات.
+- يعتمد في المشاهد الممنوع فيها البشر على السرد البيئي والمكاني (Environmental POV) بدون أي استبدال مشوّه.
+- يضيف أشعة النور الروحانية (Volumetric Noor Shafts) ومؤثرات طبيعية حلال مع كتم تام عند القرآن.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import PIXABAY_KEY
-from filters_loader import is_safe_tag, is_safe_query, is_sacred_context
+from filters_loader import is_safe_tag, is_safe_query
 
 try:
     import numpy as np
@@ -74,28 +75,29 @@ _VISION_LOCK = threading.Lock()
 _LAST_VISION_TS = 0.0
 
 # ==============================================================================
-# الهوية البصرية الموحدة — واقعية سينمائية روحانية شبيهة بالطبيعي (بدون كرتون)
+# الهوية البصرية الموحدة
 # ==============================================================================
 PHOTOREAL_NATURE_STYLE = (
-    "breathtaking hyper-realistic cinematic photography, Unreal Engine 5 photorealistic nature "
-    "and cosmic realism, shot on ARRI Alexa 65mm IMAX lens, natural volumetric sunbeams, "
-    "crystal sharp organic textures, deep atmospheric mist, rich filmic color grading, "
-    "vertical 9:16 portrait framing, 8k ultra realistic, no text, no watermark, no border"
+    "breathtaking hyper-realistic cinematic photography, Unreal Engine 5 photorealistic realism, "
+    "shot on ARRI Alexa 65mm IMAX lens, natural volumetric sunbeams, crystal sharp organic textures, "
+    "deep atmospheric depth, rich filmic color grading, vertical 9:16 portrait framing, 8k ultra realistic, "
+    "no text, no watermark, no border"
 )
 
-CINEMATIC_LIVING_STYLE = (
-    "luminous Makoto Shinkai and high-craft 3D cinematic film realism, radiant volumetric "
-    "sunlight, lush natural foliage and lifelike lighting, expressive realistic proportions, "
-    "cinematic depth of field, vertical 9:16 portrait framing, no text, no watermark"
+CINEMATIC_HUMAN_STYLE = (
+    "hyper-realistic historical epic cinema photography, shot on ARRI Alexa 65mm lens, "
+    "ordinary pre-modern Middle Eastern men in modest historical wool and linen robes and turbans, "
+    "dramatic natural candlelight or golden sunlight, expressive realistic storytelling, "
+    "vertical 9:16 portrait framing, 8k realistic film still, no text, no watermark"
 )
 
 BASE_NEGATIVE = (
     "cartoon, comic, pop art, flat 2d, vector art, clipart, chibi, stick figure, sketch, "
     "watercolor filter, cheap illustration, deformed hands, extra limbs, distorted face, "
-    "modern car, airplane, skyscraper, electricity pole, neon sign, wristwatch, modern clothing, "
+    "modern car, airplane, skyscraper, electricity pole, neon sign, wristwatch, modern clothing, suit, jeans, "
     "gift ribbon, text, words, letters, watermark, logo, signature, border, "
     "glowing halo around head, angelic wings, idol statue, sculpture, church, cross, crucifix, "
-    "bell tower, cathedral, nudity, revealing clothes"
+    "bell tower, cathedral, nudity, revealing clothes, bikini, woman, women, female, girl"
 )
 
 NO_ANIMALS_ADDON = (
@@ -112,8 +114,32 @@ NO_HUMANS_ADDON = (
 _FORBIDDEN_STOCK_RE = re.compile(
     r"\b(?:church|cathedral|chapel|basilica|monastery|abbey|bell\s*tower|steeple|gothic|"
     r"crucifix|cross|altar|priest|nun|monk|statue|sculpture|idol|buddha|hindu|shrine|"
-    r"ribbon|gift|bow|present|vector|clipart|cartoon|illustration|drawing|giraffe|sheep|ram|goat)\b",
+    r"ribbon|gift|bow|present|vector|clipart|cartoon|illustration|drawing|giraffe|sheep|ram|goat|bikini|woman|girl)\b",
     re.IGNORECASE,
+)
+
+# قائمة المنع الشرعي الدقيق: الذات الإلهية، الأنبياء والمرسلون، الملائكة، الصحابة والمبشرون بالجنة، والنساء المسلمات
+_FORBIDDEN_HUMAN_ENTITIES_RE = re.compile(
+    r"(?:^|[^\u0621-\u064A])(?:و|ف|ب|ل|ك)?(?:ال)?(?:"
+    # الذات الإلهية والملائكة
+    r"الله|جل جلاله|سبحانه|رب العالمين|ربي|ربنا|الرحمن|الخالق|"
+    r"ملائكة|ملاك|جبريل|ميكائيل|إسرافيل|اسرافيل|عزرائيل|ملك الموت|"
+    # الأنبياء والمرسلون
+    r"نبي|أنبياء|انبياء|رسول|رسل|مرسل|آدم|ادم|إدريس|ادريس|نوح|هود|صالح|"
+    r"إبراهيم|ابراهيم|لوط|إسماعيل|اسماعيل|إسحاق|اسحاق|يعقوب|يوسف|أيوب|ايوب|"
+    r"شعيب|موسى|هارون|ذو الكفل|داود|داوود|سليمان|إلياس|الياس|اليسع|يونس|"
+    r"زكريا|يحيى|عيسى|المسيح|محمد|المصطفى|خاتم الأنبياء|الخليل|الكليم|"
+    # الصحابة والمبشرون بالجنة وآل البيت
+    r"صحابي|صحابة|أبو بكر|ابو بكر|الصديق|سيدنا عمر|عمر بن الخطاب|الفاروق|"
+    r"عثمان بن عفان|ذو النورين|علي بن أبي طالب|سيدنا علي|الإمام علي|"
+    r"طلحة|الزبير|عبد الرحمن بن عوف|سعد بن أبي وقاص|سعيد بن زيد|أبو عبيدة|ابو عبيدة|"
+    r"بلال|خالد بن الوليد|سلمان الفارسي|عمار بن ياسر|حمزة|العباس|الحسن|الحسين|"
+    r"أنس بن مالك|أبو هريرة|ابو هريرة|ابن عباس|ابن مسعود|معاذ بن جبل|أبي بن كعب|"
+    # النساء المسلمات وأمهات المؤمنين
+    r"أم المؤمنين|أمهات المؤمنين|مريم|آسية|اسيه|خديجة|عائشة|فاطمة|حفصة|زينب|"
+    r"هاجر|سارة|أم سلمة|صفية|جويرية|ميمونة|سودة|رملة|سمية|أسماء|خولة|"
+    r"امرأة|المرأة|نساء|النساء|زوجة|زوجته|والدة|والدته|أمه|أمهات|ابنة|ابنته|بنت|فتاة|أخت|أخته|مؤمنة|مسلمة"
+    r")(?=$|[^\u0621-\u064A])"
 )
 
 _STORY_ANIMALS_RE = re.compile(
@@ -136,7 +162,7 @@ MOOD_PALETTES = {
         "default_sfx": "desert_breeze",
     },
     "ancient_civilization": {
-        "desc": "warm sunlit golden desert sandstone canyons and twilight sky, ancient carved limestone in natural dust",
+        "desc": "warm sunlit golden desert sandstone canyons, ancient mud-brick or stone streets, warm lantern glow",
         "tint_bgr": (-8, 3, 12),
         "contrast": 1.07,
         "ray_color": (120, 195, 255),
@@ -145,7 +171,7 @@ MOOD_PALETTES = {
         "default_sfx": "wind",
     },
     "storm_trial": {
-        "desc": "dramatic dark thunderclouds over turbulent ocean waves and misty emerald mountain cliffs, realistic lightning glow",
+        "desc": "dramatic dark thunderclouds over turbulent ocean waves or stormy desert cliffs, realistic lightning glow",
         "tint_bgr": (12, 3, -6),
         "contrast": 1.12,
         "ray_color": (210, 215, 230),
@@ -212,13 +238,24 @@ def _detect_allowed_animals(text: str) -> bool:
     return bool(_STORY_ANIMALS_RE.search(norm))
 
 
+def _allows_ordinary_humans(text: str, stype: str) -> bool:
+    """
+    يسمح بالبشر العاديين فقط عندما لا يذكر النص ذات الله، أو الأنبياء والمرسلين،
+    أو الصحابة والمبشرين بالجنة، أو الملائكة، أو النساء المسلمات.
+    """
+    if stype in ("quran", "cta", "outro"):
+        return False
+    cleaned = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك\s+ا[\u064B-\u065F]*ل[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة", "", text or "")
+    norm = re.sub(r"[\u0640\u064B-\u065F\u0670]", "", cleaned)
+    if _FORBIDDEN_HUMAN_ENTITIES_RE.search(norm):
+        return False
+    return True
+
+
 def _purge_invalid_hf_token(reason: str = "401"):
     with _STATE_LOCK:
         if not _RUNTIME_STATE["hf_token_invalid"]:
-            print(
-                f"   🔓 HF_TOKEN مرفوض ({reason}) — التحويل التلقائي للوصول العام المجاني.",
-                flush=True,
-            )
+            print(f"   🔓 HF_TOKEN مرفوض ({reason}) — التحويل التلقائي للوصول العام المجاني.", flush=True)
         _RUNTIME_STATE["hf_token_invalid"] = True
         _RUNTIME_STATE["hf_inference_disabled"] = True
         _RUNTIME_STATE["space_clients"].clear()
@@ -360,8 +397,51 @@ def _call_gemini_json(parts: list[dict], timeout: int = 45, max_tokens: int = 40
 
 
 # ==============================================================================
-# 1) مخرج اللقطات الذكي (AI Shot Director — ربط حرفي بالسرد + واقعية فائقة)
+# 1) كتاب القصة البصري (Story Visual Bible) + مخرج اللقطات المتصل بالقصة
 # ==============================================================================
+def _build_story_visual_bible(ep_title: str, segments: list) -> dict:
+    """يبني هوية بصرية ومكانية موحدة للحلقة كلها قبل تخطيط اللقطات."""
+    full_summary_parts = []
+    for seg in segments[:14]:
+        st = seg.get("type", "narration")
+        if st in ("cta", "outro"):
+            continue
+        txt = " ".join((c.get("text") or "").strip() for c in seg.get("chunks", []))
+        if txt:
+            full_summary_parts.append(f"[{st}] {txt[:240]}")
+    story_digest = "\n".join(full_summary_parts)[:2400]
+
+    prompt = f"""Analyze this Arabic Islamic story/episode and create a cohesive Story Visual Bible so all scenes feel like ONE continuous documentary film:
+Title: "{ep_title}"
+Story Excerpt:
+{story_digest}
+
+Rules:
+- Choose ONE coherent historical/natural world matching the story (e.g., ancient desert trade caravan, historic Damascus stone alleyways and market, stormy sea and wooden ship, ancient stone cave at dawn, peaceful mountain valley).
+- List 3-5 concrete physical story props/settings from the narrative (e.g., brass oil lantern, clay water jar, open parchment scroll, wooden doorway, campfire, stone well).
+- Define an emotional lighting arc (dawn -> tension -> resolution).
+
+Return ONLY JSON:
+{{
+  "story_world": "15-word description of the main unified setting and historical era",
+  "story_props": ["prop 1", "prop 2", "prop 3"],
+  "episode_anchor": "12-word consistent cinematic color grading and lighting anchor"
+}}"""
+    res = _call_gemini_json([{"text": prompt}], timeout=30, max_tokens=512)
+    if res and res.get("story_world"):
+        return {
+            "story_world": re.sub(r"[^\x20-\x7E]", " ", str(res.get("story_world", ""))).strip(),
+            "story_props": [re.sub(r"[^\x20-\x7E]", " ", str(p)).strip() for p in (res.get("story_props") or [])[:5]],
+            "episode_anchor": re.sub(r"[^\x20-\x7E]", " ", str(res.get("episode_anchor", ""))).strip()
+            or "warm golden hour volumetric sunbeams and authentic filmic realism",
+        }
+    return {
+        "story_world": "ancient Middle Eastern stone villages, desert dunes, and sunlit valleys",
+        "story_props": ["brass lantern", "ancient parchment scroll", "carved stone doorway"],
+        "episode_anchor": "warm golden hour volumetric sunbeams and deep natural realism",
+    }
+
+
 def _target_shots_for_duration(c_dur: float, is_quran: bool) -> int:
     if is_quran:
         return 2 if c_dur >= 16.0 else 1
@@ -397,55 +477,81 @@ def _normalize_shot_durations(shots: list[dict], total_dur: float) -> list[dict]
     return shots
 
 
-def _fallback_shots_for_chunk(c_text: str, c_dur: float, stype: str, ep_title: str, episode_anchor: str) -> list[dict]:
+def _fallback_shots_for_chunk(c_text: str, c_dur: float, stype: str, bible: dict) -> list[dict]:
     is_quran = (stype == "quran")
-    sacred = is_quran or is_sacred_context(c_text) or is_sacred_context(ep_title)
+    allow_h = _allows_ordinary_humans(c_text, stype)
     allow_anim = (not is_quran) and _detect_allowed_animals(c_text)
     n_shots = _target_shots_for_duration(c_dur, is_quran)
     t = c_text or ""
+    world = bible.get("story_world", "ancient Middle Eastern sunlit stone village and mountains")
+    anchor = bible.get("episode_anchor", "luminous golden hour volumetric sunbeams")
 
     if stype in ("cta", "outro"):
         mood = "sacred_heritage"
         base_envs = [
-            "tranquil sunlit limestone islamic courtyard with calm water reflection and warm golden dawn light beams",
+            "tranquil sunlit limestone courtyard with calm water reflection and warm golden dawn light beams",
             "peaceful mountain lake surrounded by pine forests and morning mist under golden sunrise rays",
         ]
         fb_q = "sunrise mountain lake mist"
-    elif any(w in t for w in ("قلم", "لوح", "كتاب", "مقادير", "علم", "غيب")):
+    elif any(w in t for w in ("قلم", "لوح", "كتاب", "مقادير", "علم", "غيب", "مكتبة")):
         mood = "cosmic_awe"
         base_envs = [
+            "macro cinematic shot of an open ancient blank parchment scroll glowing softly under warm sunbeam dust on carved wood",
             "vast starry milky way galaxy swirling above dark jagged desert mountain peaks under golden celestial rays",
-            "macro cinematic shot of an open ancient blank parchment scroll glowing softly under warm sunbeam dust",
-            "crystal clear dewdrops resting on lush emerald forest leaves bathed in golden morning sunlight",
         ]
         fb_q = "milky way night sky mountains"
-    elif any(w in t for w in ("ورقة", "رطب", "يابس", "شجر", "نبات", "غيث", "مطر")):
-        mood = "sacred_heritage"
-        base_envs = [
-            "hyper-realistic green forest stream with sunbeams piercing mossy trees and crystal clear water over stones",
-            "macro photorealistic raindrops glistening on deep green leaves in misty mountain forest light",
-            "cascading mountain waterfall pouring into a turquoise alpine lake under dramatic bright clouds",
-        ]
-        fb_q = "forest waterfall sunbeams nature"
-    elif any(w in t for w in ("عرش", "كرسي", "سماوات", "سماء", "نجوم", "خلق")):
-        mood = "cosmic_awe"
-        base_envs = [
-            "boundless deep sapphire ocean beneath towering luminous golden clouds and volumetric heaven light rays",
-            "vast dark starry cosmos with glowing amber nebula clouds above misty mountain silhouettes",
-        ]
-        fb_q = "ocean sunset clouds horizon"
-    elif any(w in t for w in ("بحر", "موج", "طوفان", "ريح", "عاصفة", "رعد", "برق")):
+    elif any(w in t for w in ("سوق", "تاجر", "بيع", "شراء", "دراهم", "دينار", "تجارة", "صدقة", "فقير", "خبز", "طعام")):
+        mood = "ancient_civilization"
+        if allow_h:
+            base_envs = [
+                f"cinematic historical scene in {world}, ordinary Middle Eastern merchants in modest robes weighing grain on a brass scale in warm sunlight",
+                "close-up realistic shot of warm loaves of bread and clay bowls on a rustic wooden table lit by a brass lantern",
+            ]
+        else:
+            base_envs = [
+                "rustic ancient stone marketplace stalls with woven baskets of wheat and brass scales bathed in warm morning sunbeams, uninhabited",
+                "warm loaves of bread and clay pitcher on a weathered wooden table beside a glowing brass lantern",
+            ]
+        fb_q = "ancient stone market sunlight"
+    elif any(w in t for w in ("سفر", "طريق", "صحراء", "رمال", "قافلة", "هجرة", "ليل", "خيمة")):
+        mood = "ancient_civilization"
+        if allow_h:
+            base_envs = [
+                "cinematic wide shot of ordinary weary desert travelers in modest cloaks walking across golden dunes at twilight",
+                "a glowing woven desert tent lit by warm firelight under a deep starry night sky",
+            ]
+        else:
+            base_envs = [
+                "fresh footprints fading across golden desert sand dunes at dawn with a glowing woven tent in the distance, zero people",
+                "warm glowing brass lantern hanging outside an empty traditional tent under starry desert night",
+            ]
+        fb_q = "desert dunes sunset"
+    elif any(w in t for w in ("كهف", "غار", "سجن", "حجر", "باب", "بيت", "دار")):
         mood = "storm_trial"
         base_envs = [
-            "dramatic dark ocean waves crashing against rugged coastal cliffs under storm clouds with distant lightning",
-            "misty blue mountain ridges rising above a dense sea of swirling volumetric clouds at twilight",
+            "atmospheric ancient carved stone cave entrance with a single golden shaft of morning sunlight piercing the shadows",
+            "heavy aged wooden doorway of an old stone house opening slightly to warm amber dawn light",
         ]
-        fb_q = "storm ocean waves mountains"
+        fb_q = "stone cave sunbeam"
+    elif any(w in t for w in ("سفينة", "بحر", "موج", "طوفان", "ريح", "عاصفة", "رعد", "برق")):
+        mood = "storm_trial"
+        base_envs = [
+            "historic wooden sailing ship bow cutting through dramatic dark ocean waves beneath storm clouds and distant golden light",
+            "turbulent ocean waves crashing against rugged coastal cliffs under storm clouds with distant lightning",
+        ]
+        fb_q = "storm ocean waves"
+    elif any(w in t for w in ("مسجد", "محراب", "صلاة", "دعاء", "خشوع")):
+        mood = "serenity_quran"
+        base_envs = [
+            "serene empty stone mosque prayer hall with sunlight streaming through carved geometric wooden lattice onto woven carpets",
+            "ancient stone courtyard fountain reflecting golden dawn light in quiet tranquility, zero people",
+        ]
+        fb_q = "islamic arch sunlight"
     else:
         mood = "serenity_quran" if is_quran else "sacred_heritage"
         base_envs = [
+            f"cinematic establishing shot of {world} bathed in golden dawn mist",
             "misty emerald alpine mountains reflected in a calm turquoise lake under soft golden sunrise",
-            "golden desert sand dunes sweeping toward the horizon in warm morning sunlight and deep shadows",
         ]
         fb_q = "turquoise alpine lake mountains"
 
@@ -461,67 +567,67 @@ def _fallback_shots_for_chunk(c_text: str, c_dur: float, stype: str, ep_title: s
             "sub_idx": i,
             "duration": round(c_dur / n_shots, 3),
             "shot_type": st,
-            "camera_move": CAMERA_MOVES[(i + len(t)) % len(CAMERA_MOVES)],
+            "camera_move": "dolly_in" if st == "closeup" else ("dolly_out" if st == "wide" else CAMERA_MOVES[(i + len(t)) % len(CAMERA_MOVES)]),
             "mood": mood,
             "particles": "none" if is_quran else MOOD_PALETTES[mood]["default_particles"],
             "sfx_type": "none" if is_quran else MOOD_PALETTES[mood]["default_sfx"],
-            "allow_humans": False,
+            "allow_humans": allow_h,
             "allow_animals": allow_anim,
             "is_hero_climax": (i == 0 and stype in ("narration", "teaser")),
             "narration_ar": t[:220],
-            "prompt_en": f"{st} cinematic shot, {env}, {episode_anchor}",
+            "prompt_en": f"{st} cinematic shot, {env}, {anchor}",
             "fallback_query": fb_q,
         })
     return _normalize_shot_durations(shots, c_dur)
 
 
-def _enforce_shot_safety(shot: dict, c_text: str, stype: str, ep_title: str) -> dict:
+def _enforce_shot_safety(shot: dict, c_text: str, stype: str) -> dict:
     is_quran = (stype == "quran")
-    sacred = is_quran or is_sacred_context(c_text) or is_sacred_context(ep_title) or (stype in ("cta", "outro"))
+    allow_h = _allows_ordinary_humans(c_text, stype)
     allow_anim = (not is_quran) and _detect_allowed_animals(c_text)
 
-    shot["allow_humans"] = False if sacred else bool(shot.get("allow_humans", False))
+    # لا نسمح بإظهار البشر إلا إذا سمح الفلتر الشرعي ولم يذكر أنبياء/صحابة/ملائكة/نساء
+    shot["allow_humans"] = allow_h and bool(shot.get("allow_humans", allow_h))
     shot["allow_animals"] = allow_anim
     shot["narration_ar"] = (c_text or "")[:240]
 
     prompt = re.sub(r"[^\x20-\x7E]", " ", str(shot.get("prompt_en", ""))).strip()
     if len(prompt) < 15:
-        prompt = "breathtaking misty blue mountain cliffs rising above a sea of clouds in golden sunrise"
+        prompt = "atmospheric ancient stone alley glowing softly in golden morning light"
 
-    prompt = _FORBIDDEN_STOCK_RE.sub("natural stone", prompt)
+    prompt = _FORBIDDEN_STOCK_RE.sub("ancient stone", prompt)
 
     if not shot["allow_humans"]:
+        # بدل الاستبدال الأعمى بكلمة تخرب الجملة، نحذف إشارات الأشخاص بنظافة ونفرض السرد البيئي POV
         prompt = re.sub(
-            r"\b(man|men|woman|women|person|people|human|humans|crowd|worker|workers|angel|angels|prophet|face|hands?|silhouettes?|travelers?|soldiers?)\b",
-            "mountain vista",
+            r"\b(?:man|men|woman|women|girl|female|person|people|human|humans|crowd|worker|workers|angel|angels|prophet|face|faces|hands?|silhouettes?|travelers?|soldiers?|merchants?)\b",
+            "",
             prompt,
             flags=re.IGNORECASE,
         )
-        prompt += ", uninhabited pure landscape, zero people, zero faces, zero wings"
+        prompt += ", environmental storytelling POV, uninhabited physical setting and story props, zero people, zero faces, zero wings"
     else:
-        prompt += ", modest ancient historical middle eastern attire, expressive cinematic lighting, no wings, no halos"
+        # نحذف أي ذكر للنساء حتى في المشاهد المسموح فيها بالبشر العاديين
+        prompt = re.sub(r"\b(?:woman|women|female|girl|lady|ladies|wife|mother|daughter)\b", "man", prompt, flags=re.IGNORECASE)
+        prompt += ", ordinary historical Middle Eastern men in modest ancient robes and turbans, zero women, zero halos, zero wings, zero modern clothes"
 
     if not shot["allow_animals"]:
         prompt = re.sub(
             r"\b(animal|animals|giraffe|sheep|ram|goat|bird|birds|deer|horse|camel|wolf|cow|fish|butterfl(?:y|ies)|wildlife)\b",
-            "sunlit foliage",
+            "stone",
             prompt,
             flags=re.IGNORECASE,
         )
         prompt += ", zero animals, zero birds"
 
-    shot["prompt_en"] = re.sub(r"\s+", " ", prompt).strip()
+    shot["prompt_en"] = re.sub(r"\s+", " ", prompt).replace(" ,", ",").strip()
 
     fb_q = str(shot.get("fallback_query", "")).strip()
-    if (
-        not fb_q
-        or _FORBIDDEN_STOCK_RE.search(fb_q)
-        or any(w in fb_q.lower() for w in ("arch", "courtyard", "building", "palace", "tower", "city", "monument", "ribbon", "gift", "cottage", "house"))
-    ):
-        shot["fallback_query"] = "milky way night sky" if shot.get("mood") == "cosmic_awe" else "mountain waterfall sunlight"
+    if not fb_q or _FORBIDDEN_STOCK_RE.search(fb_q):
+        shot["fallback_query"] = "milky way night sky" if shot.get("mood") == "cosmic_awe" else "desert dunes sunlight"
 
     if shot.get("mood") not in MOOD_PALETTES:
-        shot["mood"] = "serenity_quran" if is_quran else "sacred_heritage"
+        shot["mood"] = "serenity_quran" if is_quran else "ancient_civilization"
     if shot.get("camera_move") not in CAMERA_MOVES:
         shot["camera_move"] = random.choice(CAMERA_MOVES)
     if shot.get("particles") not in ("gold_motes", "embers", "rain", "snow", "mist", "none"):
@@ -539,19 +645,25 @@ def plan_episode_shots(meta: dict) -> dict:
     story_id = meta.get("story_id", "")
     segments = meta.get("segments", [])
 
-    plan_key = hashlib.md5(f"v4_real_{story_id}:{ep_title}:{len(segments)}".encode("utf-8")).hexdigest()[:10]
+    plan_key = hashlib.md5(f"v5_story_{story_id}:{ep_title}:{len(segments)}".encode("utf-8")).hexdigest()[:10]
     shared_plan_file = _cache_root() / f"cinema_plan_{plan_key}.json"
 
     cached_chunks_plan: dict[str, dict] = {}
-    episode_anchor = "luminous golden hour volumetric sunbeams and deep natural realism"
+    bible: dict | None = None
 
     if _share_enabled() and shared_plan_file.exists():
         try:
             saved = json.loads(shared_plan_file.read_text(encoding="utf-8"))
             cached_chunks_plan = saved.get("chunks", {})
-            episode_anchor = saved.get("episode_anchor", episode_anchor)
+            bible = saved.get("bible")
         except Exception:
             cached_chunks_plan = {}
+
+    if not bible:
+        bible = _build_story_visual_bible(ep_title, segments)
+        print(f"📖 Story Visual Bible: {bible.get('story_world', '')[:75]}...", flush=True)
+
+    episode_anchor = bible.get("episode_anchor", "warm golden hour volumetric sunbeams and deep natural realism")
 
     pending_batches = []
     current_batch = []
@@ -565,7 +677,7 @@ def plan_episode_shots(meta: dict) -> dict:
             if ckey in cached_chunks_plan:
                 continue
             c_text = (chunk.get("text") or "").strip()
-            sacred = (stype == "quran") or (stype in ("cta", "outro")) or is_sacred_context(c_text) or is_sacred_context(ep_title)
+            allow_h = _allows_ordinary_humans(c_text, stype)
             allow_anim = (stype != "quran") and _detect_allowed_animals(c_text)
             current_batch.append({
                 "key": ckey,
@@ -574,7 +686,7 @@ def plan_episode_shots(meta: dict) -> dict:
                 "type": stype,
                 "duration": round(c_dur, 3),
                 "n_shots": _target_shots_for_duration(c_dur, stype == "quran"),
-                "force_no_humans": sacred,
+                "allow_ordinary_men": allow_h,
                 "allow_animals": allow_anim,
                 "text": c_text[:450],
             })
@@ -585,34 +697,36 @@ def plan_episode_shots(meta: dict) -> dict:
         pending_batches.append(current_batch)
 
     if pending_batches:
-        print(f"🎬 AI Shot Director: تخطيط لقطات واقعية متطابقة مع السرد لـ {sum(len(b) for b in pending_batches)} مقطع...", flush=True)
+        print(f"🎬 AI Shot Director: تخطيط مشاهد من وحي القصة لـ {sum(len(b) for b in pending_batches)} مقطع...", flush=True)
 
+    props_str = ", ".join(bible.get("story_props", []))
     for batch in pending_batches:
         batch_desc = json.dumps(batch, ensure_ascii=False, indent=2)
-        prompt = f"""You are an Elite Live-Action & Unreal Engine 5 Documentary Cinematographer for an Islamic documentary series ("Malak Al-Marifa").
+        prompt = f"""You are an Elite Live-Action Documentary Cinematographer for an Islamic storytelling series ("Malak Al-Marifa").
 Episode: "{ep_title}"
 
-Task: Translate each Arabic narration chunk into literal, photorealistic, awe-inspiring nature/cosmic/historical visual shots (5-6.5s each) that DIRECTLY match what the Arabic words are describing!
+STORY VISUAL BIBLE (KEEP ALL SHOTS INSIDE THIS UNIFIED WORLD):
+- Setting / World: {bible.get('story_world')}
+- Recurring Story Props: {props_str}
+- Lighting Anchor: {episode_anchor}
 
-CRITICAL REALISM & RELEVANCE RULES:
-1. STYLE MUST BE PHOTOREALISTIC: describe real physical scenery, real mountains, waterfalls, starry milky way galaxies, golden desert dunes, rain on leaves, ancient blank scrolls in sunlight, turbulent oceans, or misty forests — NEVER cartoons, cute cottages, pop art, or abstract shapes.
-2. LITERAL VISUAL MATCHING TO ARABIC TEXT:
-   - "القلم / اللوح المحفوظ / كتاب مبين": open ancient blank glowing parchment scroll in golden sunbeams OR vast swirling cosmic milky way over mountains.
-   - "لا تسقط ورقة / حبة في ظلمات الأرض / رطب ويابس": macro photorealistic shot of a sunlit green leaf with dewdrops falling OR rain falling on deep green mossy forest floor.
-   - "العرش على الماء": boundless deep ocean under towering radiant golden horizon clouds.
-   - "الغيث / الساعة / مفاتيح الغيب": storm clouds pouring rain over lush green mountain valleys.
-   - "استسلام القلوب / يطمئن الفؤاد": peaceful turquoise alpine lake reflecting snow-capped mountains at sunrise.
-   - "cta / outro": serene sunlit mountain sunrise valley OR calm turquoise lake at dawn (NEVER ribbons, gifts, or animals).
-3. ANIMALS ARE STRICTLY FORBIDDEN unless "allow_animals" is true! If "allow_animals" is false, NEVER include any animal, bird, fish, sheep, giraffe, or insect.
-4. HUMANS: If "force_no_humans" is true, "allow_humans" MUST be false (zero people/faces/hands/silhouettes/wings). Only set "allow_humans": true if "force_no_humans" is false AND ordinary historical humans are explicitly required by the narration.
-5. "fallback_query" MUST be a 3-word real nature query for stock film search (e.g. "misty mountain sunrise", "waterfall forest river", "milky way stars", "ocean waves sunset", "rain leaves nature"). NEVER include "courtyard", "arch", "building", "city", "house", or "animal".
+Task: Translate each Arabic narration chunk into literal, photorealistic, dramatic film shots (5-6.5s each) directly depicting the exact story events and objects!
+
+STRICT ISLAMIC EDITORIAL RULES:
+1. WHEN "allow_ordinary_men" IS true:
+   - You MAY show ordinary historical people (merchants, travelers, builders, crowds, rulers, poor villagers) wearing modest pre-modern Middle Eastern robes and turbans!
+   - STRICTLY MEN ONLY — ZERO women, ZERO glowing halos, ZERO angelic wings, ZERO modern clothing.
+2. WHEN "allow_ordinary_men" IS false (Quran, Prophets, Companions, Angels, Muslim women, or CTA):
+   - You MUST use ENVIRONMENTAL STORYTELLING (POV): ZERO humans, ZERO faces, ZERO silhouettes!
+   - Instead, show the exact physical setting & story props (e.g., footprints in sand, glowing tent, ancient carved cave entrance with sunlight shaft, wooden ship on waves, empty prayer hall in morning light, open parchment scroll with pen, weathered doorway opening to dawn light).
+3. ANIMALS: Only include animals if "allow_animals" is true.
+4. MOTION MATCHING: Use "dolly_in" for suspense/discovery/closeups, "dolly_out" for vast scale/awe, "truck_left"/"truck_right" for journeys/markets.
 
 Input Chunks:
 {batch_desc}
 
 Return ONLY valid JSON:
 {{
-  "episode_anchor": "short 10-word photorealistic lighting/atmosphere anchor",
   "chunks": {{
     "0_0": [
       {{
@@ -621,19 +735,17 @@ Return ONLY valid JSON:
         "mood": "cosmic_awe|ancient_civilization|storm_trial|serenity_quran|sacred_heritage",
         "particles": "gold_motes|embers|rain|snow|mist|none",
         "sfx_type": "wind|desert_breeze|ocean|rain_thunder|embers|stream_water|none",
-        "allow_humans": false,
+        "allow_humans": true,
         "is_hero_climax": true,
         "duration": 5.5,
-        "prompt_en": "wide photorealistic shot of...",
-        "fallback_query": "misty mountain sunrise"
+        "prompt_en": "cinematic shot inside {bible.get('story_world')}...",
+        "fallback_query": "desert caravan sunset"
       }}
     ]
   }}
 }}"""
         res = _call_gemini_json([{"text": prompt}], timeout=55, max_tokens=5120)
         if res and isinstance(res.get("chunks"), dict):
-            if res.get("episode_anchor"):
-                episode_anchor = re.sub(r"[^\x20-\x7E]", " ", str(res["episode_anchor"])).strip() or episode_anchor
             for item in batch:
                 ck = item["key"]
                 planned_list = res["chunks"].get(ck)
@@ -643,23 +755,19 @@ Return ONLY valid JSON:
                         if not isinstance(sh, dict):
                             continue
                         sh["sub_idx"] = s_i
-                        cleaned_list.append(_enforce_shot_safety(sh, item["text"], item["type"], ep_title))
+                        cleaned_list.append(_enforce_shot_safety(sh, item["text"], item["type"]))
                     if cleaned_list:
                         cached_chunks_plan[ck] = {
                             "shots": _normalize_shot_durations(cleaned_list, item["duration"]),
                         }
                         continue
                 cached_chunks_plan[ck] = {
-                    "shots": _fallback_shots_for_chunk(
-                        item["text"], item["duration"], item["type"], ep_title, episode_anchor
-                    )
+                    "shots": _fallback_shots_for_chunk(item["text"], item["duration"], item["type"], bible)
                 }
         else:
             for item in batch:
                 cached_chunks_plan[item["key"]] = {
-                    "shots": _fallback_shots_for_chunk(
-                        item["text"], item["duration"], item["type"], ep_title, episode_anchor
-                    )
+                    "shots": _fallback_shots_for_chunk(item["text"], item["duration"], item["type"], bible)
                 }
 
     final_chunks: dict[str, list[dict]] = {}
@@ -673,17 +781,15 @@ Return ONLY valid JSON:
             base_entry = cached_chunks_plan.get(ck)
             if base_entry and base_entry.get("shots"):
                 shots_copy = [dict(s) for s in base_entry["shots"]]
-                shots_copy = [_enforce_shot_safety(s, chunk.get("text", ""), stype, ep_title) for s in shots_copy]
+                shots_copy = [_enforce_shot_safety(s, chunk.get("text", ""), stype) for s in shots_copy]
                 final_chunks[ck] = _normalize_shot_durations(shots_copy, c_dur)
             else:
-                final_chunks[ck] = _fallback_shots_for_chunk(
-                    chunk.get("text", ""), c_dur, stype, ep_title, episode_anchor
-                )
+                final_chunks[ck] = _fallback_shots_for_chunk(chunk.get("text", ""), c_dur, stype, bible)
 
     if _share_enabled():
         try:
             shared_plan_file.write_text(
-                json.dumps({"episode_anchor": episode_anchor, "chunks": cached_chunks_plan}, ensure_ascii=False, indent=2),
+                json.dumps({"bible": bible, "episode_anchor": episode_anchor, "chunks": cached_chunks_plan}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception:
@@ -692,6 +798,7 @@ Return ONLY valid JSON:
     return {
         "plan_key": plan_key,
         "episode_anchor": episode_anchor,
+        "bible": bible,
         "chunks": final_chunks,
     }
 
@@ -718,7 +825,8 @@ def _vision_guard_check(
         return False, f"unreadable_image: {e}"
 
     human_rule = (
-        "Ordinary historical people/crowds wearing modest ancient garments are ALLOWED, EXCEPT glowing halos, angelic wings, idols, modern clothes, or immodesty."
+        "Ordinary historical MEN in modest ancient robes/turbans ARE ALLOWED. "
+        "STRICTLY REJECT any women/girls, glowing halos around heads, angelic wings, prophets/sacred figures, statues/idols, or modern clothes."
         if allow_humans
         else "ZERO humans, faces, hands, silhouettes, crowds, or winged figures allowed."
     )
@@ -728,20 +836,21 @@ def _vision_guard_check(
         else "ZERO animals, birds, giraffes, sheep, goats, horses, fish, or insects allowed ANYWHERE."
     )
 
-    guard_prompt = f"""Inspect this vertical frame strictly for photorealism, safety, and narration alignment.
+    guard_prompt = f"""Inspect this vertical frame strictly for realism, Islamic compliance, and story alignment.
 Intended scene: "{expected_scene[:180]}"
 Arabic narration snippet: "{narration_ar[:180]}"
 
 Rejection rules:
 1. {human_rule}
 2. {animal_rule}
-3. Reject if it looks like cheap 2D vector clipart, pop-art comic, kids cartoon, gift ribbon, or smeared watercolor cartoon filter. It MUST look photorealistic or high-craft luminous cinema.
+3. Reject if it looks like cheap 2D vector clipart, pop-art comic, kids cartoon, gift ribbon, or smeared watercolor filter.
 4. Reject crosses, churches, statues, idols, gibberish text, watermarks, modern vehicles, or severe glitches.
-5. Reject if the image is completely off-topic from the intended scene/narration (e.g. a random safari animal, cartoon house, or red ribbon).
+5. Reject if the image is completely off-topic from the intended story scene.
 
 Return ONLY JSON:
 {{
   "has_humans": false,
+  "has_women_or_sacred_halo": false,
   "has_animals": false,
   "is_cheap_cartoon_or_clipart": false,
   "has_safety_or_glitch": false,
@@ -766,14 +875,15 @@ Return ONLY JSON:
 
     if res:
         has_humans = bool(res.get("has_humans", False))
+        has_forbidden_human = bool(res.get("has_women_or_sacred_halo", False))
         has_animals = bool(res.get("has_animals", False))
         is_cartoon = bool(res.get("is_cheap_cartoon_or_clipart", False))
         has_bad = bool(res.get("has_safety_or_glitch", False))
         matches = bool(res.get("matches_scene_mood", True))
         explicit_safe = bool(res.get("safe", True))
 
-        if is_cartoon or has_bad or not explicit_safe or not matches:
-            return False, str(res.get("reason", "vision_guard_quality_or_relevance_rejected"))
+        if is_cartoon or has_bad or not explicit_safe or not matches or has_forbidden_human:
+            return False, str(res.get("reason", "vision_guard_rejected"))
         if (not allow_humans) and has_humans:
             return False, "vision_guard_detected_human_in_strict_scene"
         if (not allow_animals) and has_animals:
@@ -1097,7 +1207,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
     api_key = os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000"
     headers = {
         "apikey": api_key,
-        "Client-Agent": "MalakAlMarifa:3.1:github-actions",
+        "Client-Agent": "MalakAlMarifa:3.2:github-actions",
         "Content-Type": "application/json",
     }
     models = _get_photoreal_horde_models()
@@ -1182,7 +1292,7 @@ def _fallback_stock_media(
 ) -> Path | None:
     safe_q = query if (is_safe_query(query, allow_ordinary_humans=allow_humans) and not _FORBIDDEN_STOCK_RE.search(query)) else "misty mountain sunrise"
 
-    if PIXABAY_KEY and not allow_humans:
+    if PIXABAY_KEY:
         try:
             r = requests.get(
                 "https://pixabay.com/api/videos/",
@@ -1265,7 +1375,7 @@ def _fallback_stock_media(
         try:
             with _STATE_LOCK:
                 used_urls.add(u)
-            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.1"}, timeout=25)
+            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.2"}, timeout=25)
             if resp.status_code == 200 and len(resp.content) > 12000:
                 tmp = out_img_path.with_suffix(f".stock_{threading.get_ident()}.raw")
                 tmp.write_bytes(resp.content)
@@ -1337,12 +1447,12 @@ def generate_and_guard_shot(
 
     allow_humans = bool(shot.get("allow_humans", False))
     allow_animals = bool(shot.get("allow_animals", False))
-    mood = shot.get("mood", "cosmic_awe")
+    mood = shot.get("mood", "ancient_civilization")
     mood_desc = MOOD_PALETTES[mood]["desc"]
     narration_ar = str(shot.get("narration_ar", ""))
     expected_scene = str(shot.get("prompt_en", ""))
 
-    style_suffix = CINEMATIC_LIVING_STYLE if (allow_humans or allow_animals) else PHOTOREAL_NATURE_STYLE
+    style_suffix = CINEMATIC_HUMAN_STYLE if allow_humans else PHOTOREAL_NATURE_STYLE
     neg_prompt = BASE_NEGATIVE
     if not allow_animals:
         neg_prompt = NO_ANIMALS_ADDON + neg_prompt
@@ -1353,7 +1463,7 @@ def generate_and_guard_shot(
 
     for attempt in range(3):
         seed = base_seed + attempt * 7919
-        tighten = ", pure photorealistic landscape, zero people, zero animals" if (attempt > 0 and not allow_humans and not allow_animals) else ""
+        tighten = ", pure physical environment without people" if (attempt > 0 and not allow_humans) else ""
         full_prompt = f"{expected_scene}, {mood_desc}, {episode_anchor}, {style_suffix}{tighten}"
 
         generated = (
@@ -1376,7 +1486,7 @@ def generate_and_guard_shot(
             out_img.unlink(missing_ok=True)
 
         stock_res = _fallback_stock_media(
-            shot.get("fallback_query", "misty mountain sunrise"),
+            shot.get("fallback_query", "desert dunes sunset"),
             allow_humans=allow_humans,
             allow_animals=allow_animals,
             expected_scene=expected_scene,
@@ -1696,7 +1806,6 @@ def render_parallax_clip(
     vig = np.clip(1.0 - 0.18 * (nx * nx + ny * ny), 0.70, 1.0)[..., None]
     base_img = np.clip(bgr_f * vig, 0, 255).astype(np.uint8)
 
-    # أشعة النور الروحانية العلوية (Volumetric Noor Shafts) — تضفي سكينة وهيبة فائقة
     angle_grid = np.arctan2(yy + H * 0.14, xx - W * 0.62)
     ray_wave = 0.5 + 0.5 * np.sin(angle_grid * 13.0 + 0.6)
     ray_falloff = np.clip(1.0 - (yy / (H * 0.85)), 0.0, 1.0) ** 1.65
@@ -1818,7 +1927,7 @@ def prepare_and_render_episode_chunks(
                 shot_id = f"{plan_key}_{seg_idx}_{c_idx}_{s_idx}"
                 jobs.append((seg_idx, c_idx, s_idx, sh, shot_id, is_quran))
 
-    print(f"🎨 توليد وفحص {len(jobs)} لقطة واقعية متزامنة بالتوازي...", flush=True)
+    print(f"🎨 توليد وفحص {len(jobs)} لقطة واقعية من وحي القصة بالتوازي...", flush=True)
     shot_assets: dict[tuple[int, int, int], dict] = {}
     hero_candidates: list[tuple[int, int, int, float]] = []
 
