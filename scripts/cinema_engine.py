@@ -1,11 +1,10 @@
 """
-cinema_engine.py — محرك الواقعية السينمائية الشبيهة بالطبيعي (Story Bible + Environmental POV + Fast Z-Image)
+cinema_engine.py — محرك الواقعية السينمائية 8D (Story Bible + Environmental POV + fx_8d)
 - يبني هوية بصرية موحدة لكل قصة (Story Visual Bible) حتى تكون اللقطات من وحي القصة وتسلسلها.
-- يسمح بتصوير البشر العاديين بلباس تاريخي محتشم للرجال في قصص العِبر والتاريخ، ويمنع منعاً باتاً:
-  تشبيه الذات الإلهية، والأنبياء والمرسلين، والملائكة، والصحابة والمبشرين بالجنة، والنساء المسلمات.
-- يعتمد في المشاهد الممنوع فيها البشر على السرد البيئي والمكاني (Environmental POV).
-- يستخدم الاستدعاء الدقيق السريع لـ Z-Image-Turbo و FLUX.1-schnell مع قفل منع تكرار التهيئة.
-- يضيف أشعة النور الروحانية (Volumetric Noor Shafts) ومؤثرات طبيعية حلال مع كتم تام عند القرآن.
+- يسمح بالبشر العاديين بلباس تاريخي محتشم للرجال في قصص العِبر والتاريخ، ويمنع منعاً باتاً:
+  الذات الإلهية، والأنبياء والمرسلين، والملائكة، والصحابة والمبشرين بالجنة، والنساء المسلمات.
+- يعتمد في التحريك على محرك fx_8d.py المجاني (3 طبقات عمق + ملء الفراغات + كاميرا 6-DOF +
+  Rack Focus + سريان السحاب/الماء + أشعة نور محجوبة بالعمق + جزيئات 3D) مع احتياط آمن 100%.
 """
 
 from __future__ import annotations
@@ -47,17 +46,9 @@ except Exception:
     HAS_CV2 = False
 
 try:
-    import onnxruntime as ort
-    HAS_ORT = True
-except Exception:
-    ort = None
-    HAS_ORT = False
-
-try:
-    from huggingface_hub import hf_hub_download, InferenceClient
+    from huggingface_hub import InferenceClient
     HAS_HF_HUB = True
 except Exception:
-    hf_hub_download = None
     InferenceClient = None
     HAS_HF_HUB = False
 
@@ -68,6 +59,14 @@ except Exception:
     GradioClient = None
     gradio_handle_file = None
     HAS_GRADIO = False
+
+try:
+    from fx_8d import render_8d_animation_clip, compute_depth_map_8d
+    HAS_FX8D = True
+except Exception:
+    render_8d_animation_clip = None
+    compute_depth_map_8d = None
+    HAS_FX8D = False
 
 CINEMA_AVAILABLE = HAS_CV2 and (np is not None)
 
@@ -148,46 +147,26 @@ _STORY_ANIMALS_RE = re.compile(
 MOOD_PALETTES = {
     "cosmic_awe": {
         "desc": "deep obsidian night cosmos and radiant golden volumetric light shafts, vast realistic celestial nebula",
-        "tint_bgr": (10, 4, -6),
-        "contrast": 1.09,
-        "ray_color": (135, 200, 255),
-        "ray_strength": 0.14,
         "default_particles": "gold_motes",
         "default_sfx": "desert_breeze",
     },
     "ancient_civilization": {
         "desc": "warm sunlit golden desert sandstone canyons, ancient mud-brick or stone streets, warm lantern glow",
-        "tint_bgr": (-8, 3, 12),
-        "contrast": 1.07,
-        "ray_color": (120, 195, 255),
-        "ray_strength": 0.13,
         "default_particles": "gold_motes",
         "default_sfx": "wind",
     },
     "storm_trial": {
         "desc": "dramatic dark thunderclouds over turbulent ocean waves or stormy desert cliffs, realistic lightning glow",
-        "tint_bgr": (12, 3, -6),
-        "contrast": 1.12,
-        "ray_color": (210, 215, 230),
-        "ray_strength": 0.08,
         "default_particles": "rain",
         "default_sfx": "rain_thunder",
     },
     "serenity_quran": {
         "desc": "tranquil deep emerald mountain lake and soft golden dawn mist, serene sacred stillness",
-        "tint_bgr": (8, 6, -3),
-        "contrast": 1.05,
-        "ray_color": (140, 215, 245),
-        "ray_strength": 0.16,
         "default_particles": "none",
         "default_sfx": "none",
     },
     "sacred_heritage": {
         "desc": "peaceful sunlit alpine valley, crystal mountain waterfall, warm dawn sunbeams through lush green foliage",
-        "tint_bgr": (-4, 4, 8),
-        "contrast": 1.06,
-        "ray_color": (130, 205, 255),
-        "ray_strength": 0.15,
         "default_particles": "gold_motes",
         "default_sfx": "stream_water",
     },
@@ -220,8 +199,6 @@ _RUNTIME_STATE = {
     "bad_spaces": set(),
     "space_clients": {},
     "space_apis": {},
-    "depth_session": None,
-    "depth_failed": False,
 }
 
 
@@ -237,9 +214,7 @@ def _allows_ordinary_humans(text: str, stype: str) -> bool:
         return False
     cleaned = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك\s+ا[\u064B-\u065F]*ل[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة", "", text or "")
     norm = re.sub(r"[\u0640\u064B-\u065F\u0670]", "", cleaned)
-    if _FORBIDDEN_HUMAN_ENTITIES_RE.search(norm):
-        return False
-    return True
+    return not bool(_FORBIDDEN_HUMAN_ENTITIES_RE.search(norm))
 
 
 def _purge_invalid_hf_token(reason: str = "401"):
@@ -490,7 +465,7 @@ def _fallback_shots_for_chunk(c_text: str, c_dur: float, stype: str, bible: dict
         mood = "ancient_civilization"
         if allow_h:
             base_envs = [
-                f"cinematic historical scene in {world}, ordinary Middle Eastern merchants in modest robes weighing grain on a brass scale in warm sunlight",
+                f"cinematic historical scene in {world}, ordinary Middle Eastern men merchants in modest robes weighing grain on a brass scale in warm sunlight",
                 "close-up realistic shot of warm loaves of bread and clay bowls on a rustic wooden table lit by a brass lantern",
             ]
         else:
@@ -628,7 +603,7 @@ def plan_episode_shots(meta: dict) -> dict:
     story_id = meta.get("story_id", "")
     segments = meta.get("segments", [])
 
-    plan_key = hashlib.md5(f"v5_story_{story_id}:{ep_title}:{len(segments)}".encode("utf-8")).hexdigest()[:10]
+    plan_key = hashlib.md5(f"v6_8d_{story_id}:{ep_title}:{len(segments)}".encode("utf-8")).hexdigest()[:10]
     shared_plan_file = _cache_root() / f"cinema_plan_{plan_key}.json"
 
     cached_chunks_plan: dict[str, dict] = {}
@@ -1020,14 +995,7 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
     if not named:
         return None, None
 
-    ep_name = None
-    for candidate in ("/generate", "/infer", "/predict", "/generate_image", "/image_to_video"):
-        if candidate in named:
-            ep_name = candidate
-            break
-    if not ep_name:
-        ep_name = next(iter(named.keys()))
-
+    ep_name = next((c for c in ("/generate", "/infer", "/predict", "/generate_image", "/image_to_video") if c in named), next(iter(named.keys())))
     params = named[ep_name].get("parameters", [])
     kwargs = {}
     for p in params:
@@ -1143,7 +1111,6 @@ def _call_zerogpu_image(prompt: str, neg_prompt: str, seed: int, out_path: Path)
                 continue
             if any(k in msg for k in ("zerogpu", "quota", "exceeded", "too many requests", "rate limit")):
                 if _get_hf_token() is not None:
-                    # إذا انتهت حصة التوكن، نحاول مرة بالوصول العام المجاني
                     _purge_invalid_hf_token("ZeroGPU quota -> anon retry")
                     continue
                 with _STATE_LOCK:
@@ -1190,14 +1157,7 @@ def _get_photoreal_horde_models() -> list[str]:
         if _RUNTIME_STATE["horde_models"] is not None:
             return _RUNTIME_STATE["horde_models"]
 
-    preferred = [
-        "Juggernaut XL",
-        "RealVisXL",
-        "AlbedoBase XL (SDXL)",
-        "ICBINP XL",
-        "EpicRealism",
-        "epicrealismXL",
-    ]
+    preferred = ["Juggernaut XL", "RealVisXL", "AlbedoBase XL (SDXL)", "ICBINP XL", "EpicRealism", "epicrealismXL"]
     chosen = []
     try:
         r = requests.get("https://aihorde.net/api/v2/status/models?type=image", timeout=15)
@@ -1231,13 +1191,12 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
     api_key = os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000"
     headers = {
         "apikey": api_key,
-        "Client-Agent": "MalakAlMarifa:3.3:github-actions",
+        "Client-Agent": "MalakAlMarifa:4.0:8d-engine",
         "Content-Type": "application/json",
     }
     models = _get_photoreal_horde_models()
-    full_prompt = f"{prompt} ### {neg_prompt}"
     payload = {
-        "prompt": full_prompt,
+        "prompt": f"{prompt} ### {neg_prompt}",
         "params": {
             "sampler_name": "k_euler_a",
             "width": 576,
@@ -1292,11 +1251,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
 def _extract_video_preview(vid_path: Path, preview_jpg: Path) -> bool:
     try:
         subprocess.run(
-            [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-ss", "0.5", "-i", str(vid_path),
-                "-frames:v", "1", "-q:v", "3", str(preview_jpg),
-            ],
+            ["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5", "-i", str(vid_path), "-frames:v", "1", "-q:v", "3", str(preview_jpg)],
             check=True, capture_output=True, timeout=20,
         )
         return preview_jpg.exists() and preview_jpg.stat().st_size > 4000
@@ -1320,14 +1275,7 @@ def _fallback_stock_media(
         try:
             r = requests.get(
                 "https://pixabay.com/api/videos/",
-                params={
-                    "key": PIXABAY_KEY,
-                    "q": safe_q,
-                    "video_type": "film",
-                    "safesearch": "true",
-                    "per_page": 25,
-                    "min_width": 720,
-                },
+                params={"key": PIXABAY_KEY, "q": safe_q, "video_type": "film", "safesearch": "true", "per_page": 25, "min_width": 720},
                 timeout=15,
             )
             if r.status_code == 200:
@@ -1352,9 +1300,7 @@ def _fallback_stock_media(
                         if tmp_vid.exists() and tmp_vid.stat().st_size > 40000:
                             prev_jpg = out_img_path.with_suffix(f".prev_{threading.get_ident()}.jpg")
                             if _extract_video_preview(tmp_vid, prev_jpg):
-                                ok, reason = _vision_guard_check(
-                                    prev_jpg, allow_humans, allow_animals, expected_scene, narration_ar
-                                )
+                                ok, reason = _vision_guard_check(prev_jpg, allow_humans, allow_animals, expected_scene, narration_ar)
                                 prev_jpg.unlink(missing_ok=True)
                                 if ok:
                                     shutil.move(str(tmp_vid), str(out_vid_path))
@@ -1369,14 +1315,7 @@ def _fallback_stock_media(
         try:
             r = requests.get(
                 "https://pixabay.com/api/",
-                params={
-                    "key": PIXABAY_KEY,
-                    "q": safe_q,
-                    "image_type": "photo",
-                    "safesearch": "true",
-                    "per_page": 25,
-                    "min_width": 720,
-                },
+                params={"key": PIXABAY_KEY, "q": safe_q, "image_type": "photo", "safesearch": "true", "per_page": 25, "min_width": 720},
                 timeout=15,
             )
             if r.status_code == 200:
@@ -1399,15 +1338,13 @@ def _fallback_stock_media(
         try:
             with _STATE_LOCK:
                 used_urls.add(u)
-            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.3"}, timeout=25)
+            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/4.0"}, timeout=25)
             if resp.status_code == 200 and len(resp.content) > 12000:
                 tmp = out_img_path.with_suffix(f".stock_{threading.get_ident()}.raw")
                 tmp.write_bytes(resp.content)
                 if _normalize_generated_image(tmp, out_img_path, 720, 1280):
                     tmp.unlink(missing_ok=True)
-                    ok, reason = _vision_guard_check(
-                        out_img_path, allow_humans, allow_animals, expected_scene, narration_ar
-                    )
+                    ok, reason = _vision_guard_check(out_img_path, allow_humans, allow_animals, expected_scene, narration_ar)
                     if ok:
                         return out_img_path
                     print(f"   🛡️ رفض صورة Pixabay: {reason}", flush=True)
@@ -1601,309 +1538,6 @@ def try_upgrade_hero_i2v(
     return None
 
 
-def _download_depth_onnx(depth_cache: Path) -> str | None:
-    if HAS_HF_HUB:
-        for tok in (_get_hf_token(), False):
-            if tok is None and _RUNTIME_STATE["hf_token_invalid"]:
-                continue
-            for fname in ("onnx/model.onnx", "onnx/model_quantized.onnx"):
-                try:
-                    return hf_hub_download(
-                        repo_id="onnx-community/depth-anything-v2-small",
-                        filename=fname,
-                        cache_dir=str(depth_cache),
-                        token=tok,
-                    )
-                except Exception as e:
-                    msg = str(e)
-                    if ("401" in msg or "403" in msg) and tok:
-                        _purge_invalid_hf_token("Depth Hub 401")
-                        break
-                    print(f"   ⚠️ تعذر تحميل Depth ({fname}): {msg[:80]}", flush=True)
-
-    local_onnx = depth_cache / "depth_v2_small.onnx"
-    if local_onnx.exists() and local_onnx.stat().st_size > 10_000_000:
-        return str(local_onnx)
-    for url in (
-        "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx",
-        "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx",
-    ):
-        try:
-            r = requests.get(url, timeout=90, stream=True)
-            if r.status_code == 200:
-                with open(local_onnx, "wb") as f:
-                    for ch in r.iter_content(65536):
-                        f.write(ch)
-                if local_onnx.stat().st_size > 10_000_000:
-                    return str(local_onnx)
-        except Exception:
-            continue
-    return None
-
-
-def _get_depth_session():
-    if _RUNTIME_STATE["depth_failed"] or not HAS_ORT:
-        return None
-    if _RUNTIME_STATE["depth_session"] is not None:
-        return _RUNTIME_STATE["depth_session"]
-
-    depth_cache = Path(tempfile.gettempdir()) / "depth_v2_cache"
-    depth_cache.mkdir(parents=True, exist_ok=True)
-    model_path = _download_depth_onnx(depth_cache)
-    if model_path:
-        try:
-            opts = ort.SessionOptions()
-            opts.intra_op_num_threads = max(2, os.cpu_count() or 2)
-            sess = ort.InferenceSession(model_path, sess_options=opts, providers=["CPUExecutionProvider"])
-            _RUNTIME_STATE["depth_session"] = sess
-            print(f"🧊 Depth Anything V2 Small ONNX جاهز: {Path(model_path).name}", flush=True)
-            return sess
-        except Exception as e:
-            print(f"   ⚠️ فشل تشغيل جلسة Depth ONNX: {str(e)[:80]}", flush=True)
-
-    _RUNTIME_STATE["depth_failed"] = True
-    return None
-
-
-def compute_depth_map(img_path: Path, shot_id: str, W: int, H: int):
-    cache_npy = _cache_root() / f"depth_{shot_id}_{W}x{H}.npy"
-    if _share_enabled() and cache_npy.exists():
-        try:
-            arr = np.load(str(cache_npy))
-            if arr.shape == (H, W):
-                return arr.astype(np.float32)
-        except Exception:
-            pass
-
-    bgr = cv2.imread(str(img_path))
-    if bgr is None:
-        return np.linspace(0.2, 0.9, H, dtype=np.float32)[:, None] * np.ones((1, W), dtype=np.float32)
-    bgr = cv2.resize(bgr, (W, H), interpolation=cv2.INTER_LANCZOS4)
-
-    sess = _get_depth_session()
-    depth_01 = None
-    if sess is not None:
-        try:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            inp_img = cv2.resize(rgb, (518, 518), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255.0
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-            inp_norm = (inp_img - mean) / std
-            tensor = np.transpose(inp_norm, (2, 0, 1))[None, ...].astype(np.float32)
-
-            in_name = sess.get_inputs()[0].name
-            out_name = sess.get_outputs()[0].name
-            pred = sess.run([out_name], {in_name: tensor})[0]
-            pred2d = np.squeeze(pred).astype(np.float32)
-
-            d_min, d_max = float(pred2d.min()), float(pred2d.max())
-            if d_max - d_min > 1e-5:
-                norm2d = (pred2d - d_min) / (d_max - d_min)
-                up = cv2.resize(norm2d, (W, H), interpolation=cv2.INTER_CUBIC)
-                up = cv2.bilateralFilter(up.astype(np.float32), d=9, sigmaColor=0.18, sigmaSpace=14)
-                up = cv2.GaussianBlur(up, (21, 21), 8.0)
-                depth_01 = np.clip(up, 0.0, 1.0).astype(np.float32)
-        except Exception as e:
-            print(f"   ⚠️ خطأ استنتاج العمق: {str(e)[:70]}", flush=True)
-
-    if depth_01 is None:
-        depth_01 = np.linspace(0.08, 0.95, H, dtype=np.float32)[:, None] * np.ones((1, W), dtype=np.float32)
-
-    if _share_enabled():
-        try:
-            np.save(str(cache_npy), depth_01)
-        except Exception:
-            pass
-    return depth_01
-
-
-def _init_particles(kind: str, W: int, H: int, seed: int):
-    rng = np.random.default_rng(seed)
-    if kind in ("none", "mist"):
-        return None
-    if kind == "rain":
-        count = 85
-        return {
-            "kind": "rain",
-            "x": rng.uniform(0, W, count),
-            "y": rng.uniform(0, H, count),
-            "vy": rng.uniform(15.0, 25.0, count),
-            "vx": rng.uniform(-2.2, -1.0, count),
-            "len": rng.uniform(14, 28, count),
-        }
-    if kind == "embers":
-        count = 24
-        return {
-            "kind": "embers",
-            "x": rng.uniform(0, W, count),
-            "y": rng.uniform(H * 0.35, H, count),
-            "vy": rng.uniform(-2.0, -0.8, count),
-            "vx": rng.uniform(-0.6, 0.6, count),
-            "rad": rng.integers(1, 3, count),
-            "phase": rng.uniform(0, 6.28, count),
-        }
-    if kind == "snow":
-        count = 45
-        return {
-            "kind": "snow",
-            "x": rng.uniform(0, W, count),
-            "y": rng.uniform(0, H, count),
-            "vy": rng.uniform(1.2, 2.6, count),
-            "vx": rng.uniform(-0.5, 0.5, count),
-            "rad": rng.integers(1, 3, count),
-            "phase": rng.uniform(0, 6.28, count),
-        }
-    count = 18
-    return {
-        "kind": "gold_motes",
-        "x": rng.uniform(0, W, count),
-        "y": rng.uniform(0, H, count),
-        "vy": rng.uniform(-0.5, -0.15, count),
-        "vx": rng.uniform(-0.3, 0.3, count),
-        "rad": rng.integers(1, 3, count),
-        "phase": rng.uniform(0, 6.28, count),
-    }
-
-
-def _step_and_draw_particles(frame_bgr: np.ndarray, pstate: dict | None, frame_idx: int, W: int, H: int):
-    if not pstate:
-        return frame_bgr
-    kind = pstate["kind"]
-    overlay = frame_bgr.copy()
-
-    if kind == "rain":
-        pstate["x"] = (pstate["x"] + pstate["vx"]) % W
-        pstate["y"] = (pstate["y"] + pstate["vy"]) % H
-        for i in range(len(pstate["x"])):
-            x0, y0 = int(pstate["x"][i]), int(pstate["y"][i])
-            x1, y1 = int(x0 + pstate["vx"][i] * 1.4), int(y0 + pstate["len"][i])
-            cv2.line(overlay, (x0, y0), (x1, y1), (220, 228, 238), 1, cv2.LINE_AA)
-        return cv2.addWeighted(frame_bgr, 0.85, overlay, 0.15, 0)
-
-    pstate["x"] = (pstate["x"] + pstate["vx"] + 0.25 * np.sin(frame_idx * 0.06 + pstate["phase"])) % W
-    pstate["y"] = (pstate["y"] + pstate["vy"]) % H
-    color = (95, 175, 255) if kind == "embers" else ((240, 245, 255) if kind == "snow" else (145, 215, 255))
-    blend = 0.22 if kind == "embers" else 0.15
-    for i in range(len(pstate["x"])):
-        cx, cy = int(pstate["x"][i]), int(pstate["y"][i])
-        r = int(pstate["rad"][i])
-        cv2.circle(overlay, (cx, cy), r, color, -1, cv2.LINE_AA)
-    return cv2.addWeighted(frame_bgr, 1.0 - blend, overlay, blend, 0)
-
-
-def render_parallax_clip(
-    img_path: Path,
-    depth_map: np.ndarray,
-    shot: dict,
-    shot_id: str,
-    render_dur: float,
-    W: int,
-    H: int,
-    out_mp4: Path,
-    fps: int = 24,
-):
-    bgr = cv2.imread(str(img_path))
-    if bgr is None:
-        _make_atmospheric_fallback(img_path, shot.get("mood", "cosmic_awe"), 123)
-        bgr = cv2.imread(str(img_path))
-    bgr = cv2.resize(bgr, (W, H), interpolation=cv2.INTER_LANCZOS4)
-
-    mood_cfg = MOOD_PALETTES.get(shot.get("mood", "cosmic_awe"), MOOD_PALETTES["cosmic_awe"])
-    bgr_f = bgr.astype(np.float32)
-    tint = np.array(mood_cfg["tint_bgr"], dtype=np.float32)
-    bgr_f = (bgr_f - 128.0) * mood_cfg["contrast"] + 128.0 + tint
-    bgr_f = np.clip(bgr_f, 0, 255)
-
-    far_mask = (1.0 - depth_map)[..., None] ** 2.0 * 0.10
-    haze_color = np.array(mood_cfg["ray_color"], dtype=np.float32) * 0.40
-    bgr_f = bgr_f * (1.0 - far_mask) + haze_color * far_mask
-
-    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-    nx = (xx - W * 0.5) / (W * 0.5)
-    ny = (yy - H * 0.5) / (H * 0.5)
-    vig = np.clip(1.0 - 0.18 * (nx * nx + ny * ny), 0.70, 1.0)[..., None]
-    base_img = np.clip(bgr_f * vig, 0, 255).astype(np.uint8)
-
-    angle_grid = np.arctan2(yy + H * 0.14, xx - W * 0.62)
-    ray_wave = 0.5 + 0.5 * np.sin(angle_grid * 13.0 + 0.6)
-    ray_falloff = np.clip(1.0 - (yy / (H * 0.85)), 0.0, 1.0) ** 1.65
-    noor_mask = ((ray_wave ** 2.2) * ray_falloff)[..., None]
-    ray_strength = float(mood_cfg.get("ray_strength", 0.12))
-    noor_u8 = np.clip(noor_mask * np.array(mood_cfg["ray_color"], dtype=np.float32) * ray_strength, 0, 255).astype(np.uint8)
-
-    depth_w = (0.18 + 0.82 * depth_map).astype(np.float32)
-    cx, cy = W * 0.5, H * 0.5
-    base_x = xx.astype(np.float32)
-    base_y = yy.astype(np.float32)
-
-    move = shot.get("camera_move", "dolly_in")
-    particles = _init_particles(
-        shot.get("particles", "gold_motes"),
-        W, H,
-        int(hashlib.md5(shot_id.encode("utf-8")).hexdigest()[:8], 16) % 99999,
-    )
-
-    n_frames = max(12, int(round(render_dur * fps)))
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-f", "rawvideo", "-vcodec", "rawvideo",
-        "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", str(fps),
-        "-i", "pipe:0",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-        "-pix_fmt", "yuv420p", "-an", str(out_mp4),
-    ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    assert proc.stdin is not None
-
-    base_overscan = 1.075
-    try:
-        for f in range(n_frames):
-            t = f / max(1, n_frames - 1)
-            e = 0.28 * t + 0.72 * (0.5 - 0.5 * math.cos(math.pi * t))
-
-            dz, dx_frac, dy_frac = 0.0, 0.0, 0.0
-            if move == "dolly_in":
-                dz = 0.058 * e
-                dx_frac = 0.006 * math.sin(math.pi * t)
-            elif move == "dolly_out":
-                dz = 0.058 * (1.0 - e)
-                dx_frac = -0.006 * math.sin(math.pi * t)
-            elif move == "truck_left":
-                dz = 0.022 * e
-                dx_frac = 0.024 * (e - 0.5)
-            elif move == "truck_right":
-                dz = 0.022 * e
-                dx_frac = -0.024 * (e - 0.5)
-            elif move == "tilt_up":
-                dz = 0.025 * e
-                dy_frac = 0.022 * (0.5 - e)
-
-            scale = (1.0 / base_overscan) * (1.0 - dz * depth_w)
-            map_x = cx + (base_x - cx) * scale + (dx_frac * W) * depth_w
-            map_y = cy + (base_y - cy) * scale + (dy_frac * H) * depth_w
-
-            warped = cv2.remap(
-                base_img, map_x, map_y,
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_REFLECT_101,
-            )
-            warped = cv2.add(warped, noor_u8)
-            if particles is not None:
-                warped = _step_and_draw_particles(warped, particles, f, W, H)
-
-            proc.stdin.write(warped.tobytes())
-    finally:
-        try:
-            proc.stdin.close()
-        except Exception:
-            pass
-        stderr_bytes = proc.stderr.read() if proc.stderr else b""
-        ret = proc.wait(timeout=180)
-        if ret != 0:
-            raise RuntimeError(f"Parallax ffmpeg error: {stderr_bytes.decode('utf-8', 'ignore')[:300]}")
-
-
 def _get_vid_dur(path: Path) -> float:
     try:
         r = subprocess.run(
@@ -1942,7 +1576,7 @@ def prepare_and_render_episode_chunks(
                 shot_id = f"{plan_key}_{seg_idx}_{c_idx}_{s_idx}"
                 jobs.append((seg_idx, c_idx, s_idx, sh, shot_id, is_quran))
 
-    print(f"🎨 توليد وفحص {len(jobs)} لقطة واقعية من وحي القصة بالتوازي...", flush=True)
+    print(f"🎨 توليد وفحص {len(jobs)} لقطة 8D من وحي القصة بالتوازي...", flush=True)
     shot_assets: dict[tuple[int, int, int], dict] = {}
     hero_candidates: list[tuple[int, int, int, float]] = []
 
@@ -2000,11 +1634,7 @@ def prepare_and_render_episode_chunks(
                     else:
                         trimmed = work_dir / f"trim_bg_{seg_idx}_{c_idx}.mp4"
                         subprocess.run(
-                            [
-                                "ffmpeg", "-y", "-loglevel", "error",
-                                "-i", str(cache_chunk_mp4), "-t", f"{c_dur:.3f}",
-                                "-c:v", "copy", str(trimmed),
-                            ],
+                            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(cache_chunk_mp4), "-t", f"{c_dur:.3f}", "-c:v", "copy", str(trimmed)],
                             check=True, capture_output=True, timeout=60,
                         )
                         chunk_bg_map[(seg_idx, c_idx)] = trimmed
@@ -2036,10 +1666,30 @@ def prepare_and_render_episode_chunks(
                         ],
                         check=True, capture_output=True, timeout=90,
                     )
+                elif HAS_FX8D and render_8d_animation_clip is not None:
+                    seed_val = int(hashlib.md5(asset["shot_id"].encode("utf-8")).hexdigest()[:8], 16) % 99999
+                    render_8d_animation_clip(
+                        img_path=asset["media_path"],
+                        out_mp4=sub_mp4,
+                        duration=render_dur,
+                        W=W,
+                        H=H,
+                        fps=24,
+                        mood=sh.get("mood", "cosmic_awe"),
+                        particles=sh.get("particles", "gold_motes"),
+                        move=sh.get("camera_move", "dolly_in"),
+                        is_notebook=False,
+                        seed=seed_val,
+                    )
                 else:
-                    depth_map = compute_depth_map(asset["media_path"], asset["shot_id"], W, H)
-                    render_parallax_clip(
-                        asset["media_path"], depth_map, sh, asset["shot_id"], render_dur, W, H, sub_mp4, fps=24
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-loglevel", "error",
+                            "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(asset["media_path"]),
+                            "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=24,format=yuv420p,setsar=1",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(sub_mp4),
+                        ],
+                        check=True, capture_output=True, timeout=90,
                     )
                 sub_clips.append(sub_mp4)
 
@@ -2058,9 +1708,7 @@ def prepare_and_render_episode_chunks(
                     offset += float(shots_scaled[k]["duration"])
                     trans = XFADE_TYPES[(seg_idx + c_idx + k) % len(XFADE_TYPES)]
                     out_tag = "[vout]" if k == len(sub_clips) - 2 else f"[vx{k}]"
-                    filters.append(
-                        f"{last_tag}[{k+1}:v]xfade=transition={trans}:duration={fade_dur:.3f}:offset={offset:.3f}{out_tag}"
-                    )
+                    filters.append(f"{last_tag}[{k+1}:v]xfade=transition={trans}:duration={fade_dur:.3f}:offset={offset:.3f}{out_tag}")
                     last_tag = out_tag
 
                 subprocess.run(
@@ -2079,16 +1727,12 @@ def prepare_and_render_episode_chunks(
             if target_dur > c_dur + 0.05:
                 trimmed = work_dir / f"trim_bg_{seg_idx}_{c_idx}.mp4"
                 subprocess.run(
-                    [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-i", str(final_chunk_bg), "-t", f"{c_dur:.3f}",
-                        "-c:v", "copy", str(trimmed),
-                    ],
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", str(final_chunk_bg), "-t", f"{c_dur:.3f}", "-c:v", "copy", str(trimmed)],
                     check=True, capture_output=True, timeout=60,
                 )
                 chunk_bg_map[(seg_idx, c_idx)] = trimmed
             else:
-                chunk_bg_map[(seg_idx, c_idx)] = final_chunk_mp4
+                chunk_bg_map[(seg_idx, c_idx)] = final_chunk_bg
 
     return chunk_bg_map
 
