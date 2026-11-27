@@ -2,7 +2,8 @@
 story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
 - يدعم وضع الأنيميشن/الواقعية السينمائية (CINEMA_ANIME_MODE=1) لمقاطع السرد والملخص والتشويق.
 - يفعّل نمط الدفاتر والوسائد الإسلامية المطرّزة 8K (islamic_cards.py) لمقاطع الحديث والفقه والأذكار والتشجيع (CTA/Outro).
-- يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) مع تأطير ذهبي روحاني للآيات وتوافق اليوميات (daily_*).
+- ينقّي مشاهد اليوميات الكلاسيكية من اللقطات العشوائية (كالنسور والبراكين) ليقتصر على الطبيعة الهادئة والعمارة الإسلامية.
+- يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) مع تأطير ذهبي روحاني للآيات.
 """
 
 import io
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import PIXABAY_KEY, BG_VIDEOS_DIR, BG_IMAGES_DIR
 from utilities import cleanup_dir
-from filters_loader import is_safe_tag, is_safe_query, get_allowed_keywords
+from filters_loader import is_safe_tag, is_safe_query
 
 try:
     from cinema_engine import (
@@ -316,36 +317,19 @@ THEME_POOLS = {
         "waterfall emerald lagoon nature",
         "snowy mountain peaks clouds",
         "winter pine forest falling snow",
-        "frozen waterfall alpine lake",
-        "snow covered mountain cabin",
     ],
-    "otherworldly": [
-        "bioluminescent glowing forest night",
-        "aurora borealis starry mountain sky",
+    "spiritual_nature": [
+        "misty mountains sunrise",
         "mystical glowing woods sunbeams",
         "glowing fireflies dark forest",
-        "surreal colorful nebula cosmos",
-        "cherry blossom glowing tunnel",
-        "butterflies flowers animation",
-        "rose petals falling slow",
+        "raindrops leaves nature",
         "golden bokeh lights",
-    ],
-    "cottages_rain": [
-        "wooden cabin flowers meadow",
-        "cozy wooden cottage forest rain",
-        "timber house alpine flowers",
-        "raindrops blooming flowers garden",
-        "wooden chalet misty mountains",
-        "flower garden spring rain",
-        "pink roses blooming",
+        "turquoise alpine lake",
     ],
     "damascus_heritage": [
         "old damascus courtyard fountain",
-        "azem palace damascus courtyard",
         "umayyad mosque damascus courtyard",
-        "old stone alleyway arches",
         "traditional courtyard fountain jasmine",
-        "ancient middle eastern stone street",
         "islamic arch courtyard garden",
         "islamic lantern glowing",
     ],
@@ -359,14 +343,13 @@ THEME_POOLS = {
 }
 
 KEYWORD_RULES = [
-    (r"\b(?:عرش|كرسي|سماوات|سماء|نجوم|كواكب|كون|فضاء|مصابيح)\b", ["aurora borealis starry mountain sky", "surreal colorful nebula cosmos", "starry night milky way desert"]),
-    (r"\b(?:قمر|ليل|فجر|شمس|نهار|صباح|مساء)\b", ["moonlight serene", "golden clouds sunset", "sunrise misty valley"]),
-    (r"\b(?:بحر|موج|يم|طوفان|نهر|ماء|أمطار|مطر|غيث|ينبوع|عين)\b", THEME_POOLS["streams"] + ["ocean waves sunset"]),
+    (r"\b(?:عرش|كرسي|سماوات|سماء|نجوم|كواكب|كون|فضاء|مصابيح)\b", ["starry night milky way desert", "golden clouds sunset", "moonlight serene"]),
+    (r"\b(?:قمر|ليل|فجر|شمس|نهار|صباح|مساء)\b", ["moonlight serene", "golden clouds sunset", "misty mountains sunrise"]),
+    (r"\b(?:بحر|موج|يم|طوفان|نهر|ماء|أمطار|مطر|غيث|ينبوع|عين)\b", THEME_POOLS["streams"] + ["raindrops leaves nature"]),
     (r"\b(?:جبل|جبال|طور|صخر|حجر|كهف|غار|ثلج|برد)\b", THEME_POOLS["waterfalls_snow"]),
-    (r"\b(?:صحراء|رمل|رمال|بادية|بيداء|وادي)\b", ["desert dunes sunset", "valley misty mountains"]),
-    (r"\b(?:شجر|نخل|بستان|جنة|زهر|ورد|غابة|ربيع)\b", THEME_POOLS["otherworldly"] + THEME_POOLS["cottages_rain"]),
-    (r"\b(?:نار|جهنم|بركان|ريح|عاصفة|رعد|برق)\b", ["volcano lava", "storm clouds lightning", "stormy sea waves"]),
-    (r"\b(?:مسجد|كعبة|مكة|المدينة|قدس|أقصى|صلاة|توحيد|ذكر|دعاء|دار|بيت|شام|دمشق)\b", THEME_POOLS["damascus_heritage"] + THEME_POOLS["cosmos_mosque"]),
+    (r"\b(?:صحراء|رمل|رمال|بادية|بيداء|وادي)\b", ["desert dunes sunset", "misty mountains sunrise"]),
+    (r"\b(?:شجر|نخل|بستان|جنة|زهر|ورد|غابة|ربيع)\b", THEME_POOLS["spiritual_nature"]),
+    (r"\b(?:مسجد|كعبة|مكة|المدينة|قدس|أقصى|صلاة|توحيد|ذكر|دعاء|دار|بيت|شام|دمشق|خير|ذكر|تسبيح|استغفار)\b", THEME_POOLS["damascus_heritage"] + THEME_POOLS["cosmos_mosque"]),
 ]
 
 
@@ -374,12 +357,6 @@ def _all_rich_visuals() -> list[str]:
     pool = []
     for lst in THEME_POOLS.values():
         pool.extend(lst)
-    try:
-        for kw in get_allowed_keywords():
-            if isinstance(kw, str) and len(kw.strip()) >= 3:
-                pool.append(kw.strip())
-    except Exception:
-        pass
     dedup = list(dict.fromkeys(pool))
     random.shuffle(dedup)
     return dedup
@@ -399,10 +376,10 @@ def suggest_visual_query(scene_text: str, seg_type: str = "", explicit_visual: s
             matched_candidates.extend(queries)
 
     if not matched_candidates:
-        if seg_type == "adhkar":
-            matched_candidates = THEME_POOLS["streams"] + THEME_POOLS["cottages_rain"] + THEME_POOLS["otherworldly"]
+        if seg_type in ("adhkar", "quran"):
+            matched_candidates = THEME_POOLS["cosmos_mosque"] + THEME_POOLS["streams"] + THEME_POOLS["spiritual_nature"]
         elif seg_type in ("fiqh", "hadith"):
-            matched_candidates = THEME_POOLS["damascus_heritage"] + THEME_POOLS["streams"] + THEME_POOLS["waterfalls_snow"] + THEME_POOLS["cottages_rain"] + THEME_POOLS["otherworldly"]
+            matched_candidates = THEME_POOLS["damascus_heritage"] + THEME_POOLS["streams"] + THEME_POOLS["cosmos_mosque"]
         else:
             matched_candidates = _all_rich_visuals()
 
@@ -694,7 +671,7 @@ def fetch_media(query: str, work_dir: Path, used_urls: set, used_local: set, W: 
         if backup not in fallback_queries:
             fallback_queries.append(backup)
 
-    is_heritage = any(k in query for k in ("damascus", "azem", "umayyad", "alley", "courtyard"))
+    is_heritage = any(k in query for k in ("damascus", "umayyad", "courtyard", "mosque", "arch"))
 
     for q in fallback_queries:
         if not is_safe_query(q):
@@ -774,9 +751,7 @@ def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int)
     scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(scrim)
     if is_quran:
-        # غطاء زمردي-ليلي روحاني هادئ يبرز نور الآيات
         draw.rectangle([0, 0, W, H], fill=(4, 14, 18, 130))
-        # إضاءة ذهبية خفيفة في الوسط خلف الآية الكريمة
         glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         gd = ImageDraw.Draw(glow)
         gd.ellipse([W // 2 - 260, H // 2 - 300, W // 2 + 260, H // 2 + 260], fill=(212, 175, 55, 22))
@@ -795,16 +770,13 @@ def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int)
 
 
 def _draw_quran_ornate_accents(draw: ImageDraw.ImageDraw, W: int, H: int, top_y: int, bot_y: int):
-    """إطار وفواصل ذهبية رقيقة تشبه زخرفة المصاحف حول الآية الكريمة."""
     gold = (212, 175, 55, 185)
     gold_soft = (232, 200, 108, 120)
-    # خطوط فاصلة ذهبية أعلى وأسفل الآية
     draw.line([(W // 2 - 150, top_y), (W // 2 + 150, top_y)], fill=gold_soft, width=2)
     draw.ellipse([W // 2 - 5, top_y - 5, W // 2 + 5, top_y + 5], fill=gold)
     draw.line([(W // 2 - 150, bot_y), (W // 2 + 150, bot_y)], fill=gold_soft, width=2)
     draw.ellipse([W // 2 - 5, bot_y - 5, W // 2 + 5, bot_y + 5], fill=gold)
 
-    # زوايا ذهبية إسلامية لطيفة
     m = 24
     arm = 38
     for (cx, cy, dx, dy) in [
@@ -997,7 +969,6 @@ def make_caption_slides(
 
 
 def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: float, W: int, H: int, out_chunk: Path):
-    """يحوّل شرائح البطاقة/الدفتر الإسلامي إلى مقطع حيّ مع تقريب هادئ وانتقال dissolve ناعم."""
     n = len(card_slides)
     if n == 1:
         png_path, _ = card_slides[0]
