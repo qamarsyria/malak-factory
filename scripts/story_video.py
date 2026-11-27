@@ -1,7 +1,7 @@
 """
-story_video.py — المرحلة 5: بناء الفيديو الطولي (720×1280)
+story_video.py — المرحلة 5: بناء الفيديو الطولي 8D (720×1280)
 - يجهّز قالب الدفتر الصوفي 8K مسبقاً (warmup) قبل استهلاك ZeroGPU على لقطات القصة.
-- يدعم وضع الواقعية السينمائية (CINEMA_ANIME_MODE=1) والدفتر الصوفي الإسلامي 8K (islamic_cards.py).
+- يحوّل لقطات اليوميات والدفتر الصوفي الإسلامي والقصص إلى أنيميشن 8D مجاني على CPU عبر fx_8d.py.
 - يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) مع تأطير ذهبي روحاني للآيات.
 """
 
@@ -50,6 +50,13 @@ except Exception as _ice:
     CARDS_AVAILABLE = False
     warmup_islamic_notebook_template = None
     print(f"ℹ️ بطاقات النصوص المطرّزة غير متاحة: {_ice}", flush=True)
+
+try:
+    from fx_8d import render_8d_animation_clip
+    HAS_FX8D = True
+except Exception:
+    render_8d_animation_clip = None
+    HAS_FX8D = False
 
 CARD_SEG_TYPES = {"cta", "outro", "hadith", "fiqh", "adhkar"}
 
@@ -943,7 +950,7 @@ def make_caption_slides(
         if is_quran and reciter_name and show_reciter:
             _draw_centered(meta_draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", W)
 
-        wm_txt = _prepare_draw_text("ملاك المعرفة")
+        wm_txt = _prepare_draw_text("مَلَاكُ المَعْرِفَةِ")
         if HAS_RAQM:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
@@ -969,9 +976,29 @@ def make_caption_slides(
 
 
 def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: float, W: int, H: int, out_chunk: Path):
+    """يحرّك الدفتر الصوفي الإسلامي 8K بأنيميشن 8D ناعم على CPU مع انتقال dissolve."""
     n = len(card_slides)
     if n == 1:
         png_path, _ = card_slides[0]
+        if HAS_FX8D and render_8d_animation_clip is not None:
+            try:
+                render_8d_animation_clip(
+                    img_path=png_path,
+                    out_mp4=out_chunk,
+                    duration=c_dur,
+                    W=W,
+                    H=H,
+                    fps=VIDEO_FPS,
+                    mood="spiritual_noor",
+                    particles="gold_motes",
+                    move="orbit_in",
+                    is_notebook=True,
+                    seed=777,
+                )
+                return
+            except Exception as e:
+                print(f"   ⚠️ [Card 8D fallback]: {str(e)[:70]}", flush=True)
+
         frames = max(24, int(round(c_dur * VIDEO_FPS)) + 12)
         vf = (
             f"scale={W*2}:{H*2}:flags=lanczos,"
@@ -994,8 +1021,30 @@ def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: floa
     fade_d = min(0.32, min_s * 0.35)
     inputs = []
     filters = []
+    tmp_dir = out_chunk.parent
     for i, (png_path, s_dur) in enumerate(card_slides):
         in_dur = s_dur + (fade_d if i < n - 1 else 0.0)
+        if HAS_FX8D and render_8d_animation_clip is not None:
+            try:
+                sl_mp4 = tmp_dir / f"{out_chunk.stem}_8d_{i}.mp4"
+                render_8d_animation_clip(
+                    img_path=png_path,
+                    out_mp4=sl_mp4,
+                    duration=in_dur,
+                    W=W,
+                    H=H,
+                    fps=VIDEO_FPS,
+                    mood="spiritual_noor",
+                    particles="gold_motes",
+                    move="orbit_in" if i % 2 == 0 else "orbit_out",
+                    is_notebook=True,
+                    seed=700 + i * 31,
+                )
+                inputs.extend(["-i", str(sl_mp4)])
+                filters.append(f"[{i}:v]fps={VIDEO_FPS},format=yuv420p,setsar=1[c{i}]")
+                continue
+            except Exception:
+                pass
         inputs.extend(["-loop", "1", "-t", f"{in_dur:.3f}", "-i", str(png_path)])
         filters.append(f"[{i}:v]scale={W}:{H},fps={VIDEO_FPS},format=yuv420p,setsar=1[c{i}]")
 
@@ -1036,6 +1085,28 @@ def get_duration(path) -> float:
 
 def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Path, fx_layers: dict | None = None):
     is_img = bg_file.lower().endswith((".jpg", ".jpeg", ".png"))
+
+    # في وضع اليوميات: نحول الصور الثابتة تلقائياً إلى أنيميشن 8D مجاني عبر fx_8d.py!
+    if is_img and HAS_FX8D and render_8d_animation_clip is not None:
+        try:
+            moves = ("orbit_in", "orbit_out", "orbit_left", "orbit_right")
+            seed_v = abs(hash(bg_file)) % 99999
+            render_8d_animation_clip(
+                img_path=Path(bg_file),
+                out_mp4=out_path,
+                duration=duration,
+                W=W,
+                H=H,
+                fps=VIDEO_FPS,
+                mood="sacred_heritage",
+                particles="gold_motes",
+                move=moves[seed_v % len(moves)],
+                is_notebook=False,
+                seed=seed_v,
+            )
+            return
+        except Exception as e:
+            print(f"   ⚠️ [Daily 8D fallback]: {str(e)[:70]}", flush=True)
 
     if fx_layers:
         try:
@@ -1132,7 +1203,6 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
 
     card_mode = CARDS_AVAILABLE and (os.getenv("USE_ISLAMIC_CARDS", "1") == "1")
 
-    # تجهيز قالب الدفتر الصوفي 8K مسبقاً قبل أن تستهلك لقطات القصة حصة ZeroGPU!
     if card_mode and warmup_islamic_notebook_template is not None:
         has_card_seg = any(s.get("type") in CARD_SEG_TYPES for s in segments)
         if has_card_seg:
@@ -1145,7 +1215,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     final_audio_input = audio_path
 
     if use_cinema:
-        print("🎥 تفعيل مخرج الواقعية السينمائية 3D + الدفتر الصوفي الإسلامي 8K", flush=True)
+        print("🎥 تفعيل مخرج الواقعية السينمائية 8D + الدفتر الصوفي الإسلامي 8K", flush=True)
         cinema_meta = meta
         if card_mode:
             cinema_meta = {
