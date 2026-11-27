@@ -2,10 +2,11 @@
 """
 scripts/islamic_cards.py
 =========================
-مولد البطاقات والدفاتر الإسلامية الروحانية 8K بملمس صوفي حقيقي + خط عربي متقن:
-- يثبّت gradio_client تلقائياً إذا كانت ناقصة في الـ Workflow لتشغيل Z-Image-Turbo و FLUX.1-schnell.
-- يدعم Gemini Native Image + ZeroGPU + AI Horde النشط مع كاش فوري لمنع تكرار الانتظار.
-- يجمع بين نمط المخطوطة الصوفية الدينية (للحديث والفقه) ونمط الوسائد القطنية المخيطة 3D (للأذكار والـ CTA).
+مولد الدفتر الصوفي القطني الإسلامي 8K لمشروع «ملاك المعرفة»:
+- يولّد دفتراً صوفياً قطنياً 8K بطابع ديني روحاني (خشب جوز داكن، فانوس نحاسي، ياسمين أبيض، ونسيج صوفي مبطن)
+  عبر Gemini Image / Z-Image-Turbo (بالمعاملات الدقيقة) / FLUX.1-schnell / AI Horde.
+- يدعم warmup_islamic_notebook_template لتوليد القالب 8K وحفظه في الكاش قبل استهلاك حصة ZeroGPU.
+- يطبع العنوان والحديث والأذكار والـ CTA مباشرة داخل ألياف الصوف بدون أي مربعات مرقمة مسطحة.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import base64
 import inspect
 import io
 import json
+import math
 import os
 import random
 import re
@@ -36,7 +38,6 @@ except ImportError:
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 HAS_RAQM = features.check("raqm")
-_EASTERN_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 _TPL_LOCK = threading.Lock()
 _GRADIO_LOCK = threading.Lock()
 _HORDE_FAILED_RUN = False
@@ -49,8 +50,6 @@ HEADER_BY_TYPE = {
     "adhkar":  "ذِكْرٌ وَطُمَأْنِينَةٌ",
     "summary": "خُلَاصَةٌ وَعِبْرَةٌ",
 }
-
-PILLOW_SEG_TYPES = {"adhkar", "cta", "outro"}
 
 
 def _prep_txt(text: str) -> str:
@@ -70,33 +69,6 @@ def _measure(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int, int,
     if HAS_RAQM:
         return draw.textbbox((0, 0), pt, font=font, direction="rtl")
     return draw.textbbox((0, 0), pt, font=font)
-
-
-def _draw_rtl(
-    draw: ImageDraw.ImageDraw,
-    x: int,
-    y: int,
-    text: str,
-    font,
-    fill,
-    align: str = "center",
-    v_center: bool = False,
-):
-    pt = _prep_txt(text)
-    bbox = _measure(draw, text, font)
-    tw = bbox[2] - bbox[0]
-    if align == "center":
-        dx = x - tw // 2 - bbox[0]
-    elif align == "right":
-        dx = x - bbox[2]
-    else:
-        dx = x - bbox[0]
-
-    dy = y - (bbox[1] + bbox[3]) // 2 if v_center else y
-    if HAS_RAQM:
-        draw.text((dx, dy), pt, font=font, fill=fill, direction="rtl")
-    else:
-        draw.text((dx, dy), pt, font=font, fill=fill)
 
 
 def _wrap_text(text: str, font, max_w: int, draw: ImageDraw.ImageDraw) -> list[str]:
@@ -254,7 +226,7 @@ def _get_active_horde_models() -> list[str]:
 
 
 def _vision_inspect_islamic_card(img_path: Path) -> tuple[bool, tuple[int, int, int, int]]:
-    default_box = (110, 225, 890, 825)
+    default_box = (115, 225, 895, 800)
     keys = _get_gemini_keys()
     if not keys:
         return True, default_box
@@ -270,12 +242,12 @@ def _vision_inspect_islamic_card(img_path: Path) -> tuple[bool, tuple[int, int, 
         return False, default_box
 
     prompt = (
-        "Inspect this vertical 9:16 Islamic plush wool notebook/fabric background.\n"
+        "Inspect this vertical 9:16 Islamic plush wool notebook background.\n"
         "1) halal_ok: false if there are humans, uncovered women, couples, red romantic hearts, crosses, or statues.\n"
         "2) blank_clean: true ONLY if the center cream wool area is clean and free of scribbled gibberish text.\n"
         "3) box: [x0, y0, x1, y1] in 0..1000 normalized coordinates for the largest CLEAN center writing area "
-        "(below top margin/ornament and above bottom flowers/lantern).\n"
-        'Return ONLY JSON: {"halal_ok": true, "blank_clean": true, "box": [110, 225, 890, 825]}'
+        "(right of spiral rings, below top margin, above bottom lantern/flowers).\n"
+        'Return ONLY JSON: {"halal_ok": true, "blank_clean": true, "box": [115, 225, 895, 800]}'
     )
     for k in keys[:3]:
         try:
@@ -341,10 +313,74 @@ def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
                             im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (W, H), Image.Resampling.LANCZOS)
                             im.save(out_path, "JPEG", quality=93)
                         if out_path.exists() and out_path.stat().st_size > 20000:
-                            print(f"   ✨ [Islamic Cards Gemini] تم توليد القالب الديني 8K عبر {model_id}", flush=True)
+                            print(f"   ✨ [Islamic Cards Gemini] تم توليد الدفتر 8K عبر {model_id}", flush=True)
                             return True
             except Exception:
                 continue
+    return False
+
+
+def _call_z_image_turbo(prompt: str, out_path: Path, W: int, H: int, seed: int, tok: str | None) -> bool:
+    """استدعاء دقيق لـ Tongyi-MAI/Z-Image-Turbo حسب توثيق Endpoint الفعلي."""
+    for try_tok in ([tok, None] if tok else [None]):
+        try:
+            client = _open_gradio_client("Tongyi-MAI/Z-Image-Turbo", try_tok)
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                res = ex.submit(
+                    lambda: client.predict(
+                        prompt=prompt,
+                        resolution="720x1280 ( 9:16 )",
+                        seed=int(seed),
+                        steps=8,
+                        shift=3.0,
+                        random_seed=False,
+                        api_name="/generate",
+                    )
+                ).result(timeout=85)
+            fpath = _extract_gradio_image_path(res, out_path.parent)
+            if fpath and os.path.exists(fpath):
+                with Image.open(fpath) as im:
+                    im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (W, H), Image.Resampling.LANCZOS)
+                    im.save(out_path, "JPEG", quality=93)
+                if out_path.exists() and out_path.stat().st_size > 20000:
+                    print("   🕌 [Islamic Cards ZeroGPU] تم توليد الدفتر الصوفي 8K عبر Z-Image-Turbo", flush=True)
+                    return True
+        except Exception as e:
+            msg = str(e)
+            print(f"   ⚠️ [Islamic Cards Z-Image-Turbo]: {msg[:100]}", flush=True)
+            if "quota" not in msg.lower() and "401" not in msg:
+                break
+    return False
+
+
+def _call_flux_schnell(prompt: str, out_path: Path, W: int, H: int, seed: int, tok: str | None) -> bool:
+    for try_tok in ([tok, None] if tok else [None]):
+        try:
+            client = _open_gradio_client("black-forest-labs/FLUX.1-schnell", try_tok)
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                res = ex.submit(
+                    lambda: client.predict(
+                        prompt=prompt,
+                        seed=int(seed),
+                        randomize_seed=False,
+                        width=720,
+                        height=1280,
+                        num_inference_steps=4,
+                        api_name="/infer",
+                    )
+                ).result(timeout=85)
+            fpath = _extract_gradio_image_path(res, out_path.parent)
+            if fpath and os.path.exists(fpath):
+                with Image.open(fpath) as im:
+                    im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (W, H), Image.Resampling.LANCZOS)
+                    im.save(out_path, "JPEG", quality=93)
+                if out_path.exists() and out_path.stat().st_size > 20000:
+                    print("   🕌 [Islamic Cards ZeroGPU] تم توليد الدفتر الصوفي 8K عبر FLUX.1-schnell", flush=True)
+                    return True
+        except Exception as e:
+            print(f"   ⚠️ [Islamic Cards FLUX.1-schnell]: {str(e)[:100]}", flush=True)
+            if "quota" not in str(e).lower() and "401" not in str(e):
+                break
     return False
 
 
@@ -359,60 +395,11 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
     if _gemini_generate_image(prompt, out_path, W, H):
         return True
 
-    # ZeroGPU مع تثبيت تلقائي لـ gradio_client
-    try:
-        tok = _check_valid_hf_token()
-        for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
-            try:
-                client = _open_gradio_client(space_id, tok)
-                api = client.view_api(return_format="dict") or {}
-                named = api.get("named_endpoints", {})
-                ep_name = "/generate" if "/generate" in named else ("/infer" if "/infer" in named else next(iter(named.keys()), None))
-                if not ep_name:
-                    continue
-                params = named[ep_name].get("parameters", [])
-                call_kw = {}
-                for p in params:
-                    pn = (p.get("parameter_name") or "").lower()
-                    if pn in ("prompt", "positive_prompt"):
-                        call_kw[p["parameter_name"]] = prompt
-                    elif pn in ("negative_prompt", "neg_prompt"):
-                        call_kw[p["parameter_name"]] = neg
-                    elif pn == "seed":
-                        call_kw[p["parameter_name"]] = int(seed)
-                    elif pn in ("randomize_seed", "random_seed"):
-                        call_kw[p["parameter_name"]] = False
-                    elif pn == "width":
-                        call_kw[p["parameter_name"]] = 720
-                    elif pn == "height":
-                        call_kw[p["parameter_name"]] = 1280
-                    elif pn in ("num_inference_steps", "steps"):
-                        call_kw[p["parameter_name"]] = 8 if "Z-Image" in space_id else 4
-                    elif pn == "resolution":
-                        enums = (p.get("type") or {}).get("enum") or []
-                        call_kw[p["parameter_name"]] = next(
-                            (e for e in enums if "9:16" in str(e) or "720x1280" in str(e) or "576x1024" in str(e)),
-                            p.get("parameter_default"),
-                        )
-                    elif "parameter_default" in p and p.get("parameter_has_default", True):
-                        call_kw[p["parameter_name"]] = p.get("parameter_default")
-
-                with ThreadPoolExecutor(max_workers=1) as ex:
-                    res = ex.submit(lambda: client.predict(**call_kw, api_name=ep_name)).result(timeout=85)
-
-                fpath = _extract_gradio_image_path(res, out_path.parent)
-                if fpath and os.path.exists(fpath):
-                    with Image.open(fpath) as im:
-                        im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (W, H), Image.Resampling.LANCZOS)
-                        im.save(out_path, "JPEG", quality=93)
-                    if out_path.exists() and out_path.stat().st_size > 20000:
-                        print(f"   🕌 [Islamic Cards ZeroGPU] تم التوليد عبر {space_id}", flush=True)
-                        return True
-            except Exception as e:
-                print(f"   ⚠️ [Islamic Cards ZeroGPU {space_id}]: {str(e)[:90]}", flush=True)
-                continue
-    except Exception as e:
-        print(f"   ⚠️ [Islamic Cards gradio]: {str(e)[:80]}", flush=True)
+    tok = _check_valid_hf_token()
+    if _call_z_image_turbo(prompt, out_path, W, H, seed, tok):
+        return True
+    if _call_flux_schnell(prompt, out_path, W, H, seed, tok):
+        return True
 
     if _HORDE_FAILED_RUN:
         return False
@@ -422,7 +409,7 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
         print(f"   🕌 [Islamic Cards Horde] التوليد عبر: {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "MalakAlMarifa:3.4:islamic-plush",
+            "Client-Agent": "MalakAlMarifa:3.5:islamic-plush",
             "Content-Type": "application/json",
         }
         payload = {
@@ -451,7 +438,7 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
             _HORDE_FAILED_RUN = True
             return False
 
-        deadline = time.time() + 125
+        deadline = time.time() + 135
         while time.time() < deadline:
             time.sleep(5)
             chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
@@ -475,11 +462,11 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
                             im.save(out_path, "JPEG", quality=93)
                         tmp.unlink(missing_ok=True)
                         if out_path.exists() and out_path.stat().st_size > 20000:
-                            print("   ✅ [Islamic Cards Horde] تم توليد القالب بنجاح!", flush=True)
+                            print("   ✅ [Islamic Cards Horde] تم توليد الدفتر 8K بنجاح!", flush=True)
                             return True
                 _HORDE_FAILED_RUN = True
                 return False
-        print("   ⏱️ [Islamic Cards Horde] تجاوز المهلة 125ث — الاعتماد على القالب المحلي 3D", flush=True)
+        print("   ⏱️ [Islamic Cards Horde] تجاوز المهلة 135ث", flush=True)
         _HORDE_FAILED_RUN = True
     except Exception as e:
         print(f"   ⚠️ [Islamic Cards Horde]: {str(e)[:80]}", flush=True)
@@ -508,7 +495,7 @@ def _soft_clean_center_wool(img: Image.Image, norm_box: tuple[int, int, int, int
 
 
 def _get_plush_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, tuple[int, int, int, int]]:
-    default_box = (110, 225, 890, 825)
+    default_box = (115, 225, 895, 800)
     repo_tpl = _REPO_ROOT / "assets" / "templates" / f"{kind}.jpg"
     if repo_tpl.exists() and repo_tpl.stat().st_size > 15000:
         _, bx = _vision_inspect_islamic_card(repo_tpl)
@@ -517,8 +504,8 @@ def _get_plush_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, 
 
     cache_dir = Path(tempfile.gettempdir()) / "islamic_plush_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = cache_dir / f"{kind}_v4_{W}x{H}.jpg"
-    box_cache = cache_dir / f"{kind}_v4_{W}x{H}_box.json"
+    cached = cache_dir / f"{kind}_v5_{W}x{H}.jpg"
+    box_cache = cache_dir / f"{kind}_v5_{W}x{H}_box.json"
 
     with _TPL_LOCK:
         if cached.exists() and cached.stat().st_size > 15000 and box_cache.exists():
@@ -529,25 +516,16 @@ def _get_plush_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, 
             except Exception:
                 pass
 
-        prompts = {
-            "notebook_plush_blank": (
-                "Top-down flat-lay macro photography of a thick cream-ivory quilted sherpa wool-felt "
-                "spiritual Islamic notebook lying flat on a warm carved walnut wooden desk, subtle stitched "
-                "golden thread border, delicate white jasmine blossoms and a tiny warm glowing brass Islamic "
-                "lantern resting ONLY at the far bottom outer corners of the desk, horizontal debossed wool "
-                "grooves across the page, soft peaceful warm Noor morning sunlight beams. The ENTIRE middle "
-                "and center of the cream wool page is 100% BLANK, EMPTY, CLEAN, UNWRITTEN cream fleece with "
-                "ZERO text, ZERO Arabic, ZERO letters, ZERO numbers, ZERO people, 8k photorealistic macro."
-            ),
-            "fabric_plush_blank": (
-                "Top-down flat-lay macro photography of soft fluffy warm ivory-cream and pale sage-gold "
-                "velvety plush fleece texture with subtle delicate golden wool sheen and soft spiritual "
-                "morning light vignette around the edges, tiny white jasmine petals on the very outer corners, "
-                "completely blank empty texture in the center with ZERO text, ZERO letters, ZERO objects, "
-                "8k photorealistic tactile craft."
-            ),
-        }
-        prompt = prompts.get(kind, prompts["fabric_plush_blank"])
+        prompt = (
+            "Top-down flat-lay macro studio photograph of a thick puffy cream-ivory quilted sherpa wool-felt "
+            "spiral-bound Islamic notebook lying flat on a warm carved walnut wooden desk, silver spiral binding "
+            "rings along the far left edge, soft fuzzy wool edges, horizontal debossed quilted wool ridges across "
+            "the page, a tiny cute 3D golden felt crescent and pearl flower pinned at the top center margin, "
+            "delicate white jasmine blossoms and a small warm glowing brass Islamic lantern resting ONLY at the "
+            "far bottom corners of the page, soft peaceful golden Noor sunlight beams. "
+            "The ENTIRE middle of the cream wool page is 100% BLANK, EMPTY, CLEAN, UNWRITTEN cream fleece "
+            "with ZERO text, ZERO Arabic, ZERO English, ZERO letters, ZERO numbers, ZERO people, 8k macro photo."
+        )
         if os.getenv("AI_PLUSH_TEMPLATES", "1") == "1" and _ai_generate_blank_plush(prompt, cached, W, H, seed=7742):
             is_clean, bx = _vision_inspect_islamic_card(cached)
             with Image.open(cached) as im:
@@ -560,6 +538,15 @@ def _get_plush_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, 
     return None, default_box
 
 
+def warmup_islamic_notebook_template(W: int = 720, H: int = 1280):
+    """يولّد ويحفظ قالب الدفتر الصوفي 8K في الكاش قبل بدء رندرة لقطات القصة حتى لا تنفد حصة ZeroGPU."""
+    try:
+        print("🧶 تجهيز قالب الدفتر الصوفي الإسلامي 8K مسبقاً...", flush=True)
+        _get_plush_template("notebook_plush_blank", W, H)
+    except Exception as e:
+        print(f"   ⚠️ تعذر التجهيز المسبق للدفتر: {str(e)[:80]}", flush=True)
+
+
 def _embed_text_into_wool(
     base_rgb: Image.Image,
     items: list[tuple[int, int, str, object, tuple[int, int, int], str]],
@@ -568,8 +555,8 @@ def _embed_text_into_wool(
     out = base_rgb.convert("RGBA")
 
     gray = base_rgb.convert("L")
-    wool_hi = ImageEnhance.Contrast(gray).enhance(1.75)
-    fiber_bleed = wool_hi.point(lambda p: max(0, min(42, int((p - 180) * 0.50))))
+    wool_hi = ImageEnhance.Contrast(gray).enhance(1.80)
+    fiber_bleed = wool_hi.point(lambda p: max(0, min(42, int((p - 178) * 0.52))))
 
     for x, y, text, font, rgb, align in items:
         if not text:
@@ -611,88 +598,68 @@ def _embed_text_into_wool(
     return out
 
 
-def _make_wood_table_bg(W: int, H: int) -> Image.Image:
-    base = Image.new("RGB", (W, H), (78, 54, 38))
-    grain = Image.effect_noise((W // 8, H), 20).resize((W, H), Image.Resampling.BILINEAR).convert("RGB")
-    mixed = ImageChops.soft_light(base, grain)
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    for y in range(H):
-        ratio = y / max(1, H)
-        alpha = int(95 * abs(ratio - 0.45) * 1.4)
-        od.line([(0, y), (W, y)], fill=(14, 9, 5, min(155, alpha)))
-    mixed_rgba = mixed.convert("RGBA")
-    mixed_rgba.alpha_composite(overlay)
-    return mixed_rgba.filter(ImageFilter.GaussianBlur(radius=2.6)).convert("RGB")
+def _make_rich_wool_notebook_fallback(W: int, H: int, groove_ys: list[int], lh: int) -> Image.Image:
+    """احتياط دافئ بصفحة صوفية مبطنة على طاولة خشب وحلقات تجليد (بدون أي مربعات UI)."""
+    desk = Image.new("RGB", (W, H), (88, 60, 42))
+    grain = Image.effect_noise((W // 10, H // 2), 22).resize((W, H), Image.Resampling.BILINEAR).convert("RGB")
+    desk = ImageChops.soft_light(desk, grain).filter(ImageFilter.GaussianBlur(3.8)).convert("RGBA")
 
+    px0, py0, px1, py1 = 36, 108, W - 36, H - 102
+    pw, ph = px1 - px0, py1 - py0
 
-def _draw_stitched_rect(draw: ImageDraw.ImageDraw, box: list[int], radius: int, color, dash: int = 10, gap: int = 7):
-    x0, y0, x1, y1 = box
-    draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=(*color[:3], 70), width=1)
-    for x in range(x0 + radius, x1 - radius, dash + gap):
-        ex = min(x + dash, x1 - radius)
-        draw.line([(x, y0), (ex, y0)], fill=color, width=2)
-        draw.line([(x, y1), (ex, y1)], fill=color, width=2)
-    for y in range(y0 + radius, y1 - radius, dash + gap):
-        ey = min(y + dash, y1 - radius)
-        draw.line([(x0, y), (x0, ey)], fill=color, width=2)
-        draw.line([(x1, y), (x1, ey)], fill=color, width=2)
+    sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle([px0 + 6, py0 + 14, px1 + 8, py1 + 16], radius=40, fill=(20, 10, 4, 145))
+    desk.alpha_composite(sh.filter(ImageFilter.GaussianBlur(18)))
 
+    page = Image.new("RGB", (pw, ph), (247, 240, 228))
+    n1 = Image.effect_noise((pw // 4, ph // 4), 16).resize((pw, ph), Image.Resampling.BICUBIC).convert("RGB")
+    n2 = Image.effect_noise((pw, ph), 12).convert("RGB")
+    page = ImageChops.soft_light(ImageChops.soft_light(page, n1), n2).convert("RGBA")
 
-def _draw_3d_plush_pill(
-    canvas: Image.Image,
-    box: list[int],
-    radius: int,
-    fill_rgb: tuple[int, int, int],
-    fabric_src: Image.Image | None = None,
-    active: bool = False,
-):
-    x0, y0, x1, y1 = box
-    pw, ph = max(20, x1 - x0), max(20, y1 - y0)
+    # أخاديد السطور الغائرة
+    gs = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    gh = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    gsd, ghd = ImageDraw.Draw(gs), ImageDraw.Draw(gh)
+    all_g = sorted(set(groove_ys))
+    if all_g:
+        step = max(54, lh)
+        g = all_g[0] - step
+        while g > py0 + 40:
+            all_g.append(g)
+            g -= step
+        g = max(all_g) + step
+        while g < py1 - 40:
+            all_g.append(g)
+            g += step
+    for gy_abs in sorted(set(all_g)):
+        gy = gy_abs - py0
+        if 30 < gy < ph - 26:
+            gsd.line([(24, gy), (pw - 24, gy)], fill=(148, 122, 96, 86), width=5)
+            ghd.line([(24, gy + 6), (pw - 24, gy + 6)], fill=(255, 253, 248, 120), width=6)
+    page.alpha_composite(gs.filter(ImageFilter.GaussianBlur(2.6)))
+    page.alpha_composite(gh.filter(ImageFilter.GaussianBlur(3.4)))
 
-    sh = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    sd = ImageDraw.Draw(sh)
-    sd.rounded_rectangle([x0 + 2, y0 + (9 if active else 7), x1 + 2, y1 + (9 if active else 7)], radius=radius, fill=(26, 18, 10, 110 if active else 80))
-    sh = sh.filter(ImageFilter.GaussianBlur(radius=10))
-    canvas.alpha_composite(sh)
+    rng = random.Random(303)
+    pmask = Image.new("L", (pw, ph), 0)
+    pmd = ImageDraw.Draw(pmask)
+    pmd.rounded_rectangle([12, 12, pw - 13, ph - 13], radius=38, fill=255)
+    for x in range(44, pw - 44, 4):
+        for ye, sg in ((12, -1), (ph - 13, 1)):
+            pmd.line([(x, ye), (x + rng.randint(-3, 3), ye + sg * rng.randint(4, 10))], fill=rng.randint(155, 240), width=2)
+    for y in range(44, ph - 44, 4):
+        for xe, sg in ((12, -1), (pw - 13, 1)):
+            pmd.line([(xe, y), (xe + sg * rng.randint(4, 10), y + rng.randint(-3, 3))], fill=rng.randint(155, 240), width=2)
+    pmask = pmask.filter(ImageFilter.GaussianBlur(0.7))
 
-    if active:
-        glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        gd = ImageDraw.Draw(glow)
-        gd.rounded_rectangle([x0 - 7, y0 - 7, x1 + 7, y1 + 7], radius=radius + 7, fill=(218, 172, 58, 115))
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=13))
-        canvas.alpha_composite(glow)
+    out_page = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    out_page.paste(page, (0, 0), pmask)
+    desk.alpha_composite(out_page, dest=(px0, py0))
 
-    pill = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    if fabric_src is not None:
-        crop = fabric_src.crop((max(0, x0), max(0, y0), min(fabric_src.width, x0 + pw), min(fabric_src.height, y0 + ph))).resize((pw, ph))
-        tint = Image.new("RGB", (pw, ph), fill_rgb)
-        base_rgb = Image.blend(crop, tint, 0.56)
-    else:
-        tex = Image.effect_noise((pw, ph), 12).convert("RGB")
-        base_rgb = ImageChops.soft_light(Image.new("RGB", (pw, ph), fill_rgb), tex)
-
-    mask = Image.new("L", (pw, ph), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, pw - 1, ph - 1], radius=radius, fill=255)
-    pill.paste(base_rgb.convert("RGBA"), (0, 0), mask)
-
-    bevel = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    bd = ImageDraw.Draw(bevel)
-    bd.rounded_rectangle([3, 3, pw - 4, ph - 6], radius=max(4, radius - 3), outline=(255, 255, 250, 195), width=4)
-    bd.rounded_rectangle([3, 7, pw - 4, ph - 3], radius=max(4, radius - 3), outline=(85, 68, 48, 55), width=4)
-    bevel = bevel.filter(ImageFilter.GaussianBlur(radius=2.5))
-    pill = Image.alpha_composite(pill, bevel)
-
-    pd = ImageDraw.Draw(pill)
-    stitch_col = (196, 148, 44, 245) if active else (168, 142, 102, 165)
-    _draw_stitched_rect(pd, [10, 10, pw - 11, ph - 11], max(4, radius - 9), stitch_col, dash=9, gap=6)
-
-    if active:
-        pd.rounded_rectangle([1, 1, pw - 2, ph - 2], radius=radius, outline=(212, 168, 55, 250), width=3)
-    else:
-        pd.rounded_rectangle([1, 1, pw - 2, ph - 2], radius=radius, outline=(185, 165, 130, 140), width=1)
-
-    canvas.alpha_composite(pill, dest=(x0, y0))
+    sp = ImageDraw.Draw(desk)
+    for ry in range(py0 + 70, py1 - 60, 56):
+        sp.ellipse([px0 + 14, ry - 6, px0 + 28, ry + 6], fill=(82, 64, 52, 180))
+        sp.rounded_rectangle([px0 - 18, ry - 5, px0 + 22, ry + 5], radius=5, fill=(198, 192, 186, 255), outline=(126, 118, 110, 220), width=1)
+    return desk.convert("RGB")
 
 
 def _render_notebook_slides(
@@ -711,42 +678,37 @@ def _render_notebook_slides(
     ai_tpl, norm_box = _get_plush_template("notebook_plush_blank", W, H)
 
     if ai_tpl is not None:
-        bg = ai_tpl.convert("RGBA")
         bx0 = max(72, int(norm_box[0] * W / 1000))
         by0 = max(210, int(norm_box[1] * H / 1000))
-        bx1 = min(W - 72, int(norm_box[2] * W / 1000))
-        by1 = min(H - 150, int(norm_box[3] * H / 1000))
+        bx1 = min(W - 64, int(norm_box[2] * W / 1000))
+        by1 = min(H - 170, int(norm_box[3] * H / 1000))
         if bx1 - bx0 < 400:
-            bx0, bx1 = 88, W - 88
+            bx0, bx1 = 92, W - 76
         if by1 - by0 < 360:
-            by0, by1 = 235, H - 190
+            by0, by1 = 230, H - 200
         safe_x0, safe_x1 = bx0, bx1
-        hdr_y0, hdr_y1 = max(125, by0 - 82), max(185, by0 - 20)
-        zone_top, zone_bot = by0 + 16, by1
+        hdr_y = max(168, by0 - 50)
+        zone_top, zone_bot = by0 + 14, by1
     else:
-        page_x0, page_y0, page_x1, page_y1 = 44, 126, W - 44, H - 98
-        safe_x0, safe_x1 = page_x0 + 44, page_x1 - 44
-        hdr_y0, hdr_y1 = page_y0 + 26, page_y0 + 94
-        zone_top, zone_bot = hdr_y1 + 32, page_y1 - 86
-        bg = _make_wood_table_bg(W, H).convert("RGBA")
-        _draw_3d_plush_pill(bg, [page_x0, page_y0, page_x1, page_y1], radius=34, fill_rgb=(245, 239, 226), active=False)
+        safe_x0, safe_x1 = 96, W - 76
+        hdr_y = 195
+        zone_top, zone_bot = 265, H - 220
 
     text_max_w = safe_x1 - safe_x0
     text_max_h = zone_bot - zone_top
+    center_x = (safe_x0 + safe_x1) // 2
 
     chosen_font = _load_font(font_path, 28)
     clause_lines_map: list[list[str]] = []
-    lh = 56
+    lh = 58
 
     for sz in range(42, 26, -2):
         f = _load_font(font_path, sz)
         grouped = [_wrap_text(cl, f, text_max_w, dd) for cl in clauses]
         total_lines = sum(len(g) for g in grouped)
-        cand_lh = max(58, int(sz * 1.78))
+        cand_lh = max(58, int(sz * 1.80))
         if total_lines * cand_lh <= text_max_h:
-            chosen_font = f
-            clause_lines_map = grouped
-            lh = cand_lh
+            chosen_font, clause_lines_map, lh = f, grouped, cand_lh
             break
     else:
         clause_lines_map = [_wrap_text(cl, chosen_font, text_max_w, dd) for cl in clauses]
@@ -755,17 +717,25 @@ def _render_notebook_slides(
     total_text_h = total_lines * lh
     text_start_y = zone_top + max(0, (text_max_h - total_text_h) // 2)
 
-    hdr_box = [W // 2 - 208, hdr_y0, W // 2 + 208, hdr_y1]
-    _draw_3d_plush_pill(bg, hdr_box, radius=28, fill_rgb=(242, 234, 214), fabric_src=bg.convert("RGB"), active=True)
+    groove_ys = [text_start_y + i * lh + int(lh * 0.88) for i in range(total_lines)]
+
+    if ai_tpl is not None:
+        bg = ai_tpl.convert("RGBA")
+    else:
+        bg = _make_rich_wool_notebook_fallback(W, H, groove_ys, lh).convert("RGBA")
+
+    # خط زخرفي ذهبي رفيع تحت الترويسة المحفورة في الصوف (بدون أي مربعات مسطحة!)
+    dec = ImageDraw.Draw(bg)
+    dec.line([(center_x - 135, hdr_y + 30), (center_x + 135, hdr_y + 30)], fill=(184, 144, 62, 165), width=2)
+    dec.ellipse([center_x - 4, hdr_y + 26, center_x + 4, hdr_y + 34], fill=(184, 144, 62, 210))
 
     clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
     meta_items: list[tuple[int, int, str, object, tuple[int, int, int], str]] = [
-        (W // 2, (hdr_y0 + hdr_y1) // 2, header_label, _load_font(font_path, 26), (72, 48, 18), "center"),
-        (W // 2, H - 64, "مَلَاك المَعْرِفَة", _load_font(font_path, 26), (132, 98, 38), "center"),
+        (center_x, hdr_y, header_label, _load_font(font_path, 32), (118, 76, 24), "center"),
+        (center_x, H - 145, "مَلَاك المَعْرِفَة", _load_font(font_path, 26), (132, 92, 34), "center"),
     ]
     if clean_title:
-        top_d = ImageDraw.Draw(bg)
-        _draw_rtl(top_d, W // 2, 48, clean_title, _load_font(font_path, 24), (244, 218, 152, 255), align="center", v_center=True)
+        meta_items.append((W // 2, 48, clean_title, _load_font(font_path, 24), (244, 218, 152), "center"))
 
     bg_with_meta = _embed_text_into_wool(bg.convert("RGB"), meta_items)
     total_chars = max(1, sum(len(cl) for cl in clauses))
@@ -776,10 +746,10 @@ def _render_notebook_slides(
         cur_y = text_start_y
         for cl_i, lines in enumerate(clause_lines_map):
             is_act = (cl_i == active_idx) and (len(clauses) > 1)
-            ink = (20, 14, 8) if (is_act or len(clauses) == 1) else (98, 86, 70)
+            ink = (18, 12, 6) if (is_act or len(clauses) == 1) else (106, 94, 78)
             for ln in lines:
                 if cur_y + lh <= zone_bot + 10:
-                    text_items.append(((safe_x0 + safe_x1) // 2, cur_y + int(lh * 0.46), ln, chosen_font, ink, "center"))
+                    text_items.append((center_x, cur_y + int(lh * 0.46), ln, chosen_font, ink, "center"))
                 cur_y += lh
 
         final_img = _embed_text_into_wool(bg_with_meta, text_items).convert("RGB")
@@ -787,104 +757,6 @@ def _render_notebook_slides(
         final_img.save(out_png)
 
         s_dur = max(0.35, c_dur * (max(1, len(clauses[active_idx])) / total_chars)) if len(clauses) > 1 else c_dur
-        outputs.append((out_png, s_dur))
-
-    return outputs
-
-
-def _render_plush_pillows_slides(
-    clauses: list[str],
-    header_label: str,
-    ep_title: str,
-    font_path: str,
-    base_png_path: Path,
-    W: int,
-    H: int,
-    c_dur: float,
-) -> list[tuple[Path, float]]:
-    ai_bg, _ = _get_plush_template("fabric_plush_blank", W, H)
-    if ai_bg is not None:
-        fabric_rgb = ai_bg
-    else:
-        base = Image.new("RGB", (W, H), (232, 234, 224))
-        fibers = Image.effect_noise((W, H), 15).convert("RGB")
-        fabric_rgb = ImageChops.soft_light(base, fibers).filter(ImageFilter.GaussianBlur(0.8)).convert("RGB")
-
-    bg = fabric_rgb.convert("RGBA")
-
-    clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
-    if clean_title:
-        _draw_rtl(ImageDraw.Draw(bg), W // 2, 52, clean_title, _load_font(font_path, 24), (104, 78, 34, 245), align="center", v_center=True)
-
-    _draw_3d_plush_pill(bg, [W // 2 - 220, 96, W // 2 + 220, 174], radius=34, fill_rgb=(248, 243, 230), fabric_src=fabric_rgb, active=True)
-    bg = _embed_text_into_wool(
-        bg.convert("RGB"),
-        [
-            (W // 2, 135, header_label, _load_font(font_path, 28), (68, 46, 16), "center"),
-            (W // 2, H - 56, "مَلَاك المَعْرِفَة", _load_font(font_path, 26), (126, 92, 34), "center"),
-        ],
-    ).convert("RGBA")
-
-    dummy_d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-    n_c = max(1, len(clauses))
-    zone_top, zone_bot = 212, H - 115
-    gap = 26
-    box_h = min(285, (zone_bot - zone_top - gap * (n_c - 1)) // n_c)
-    stack_h = n_c * box_h + (n_c - 1) * gap
-    start_y = zone_top + (zone_bot - zone_top - stack_h) // 2
-
-    total_chars = max(1, sum(len(cl) for cl in clauses))
-    outputs: list[tuple[Path, float]] = []
-
-    for act_i in range(n_c):
-        frame = bg.copy()
-        text_items: list[tuple[int, int, str, object, tuple[int, int, int], str]] = []
-
-        for ci, cl in enumerate(clauses):
-            by0 = start_y + ci * (box_h + gap)
-            by1 = by0 + box_h
-            is_act = (ci == act_i)
-            is_ivory = (ci % 2 == 0)
-            fill_c = (250, 246, 236) if is_ivory else (232, 238, 224)
-
-            _draw_3d_plush_pill(
-                frame,
-                [46, by0, W - 46, by1],
-                radius=34,
-                fill_rgb=fill_c,
-                fabric_src=fabric_rgb,
-                active=is_act,
-            )
-
-            badge_x, badge_y = 104, (by0 + by1) // 2
-            bd = ImageDraw.Draw(frame)
-            b_outline = (202, 156, 52, 245) if is_act else (156, 134, 98, 210)
-            bd.ellipse([badge_x - 26, badge_y - 26, badge_x + 26, badge_y + 26], fill=(248, 242, 228, 245), outline=b_outline, width=3)
-            num_txt = str(ci + 1).translate(_EASTERN_DIGITS)
-            text_items.append((badge_x, badge_y, num_txt, _load_font(font_path, 26), (82, 54, 22), "center"))
-
-            max_tw = W - 220
-            chosen_f = _load_font(font_path, 26)
-            lines = [cl]
-            for sz in range(38, 24, -2):
-                f = _load_font(font_path, sz)
-                lns = _wrap_text(cl, f, max_tw, dummy_d)
-                lh = int(sz * 1.66)
-                if len(lns) <= 4 and len(lns) * lh <= box_h - 28:
-                    chosen_f, lines = f, lns
-                    break
-            lh = int(chosen_f.size * 1.66)
-            cy_t = (by0 + by1) // 2 - ((len(lines) - 1) * lh) // 2
-            ink = (22, 16, 10) if is_act or n_c == 1 else (86, 78, 64)
-            for ln in lines:
-                text_items.append((W // 2 + 24, cy_t, ln, chosen_f, ink, "center"))
-                cy_t += lh
-
-        final_img = _embed_text_into_wool(frame.convert("RGB"), text_items).convert("RGB")
-        out_png = base_png_path.with_name(f"{base_png_path.stem}_pill_{act_i}.png")
-        final_img.save(out_png)
-
-        s_dur = max(0.35, c_dur * (max(1, len(clauses[act_i])) / total_chars)) if n_c > 1 else c_dur
         outputs.append((out_png, s_dur))
 
     return outputs
@@ -906,16 +778,12 @@ def render_islamic_card_slides(
     if not clean:
         return []
 
-    clauses = _split_clauses(clean, max_clauses=4 if seg_type in PILLOW_SEG_TYPES else 3)
+    clauses = _split_clauses(clean, max_clauses=3)
     if not clauses:
         return []
 
     header_label = HEADER_BY_TYPE.get(seg_type, HEADER_BY_TYPE["summary"])
-
-    if seg_type in PILLOW_SEG_TYPES:
-        outputs = _render_plush_pillows_slides(clauses, header_label, ep_title, font_path, base_png_path, W, H, c_dur)
-    else:
-        outputs = _render_notebook_slides(clauses, header_label, ep_title, font_path, base_png_path, W, H, c_dur)
+    outputs = _render_notebook_slides(clauses, header_label, ep_title, font_path, base_png_path, W, H, c_dur)
 
     if outputs:
         diff = c_dur - sum(d for _, d in outputs)
