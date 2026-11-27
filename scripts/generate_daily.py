@@ -788,4 +788,160 @@ def build_adhkar_episode(used_ids: list[str], state: dict, hook_style: str) -> t
         segments.append({"type": "summary", "voice": "Rasalgethi", "text": make_tts_safe(res.get("closing", f"خلي {slot_label} جزء ثابت من يومك، من كتاب حصن المسلم."))})
     else:
         title = make_title_safe(f"{slot_label} المباركة", slot_label)
-        segments.append({"type": "intro", "voice": "Puck", "text": f"باقة مباركة من {slot_label} الثابتة عن النبي صلى الله عليه وسلم
+        segments.append({"type": "intro", "voice": "Puck", "text": f"باقة مباركة من {slot_label} الثابتة عن النبي صلى الله عليه وسلم ومعانيها المبسطة."})
+        for x in picked_list:
+            rep = int(x.get("repeat", 1) or 1)
+            rep_txt = format_repeat_ar(rep)
+            bless = x.get("bless", "")
+            lead = f"يُقال هذا الذكر {rep_txt}. {bless}".strip() if rep_txt else bless
+            if lead.strip():
+                segments.append({"type": "narration", "voice": "Charon", "text": make_tts_safe(lead)})
+            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(x["text"])})
+        segments.append({"type": "summary", "voice": "Rasalgethi", "text": f"حافظ على {slot_label} يومياً، من كتاب حصن المسلم والسنة النبوية الصحيحة."})
+
+    segments = [s for s in segments if s.get("text")]
+    return title, segments, used_ids
+
+
+def build_dua_episode(used_ids: list[str], hook_style: str) -> tuple[str, list[dict], list[str]]:
+    topic_obj, used_ids = pick_unused(DUA_TOPICS, used_ids)
+    if not topic_obj:
+        topic_obj = DUA_TOPICS[0]
+
+    topic_name = topic_obj["topic"]
+    duas_list = topic_obj["duas"]
+
+    duas_bundle = "\n".join(
+        f"- الدعاء {i+1}: {d['text']} | المصدر: {d['source']} | كلمات مهمة للشرح: {d['focus_words']}"
+        for i, d in enumerate(duas_list)
+    )
+
+    prompt = f"""نريد إعداد حلقة موسّعة ومؤثرة جداً لفقرة الأدعية حول محور: «{topic_name}».
+
+الأدعية المعتمدة (4 أدعية صحيحة تُستخدم كلها بدون تحريف نص الدعاء):
+{duas_bundle}
+
+أسلوب البداية الإلزامي لهذه الحلقة:
+{hook_style}
+
+المطلوب: صياغة رحلة دعاء موسّعة تلمس القلب، تفهم المستمع أسرار كل دعاء وكلماته الصعبة بلغة شامية بيضاء دافئة ومبسّطة (حتى يدعو وهو مستحضر قلبه، لا يردد بلسانه فقط):
+{{
+  "title": "عنوان مختصر دافئ أقل من 45 حرفاً يعبر عن {topic_name}",
+  "intro": "خطاف عاطفي واقعي من 2 إلى 3 جمل يلامس ألم الناس وحاجتهم لهذا المحور من الدعاء، ويمهّد له بدون مقدمات تقليدية.",
+  "items": [
+    {{
+      "lead_in": "تمهيد حميمي من جملتين يهيّئ القلب ويبين متى قال النبي هذا الدعاء أو متى يُستحب.",
+      "dua_exact": "نص الدعاء كما ورد بالضبط بدون أقواس.",
+      "deep_meaning": "شرح معمّق ومبسط لمعاني الكلمات الدقيقة في الدعاء بلغة شامية بيضاء دافئة ومفهومة في 3 إلى 4 جمل."
+    }}
+  ],
+  "etiquette_closing": "خاتمة موسّعة من 3 إلى 4 جمل تذكّر بآداب استجابة الدعاء (الثناء، الصلاة على النبي صلى الله عليه وسلم، وحضور القلب واليقين بالإجابة) مع دعوة للناس بترديدها دائماً."
+}}"""
+
+    res = call_llm_json(prompt, max_tokens=3400)
+    segments = []
+
+    if res and isinstance(res.get("items"), list) and len(res["items"]) > 0:
+        title = make_title_safe(res.get("title", ""), topic_name)
+        segments.append({
+            "type": "intro",
+            "voice": "Puck",
+            "text": make_tts_safe(res.get("intro", f"لمّا تتسكّر الأبواب بوجهك، ما في باب بيفتح أسرع من الدعاء الصادق، تعال نعيش اليوم مع {topic_name}.")),
+        })
+        for idx, src_dua in enumerate(duas_list):
+            gen_item = res["items"][idx] if idx < len(res["items"]) else {}
+            lead = make_tts_safe(gen_item.get("lead_in", ""))
+            if lead:
+                segments.append({"type": "narration", "voice": "Charon", "text": lead})
+            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(src_dua["text"])})
+            deep = make_tts_safe(gen_item.get("deep_meaning", ""))
+            if deep:
+                segments.append({"type": "narration", "voice": "Charon", "text": deep})
+
+        closing = make_tts_safe(res.get("etiquette_closing", "ولحتى يستجيب ربنا دعاءك، ابدأ بالثناء على الله والصلاة على النبي صلى الله عليه وسلم، وادعُ وأنت واثق أن الله يسمعك وقريب منك."))
+        segments.append({"type": "summary", "voice": "Rasalgethi", "text": closing})
+    else:
+        title = make_title_safe(topic_name, "أدعية نبوية وقرآنية")
+        segments.append({"type": "intro", "voice": "Puck", "text": f"باقة مباركة وموسّعة من {topic_name} من القرآن الكريم والسنة الصحيحة."})
+        for d in duas_list:
+            segments.append({"type": "narration", "voice": "Charon", "text": make_tts_safe(f"من الأدعية العظيمة الثابتة في {d['source']}:")})
+            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(d["text"])})
+        segments.append({"type": "summary", "voice": "Rasalgethi", "text": "حافظ على هذه الأدعية بقلب حاضر ويقين بالإجابة، ولا تنسَ الصلاة على النبي صلى الله عليه وسلم."})
+
+    segments = [s for s in segments if s.get("text")]
+    return title, segments, used_ids
+
+
+def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    all_types = ("fiqh", "hadith", "quran", "adhkar", "dua")
+    state = {
+        "run_count": 0,
+        "adhkar_slot_idx": 0,
+        "used_ids": {k: [] for k in all_types},
+    }
+    if STATE_FILE.exists():
+        try:
+            saved = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            state.update(saved)
+            for k in all_types:
+                state.setdefault("used_ids", {}).setdefault(k, [])
+        except Exception:
+            pass
+
+    type_names = list(all_types)
+    forced = os.getenv("FORCE_CONTENT_TYPE", "auto").strip().lower()
+    if forced in type_names:
+        current_type = forced
+    else:
+        current_type = type_names[state["run_count"] % len(type_names)]
+
+    used_list = state["used_ids"].get(current_type, [])
+    hook_style = HOOK_STYLES[state["run_count"] % len(HOOK_STYLES)]
+    state["run_count"] += 1
+    print(f"🔄 التشغيل #{state['run_count']} | النوع: {current_type} | المستخدم سابقاً: {len(used_list)}", flush=True)
+
+    if current_type == "fiqh":
+        title, segments, used_list = build_fiqh_episode(used_list, hook_style)
+    elif current_type == "hadith":
+        title, segments, used_list = build_hadith_episode(used_list, hook_style)
+    elif current_type == "quran":
+        title, segments, used_list = build_quran_episode(used_list, hook_style)
+    elif current_type == "adhkar":
+        title, segments, used_list = build_adhkar_episode(used_list, state, hook_style)
+    else:
+        title, segments, used_list = build_dua_episode(used_list, hook_style)
+
+    segments.append({
+        "type": "cta",
+        "voice": "Puck",
+        "text": "قال رسول الله صلى الله عليه وسلم: من دل على خير فله مثل أجر فاعله. شارك المقطع لتعم الفائدة. مَلَاكُ المَعْرِفَةِ.",
+    })
+
+    ep_data = {
+        "episode_number": state["run_count"],
+        "story_id": f"daily_{current_type}",
+        "title": title,
+        "segments": segments,
+    }
+
+    state["used_ids"][current_type] = used_list
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = OUTPUT_DIR / f"daily-{current_type}-{timestamp}.json"
+    output_path.write_text(json.dumps(ep_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    OUT_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_FILE_PATH.write_text(str(output_path), encoding="utf-8")
+    print(f"✅ تم توليد الحلقة بنجاح: {output_path} | العنوان: {title}", flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"❌ فشل generate_daily.py: {e}", flush=True)
+        sys.exit(1)
