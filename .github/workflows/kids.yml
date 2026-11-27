@@ -1,0 +1,77 @@
+name: "🧸 قصص الأطفال 3D (عماد ومريم)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  kids_story:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: "📥 سحب المستودع"
+        uses: actions/checkout@v4
+
+      - name: "🐍 إعداد Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "📦 تثبيت الحزم والخطوط العربية"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg libraqm0 fonts-hosny-amiri
+          pip install -q pillow requests arabic-reshaper python-bidi gradio_client numpy opencv-python-headless onnxruntime huggingface_hub
+
+      - name: "✍️ تأليف قصة الأطفال وتوليد الأصوات"
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          KIDS_BOY_NAME: "عِمَاد"
+          KIDS_GIRL_NAME: "مَرْيَم"
+        run: |
+          python -u scripts/kids_story.py
+
+      - name: "🎬 إخراج الفيديو الكرتوني 3D/8D"
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          AI_HORDE_API_KEY: ${{ secrets.AI_HORDE_API_KEY }}
+          KIDS_BOY_NAME: "عِمَاد"
+          KIDS_GIRL_NAME: "مَرْيَم"
+        run: |
+          EP_JSON=$(cat out/kids/latest_kids_ep.txt)
+          python -u scripts/kids_video.py "$EP_JSON" "out/kids/kids_final.mp4"
+
+      - name: "📤 إرسال الفيديو إلى تلجرام"
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - << 'EOF'
+          import json, os, requests
+          from pathlib import Path
+          ep = json.loads(Path(Path("out/kids/latest_kids_ep.txt").read_text().strip()).read_text())
+          tok = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+          cid = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+          if tok and cid and Path("out/kids/kids_final.mp4").exists():
+              cap = f"🧸 قصص الأطفال — مَلَاكُ المَعْرِفَةِ\n📖 {ep.get('title','')}\n✨ الحكمة: {ep.get('moral_card','')}"
+              with open("out/kids/kids_final.mp4", "rb") as vf:
+                  r = requests.post(
+                      f"https://api.telegram.org/bot{tok}/sendVideo",
+                      data={"chat_id": cid, "caption": cap, "supports_streaming": "true"},
+                      files={"video": vf},
+                      timeout=180,
+                  )
+              print("Telegram:", r.status_code, r.text[:160])
+          EOF
+
+      - name: "💾 حفظ حالة القصص"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/kids_state.json || true
+          git diff --staged --quiet || git commit -m "chore(kids): update kids_state.json"
+          git push || true
