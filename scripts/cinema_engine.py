@@ -1,9 +1,10 @@
 """
-cinema_engine.py — محرك الواقعية السينمائية الشبيهة بالطبيعي (Story Bible + Environmental POV)
+cinema_engine.py — محرك الواقعية السينمائية الشبيهة بالطبيعي (Story Bible + Environmental POV + Fast Z-Image)
 - يبني هوية بصرية موحدة لكل قصة (Story Visual Bible) حتى تكون اللقطات من وحي القصة وتسلسلها.
-- يسمح بتصوير البشر العاديين بلباس تاريخي محتشم في قصص العِبر والتاريخ، ويمنع منعاً باتاً:
+- يسمح بتصوير البشر العاديين بلباس تاريخي محتشم للرجال في قصص العِبر والتاريخ، ويمنع منعاً باتاً:
   تشبيه الذات الإلهية، والأنبياء والمرسلين، والملائكة، والصحابة والمبشرين بالجنة، والنساء المسلمات.
-- يعتمد في المشاهد الممنوع فيها البشر على السرد البيئي والمكاني (Environmental POV) بدون أي استبدال مشوّه.
+- يعتمد في المشاهد الممنوع فيها البشر على السرد البيئي والمكاني (Environmental POV).
+- يستخدم الاستدعاء الدقيق السريع لـ Z-Image-Turbo و FLUX.1-schnell مع قفل منع تكرار التهيئة.
 - يضيف أشعة النور الروحانية (Volumetric Noor Shafts) ومؤثرات طبيعية حلال مع كتم تام عند القرآن.
 """
 
@@ -71,12 +72,10 @@ except Exception:
 CINEMA_AVAILABLE = HAS_CV2 and (np is not None)
 
 _STATE_LOCK = threading.Lock()
+_CLIENT_INIT_LOCK = threading.Lock()
 _VISION_LOCK = threading.Lock()
 _LAST_VISION_TS = 0.0
 
-# ==============================================================================
-# الهوية البصرية الموحدة
-# ==============================================================================
 PHOTOREAL_NATURE_STYLE = (
     "breathtaking hyper-realistic cinematic photography, Unreal Engine 5 photorealistic realism, "
     "shot on ARRI Alexa 65mm IMAX lens, natural volumetric sunbeams, crystal sharp organic textures, "
@@ -118,24 +117,19 @@ _FORBIDDEN_STOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# قائمة المنع الشرعي الدقيق: الذات الإلهية، الأنبياء والمرسلون، الملائكة، الصحابة والمبشرون بالجنة، والنساء المسلمات
 _FORBIDDEN_HUMAN_ENTITIES_RE = re.compile(
     r"(?:^|[^\u0621-\u064A])(?:و|ف|ب|ل|ك)?(?:ال)?(?:"
-    # الذات الإلهية والملائكة
     r"الله|جل جلاله|سبحانه|رب العالمين|ربي|ربنا|الرحمن|الخالق|"
     r"ملائكة|ملاك|جبريل|ميكائيل|إسرافيل|اسرافيل|عزرائيل|ملك الموت|"
-    # الأنبياء والمرسلون
     r"نبي|أنبياء|انبياء|رسول|رسل|مرسل|آدم|ادم|إدريس|ادريس|نوح|هود|صالح|"
     r"إبراهيم|ابراهيم|لوط|إسماعيل|اسماعيل|إسحاق|اسحاق|يعقوب|يوسف|أيوب|ايوب|"
     r"شعيب|موسى|هارون|ذو الكفل|داود|داوود|سليمان|إلياس|الياس|اليسع|يونس|"
     r"زكريا|يحيى|عيسى|المسيح|محمد|المصطفى|خاتم الأنبياء|الخليل|الكليم|"
-    # الصحابة والمبشرون بالجنة وآل البيت
     r"صحابي|صحابة|أبو بكر|ابو بكر|الصديق|سيدنا عمر|عمر بن الخطاب|الفاروق|"
     r"عثمان بن عفان|ذو النورين|علي بن أبي طالب|سيدنا علي|الإمام علي|"
     r"طلحة|الزبير|عبد الرحمن بن عوف|سعد بن أبي وقاص|سعيد بن زيد|أبو عبيدة|ابو عبيدة|"
     r"بلال|خالد بن الوليد|سلمان الفارسي|عمار بن ياسر|حمزة|العباس|الحسن|الحسين|"
     r"أنس بن مالك|أبو هريرة|ابو هريرة|ابن عباس|ابن مسعود|معاذ بن جبل|أبي بن كعب|"
-    # النساء المسلمات وأمهات المؤمنين
     r"أم المؤمنين|أمهات المؤمنين|مريم|آسية|اسيه|خديجة|عائشة|فاطمة|حفصة|زينب|"
     r"هاجر|سارة|أم سلمة|صفية|جويرية|ميمونة|سودة|رملة|سمية|أسماء|خولة|"
     r"امرأة|المرأة|نساء|النساء|زوجة|زوجته|والدة|والدته|أمه|أمهات|ابنة|ابنته|بنت|فتاة|أخت|أخته|مؤمنة|مسلمة"
@@ -239,10 +233,6 @@ def _detect_allowed_animals(text: str) -> bool:
 
 
 def _allows_ordinary_humans(text: str, stype: str) -> bool:
-    """
-    يسمح بالبشر العاديين فقط عندما لا يذكر النص ذات الله، أو الأنبياء والمرسلين،
-    أو الصحابة والمبشرين بالجنة، أو الملائكة، أو النساء المسلمات.
-    """
     if stype in ("quran", "cta", "outro"):
         return False
     cleaned = re.sub(r"م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك\s+ا[\u064B-\u065F]*ل[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة", "", text or "")
@@ -255,7 +245,7 @@ def _allows_ordinary_humans(text: str, stype: str) -> bool:
 def _purge_invalid_hf_token(reason: str = "401"):
     with _STATE_LOCK:
         if not _RUNTIME_STATE["hf_token_invalid"]:
-            print(f"   🔓 HF_TOKEN مرفوض ({reason}) — التحويل التلقائي للوصول العام المجاني.", flush=True)
+            print(f"   🔓 HF_TOKEN ({reason}) — التحويل للوصول العام المجاني.", flush=True)
         _RUNTIME_STATE["hf_token_invalid"] = True
         _RUNTIME_STATE["hf_inference_disabled"] = True
         _RUNTIME_STATE["space_clients"].clear()
@@ -396,11 +386,7 @@ def _call_gemini_json(parts: list[dict], timeout: int = 45, max_tokens: int = 40
     return None
 
 
-# ==============================================================================
-# 1) كتاب القصة البصري (Story Visual Bible) + مخرج اللقطات المتصل بالقصة
-# ==============================================================================
 def _build_story_visual_bible(ep_title: str, segments: list) -> dict:
-    """يبني هوية بصرية ومكانية موحدة للحلقة كلها قبل تخطيط اللقطات."""
     full_summary_parts = []
     for seg in segments[:14]:
         st = seg.get("type", "narration")
@@ -417,9 +403,9 @@ Story Excerpt:
 {story_digest}
 
 Rules:
-- Choose ONE coherent historical/natural world matching the story (e.g., ancient desert trade caravan, historic Damascus stone alleyways and market, stormy sea and wooden ship, ancient stone cave at dawn, peaceful mountain valley).
-- List 3-5 concrete physical story props/settings from the narrative (e.g., brass oil lantern, clay water jar, open parchment scroll, wooden doorway, campfire, stone well).
-- Define an emotional lighting arc (dawn -> tension -> resolution).
+- Choose ONE coherent historical/natural world matching the story.
+- List 3-5 concrete physical story props/settings from the narrative.
+- Define a consistent lighting/color anchor.
 
 Return ONLY JSON:
 {{
@@ -586,7 +572,6 @@ def _enforce_shot_safety(shot: dict, c_text: str, stype: str) -> dict:
     allow_h = _allows_ordinary_humans(c_text, stype)
     allow_anim = (not is_quran) and _detect_allowed_animals(c_text)
 
-    # لا نسمح بإظهار البشر إلا إذا سمح الفلتر الشرعي ولم يذكر أنبياء/صحابة/ملائكة/نساء
     shot["allow_humans"] = allow_h and bool(shot.get("allow_humans", allow_h))
     shot["allow_animals"] = allow_anim
     shot["narration_ar"] = (c_text or "")[:240]
@@ -598,7 +583,6 @@ def _enforce_shot_safety(shot: dict, c_text: str, stype: str) -> dict:
     prompt = _FORBIDDEN_STOCK_RE.sub("ancient stone", prompt)
 
     if not shot["allow_humans"]:
-        # بدل الاستبدال الأعمى بكلمة تخرب الجملة، نحذف إشارات الأشخاص بنظافة ونفرض السرد البيئي POV
         prompt = re.sub(
             r"\b(?:man|men|woman|women|girl|female|person|people|human|humans|crowd|worker|workers|angel|angels|prophet|face|faces|hands?|silhouettes?|travelers?|soldiers?|merchants?)\b",
             "",
@@ -607,7 +591,6 @@ def _enforce_shot_safety(shot: dict, c_text: str, stype: str) -> dict:
         )
         prompt += ", environmental storytelling POV, uninhabited physical setting and story props, zero people, zero faces, zero wings"
     else:
-        # نحذف أي ذكر للنساء حتى في المشاهد المسموح فيها بالبشر العاديين
         prompt = re.sub(r"\b(?:woman|women|female|girl|lady|ladies|wife|mother|daughter)\b", "man", prompt, flags=re.IGNORECASE)
         prompt += ", ordinary historical Middle Eastern men in modest ancient robes and turbans, zero women, zero halos, zero wings, zero modern clothes"
 
@@ -718,7 +701,7 @@ STRICT ISLAMIC EDITORIAL RULES:
    - STRICTLY MEN ONLY — ZERO women, ZERO glowing halos, ZERO angelic wings, ZERO modern clothing.
 2. WHEN "allow_ordinary_men" IS false (Quran, Prophets, Companions, Angels, Muslim women, or CTA):
    - You MUST use ENVIRONMENTAL STORYTELLING (POV): ZERO humans, ZERO faces, ZERO silhouettes!
-   - Instead, show the exact physical setting & story props (e.g., footprints in sand, glowing tent, ancient carved cave entrance with sunlight shaft, wooden ship on waves, empty prayer hall in morning light, open parchment scroll with pen, weathered doorway opening to dawn light).
+   - Instead, show the exact physical setting & story props (footprints in sand, glowing tent, cave entrance with sunlight shaft, wooden ship on waves, empty prayer hall, open parchment scroll with pen, weathered doorway opening to dawn light).
 3. ANIMALS: Only include animals if "allow_animals" is true.
 4. MOTION MATCHING: Use "dolly_in" for suspense/discovery/closeups, "dolly_out" for vast scale/awe, "truck_left"/"truck_right" for journeys/markets.
 
@@ -803,9 +786,6 @@ Return ONLY valid JSON:
     }
 
 
-# ==============================================================================
-# 2) فاحص الأمان والجودة والمطابقة (Gemini Vision Guard)
-# ==============================================================================
 def _vision_guard_check(
     img_path: Path,
     allow_humans: bool,
@@ -904,9 +884,6 @@ Return ONLY JSON:
     return True, "fallback_unchecked"
 
 
-# ==============================================================================
-# 3) مولد اللوحات والفيديو الواقعي (Gemini Image -> ZeroGPU -> AI Horde -> Pixabay Film)
-# ==============================================================================
 def _get_hf_token() -> str | None:
     if _RUNTIME_STATE["hf_token_invalid"]:
         return None
@@ -914,8 +891,26 @@ def _get_hf_token() -> str | None:
     return tok or None
 
 
+def _ensure_gradio_available() -> bool:
+    global HAS_GRADIO, GradioClient, gradio_handle_file
+    if HAS_GRADIO and GradioClient is not None:
+        return True
+    with _CLIENT_INIT_LOCK:
+        if HAS_GRADIO and GradioClient is not None:
+            return True
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gradio_client"], check=False, timeout=90)
+            from gradio_client import Client as _GC, handle_file as _GHF
+            GradioClient = _GC
+            gradio_handle_file = _GHF
+            HAS_GRADIO = True
+            return True
+        except Exception:
+            return False
+
+
 def _get_gradio_client(space_id: str):
-    if not HAS_GRADIO:
+    if not _ensure_gradio_available():
         return None
     with _STATE_LOCK:
         if space_id in _RUNTIME_STATE["bad_spaces"]:
@@ -923,36 +918,43 @@ def _get_gradio_client(space_id: str):
         if space_id in _RUNTIME_STATE["space_clients"]:
             return _RUNTIME_STATE["space_clients"][space_id]
 
-    for attempt_anon in (False, True):
-        hf_token = None if attempt_anon else _get_hf_token()
-        if attempt_anon and not hf_token and not _RUNTIME_STATE["hf_token_invalid"]:
-            break
-        try:
-            sig = inspect.signature(GradioClient.__init__)
-            kwargs = {}
-            if hf_token:
-                if "token" in sig.parameters:
-                    kwargs["token"] = hf_token
-                elif "hf_token" in sig.parameters:
-                    kwargs["hf_token"] = hf_token
-            client = GradioClient(space_id, **kwargs)
+    with _CLIENT_INIT_LOCK:
+        with _STATE_LOCK:
+            if space_id in _RUNTIME_STATE["space_clients"]:
+                return _RUNTIME_STATE["space_clients"][space_id]
+            if space_id in _RUNTIME_STATE["bad_spaces"]:
+                return None
+
+        for attempt_anon in (False, True):
+            hf_token = None if attempt_anon else _get_hf_token()
+            if attempt_anon and not hf_token and not _RUNTIME_STATE["hf_token_invalid"]:
+                break
             try:
-                api_info = client.view_api(return_format="dict") or {}
-            except Exception:
-                api_info = {}
-            with _STATE_LOCK:
-                _RUNTIME_STATE["space_clients"][space_id] = client
-                _RUNTIME_STATE["space_apis"][space_id] = api_info
-            return client
-        except Exception as e:
-            msg = str(e)
-            if hf_token and ("401" in msg or "403" in msg or "invalid" in msg.lower() or "unexpected keyword" in msg.lower()):
-                _purge_invalid_hf_token("Gradio Auth/KW")
-                continue
-            print(f"   ⚠️ تعذر فتح Space ({space_id}): {msg[:90]}", flush=True)
-            with _STATE_LOCK:
-                _RUNTIME_STATE["bad_spaces"].add(space_id)
-            return None
+                sig = inspect.signature(GradioClient.__init__)
+                kwargs = {}
+                if hf_token:
+                    if "token" in sig.parameters:
+                        kwargs["token"] = hf_token
+                    elif "hf_token" in sig.parameters:
+                        kwargs["hf_token"] = hf_token
+                client = GradioClient(space_id, **kwargs)
+                try:
+                    api_info = client.view_api(return_format="dict") or {}
+                except Exception:
+                    api_info = {}
+                with _STATE_LOCK:
+                    _RUNTIME_STATE["space_clients"][space_id] = client
+                    _RUNTIME_STATE["space_apis"][space_id] = api_info
+                return client
+            except Exception as e:
+                msg = str(e)
+                if hf_token and ("401" in msg or "403" in msg or "invalid" in msg.lower() or "unexpected keyword" in msg.lower()):
+                    _purge_invalid_hf_token("Gradio Auth/KW")
+                    continue
+                print(f"   ⚠️ تعذر فتح Space ({space_id}): {msg[:90]}", flush=True)
+                with _STATE_LOCK:
+                    _RUNTIME_STATE["bad_spaces"].add(space_id)
+                return None
     return None
 
 
@@ -992,6 +994,26 @@ def _extract_media_path(result, out_dir: Path, prefix: str) -> Path | None:
 
 
 def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int, w: int, h: int, image_file: Path | None = None):
+    sl = space_id.lower()
+    if image_file is None and "z-image" in sl:
+        return "/generate", {
+            "prompt": prompt,
+            "resolution": "720x1280 ( 9:16 )",
+            "seed": int(seed),
+            "steps": 8,
+            "shift": 3.0,
+            "random_seed": False,
+        }
+    if image_file is None and "flux.1-schnell" in sl:
+        return "/infer", {
+            "prompt": prompt,
+            "seed": int(seed),
+            "randomize_seed": False,
+            "width": int(w),
+            "height": int(h),
+            "num_inference_steps": 4,
+        }
+
     with _STATE_LOCK:
         api = _RUNTIME_STATE["space_apis"].get(space_id, {})
     named = api.get("named_endpoints", {})
@@ -1011,6 +1033,8 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
     for p in params:
         pname = (p.get("parameter_name") or "").lower()
         pdefault = p.get("parameter_default")
+        if pname in ("gallery_images", "gallery"):
+            continue
         if image_file is not None and pname in ("image", "input_image", "img", "first_frame", "start_image", "input_img"):
             kwargs[p["parameter_name"]] = gradio_handle_file(str(image_file))
         elif pname in ("prompt", "positive_prompt", "caption"):
@@ -1026,17 +1050,13 @@ def _build_gradio_kwargs(space_id: str, prompt: str, neg_prompt: str, seed: int,
         elif pname == "height":
             kwargs[p["parameter_name"]] = int(h)
         elif pname in ("num_inference_steps", "steps"):
-            kwargs[p["parameter_name"]] = 4 if "schnell" in space_id.lower() else 8
+            kwargs[p["parameter_name"]] = 4 if "schnell" in sl else 8
         elif pname in ("guidance_scale", "guidance"):
-            kwargs[p["parameter_name"]] = 0.0 if ("schnell" in space_id.lower() or "z-image" in space_id.lower()) else 3.5
+            kwargs[p["parameter_name"]] = 0.0 if ("schnell" in sl or "z-image" in sl) else 3.5
         elif pname == "resolution":
             enum_vals = (p.get("type") or {}).get("enum") or []
-            chosen_res = None
-            for ev in enum_vals:
-                if "9:16" in str(ev) or "720x1280" in str(ev) or "576x1024" in str(ev):
-                    chosen_res = ev
-                    break
-            kwargs[p["parameter_name"]] = chosen_res or pdefault
+            chosen_res = next((ev for ev in enum_vals if "720x1280" in str(ev) or "9:16" in str(ev)), None)
+            kwargs[p["parameter_name"]] = chosen_res or "720x1280 ( 9:16 )"
         elif pname == "aspect_ratio":
             kwargs[p["parameter_name"]] = "9:16"
         elif pname in ("duration", "duration_seconds") and image_file is not None:
@@ -1081,7 +1101,7 @@ def _call_gemini_image(prompt: str, out_path: Path) -> bool:
                             tmp.unlink(missing_ok=True)
                             if ok:
                                 return True
-                elif r.status_code in (403, 429) and "quota" in r.text.lower():
+                elif r.status_code in (403, 429):
                     _RUNTIME_STATE["gemini_image_disabled"] = True
                     return False
             except Exception:
@@ -1091,7 +1111,7 @@ def _call_gemini_image(prompt: str, out_path: Path) -> bool:
 
 
 def _call_zerogpu_image(prompt: str, neg_prompt: str, seed: int, out_path: Path) -> bool:
-    if not HAS_GRADIO or _RUNTIME_STATE["zerogpu_exhausted"]:
+    if not _ensure_gradio_available() or _RUNTIME_STATE["zerogpu_exhausted"]:
         return False
 
     for space_id in _DEFAULT_IMAGE_SPACES:
@@ -1122,6 +1142,10 @@ def _call_zerogpu_image(prompt: str, neg_prompt: str, seed: int, out_path: Path)
                 _purge_invalid_hf_token("ZeroGPU predict 401")
                 continue
             if any(k in msg for k in ("zerogpu", "quota", "exceeded", "too many requests", "rate limit")):
+                if _get_hf_token() is not None:
+                    # إذا انتهت حصة التوكن، نحاول مرة بالوصول العام المجاني
+                    _purge_invalid_hf_token("ZeroGPU quota -> anon retry")
+                    continue
                 with _STATE_LOCK:
                     if not _RUNTIME_STATE["zerogpu_exhausted"]:
                         print("   ⏸️ انتهت حصة ZeroGPU المؤقتة — التبديل إلى نماذج الواقعية في AI Horde.", flush=True)
@@ -1207,7 +1231,7 @@ def _call_ai_horde_image(prompt: str, neg_prompt: str, seed: int, out_path: Path
     api_key = os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000"
     headers = {
         "apikey": api_key,
-        "Client-Agent": "MalakAlMarifa:3.2:github-actions",
+        "Client-Agent": "MalakAlMarifa:3.3:github-actions",
         "Content-Type": "application/json",
     }
     models = _get_photoreal_horde_models()
@@ -1375,7 +1399,7 @@ def _fallback_stock_media(
         try:
             with _STATE_LOCK:
                 used_urls.add(u)
-            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.2"}, timeout=25)
+            resp = requests.get(u, headers={"User-Agent": "MalakAlMarifa/3.3"}, timeout=25)
             if resp.status_code == 200 and len(resp.content) > 12000:
                 tmp = out_img_path.with_suffix(f".stock_{threading.get_ident()}.raw")
                 tmp.write_bytes(resp.content)
@@ -1502,9 +1526,6 @@ def generate_and_guard_shot(
     return out_img
 
 
-# ==============================================================================
-# 4) ترقية الذروة إلى فيديو AI حقيقي (اختياري بعد اكتمال اللوحات)
-# ==============================================================================
 def try_upgrade_hero_i2v(
     media_path: Path,
     shot: dict,
@@ -1516,7 +1537,7 @@ def try_upgrade_hero_i2v(
 ) -> Path | None:
     if media_path.suffix.lower() == ".mp4":
         return media_path
-    if os.getenv("ENABLE_HERO_I2V", "1") != "1" or not HAS_GRADIO or _RUNTIME_STATE["zerogpu_exhausted"]:
+    if os.getenv("ENABLE_HERO_I2V", "1") != "1" or not _ensure_gradio_available() or _RUNTIME_STATE["zerogpu_exhausted"]:
         return None
 
     cached_i2v = _cache_root() / f"hero_i2v_{shot_id}_{W}x{H}.mp4"
@@ -1580,9 +1601,6 @@ def try_upgrade_hero_i2v(
     return None
 
 
-# ==============================================================================
-# 5) محرك العمق Depth Anything V2 Small + أشعة النور الروحانية + كاميرا 3D
-# ==============================================================================
 def _download_depth_onnx(depth_cache: Path) -> str | None:
     if HAS_HF_HUB:
         for tok in (_get_hf_token(), False):
@@ -1886,9 +1904,6 @@ def render_parallax_clip(
             raise RuntimeError(f"Parallax ffmpeg error: {stderr_bytes.decode('utf-8', 'ignore')[:300]}")
 
 
-# ==============================================================================
-# 6) تحضير ورندرة خلفيات المقاطع بالتوازي + xfade + مشاركة الكاش للنسخ الثلاث
-# ==============================================================================
 def _get_vid_dur(path: Path) -> float:
     try:
         r = subprocess.run(
@@ -2073,14 +2088,11 @@ def prepare_and_render_episode_chunks(
                 )
                 chunk_bg_map[(seg_idx, c_idx)] = trimmed
             else:
-                chunk_bg_map[(seg_idx, c_idx)] = final_chunk_bg
+                chunk_bg_map[(seg_idx, c_idx)] = final_chunk_mp4
 
     return chunk_bg_map
 
 
-# ==============================================================================
-# 7) مولد المؤثرات الصوتية الطبيعية الحلال (-26dB، مع كتم 100% عند القرآن)
-# ==============================================================================
 def _gen_natural_noise_texture(kind: str, n_samples: int, sr: int = 24000, seed: int = 7) -> np.ndarray:
     rng = np.random.default_rng(seed)
     white = rng.standard_normal(n_samples).astype(np.float32)
