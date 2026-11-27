@@ -2,12 +2,9 @@
 """
 scripts/whispers_video.py
 =========================
-المخرج السينمائي 8D لمشروع «همسات ملك» (1080×1920 @ 30fps):
-- يولّد لوحات رومانسية أو روحانية عبر (Gemini Native Image -> ZeroGPU Z-Image-Turbo/FLUX -> AI Horde -> Pixabay Film)
-  مع فحص Gemini Vision.
-- يحوّل كل اللوحات والدفتر الصوفي القطني 8K إلى أنيميشن 8D مجاني على CPU عبر fx_8d.py
-  (3 طبقات عمق + ملء الفراغات + كاميرا مدارية 6-DOF + Rack Focus + أشعة نور + جزيئات بوكيه 3D)
-  بدون الحاجة لـ Cloudflare أو حصص فيديو خارجية.
+المخرج السينمائي الصافي لمشروع «همسات ملك» (1080×1920 @ 30fps):
+- يولّد لوحات رومانسية أو روحانية عبر (Gemini Image -> ZeroGPU Z-Image-Turbo/FLUX -> AI Horde -> Pixabay Film).
+- يحافظ على الدفتر الصوفي القطني 8K (romantic_cards.py) نقياً وحادّاً 100% دون أي تشويه أو طبقات إضافية.
 """
 
 from __future__ import annotations
@@ -47,12 +44,11 @@ from romantic_cards import (
     _get_active_horde_models,
     _open_gradio_client,
 )
-from fx_8d import render_8d_animation_clip
 
 VIDEO_W = 1080
 VIDEO_H = 1920
 FPS = 30
-XFADE_DUR = 0.72
+XFADE_DUR = 0.65
 
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 HAS_RAQM = features.check("raqm")
@@ -365,7 +361,6 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
 
     try:
         tok = _check_valid_hf_token()
-        # Z-Image-Turbo بالاستدعاء الدقيق ثم FLUX.1-schnell
         for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
             for try_tok in ([tok, None] if tok else [None]):
                 try:
@@ -414,7 +409,7 @@ def _generate_romantic_scene_image(scene_en: str, category: str, out_jpg: Path, 
         print(f"   🎨 [Scene AI Horde] رسم '{scene_en[:45]}...' عبر {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "HamsatMalak:4.0:8d-scene",
+            "Client-Agent": "HamsatMalak:3.5:clean",
             "Content-Type": "application/json",
         }
         payload = {
@@ -586,18 +581,16 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
     font_path = _find_amiri_font()
     seg_durs = _extract_segment_durations(segs, total_dur)
     notebook_mode = os.environ.get("WHISPERS_NOTEBOOK_MODE", "climax").strip().lower()
-    mood_8d = "spiritual_noor" if category == "prayer_niqab" else "warm_romance"
-    moves_8d = ("orbit_in", "orbit_left", "orbit_out", "orbit_right")
 
-    print(f"⏱️ مدة الصوت: {total_dur:.2f} ث | المحور: {category} | الوضع: {notebook_mode} | المحرك: 8D مجاني", flush=True)
+    print(f"⏱️ مدة الصوت: {total_dur:.2f} ث | المحور: {category} | الوضع: {notebook_mode}", flush=True)
 
-    work = Path(tempfile.mkdtemp(prefix="whisper_8d_"))
+    work = Path(tempfile.mkdtemp(prefix="whisper_vid_"))
     try:
         if notebook_mode == "full_notebook" or len(segs) <= 1:
             card_slides = render_romantic_notebook_slides(
                 segs, title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=total_dur
             )
-            _render_8d_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4", mood_8d)
+            _render_slides_with_fade(card_slides, total_dur, work / "vid_only.mp4")
         else:
             scene_segs = segs[:-1]
             scene_durs = seg_durs[:-1]
@@ -639,75 +632,62 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
                 seg_mp4 = work / f"seg_clip_{idx}.mp4"
                 is_img = media_p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
                 if is_img:
-                    bg_8d = work / f"bg_8d_{idx}.mp4"
-                    render_8d_animation_clip(
-                        img_path=media_p,
-                        out_mp4=bg_8d,
-                        duration=render_dur,
-                        W=VIDEO_W,
-                        H=VIDEO_H,
-                        fps=FPS,
-                        mood=mood_8d,
-                        particles="gold_motes",
-                        move=moves_8d[idx % len(moves_8d)],
-                        is_notebook=False,
-                        seed=1000 + idx * 77,
-                    )
+                    frames = max(30, int(round(render_dur * FPS)) + 15)
+                    z_expr = "min(zoom+0.0005,1.10)" if idx % 2 == 0 else "max(1.10-0.0005*on,1.0)"
                     fc = (
-                        f"[0:v]fps={FPS},format=yuv420p[bg];"
+                        f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
+                        f"crop={VIDEO_W*2}:{VIDEO_H*2},"
+                        f"zoompan=z='{z_expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},"
+                        f"eq=contrast=1.04:saturation=1.10,vignette=PI/6,format=yuv420p[bg];"
                         f"[1:v]fps={FPS},format=rgba[ov];"
                         f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
-                    subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-loglevel", "error",
-                            "-i", str(bg_8d),
-                            "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
-                            "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
-                            str(seg_mp4),
-                        ],
-                        check=True, capture_output=True, timeout=180,
-                    )
+                    in_flags = ["-loop", "1", "-t", f"{render_dur:.3f}"]
                 else:
                     fc = (
                         f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
                         f"crop={VIDEO_W}:{VIDEO_H},fps={FPS},"
-                        f"eq=contrast=1.04:saturation=1.12,vignette=PI/6,format=yuv420p[bg];"
+                        f"eq=contrast=1.04:saturation=1.10,vignette=PI/6,format=yuv420p[bg];"
                         f"[1:v]fps={FPS},format=rgba[ov];"
                         f"[bg][ov]overlay=0:0:shortest=1,format=yuv420p,setsar=1[v]"
                     )
-                    subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-loglevel", "error",
-                            "-stream_loop", "-1", "-t", f"{render_dur:.3f}", "-i", str(media_p),
-                            "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
-                            "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
-                            str(seg_mp4),
-                        ],
-                        check=True, capture_output=True, timeout=180,
-                    )
+                    in_flags = ["-stream_loop", "-1", "-t", f"{render_dur:.3f}"]
+
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        *in_flags, "-i", str(media_p),
+                        "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
+                        "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                        str(seg_mp4),
+                    ],
+                    check=True, capture_output=True, timeout=180,
+                )
                 clip_slots.append((seg_mp4, sdur))
 
-            # مشهد الذروة في الدفتر الصوفي بتحريك 8D ناعم يحافظ على حدة الحروف 100%
+            # الدفتر الصوفي 8K في الذروة صافٍ 100% بتقريب ناعم جداً من FFmpeg دون أي تشويه
             card_slides = render_romantic_notebook_slides(
                 [segs[-1]], title, category, work / "nb.png", W=VIDEO_W, H=VIDEO_H, total_dur=climax_dur
             )
             climax_png = card_slides[-1][0]
             climax_mp4 = work / "seg_climax_notebook.mp4"
-            render_8d_animation_clip(
-                img_path=climax_png,
-                out_mp4=climax_mp4,
-                duration=climax_dur,
-                W=VIDEO_W,
-                H=VIDEO_H,
-                fps=FPS,
-                mood=mood_8d,
-                particles="gold_motes",
-                move="orbit_in",
-                is_notebook=True,
-                seed=9090,
+            climax_frames = max(30, int(round(climax_dur * FPS)) + 15)
+            climax_vf = (
+                f"scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
+                f"zoompan=z='min(zoom+0.00028,1.045)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"d={climax_frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p,setsar=1"
+            )
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-loop", "1", "-t", f"{climax_dur:.3f}", "-i", str(climax_png),
+                    "-vf", climax_vf,
+                    "-t", f"{climax_dur:.3f}",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                    str(climax_mp4),
+                ],
+                check=True, capture_output=True, timeout=180,
             )
             clip_slots.append((climax_mp4, climax_dur))
 
@@ -728,7 +708,7 @@ def build_whisper_video(audio_path: str, json_path: str, out_mp4: str) -> bool:
             check=True, capture_output=True, timeout=360,
         )
         size_mb = out_p.stat().st_size / (1024 * 1024)
-        print(f"✅ تم إخراج فيديو همسات ملك 8D: {out_p.name} ({size_mb:.2f} MB)", flush=True)
+        print(f"✅ تم إخراج فيديو همسات ملك: {out_p.name} ({size_mb:.2f} MB)", flush=True)
         return True
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -767,46 +747,34 @@ def _concat_clips_with_xfade(clip_slots: list[tuple[Path, float]], total_dur: fl
     )
 
 
-def _render_8d_slides_with_fade(card_slides: list[tuple[Path, float]], total_dur: float, out_mp4: Path, mood_8d: str):
+def _render_slides_with_fade(card_slides: list[tuple[Path, float]], total_dur: float, out_mp4: Path):
     if len(card_slides) == 1:
-        render_8d_animation_clip(
-            img_path=card_slides[0][0],
-            out_mp4=out_mp4,
-            duration=total_dur,
-            W=VIDEO_W,
-            H=VIDEO_H,
-            fps=FPS,
-            mood=mood_8d,
-            particles="gold_motes",
-            move="orbit_in",
-            is_notebook=True,
-            seed=707,
+        frames = max(30, int(round(total_dur * FPS)) + 15)
+        vf = (
+            f"scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
+            f"zoompan=z='min(zoom+0.00028,1.045)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p,setsar=1"
+        )
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-loop", "1", "-t", f"{total_dur:.3f}", "-i", str(card_slides[0][0]),
+                "-vf", vf,
+                "-t", f"{total_dur:.3f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an", str(out_mp4),
+            ],
+            check=True, capture_output=True, timeout=180,
         )
         return
 
     min_d = min(d for _, d in card_slides)
-    fade_d = min(0.45, min_d * 0.35)
+    fade_d = min(0.35, min_d * 0.35)
     inputs = []
     filters = []
-    tmp_dir = card_slides[0][0].parent
     for i, (p, d) in enumerate(card_slides):
         in_d = d + (fade_d if i < len(card_slides) - 1 else 0.0)
-        sl_mp4 = tmp_dir / f"nb_8d_{i}.mp4"
-        render_8d_animation_clip(
-            img_path=p,
-            out_mp4=sl_mp4,
-            duration=in_d,
-            W=VIDEO_W,
-            H=VIDEO_H,
-            fps=FPS,
-            mood=mood_8d,
-            particles="gold_motes",
-            move="orbit_in" if i % 2 == 0 else "orbit_out",
-            is_notebook=True,
-            seed=700 + i * 33,
-        )
-        inputs.extend(["-i", str(sl_mp4)])
-        filters.append(f"[{i}:v]fps={FPS},format=yuv420p,setsar=1[c{i}]")
+        inputs.extend(["-loop", "1", "-t", f"{in_d:.3f}", "-i", str(p)])
+        filters.append(f"[{i}:v]scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1[c{i}]")
 
     last_tag = "[c0]"
     offset = 0.0
