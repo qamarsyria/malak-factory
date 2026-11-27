@@ -1,10 +1,9 @@
 {
-  "run_count": 20,
+  "run_count": 21,
   "adhkar_slot_idx": 3,
   "used_ids": {
     "fiqh": [
-      "binbaz-12467",
-      "binbaz-8320"
+      "binbaz-17232"
     ],
     "hadith": [
       "henc-66326",
