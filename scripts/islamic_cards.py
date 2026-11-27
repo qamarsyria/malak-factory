@@ -3,8 +3,8 @@
 scripts/islamic_cards.py
 =========================
 مولد البطاقات والدفاتر الإسلامية الروحانية 8K بملمس صوفي حقيقي + خط عربي متقن:
-- يدعم Gemini Native Image + ZeroGPU (Z-Image-Turbo / FLUX.1-schnell via _open_gradio_client) + AI Horde النشط.
-- يفحص نظافة الوسط وخلوّه من المحظورات via Gemini Vision مع الحفاظ الكامل على ملمس الصوف والزخارف الإسلامية.
+- يثبّت gradio_client تلقائياً إذا كانت ناقصة في الـ Workflow لتشغيل Z-Image-Turbo و FLUX.1-schnell.
+- يدعم Gemini Native Image + ZeroGPU + AI Horde النشط مع كاش فوري لمنع تكرار الانتظار.
 - يجمع بين نمط المخطوطة الصوفية الدينية (للحديث والفقه) ونمط الوسائد القطنية المخيطة 3D (للأذكار والـ CTA).
 """
 
@@ -17,6 +17,8 @@ import json
 import os
 import random
 import re
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -36,6 +38,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 HAS_RAQM = features.check("raqm")
 _EASTERN_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 _TPL_LOCK = threading.Lock()
+_GRADIO_LOCK = threading.Lock()
+_HORDE_FAILED_RUN = False
 
 HEADER_BY_TYPE = {
     "cta":     "الدَّالُّ عَلَى الخَيْرِ كَفَاعِلِهِ",
@@ -117,7 +121,6 @@ def _wrap_text(text: str, font, max_w: int, draw: ImageDraw.ImageDraw) -> list[s
 
 
 def _split_clauses(text: str, max_clauses: int = 4) -> list[str]:
-    """تقسيم النص إلى عبارات متوازنة بدون تكرار توقيع القناة في نهاية البطاقات."""
     cleaned = re.sub(r"(?:مَلَاك|ملاك)\s+(?:المَعْرِفَة|المعرفة)[.!؟،\s]*$", "", text.strip()).strip()
     if not cleaned:
         cleaned = text.strip()
@@ -147,10 +150,6 @@ def _split_clauses(text: str, max_clauses: int = 4) -> list[str]:
     return merged
 
 
-# ==============================================================================
-# أدوات الاتصال الذكي بمحركات الذكاء الاصطناعي (Gemini Image / ZeroGPU / AI Horde)
-# ==============================================================================
-
 def _get_gemini_keys() -> list[str]:
     raw_keys = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
     return [k.strip() for k in re.split(r"[\s,;]+", raw_keys.strip()) if len(k.strip()) > 20]
@@ -169,8 +168,24 @@ def _check_valid_hf_token() -> str | None:
     return None
 
 
+def _ensure_gradio_client_cls():
+    with _GRADIO_LOCK:
+        try:
+            from gradio_client import Client as GradioClient
+            return GradioClient
+        except ImportError:
+            print("   📦 تثبيت gradio_client تلقائياً لتفعيل ZeroGPU 8K...", flush=True)
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "gradio_client"],
+                check=False,
+                timeout=90,
+            )
+            from gradio_client import Client as GradioClient
+            return GradioClient
+
+
 def _open_gradio_client(space_id: str, tok: str | None):
-    from gradio_client import Client as GradioClient
+    GradioClient = _ensure_gradio_client_cls()
     if tok:
         try:
             sig = inspect.signature(GradioClient.__init__).parameters
@@ -299,7 +314,7 @@ def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
 
     logged = False
     for model_id in ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview"):
-        for k in keys[:4]:
+        for k in keys[:3]:
             try:
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
@@ -310,7 +325,7 @@ def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
                             "imageConfig": {"aspectRatio": "9:16"},
                         },
                     },
-                    timeout=55,
+                    timeout=45,
                 )
                 if r.status_code != 200:
                     if not logged:
@@ -334,17 +349,17 @@ def _gemini_generate_image(prompt: str, out_path: Path, W: int, H: int) -> bool:
 
 
 def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: int = 7742) -> bool:
+    global _HORDE_FAILED_RUN
     neg = (
         "text, words, letters, writing, arabic, calligraphy, numbers, watermark, logo, signature, "
         "scribbles, human, woman, man, face, hands, couple, pink, red heart, cross, church, statue, "
         "cartoon, vector, 2d flat, angled perspective"
     )
 
-    # 1) Gemini Native Image
     if _gemini_generate_image(prompt, out_path, W, H):
         return True
 
-    # 2) Hugging Face ZeroGPU (Z-Image-Turbo ثم FLUX.1-schnell via _open_gradio_client)
+    # ZeroGPU مع تثبيت تلقائي لـ gradio_client
     try:
         tok = _check_valid_hf_token()
         for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
@@ -399,13 +414,15 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
     except Exception as e:
         print(f"   ⚠️ [Islamic Cards gradio]: {str(e)[:80]}", flush=True)
 
-    # 3) AI Horde النشط
+    if _HORDE_FAILED_RUN:
+        return False
+
     try:
         models = _get_active_horde_models()
         print(f"   🕌 [Islamic Cards Horde] التوليد عبر: {models[:3]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "MalakAlMarifa:3.3:islamic-plush",
+            "Client-Agent": "MalakAlMarifa:3.4:islamic-plush",
             "Content-Type": "application/json",
         }
         payload = {
@@ -425,36 +442,48 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
             "models": models,
         }
         r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=20)
-        if r.status_code in (200, 202):
-            job_id = r.json().get("id")
-            if job_id:
-                deadline = time.time() + 145
-                while time.time() < deadline:
-                    time.sleep(5)
-                    chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
-                    if chk.status_code != 200:
-                        continue
-                    cdata = chk.json()
-                    if cdata.get("faulted"):
-                        break
-                    if cdata.get("done"):
-                        st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=20)
-                        gens = st.json().get("generations") or [] if st.status_code == 200 else []
-                        if gens and gens[0].get("img"):
-                            ir = requests.get(gens[0]["img"], timeout=30)
-                            if ir.status_code == 200 and len(ir.content) > 8000:
-                                tmp = out_path.with_suffix(".webp")
-                                tmp.write_bytes(ir.content)
-                                with Image.open(tmp) as im:
-                                    im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (W, H), Image.Resampling.LANCZOS)
-                                    im.save(out_path, "JPEG", quality=93)
-                                tmp.unlink(missing_ok=True)
-                                if out_path.exists() and out_path.stat().st_size > 20000:
-                                    print("   ✅ [Islamic Cards Horde] تم توليد القالب بنجاح!", flush=True)
-                                    return True
-                        break
+        if r.status_code not in (200, 202):
+            print(f"   ⚠️ [Islamic Cards Horde HTTP {r.status_code}]", flush=True)
+            _HORDE_FAILED_RUN = True
+            return False
+        job_id = r.json().get("id")
+        if not job_id:
+            _HORDE_FAILED_RUN = True
+            return False
+
+        deadline = time.time() + 125
+        while time.time() < deadline:
+            time.sleep(5)
+            chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
+            if chk.status_code != 200:
+                continue
+            cdata = chk.json()
+            if cdata.get("faulted"):
+                print("   ⚠️ [Islamic Cards Horde] faulted", flush=True)
+                _HORDE_FAILED_RUN = True
+                return False
+            if cdata.get("done"):
+                st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=20)
+                gens = st.json().get("generations") or [] if st.status_code == 200 else []
+                if gens and gens[0].get("img"):
+                    ir = requests.get(gens[0]["img"], timeout=30)
+                    if ir.status_code == 200 and len(ir.content) > 8000:
+                        tmp = out_path.with_suffix(".webp")
+                        tmp.write_bytes(ir.content)
+                        with Image.open(tmp) as im:
+                            im = ImageOps.fit(ImageOps.exif_transpose(im).convert("RGB"), (W, H), Image.Resampling.LANCZOS)
+                            im.save(out_path, "JPEG", quality=93)
+                        tmp.unlink(missing_ok=True)
+                        if out_path.exists() and out_path.stat().st_size > 20000:
+                            print("   ✅ [Islamic Cards Horde] تم توليد القالب بنجاح!", flush=True)
+                            return True
+                _HORDE_FAILED_RUN = True
+                return False
+        print("   ⏱️ [Islamic Cards Horde] تجاوز المهلة 125ث — الاعتماد على القالب المحلي 3D", flush=True)
+        _HORDE_FAILED_RUN = True
     except Exception as e:
         print(f"   ⚠️ [Islamic Cards Horde]: {str(e)[:80]}", flush=True)
+        _HORDE_FAILED_RUN = True
     return False
 
 
@@ -488,8 +517,8 @@ def _get_plush_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, 
 
     cache_dir = Path(tempfile.gettempdir()) / "islamic_plush_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = cache_dir / f"{kind}_v3_{W}x{H}.jpg"
-    box_cache = cache_dir / f"{kind}_v3_{W}x{H}_box.json"
+    cached = cache_dir / f"{kind}_v4_{W}x{H}.jpg"
+    box_cache = cache_dir / f"{kind}_v4_{W}x{H}_box.json"
 
     with _TPL_LOCK:
         if cached.exists() and cached.stat().st_size > 15000 and box_cache.exists():
@@ -535,7 +564,6 @@ def _embed_text_into_wool(
     base_rgb: Image.Image,
     items: list[tuple[int, int, str, object, tuple[int, int, int], str]],
 ) -> Image.Image:
-    """يغرس الخط العربي في ألياف الصوف والقماش بنعومة وبدون تغميق الخلفية."""
     w, h = base_rgb.size
     out = base_rgb.convert("RGBA")
 
@@ -677,7 +705,6 @@ def _render_notebook_slides(
     H: int,
     c_dur: float,
 ) -> list[tuple[Path, float]]:
-    """نمط المخطوطة الصوفية الدينية 8K بدون طمس ملمس الصوف الحقيقي."""
     dummy = Image.new("RGB", (10, 10))
     dd = ImageDraw.Draw(dummy)
 
@@ -728,7 +755,6 @@ def _render_notebook_slides(
     total_text_h = total_lines * lh
     text_start_y = zone_top + max(0, (text_max_h - total_text_h) // 2)
 
-    # شارة الترويسة الدينية الذهبية أعلى الصفحة
     hdr_box = [W // 2 - 208, hdr_y0, W // 2 + 208, hdr_y1]
     _draw_3d_plush_pill(bg, hdr_box, radius=28, fill_rgb=(242, 234, 214), fabric_src=bg.convert("RGB"), active=True)
 
@@ -738,7 +764,6 @@ def _render_notebook_slides(
         (W // 2, H - 64, "مَلَاك المَعْرِفَة", _load_font(font_path, 26), (132, 98, 38), "center"),
     ]
     if clean_title:
-        # العنوان فوق الدفتر بلون ذهبي على الخشب الداكن
         top_d = ImageDraw.Draw(bg)
         _draw_rtl(top_d, W // 2, 48, clean_title, _load_font(font_path, 24), (244, 218, 152, 255), align="center", v_center=True)
 
@@ -777,7 +802,6 @@ def _render_plush_pillows_slides(
     H: int,
     c_dur: float,
 ) -> list[tuple[Path, float]]:
-    """نمط الوسائد القطنية المخيطة 3D (مستوحى من الصورة 1 للأذكار والدعاء والـ CTA)."""
     ai_bg, _ = _get_plush_template("fabric_plush_blank", W, H)
     if ai_bg is not None:
         fabric_rgb = ai_bg
@@ -788,7 +812,6 @@ def _render_plush_pillows_slides(
 
     bg = fabric_rgb.convert("RGBA")
 
-    # لافتة الترويسة العلوية
     clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
     if clean_title:
         _draw_rtl(ImageDraw.Draw(bg), W // 2, 52, clean_title, _load_font(font_path, 24), (104, 78, 34, 245), align="center", v_center=True)
@@ -833,7 +856,6 @@ def _render_plush_pillows_slides(
                 active=is_act,
             )
 
-            # شارة رقم عربية صغيرة (١، ٢، ٣)
             badge_x, badge_y = 104, (by0 + by1) // 2
             bd = ImageDraw.Draw(frame)
             b_outline = (202, 156, 52, 245) if is_act else (156, 134, 98, 210)
