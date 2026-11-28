@@ -2,7 +2,7 @@
 story_video.py — المرحلة 5: بناء الفيديو الطولي 720×1280 بحجم اقتصادي ونقاء حاد
 - يضبط معدل الإطارات (15 FPS) وسقف الضغط (-maxrate 165k + صوت 36k) بحيث لا يتجاوز فيديو الـ 3 دقائق ~3-4.4 MB.
 - يعرض الترجمة الإنكليزية الدقيقة نصاً على الشاشة لجميع الفقرات باستثناء القرآن الكريم.
-- يحفظ الرسم العثماني (AmiriQuran) واسم القناة (مَلَّاكُ المَعْرِفَةِ).
+- يحفظ الرسم العثماني (AmiriQuran) واسم القناة (مَلَاكُ المَعْرِفَةِ).
 """
 
 import io
@@ -59,7 +59,7 @@ except Exception:
     HAS_FX8D = False
 
 CARD_SEG_TYPES = {"cta", "outro", "hadith", "fiqh", "adhkar", "dua"}
-CHANNEL_BRAND = "مَلَّاكُ المَعْرِفَةِ"
+CHANNEL_BRAND = "مَلَاكُ المَعْرِفَةِ"
 
 HAS_RAQM = features.check("raqm")
 print(f"🔤 محرك الخط العربي: {'RAQM (مباشر)' if HAS_RAQM else 'Reshaper + Bidi (احتياطي)'}", flush=True)
@@ -591,7 +591,7 @@ def _try_openverse_image(q: str, work_dir: Path, used_urls: set, scene_id: int) 
     try:
         r = requests.get(
             "https://api.openverse.org/v1/images/",
-            headers={"User-Agent": "MallakAlMarifa/1.0"},
+            headers={"User-Agent": "MalakAlMarifa/1.0"},
             params={
                 "q": q,
                 "license_type": "commercial",
@@ -624,7 +624,7 @@ def _try_openverse_image(q: str, work_dir: Path, used_urls: set, scene_id: int) 
             if not safety_text or not is_safe_tag(safety_text):
                 continue
 
-            resp = requests.get(url, headers={"User-Agent": "MallakAlMarifa/1.0"}, timeout=25)
+            resp = requests.get(url, headers={"User-Agent": "MalakAlMarifa/1.0"}, timeout=25)
             if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
                 out = work_dir / f"ov_img_{scene_id}_{idx}.jpg"
                 if _save_clean_jpeg(resp.content, out):
@@ -876,7 +876,7 @@ def make_caption_slides(
 ) -> list[tuple[Path, float]]:
     if is_quran:
         clean_body = (chunk_text or "").strip()
-        en_body = ""  # حماية مطلقة: لا تُترجم نصوص القرآن الكريم أبداً
+        en_body = ""
     else:
         clean_body = re.sub(r"[*#@_\[\]]", "", chunk_text or "")
         clean_body = re.sub(r"[a-zA-Z]", "", clean_body).strip()
