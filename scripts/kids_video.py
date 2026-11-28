@@ -2,15 +2,17 @@
 """
 scripts/kids_video.py
 =====================
-مخرج قصص الأطفال الكرتونية 3D لمشروع «مَلَاكُ المَعْرِفَةِ» (720×1280 @ 24fps):
+مخرج قصص الأطفال الكرتونية 3D لمشروع «مَلَّاكُ المَعْرِفَةِ» (720×1280 @ 18fps):
+- مستقل بالكامل ولا يعتمد على ملفات خارجية مفقودة.
 - يولّد مشاهد 3D Pixar Storybook متناسقة لشخصيتي عِمَاد ومَرْيَم عبر:
-  (Gemini Native Image -> ZeroGPU Z-Image-Turbo / FLUX.1-schnell -> AI Horde) مع فحص Gemini Vision.
-- يحرّك المشاهد بنعومة وصفاء تام عبر FFmpeg zoompan ويدمج شارات المتحدثين وبطاقة حكمة القصة في النهاية.
+  (Gemini Image -> ZeroGPU Z-Image-Turbo / FLUX.1-schnell -> AI Horde) مع فحص Gemini Vision.
+- يحافظ على كامل حوارات الأطفال ويخصص مشهد دفتر الحكمة لفقرة النهاية (type="moral") بحجم اقتصادي ونقي.
 """
 
 from __future__ import annotations
 
 import base64
+import inspect
 import io
 import json
 import os
@@ -20,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -39,35 +42,97 @@ except Exception:
     bidi_display = None
     HAS_RESHAPER = False
 
-from romantic_cards import (
-    _find_amiri_font,
-    _check_valid_hf_token,
-    _open_gradio_client,
-)
-
 VIDEO_W = 720
 VIDEO_H = 1280
-FPS = 24
-XFADE_DUR = 0.45
+FPS = 18
+XFADE_DUR = 0.35
 HAS_RAQM = features.check("raqm")
 
 BOY_NAME = os.getenv("KIDS_BOY_NAME", "عِمَاد").strip() or "عِمَاد"
 GIRL_NAME = os.getenv("KIDS_GIRL_NAME", "مَرْيَم").strip() or "مَرْيَم"
+CHANNEL_BRAND = "مَلَّاكُ المَعْرِفَةِ"
+
+_GRADIO_LOCK = threading.Lock()
+_HORDE_LOCK = threading.Lock()
+_HORDE_FAILURES = 0
 
 FINAL_ENCODE = [
     "-c:v", "libx264",
     "-preset", "slow",
-    "-crf", "24",
-    "-maxrate", "620k",
-    "-bufsize", "1240k",
+    "-crf", "27",
+    "-maxrate", "220k",
+    "-bufsize", "440k",
     "-profile:v", "high",
     "-level:v", "4.0",
-    "-g", str(FPS * 4),
-    "-bf", "3",
+    "-g", str(FPS * 10),
+    "-bf", "4",
+    "-refs", "4",
     "-aq-mode", "3",
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
 ]
+
+
+def _find_amiri_font() -> str:
+    candidates = [
+        "/usr/share/fonts/opentype/fonts-hosny-amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/hosny-amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    try:
+        r = subprocess.run(["fc-list", ":lang=ar", "--format=%{file}\n"], capture_output=True, text=True)
+        files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
+        for f in files:
+            if "Amiri" in f and "Bold" in f:
+                return f
+        if files:
+            return files[0]
+    except Exception:
+        pass
+    raise RuntimeError("❌ لم يُعثر على أي خط عربي في النظام.")
+
+
+def _check_valid_hf_token() -> str | None:
+    tok = (os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACE_HUB_TOKEN", "")).strip()
+    if not tok:
+        return None
+    try:
+        r = requests.get("https://huggingface.co/api/whoami-v2", headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+        if r.status_code == 200:
+            return tok
+    except Exception:
+        return tok
+    return None
+
+
+def _ensure_gradio_client_cls():
+    with _GRADIO_LOCK:
+        try:
+            from gradio_client import Client as GradioClient
+            return GradioClient
+        except ImportError:
+            print("   📦 تثبيت gradio_client لتفعيل ZeroGPU...", flush=True)
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gradio_client"], check=False, timeout=90)
+            from gradio_client import Client as GradioClient
+            return GradioClient
+
+
+def _open_gradio_client(space_id: str, tok: str | None):
+    GradioClient = _ensure_gradio_client_cls()
+    if tok:
+        try:
+            sig = inspect.signature(GradioClient.__init__).parameters
+            if "token" in sig:
+                return GradioClient(space_id, token=tok)
+            if "hf_token" in sig:
+                return GradioClient(space_id, hf_token=tok)
+        except Exception:
+            pass
+    return GradioClient(space_id)
 
 
 def _prep_txt(text: str) -> str:
@@ -159,28 +224,29 @@ def _vision_check_kids_image(img_path: Path, scene_en: str) -> bool:
     prompt = (
         f"Inspect this vertical 3D Pixar kids storybook illustration.\nIntended scene: '{scene_en[:160]}'\n"
         "Rules: Cute modest 3D animated children (boy and/or veiled girl) and friendly animals are ALLOWED. "
-        "REJECT nudity, uncovered adult women, scary horror/violence, deformed faces/extra limbs, crosses, statues, or text.\n"
+        "REJECT prophets/religious saints/angels, uncovered adult women, scary horror/violence, deformed faces/extra limbs, crosses, statues, or gibberish text.\n"
         'Return ONLY JSON: {"safe": true, "good_3d": true}'
     )
-    for k in keys[:3]:
-        try:
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={k}",
-                json={
-                    "contents": [{"parts": [{"inline_data": {"mime_type": "image/jpeg", "data": b64}}, {"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 200, "responseMimeType": "application/json"},
-                },
-                timeout=20,
-            )
-            if r.status_code == 200:
-                parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
-                txt = "\n".join(p.get("text", "") for p in parts if not p.get("thought") and p.get("text"))
-                s, e = txt.find("{"), txt.rfind("}")
-                if s != -1 and e > s:
-                    res = json.loads(txt[s : e + 1])
-                    return bool(res.get("safe", True)) and bool(res.get("good_3d", True))
-        except Exception:
-            continue
+    for model_id in ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
+        for k in keys[:3]:
+            try:
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
+                    json={
+                        "contents": [{"parts": [{"inline_data": {"mime_type": "image/jpeg", "data": b64}}, {"text": prompt}]}],
+                        "generationConfig": {"maxOutputTokens": 200, "responseMimeType": "application/json"},
+                    },
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+                    txt = "\n".join(p.get("text", "") for p in parts if not p.get("thought") and p.get("text"))
+                    s, e = txt.find("{"), txt.rfind("}")
+                    if s != -1 and e > s:
+                        res = json.loads(txt[s : e + 1])
+                        return bool(res.get("safe", True)) and bool(res.get("good_3d", True))
+            except Exception:
+                continue
     return True
 
 
@@ -189,8 +255,8 @@ def _gemini_kids_image(prompt: str, out_jpg: Path) -> bool:
     keys = [k.strip() for k in re.split(r"[\s,;]+", raw_keys.strip()) if len(k.strip()) > 20]
     if not keys:
         return False
-    for model_id in ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview"):
-        for k in keys[:3]:
+    for model_id in ("gemini-3.1-flash-image-preview", "gemini-3.1-flash-image"):
+        for k in keys[:2]:
             try:
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={k}",
@@ -237,9 +303,10 @@ def _get_kids_horde_models() -> list[str]:
 
 
 def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
+    global _HORDE_FAILURES
     neg = (
         "nudity, adult woman, uncovered hair woman, scary, horror, blood, weapon, deformed face, "
-        "extra fingers, extra limbs, cross, church, statue, text, words, watermark, 2d flat stick figure"
+        "extra fingers, extra limbs, cross, church, statue, text, words, watermark, 2d flat stick figure, halo, wings"
     )
 
     if _gemini_kids_image(scene_en, out_jpg) and _vision_check_kids_image(out_jpg, scene_en):
@@ -249,6 +316,7 @@ def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
         tok = _check_valid_hf_token()
         for space_id in ("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.1-schnell"):
             for try_tok in ([tok, None] if tok else [None]):
+                ex = ThreadPoolExecutor(max_workers=1)
                 try:
                     client = _open_gradio_client(space_id, try_tok)
                     if "Z-Image" in space_id:
@@ -271,8 +339,7 @@ def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
                             num_inference_steps=4,
                             api_name="/infer",
                         )
-                    with ThreadPoolExecutor(max_workers=1) as ex:
-                        res = ex.submit(fn).result(timeout=85)
+                    res = ex.submit(fn).result(timeout=70)
                     fpath = _extract_gradio_path(res, out_jpg.parent)
                     if fpath and os.path.exists(fpath):
                         with Image.open(fpath) as im:
@@ -285,15 +352,22 @@ def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
                     print(f"   ⚠️ [Kids ZeroGPU {space_id}]: {str(e)[:85]}", flush=True)
                     if "quota" not in str(e).lower() and "401" not in str(e):
                         break
+                finally:
+                    ex.shutdown(wait=False, cancel_futures=True)
     except Exception:
         pass
+
+    with _HORDE_LOCK:
+        skip_horde = (_HORDE_FAILURES >= 2)
+    if skip_horde:
+        return False
 
     try:
         models = _get_kids_horde_models()
         print(f"   🎨 [Kids AI Horde] {models[:2]}", flush=True)
         headers = {
             "apikey": os.getenv("AI_HORDE_API_KEY", "").strip() or "0000000000",
-            "Client-Agent": "MalakKids:1.1:pixar-clean",
+            "Client-Agent": "MallakKids:1.2:pixar-clean",
             "Content-Type": "application/json",
         }
         payload = {
@@ -304,11 +378,16 @@ def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
         r = requests.post("https://aihorde.net/api/v2/generate/async", headers=headers, json=payload, timeout=20)
         if r.status_code in (200, 202) and r.json().get("id"):
             job_id = r.json()["id"]
-            deadline = time.time() + 135
+            deadline = time.time() + 75
             while time.time() < deadline:
                 time.sleep(5)
                 chk = requests.get(f"https://aihorde.net/api/v2/generate/check/{job_id}", headers=headers, timeout=15)
-                if chk.status_code == 200 and chk.json().get("done"):
+                if chk.status_code != 200:
+                    continue
+                cd = chk.json()
+                if cd.get("faulted"):
+                    break
+                if cd.get("done"):
                     st = requests.get(f"https://aihorde.net/api/v2/generate/status/{job_id}", headers=headers, timeout=20)
                     gens = st.json().get("generations") or [] if st.status_code == 200 else []
                     if gens and gens[0].get("img"):
@@ -325,6 +404,9 @@ def _generate_kids_scene_image(scene_en: str, out_jpg: Path, seed: int) -> bool:
                     break
     except Exception:
         pass
+
+    with _HORDE_LOCK:
+        _HORDE_FAILURES += 1
     return False
 
 
@@ -363,24 +445,24 @@ def _make_kids_overlay_png(text: str, speaker: str, title: str, show_title: bool
 
     clean_text = (text or "").strip()
     if clean_text:
-        chosen_f = _load_font(font_path, 30)
-        lines = []
-        lh = 52
-        for sz in range(38, 26, -2):
+        chosen_f = _load_font(font_path, 26)
+        lines: list[str] = []
+        lh = 44
+        for sz in range(36, 20, -2):
             f = _load_font(font_path, sz)
-            lns = _wrap_text(clean_text, f, VIDEO_W - 108, d)
-            cand_lh = max(48, int(sz * 1.56))
-            if len(lns) <= 4 and len(lns) * cand_lh <= 230:
+            lns = _wrap_text(clean_text, f, VIDEO_W - 104, d)
+            cand_lh = max(40, int(sz * 1.54))
+            if len(lns) <= 5 and len(lns) * cand_lh <= 260:
                 chosen_f, lines, lh = f, lns, cand_lh
                 break
         if not lines:
-            lines = _wrap_text(clean_text, chosen_f, VIDEO_W - 108, d)[:4]
+            lines = _wrap_text(clean_text, chosen_f, VIDEO_W - 104, d)[:6]
 
-        box_h = len(lines) * lh + 34
-        box_y1 = VIDEO_H - 120
+        box_h = len(lines) * lh + 38
+        box_y1 = VIDEO_H - 110
         box_y0 = box_y1 - box_h
 
-        d.rounded_rectangle([32, box_y0, VIDEO_W - 32, box_y1], radius=28, fill=(18, 24, 46, 198), outline=(255, 222, 138, 195), width=2)
+        d.rounded_rectangle([30, box_y0, VIDEO_W - 30, box_y1], radius=28, fill=(18, 24, 46, 204), outline=(255, 222, 138, 195), width=2)
 
         sp_font = _load_font(font_path, 24)
         sbb = _measure(d, sp_label, sp_font)
@@ -393,7 +475,7 @@ def _make_kids_overlay_png(text: str, speaker: str, title: str, show_title: bool
         else:
             d.text((stx, box_y0 - 20), _prep_txt(sp_label), font=sp_font, fill=(255, 255, 255, 255))
 
-        cy = box_y0 + 24
+        cy = box_y0 + 26
         for ln in lines:
             bb = _measure(d, ln, chosen_f)
             lx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
@@ -404,18 +486,18 @@ def _make_kids_overlay_png(text: str, speaker: str, title: str, show_title: bool
             cy += lh
 
     wm_font = _load_font(font_path, 24)
-    wm = "مَلَاكُ المَعْرِفَةِ — قصص الأطفال"
+    wm = f"{CHANNEL_BRAND} — قصص الأطفال"
     wbb = _measure(d, wm, wm_font)
     wx = (VIDEO_W - (wbb[2] - wbb[0])) // 2 - wbb[0]
     if HAS_RAQM:
-        d.text((wx, VIDEO_H - 72), _prep_txt(wm), font=wm_font, fill=(255, 222, 132, 235), direction="rtl")
+        d.text((wx, VIDEO_H - 68), _prep_txt(wm), font=wm_font, fill=(255, 222, 132, 235), direction="rtl")
     else:
-        d.text((wx, VIDEO_H - 72), _prep_txt(wm), font=wm_font, fill=(255, 222, 132, 235))
+        d.text((wx, VIDEO_H - 68), _prep_txt(wm), font=wm_font, fill=(255, 222, 132, 235))
 
     overlay.save(out_png)
 
 
-def _make_kids_moral_storybook_card(moral_text: str, title: str, font_path: str, out_png: Path):
+def _make_kids_moral_storybook_card(moral_text: str, font_path: str, out_png: Path):
     prompt = (
         "Top-down flat-lay macro studio photograph of an open thick puffy cream-ivory quilted wool "
         "children's storybook lying flat on a warm bright sunlit oak table, cute 3D felt stars and "
@@ -435,21 +517,33 @@ def _make_kids_moral_storybook_card(moral_text: str, title: str, font_path: str,
         card = im.convert("RGBA")
 
     d = ImageDraw.Draw(card)
-    d.rounded_rectangle([64, 210, VIDEO_W - 64, VIDEO_H - 220], radius=36, fill=(252, 247, 236, 205), outline=(212, 164, 62, 210), width=3)
+    d.rounded_rectangle([64, 210, VIDEO_W - 64, VIDEO_H - 220], radius=36, fill=(252, 247, 236, 218), outline=(212, 164, 62, 215), width=3)
 
     h_font = _load_font(font_path, 34)
-    hdr = "✨ حِكْمَةُ القِصَّةِ اليَوْم ✨"
+    hdr = "حِكْمَةُ القِصَّةِ اليَوْم"
     hbb = _measure(d, hdr, h_font)
     hx = (VIDEO_W - (hbb[2] - hbb[0])) // 2 - hbb[0]
     if HAS_RAQM:
-        d.text((hx, 260), _prep_txt(hdr), font=h_font, fill=(182, 88, 28, 255), direction="rtl")
+        d.text((hx, 255), _prep_txt(hdr), font=h_font, fill=(182, 88, 28, 255), direction="rtl")
     else:
-        d.text((hx, 260), _prep_txt(hdr), font=h_font, fill=(182, 88, 28, 255))
+        d.text((hx, 255), _prep_txt(hdr), font=h_font, fill=(182, 88, 28, 255))
 
-    m_font = _load_font(font_path, 36)
-    lines = _wrap_text(moral_text, m_font, VIDEO_W - 180, d)
-    lh = 64
-    cy = 480 - (len(lines) * lh) // 2
+    # ملاءمة تلقائية لارتفاع النص بين y=340 و y=930 لمنع التداخل
+    m_font = _load_font(font_path, 30)
+    lines = []
+    lh = 52
+    for sz in range(38, 22, -2):
+        f = _load_font(font_path, sz)
+        lns = _wrap_text(moral_text, f, VIDEO_W - 180, d)
+        cand_lh = max(48, int(sz * 1.70))
+        if len(lns) * cand_lh <= 560:
+            m_font, lines, lh = f, lns, cand_lh
+            break
+    if not lines:
+        lines = _wrap_text(moral_text, m_font, VIDEO_W - 180, d)
+
+    total_h = len(lines) * lh
+    cy = 340 + max(0, (580 - total_h) // 2)
     for ln in lines:
         bb = _measure(d, ln, m_font)
         lx = (VIDEO_W - (bb[2] - bb[0])) // 2 - bb[0]
@@ -460,7 +554,7 @@ def _make_kids_moral_storybook_card(moral_text: str, title: str, font_path: str,
         cy += lh
 
     sig_font = _load_font(font_path, 28)
-    sig = f"{BOY_NAME} وَ{GIRL_NAME} — مَلَاكُ المَعْرِفَةِ"
+    sig = f"{BOY_NAME} وَ{GIRL_NAME} — {CHANNEL_BRAND}"
     sbb = _measure(d, sig, sig_font)
     sx = (VIDEO_W - (sbb[2] - sbb[0])) // 2 - sbb[0]
     if HAS_RAQM:
@@ -469,6 +563,19 @@ def _make_kids_moral_storybook_card(moral_text: str, title: str, font_path: str,
         d.text((sx, VIDEO_H - 300), _prep_txt(sig), font=sig_font, fill=(154, 92, 28, 255))
 
     card.convert("RGB").save(out_png)
+
+
+def _get_audio_dur(path: Path, fallback: float) -> float:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        v = float(r.stdout.strip() or 0)
+        return v if v > 0 else fallback
+    except Exception:
+        return fallback
 
 
 def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
@@ -481,7 +588,7 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
     title = ep.get("title", "قصة للأطفال")
     moral = ep.get("moral_card", "")
     segs = ep.get("segments", [])
-    total_dur = float(ep.get("total_duration") or 30.0)
+    total_dur = _get_audio_dur(audio_p, float(ep.get("total_duration") or 30.0))
     font_path = _find_amiri_font()
 
     work = Path(tempfile.mkdtemp(prefix="kids_vid_"))
@@ -489,6 +596,8 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
         def _prep_img(i_s):
             idx, s = i_s
             out_img = work / f"ksc_{idx}.jpg"
+            if s.get("type") == "moral":
+                return out_img
             seed = 9000 + idx * 107 + random.randint(1, 50)
             if not _generate_kids_scene_image(s["scene_prompt_en"], out_img, seed):
                 _make_kids_gradient_fallback(out_img)
@@ -503,22 +612,19 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
             sdur = float(s["duration"])
             is_last = (idx == len(segs) - 1)
             render_dur = sdur + (0.0 if is_last else XFADE_DUR)
-            frames = max(24, int(round(render_dur * FPS)) + 12)
+            frames = max(18, int(round(render_dur * FPS)) + 8)
+            is_moral = (s.get("type") == "moral")
 
-            if is_last and moral:
+            if is_moral and moral:
                 moral_png = work / "moral_card.png"
-                _make_kids_moral_storybook_card(moral, title, font_path, moral_png)
-                vf = (
-                    f"scale={VIDEO_W*2}:{VIDEO_H*2}:flags=lanczos,"
-                    f"zoompan=z='min(zoom+0.0003,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                    f"d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p,setsar=1"
-                )
+                _make_kids_moral_storybook_card(moral, font_path, moral_png)
                 subprocess.run(
                     [
                         "ffmpeg", "-y", "-loglevel", "error",
                         "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(moral_png),
-                        "-vf", vf, "-t", f"{render_dur:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                        "-vf", f"scale={VIDEO_W}:{VIDEO_H},fps={FPS},format=yuv420p,setsar=1",
+                        "-t", f"{render_dur:.3f}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-an",
                         str(work / f"kclip_{idx}.mp4"),
                     ],
                     check=True, capture_output=True, timeout=180,
@@ -533,7 +639,7 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
                     font_path=font_path,
                     out_png=ov_png,
                 )
-                z_expr = "min(zoom+0.0005,1.09)" if idx % 2 == 0 else "max(1.09-0.0005*on,1.0)"
+                z_expr = "min(zoom+0.00045,1.06)" if idx % 2 == 0 else "max(1.06-0.00045*on,1.0)"
                 fc = (
                     f"[0:v]scale={VIDEO_W*2}:{VIDEO_H*2}:force_original_aspect_ratio=increase,"
                     f"crop={VIDEO_W*2}:{VIDEO_H*2},"
@@ -548,7 +654,7 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
                         "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(img_p),
                         "-loop", "1", "-t", f"{render_dur:.3f}", "-i", str(ov_png),
                         "-filter_complex", fc, "-map", "[v]", "-t", f"{render_dur:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-an",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-an",
                         str(work / f"kclip_{idx}.mp4"),
                     ],
                     check=True, capture_output=True, timeout=180,
@@ -571,7 +677,7 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
                     *inputs, "-filter_complex", ";".join(filters), "-map", "[vout]",
-                    "-t", f"{total_dur:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-an",
+                    "-t", f"{total_dur:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-an",
                     str(vid_only),
                 ],
                 check=True, capture_output=True, timeout=240,
@@ -582,7 +688,7 @@ def build_kids_video(ep_json_path: str, out_mp4: str) -> bool:
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(vid_only), "-i", str(audio_p),
                 "-map", "0:v", "-map", "1:a", "-t", f"{total_dur:.3f}",
-                *FINAL_ENCODE, "-c:a", "aac", "-b:a", "80k", "-ar", "44100", "-shortest",
+                *FINAL_ENCODE, "-c:a", "aac", "-ac", "1", "-b:a", "48k", "-ar", "24000", "-shortest",
                 str(out_p),
             ],
             check=True, capture_output=True, timeout=240,
