@@ -1,6 +1,7 @@
 {
-  "run_count": 22,
+  "run_count": 23,
   "adhkar_slot_idx": 3,
+  "last_cta_idx": 2,
   "used_ids": {
     "fiqh": [
       "binbaz-17232",
@@ -35,6 +36,8 @@
       "adhkar-sleep-0107",
       "adhkar-sleep-0101"
     ],
-    "dua": []
+    "dua": [
+      "dua-faraj-karb"
+    ]
   }
 }
