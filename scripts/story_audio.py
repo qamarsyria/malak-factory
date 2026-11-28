@@ -1,7 +1,7 @@
 """
 story_audio.py — المرحلة 4: بناء الصوت + الترجمة النصية المتزامنة (مشترك لليوميات والقصص)
 - السرد يُولَّد مرة واحدة ويُشارك بين كل النسخ لتوفير حصة Gemini.
-- يضبط التشكيل الصوتي ويفرض نطق اسم القناة (مَلَّاكُ المَعْرِفَةِ).
+- يضبط التشكيل الصوتي ويفرض نطق اسم القناة بدون شدة على اللام (مَلَاكُ المَعْرِفَةِ).
 - يولّد ترجمة إنكليزية نصية دقيقة لكل شريحة غير قرآنية (text_en) لتظهر على الشاشة فقط دون نطق صوتي.
 - يستثني نصوص القرآن الكريم (type == "quran") من الترجمة تماماً.
 """
@@ -34,18 +34,18 @@ TTS_ENGINE = os.environ.get("TTS_ENGINE", "1").strip()
 ENABLE_EN_SUBTITLES = os.environ.get("ENABLE_EN_SUBTITLES", "1") == "1"
 
 VOICE_BY_TYPE = {
-    "intro":     "Puck",        # نبرة حيوية واضحة لطرح المدخل والمقدمة
+    "intro":     "Puck",
     "teaser":    "Puck",
-    "fiqh":      "Orus",        # نبرة وقورة حازمة للحكم الشرعي
-    "hadith":    "Orus",        # نبرة وقورة لنص الحديث النبوي
-    "narration": "Charon",      # نبرة الشارح/الراوي الرصينة العميقة
-    "adhkar":    "Algieba",     # نبرة ناعمة وهادئة للأذكار
-    "dua":       "Algieba",     # نبرة خاشعة دافئة للأدعية
-    "summary":   "Rasalgethi",  # نبرة متزنة للمصدر والخلاصة
+    "fiqh":      "Orus",
+    "hadith":    "Orus",
+    "narration": "Charon",
+    "adhkar":    "Algieba",
+    "dua":       "Algieba",
+    "summary":   "Rasalgethi",
     "outro":     "Rasalgethi",
     "cta":       "Puck",
 }
-YT_QURAN_VOICE = "Algieba"      # نبرة هادئة رخيمة لآية اليوتيوب مع صدى المسجد
+YT_QURAN_VOICE = "Algieba"
 
 EDGE_VOICE_BY_GEMINI = {
     "Puck":       "ar-EG-ShakirNeural",
@@ -74,7 +74,7 @@ def _edge_phonetic_fix(text: str) -> str:
     }
     for src, dst in replacements.items():
         text = re.sub(rf"\b{src}\b", dst, text)
-    return _enforce_mallak(text)
+    return _enforce_malak(text)
 
 
 if TTS_ENGINE == "1":
@@ -167,14 +167,14 @@ def arabize_numbers(text: str) -> str:
     return re.sub(r"\b(\d{1,6})\b", lambda m: _num_to_arabic(int(m.group(0))), text)
 
 
-def _enforce_mallak(text: str) -> str:
-    """يضبط اسم القناة دائماً بفتح الميم وتشديد اللام مع الفتح: مَلَّاكُ المَعْرِفَةِ."""
+def _enforce_malak(text: str) -> str:
+    """يضبط اسم القناة دائماً بفتح الميم وبدون شدة على اللام: مَلَاكُ المَعْرِفَةِ."""
     if not text:
         return ""
     return re.sub(
         r"(?<![\u0621-\u064A])م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك([\u064B-\u065F]*)"
         r"\s+ال[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة([\u064B-\u065F]*)",
-        lambda m: f"مَلَّاك{m.group(1) or 'ُ'} المَعْرِفَة{m.group(2) or 'ِ'}",
+        lambda m: f"مَلَاك{m.group(1) or 'ُ'} المَعْرِفَة{m.group(2) or 'ِ'}",
         text,
     )
 
@@ -335,7 +335,7 @@ PASS1_PROMPT = """أنت أستاذ لغوي متخصص في الصرف والن
 قواعد الصرف والنحو والنطق الإلزامية:
 1. افهم معنى كل جملة أولاً لتفرق بدقة بين المبني للمعلوم والمجهول والمتشابهات السياقية.
 2. الشدّة (`ّ`) ضرورية جداً للنطق السليم: ضع الشدّة على كل حرف مشدد وعلى الحرف الشمسي بعد (الـ) الشمسية.
-3. اسم القناة «مَلَّاكُ المَعْرِفَةِ» يُضبط دائماً بفتح الميم وتشديد اللام مع الفتح: مَلَّاكُ المَعْرِفَةِ.
+3. اسم القناة «مَلَاكُ المَعْرِفَةِ» يُضبط دائماً بفتح الميم وبدون شدة على اللام: مَلَاكُ المَعْرِفَةِ.
 4. اضبط أواخر الكلمات إعرابياً حسب موقعها، وضع سكوناً (`ْ`) على الحرف الساكن الأخير قبل الفاصلة والنقطة.
 5. حافظ على جميع الكلمات والمسافات وعلامات الترقيم كما هي تماماً دون حذف أو زيادة كلمة.
 
@@ -357,7 +357,7 @@ PASS2_VERIFY_PROMPT = """أنت مدقق صرفي ونحوي صارم تراجع
 التشكيل المقترح:
 {draft}
 
-راجع التشكيل المقترح كلمةً بكلمة وصحح أي خطأ في الشدّة أو الإعراب أو الصرف (وتأكد أن اسم القناة مضبوط دائماً هكذا: مَلَّاكُ المَعْرِفَةِ)، وتأكد من سلامة الحروف دون تغيير أو إضافة كلمات.
+راجع التشكيل المقترح كلمةً بكلمة وصحح أي خطأ في الشدّة أو الإعراب أو الصرف (وتأكد أن اسم القناة مضبوط دائماً هكذا بدون شدة على اللام: مَلَاكُ المَعْرِفَةِ)، وتأكد من سلامة الحروف دون تغيير أو إضافة كلمات.
 
 أعد JSON فقط:
 {{
@@ -372,18 +372,18 @@ def smart_diacritize(text: str, cache_file: Path | None = None) -> str:
     if cache_file and cache_file.exists():
         cached = cache_file.read_text(encoding="utf-8").strip()
         if cached:
-            return _enforce_mallak(cached)
+            return _enforce_malak(cached)
 
     try:
         p1 = _call_gemini_json(PASS1_PROMPT.format(text=text))
         draft = (p1 or {}).get("diacritized", "").strip()
         if not draft:
-            return _enforce_mallak(text)
+            return _enforce_malak(text)
 
         p2 = _call_gemini_json(PASS2_VERIFY_PROMPT.format(original=text, draft=draft))
         verified = (p2 or {}).get("final_text", "").strip() or draft
 
-        final_text = _enforce_mallak(_merge_diacritics_safely(text, verified))
+        final_text = _enforce_malak(_merge_diacritics_safely(text, verified))
 
         diac_count = len(re.findall(r"[\u064B-\u0652]", final_text))
         letter_count = max(1, len(re.findall(r"[\u0621-\u064A]", final_text)))
@@ -395,7 +395,7 @@ def smart_diacritize(text: str, cache_file: Path | None = None) -> str:
         return final_text
     except Exception as e:
         print(f"   ⚠️ تعذر التشكيل: {str(e)[:80]}", flush=True)
-        return _enforce_mallak(text)
+        return _enforce_malak(text)
 
 
 TRANSLATE_PROMPT = """You are an authoritative Islamic translator specializing in Quranic/Hadith/Fiqh English translation and concise on-screen video subtitles.
@@ -413,7 +413,7 @@ STRICT RULES:
    - Always use **"Allah"** (never "God").
    - Translate "صلى الله عليه وسلم" concisely as **"peace be upon him"**.
    - Translate "رضي الله عنه / عنها" as **"may Allah be pleased with him/her"** and "رحمه الله" as **"may Allah have mercy on him"**.
-   - Always render the channel name "مَلَّاكُ المَعْرِفَةِ" / "ملاك المعرفة" as **"Mallak Al-Ma'rifah"** (never "Angel of Knowledge").
+   - Always render the channel name "مَلَاكُ المَعْرِفَةِ" / "ملاك المعرفة" as **"Malak Al-Ma'rifah"** (never "Angel of Knowledge").
    - Keep Hadith/Fiqh rulings and Duas 100% faithful to the exact Arabic meaning with zero distortion or omission.
 3. Subtitle readability: keep each chunk's English clear, natural, and concise (plain text, NO markdown, NO brackets unless brief clarification, NO Arabic script).
 
@@ -472,7 +472,6 @@ def translate_chunks_batch(
                 translations = cleaned
                 break
 
-    # احتياط: إذا اختلف العدد أو نقصت شريحة، ترجم الشرائح الفارغة إفرادياً
     if len(translations) != len(plain_chunks):
         translations = [""] * len(plain_chunks)
         for i, ch in enumerate(plain_chunks):
@@ -523,7 +522,7 @@ def sanitize_for_tts(t: str) -> str:
     t = re.sub(r"\[.*?\]|\(.*?\)|﴿.*?﴾", "", t, flags=re.DOTALL)
     t = re.sub(r"[^\u0621-\u064A\u064B-\u065F\u0670\s،؛؟!.:]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
-    return _enforce_mallak(t)
+    return _enforce_malak(t)
 
 
 def _load_local_uthmani_cache():
@@ -687,7 +686,6 @@ def split_text(text: str, max_plain_chars: int = 165) -> list[str]:
     """يقسّم النص بناءً على عدد الحروف الصافية (بدون التشكيل) لتناسق البطاقات والترجمة."""
     sentences = [s.strip() for s in re.split(r"(?<=[.!؟])\s+", text) if s.strip()]
 
-    # تفتيت الجمل الطويلة جداً على الفواصل أولاً حتى لا تفيض عن الدفتر
     granular: list[str] = []
     for sent in sentences:
         if _plain_len(sent) <= max_plain_chars:
@@ -768,7 +766,7 @@ def _build_gemini_quran_chunks(
             "surah_name": sname,
             "reciter": "",
             "text": f"{display} - آية {a}",
-            "text_en": "",  # القرآن الكريم لا يُترجم أبداً
+            "text_en": "",
             "duration": round(get_dur(reverb_wav) + SILENCE_DUR, 3),
         })
     if not q_chunks:
@@ -805,7 +803,7 @@ def _build_husary_quran_chunks(
             "surah_name": sname,
             "reciter": RECITER_YT["name"],
             "text": f"{display} - آية {a}",
-            "text_en": "",  # القرآن الكريم لا يُترجم أبداً
+            "text_en": "",
             "duration": round(get_dur(norm_wav) + SILENCE_DUR, 3),
         })
     if not yt_chunks:
@@ -862,7 +860,7 @@ def build_episode_audio(
 
     title_ar = ep.get("title", "")
     title_hash = hashlib.md5(title_ar.encode("utf-8")).hexdigest()[:8]
-    title_en = translate_title_en(title_ar, cache_file=ep_cache / f"title_en_{title_hash}.txt")
+    title_en = translate_title_en(title_ar, cache_file=ep_cache / f"title_en_v2_{title_hash}.txt")
 
     reciter_bag = RECITER_LIST_SOCIAL.copy()
     random.shuffle(reciter_bag)
@@ -895,7 +893,7 @@ def build_episode_audio(
                 print(f"   🎙️ الفقرة {idx} [{stype}] ← النبرة: {seg_voice}", flush=True)
 
                 txt_md5 = hashlib.md5(raw_text.encode("utf-8")).hexdigest()[:8]
-                diac_cache = ep_cache / f"seg_{idx}_diac_v3_{txt_md5}.txt"
+                diac_cache = ep_cache / f"seg_{idx}_diac_v4_{txt_md5}.txt"
                 diac_text = smart_diacritize(raw_text, cache_file=diac_cache)
                 chunks = [
                     c for c in split_text(diac_text)
@@ -905,7 +903,7 @@ def build_episode_audio(
                     continue
 
                 en_hash = hashlib.md5(("||".join(chunks)).encode("utf-8")).hexdigest()[:8]
-                en_cache = ep_cache / f"seg_{idx}_en_v1_{en_hash}.json"
+                en_cache = ep_cache / f"seg_{idx}_en_v2_{en_hash}.json"
                 en_chunks = translate_chunks_batch(chunks, stype, raw_text, cache_file=en_cache)
 
                 chunk_timings = []
@@ -1000,7 +998,7 @@ def build_episode_audio(
                             "surah_name": sname,
                             "reciter": used_reciter["name"],
                             "text": f"{display} - آية {a}",
-                            "text_en": "",  # القرآن الكريم لا يُترجم أبداً
+                            "text_en": "",
                             "duration": round(get_dur(norm_wav) + SILENCE_DUR, 3),
                         })
                     if social_chunks:
