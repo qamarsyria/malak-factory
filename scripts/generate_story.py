@@ -1,9 +1,9 @@
 """
-generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد الحلقات بأسلوب سردي حيّ ومبسّط
+generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد الحلقات بأسلوب سردي حي ومبسّط
 - يقرأ audited/events/ بالترتيب الزمني الدقيق.
 - يبني كل حلقة بنمط: [فقرة سرد حيّة مبسّطة تشرح المعاني والألفاظ الصعبة ← الآية المؤكدة لها مباشرة].
-- يجمع بين الدقة العلمية والتعظيم الشرعي وبين السرد المبسّط القريب للقلب بلمسة شامية بيضاء دافئة ومفهومة للجميع.
-- يضبط نطق اسم القناة (مَلَاك) بفتح الميم تلقائياً في كل النصوص والخاتمة، ويمنع تسرّب الآيات أو تكرار الافتتاحيات.
+- يجمع بين الدقة العلمية والتعظيم الشرعي وبين اللغة العربية البسيطة الواضحة للجميع.
+- يضبط اسم القناة (مَلَّاكُ المَعْرِفَةِ) بفتح الميم وتشديد اللام مع الفتح.
 """
 
 import os
@@ -86,12 +86,12 @@ THEOLOGICAL_DIGNITY_RULES = """🛡️ ضوابط التعظيم والتنزي�
 - اجعل لغة السرد والخلاصة والتشويق تأملية وقورة تُعظّم الخالق وتُبرز سعة علمه وقدرته وضآلة المخلوقين أمام عظمته سبحانه."""
 
 OPENING_STYLES = [
-    "الدخول فوراً في قلب الحدث بسؤال مثير يوقظ الفضول (مثل: تخيّل لو... أو هل خطَر ببالك يوماً كيف...؟)، دون أي ترحيب تقليدي.",
-    "البدء بكشف معنى كلمة قرآنية عميقة أو تفصيلة مدهشة في الحدث لا ينتبه لها أغلب الناس، لفتح شهية المستمع للتدبر.",
-    "التقاط مشهد حسّي حيّ في أول ثانية (أرض ساكنة، ظلمة تغطي الكون، قلب مضطرب...) يجذب الأذن فوراً قبل التوسع بالتفاصيل.",
-    "تصحيح فكرة خاطئة أو سطحية يتداولها بعض الناس حول هذا الموقف، ثم بيان الحقيقة الموثقة بأسلوب دافئ ومقنع.",
-    "مخاطبة مشاعر الإنسان اليوم وتفكيره، والربط المباشر بين حكمته في هذه القصة وبين هموم حياتنا اليومية.",
-    "إظهار التدرّج العجيب في سنن الله وأحداث القصة بربط لطيف يبيّن أن كل خطوة في الحدث لها سر وحكمة.",
+    "الدخول فوراً في قلب الحدث بسؤال مثير يوقظ الفضول (مثل: تخيل لو... أو هل خطر ببالك يوماً كيف...؟)، دون أي ترحيب تقليدي.",
+    "البدء بكشف معنى كلمة قرآنية عميقة أو تفصيلة مدهشة في الحدث لا ينتبه لها أغلب الناس، بلغة بسيطة جداً ومباشرة.",
+    "التقاط مشهد حسّي حي في أول ثانية يجذب الأذن فوراً قبل التوسع بالتفاصيل.",
+    "تصحيح فكرة خاطئة أو سطحية يتداولها بعض الناس حول هذا الموقف، ثم بيان الحقيقة الموثقة بأسلوب دافئ ومبسط.",
+    "مخاطبة مشاعر الإنسان اليوم وتفكيره، والربط المباشر بين الحكمة في هذه القصة وبين هموم حياتنا اليومية.",
+    "إظهار التدرّج العجيب في سنن الله وأحداث القصة بربط لطيف وسلس يفهمه الجميع من أول مرة.",
 ]
 
 _CLICHE_OPENINGS = (
@@ -113,10 +113,10 @@ _FORBIDDEN_IN_CREATION_RE = re.compile(
 )
 
 _SACRED_DISRESPECT_RE = re.compile(
-    r"(?:(?:عرش\s+(?:الله|الرحمن)|الكرسي|كرسي\s+الله|ملك\s+الله|قدرة\s+الله|الذات\s+الالهية)"
+    r"(?:(?:عرش\s+(?:الله|الرحمن)|الكرسي|كرسي\s+الله|ملك\s+الله|قدرة\s+الله|الذات\s+الالهيه)"
     r"[^.،؟!]{0,55}"
-    r"(?:خيان[ةه]|يتهوى|يتداعى|أنقاض|انقاض|انهيار|سقوط|يصمد|عجز|تهديد|يضعف))|"
-    r"(?:(?:خيان[ةه]|يتهوى|يتداعى|أنقاض|انقاض|انهيار|سقوط|يصمد)"
+    r"(?:خيانه|يتهوى|يتداعى|انقاض|انهيار|سقوط|يصمد|عجز|تهديد|يضعف))|"
+    r"(?:(?:خيانه|يتهوى|يتداعى|انقاض|انهيار|سقوط|يصمد)"
     r"[^.،؟!]{0,55}"
     r"(?:عرش\s+(?:الله|الرحمن)|الكرسي|كرسي\s+الله|ملك\s+الله))"
 )
@@ -172,11 +172,12 @@ def arabize_numbers(text: str) -> str:
     return re.sub(r"\b(\d{1,6})\b", lambda m: num_to_arabic(int(m.group(0))), text)
 
 
-def _enforce_malak_fatha(text: str) -> str:
-    """يضبط نطق اسم القناة (مَلَاك) بفتح الميم قطعاً ويمنع كسرها (مِلاك)."""
+def _enforce_mallak(text: str) -> str:
+    """يضبط اسم القناة دائماً بفتح الميم وتشديد اللام مع الفتح: مَلَّاكُ المَعْرِفَةِ."""
     return re.sub(
-        r"(?<![\u0621-\u064A])م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك([\u064B-\u065F]*)(?=$|[^\u0621-\u064A])",
-        lambda m: "مَلَاك" + (m.group(1) or ""),
+        r"(?<![\u0621-\u064A])م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك([\u064B-\u065F]*)"
+        r"\s+ال[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة([\u064B-\u065F]*)",
+        lambda m: f"مَلَّاك{m.group(1) or 'ُ'} المَعْرِفَة{m.group(2) or 'ِ'}",
         text,
     )
 
@@ -184,11 +185,12 @@ def _enforce_malak_fatha(text: str) -> str:
 def clean_narration(text: str) -> str:
     if not text:
         return ""
+    text = text.replace("ﷺ", " صلى الله عليه وسلم ")
     text = arabize_numbers(text)
     text = re.sub(r"[a-zA-Z]+", "", text)
-    text = re.sub(r"[\[\]\(\)\{\}<>﴿﴾]", "", text)
+    text = re.sub(r"[\[\]\(\)\{\}<>﴿﴾«»\"'`*#@_•/\\|~=+—–\-]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return _enforce_malak_fatha(text)
+    return _enforce_mallak(text)
 
 
 def _norm_ar(text: str) -> str:
@@ -206,7 +208,7 @@ def check_theological_and_context_safety(text: str, story: dict | None = None) -
     story_id = (story or {}).get("story_id") or (story or {}).get("id", "")
     is_creation = (era == "creation" or story_id.startswith("creation-"))
 
-    norm_txt = re.sub(r"[\u0640\u064B-\u065F\u0670]", "", text)
+    norm_txt = _norm_ar(text)
     if is_creation and _FORBIDDEN_IN_CREATION_RE.search(norm_txt):
         issues.append("inappropriate_dramatic_metaphor_in_creation_era")
     if _SACRED_DISRESPECT_RE.search(norm_txt):
@@ -257,7 +259,7 @@ def _advance_pool(pool):
 def _thinking_config(model: str, minimal_thinking: bool = False) -> dict | None:
     m = model.lower()
     if any(x in m for x in ["gemini-3", "gemini-4"]):
-        if minimal_thinking and "gemini-3" in m and "gemini-4" not in m:
+        if minimal_thinking and "lite" in m:
             return {"thinkingLevel": "minimal"}
         return {"thinkingLevel": "low"}
     if "gemini-2.5" in m:
@@ -274,8 +276,10 @@ def _prepare_models(raw_models: list[str]) -> list[str]:
         if canonical and canonical not in seen:
             seen.add(canonical)
             cleaned.append(canonical)
-    if "gemini-3.5-flash-lite" not in seen:
-        cleaned.append("gemini-3.5-flash-lite")
+    for fb in ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
+        if fb not in seen:
+            seen.add(fb)
+            cleaned.append(fb)
     cleaned.sort(key=lambda m: _MODEL_PENALTIES.get(m, 0))
     return cleaned
 
@@ -294,11 +298,7 @@ def call_llm(
     pool = get_pool()
     breaker = get_breaker()
     raw_models = discover_and_cache(force=False)[:10]
-    models = _prepare_models(raw_models) if raw_models else []
-    if not models:
-        _LAST_LLM_ERROR = "لا توجد موديلات Gemini متاحة من discover_and_cache"
-        print(f"   ❌ {_LAST_LLM_ERROR}", flush=True)
-        return None
+    models = _prepare_models(raw_models) if raw_models else ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
     for model in models:
         if breaker.is_open(f"model:{model}"):
@@ -318,7 +318,7 @@ def call_llm(
                     print(f"   ❌ {_LAST_LLM_ERROR}", flush=True)
                     return None
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                gen_cfg = {"maxOutputTokens": max_tokens}
+                gen_cfg: dict = {"maxOutputTokens": max_tokens}
                 if use_temperature:
                     gen_cfg["temperature"] = temperature
                 if is_json:
@@ -383,7 +383,7 @@ def call_llm(
                         use_thinking = False
                     continue
 
-                elif r.status_code == 400 and use_temperature and "temperature" in r.text.lower():
+                elif r.status_code == 400 and use_temperature and ("temperature" in r.text.lower() or "sampling" in r.text.lower()):
                     use_temperature = False
                     continue
 
@@ -492,8 +492,14 @@ def llm_split_event(event_title: str, ayahs: list, narrative: list) -> dict:
                 })
         if cleaned_eps:
             missing_idx = [i for i in range(n_len) if i not in used_idx]
-            if missing_idx:
-                cleaned_eps[-1]["narrative_indices"].extend(missing_idx)
+            for mi in missing_idx:
+                # إلحاق أي فقرة منسية بأقرب حلقة تحافظ على الترتيب الزمني التصاعدي
+                target_ep = next(
+                    (ep for ep in cleaned_eps if ep["narrative_indices"] and mi < ep["narrative_indices"][-1]),
+                    cleaned_eps[-1],
+                )
+                target_ep["narrative_indices"].append(mi)
+                target_ep["narrative_indices"].sort()
             missing_refs = [a["ref"] for a in ayahs if a["ref"] not in used_refs]
             if missing_refs:
                 cleaned_eps[-1]["ayah_refs"].extend(missing_refs)
@@ -552,7 +558,7 @@ def ensure_splits(story_id: str) -> list[Path]:
     return ev_dirs
 
 
-SCRIPT_PROMPT = """أنت حكواتي وراوٍ إسلامي متمكّن تخاطب القلب والعقل بأسلوب دافئ، سلس، ومشوّق، وتلتزم التزاماً صارماً بالمادة الموثقة فقط.
+SCRIPT_PROMPT = """أنت حكواتي وراوٍ إسلامي ذكي تخاطب القلب والعقل بلغة عربية معاصرة **سهلة وبسيطة جداً**، وتلتزم التزاماً صارماً بالمادة الموثقة فقط.
 
 📖 القصة: {story_title}
 📖 الحلقة: {ep_title}
@@ -567,12 +573,12 @@ SCRIPT_PROMPT = """أنت حكواتي وراوٍ إسلامي متمكّن تخ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🎯 أسلوب الطرح والتبسيط (سر تميّز الحلقة):
-1. **لغة مبسّطة دافئة بلمسة شامية بيضاء مهذّبة**: ابتعد تماماً عن الأسلوب المدرسي الجاف والكلمات الخشبية ("ينبغي على المرء"، "مما لا شك فيه"، "وفي هذا الصدد"). تكلّم كأنك تجلس مع مستمعك وتشوّقه وتفهمه من قلبك بعبارات سلسة واضحة ومضبوطة النطق لـ TTS (مثل: "تخيّل معي..."، "بس لحظة..."، "هون السر العجيب..."، "يعني ببساطة..."، "شو معناها؟"، "ليش صار هيك؟")، دون عامية مغرقة تصعب قراءتها.
-2. **ممنوع تمرير كلمة قرآنية أو تراثية صعبة بدون شرحها**: إذا احتوت الآية أو المادة الموثقة كلمة لا يفهم معناها عامة الناس (مثل: دحاها، أغطش، رتق، فتق، أقواتها، تحفّهم، السكينة، غشيتهم، كظم)، اشرح معناها في فقرة `"narration"` التي تسبقها بلغة يومية واضحة وتصوير حيّ يدهش المستمع (بدون نقل الآية حرفياً!).
-3. **العمق قبل العاطفة**: لا تكتفِ بالوصف السطحي؛ اشرح *الحكمة والدلالة الدقيقة* وراء المشهد واربطها بإحساس الإنسان اليوم.
+1. **لغة عربية بسيطة جداً وواضحة للجميع**: ابتعد تماماً عن الأسلوب المدرسي الجاف، وعن أسلوب "سأل فلان وقال علّان"، وعن الكلمات التراثية المعقدة. اكتب بجمل قصيرة، واضحة، سلسة ومضبوطة النطق لـ TTS يفهمها أي مشاهد حتى لو لم تكن لغته العربية قوية.
+2. **ترجمة أي كلمة صعبة فوراً**: إذا وردت في الآية أو المادة الموثقة كلمة قد يصعب فهمها على الناس (مثل: دحاها، أغطش، رتق، فتق، أقواتها، تحفّهم، كظم)، اشرح معناها في فقرة `"narration"` التي تسبقها بلغة يومية واضحة ("بمعنى أوضح...") دون نقل الآية حرفياً!
+3. **العمق قبل العاطفة**: اشرح *الحكمة والدلالة العملية* وراء المشهد واربطها بإحساس الإنسان وحياته اليوم.
 
 🎯 الهيكل الإلزامي للسكريبت:
-- كتلة `"narration"`: تشرح المشهد والمعنى والكلمات الغريبة بأسلوب حكواتي مشوّق ودافئ مستند للمادة الموثقة فقط.
+- كتلة `"narration"`: تشرح المشهد والمعنى والكلمات الصعبة بأسلوب حكواتي مشوّق ودافئ مستند للمادة الموثقة فقط.
 - تتلوها مباشرة كتلة `"quran"`: الآية (أو الآيات المتتابعة أرقاماً من نفس السورة) التي **تؤكد وتثبت ما ذُكر في فقرة السرد التي سبقتها مباشرة**.
 
 🎙️ أسلوب الافتتاحية الإلزامي لهذه الحلقة (للتنويع ومنع التكرار):
@@ -582,10 +588,10 @@ SCRIPT_PROMPT = """أنت حكواتي وراوٍ إسلامي متمكّن تخ
 
 ⚠️ قواعد صارمة:
 1️⃣ **لا إضافة من الخارج**: التزم بالمعلومات الموثقة أعلاه فقط. لا تخترع أحداثاً ولا تستورد آيات غير موجودة في القائمة.
-2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً أو اقتباس جملة قرآنية كاملة داخل نص `"narration"`. اشرح معناها وسياقها بكلمات وصفية، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
+2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً أو اقتباس جملة قرآنية كاملة داخل نص `"narration"`. اشرح معناها وسياقها بكلمات وصفية بسيطة، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
 3️⃣ **منع تتابع آيتين غير متسلسلتين**: يُمنع منعاً باتاً وضع كتلتَي `"quran"` متتاليتين مباشرةً دون فقرة `"narration"` فاصلة بينهما، **إلا** إذا كانتا من **نفس السورة ومتتاليتين تماماً بالأرقام** (مثل آية 22 ثم 23). وكذلك لا تجمع داخل كتلة `"quran"` واحدة أرقاماً غير متتالية؛ إذا تباعدت الآيات أو اختلفت السور فاجعل قبل كل آية فقرة `"narration"` تمهد لها.
 4️⃣ **لا حشو**: ممنوع الجمل الإنشائية الفارغة ("في خضم الأحداث"، "مما لا شك فيه"، "ومن الجدير بالذكر").
-5️⃣ **اللغة**: عربية سليمة مبسّطة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد، واسم القناة هو «مَلَاك المَعْرِفَة» بفتح الميم.
+5️⃣ **اللغة**: عربية بسيطة وواضحة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد، واسم القناة هو «مَلَّاكُ المَعْرِفَةِ» بفتح الميم وتشديد اللام.
 6️⃣ **الطول المستهدف للسرد**: {min_words} إلى {max_words} كلمة (بقدر المادة الموثقة دون مطّ).
 
 {dignity_rules}
@@ -672,6 +678,7 @@ def enrich_and_validate_script(
 
     expected_refs = {a["ref"] for a in expected_ayahs}
     actual_refs = set()
+    actual_refs_list = []
     meaningful_segments = []
 
     for s in segments:
@@ -701,7 +708,11 @@ def enrich_and_validate_script(
                 issues.append(f"non_consecutive_ayahs_in_block ({s['display']}: {nums})")
 
             for n in nums:
-                actual_refs.add(f"{surah}:{n}")
+                ref_k = f"{surah}:{n}"
+                if ref_k in actual_refs:
+                    issues.append(f"duplicate_ayah ({ref_k})")
+                actual_refs.add(ref_k)
+                actual_refs_list.append(ref_k)
             meaningful_segments.append(s)
 
     missing = sorted(expected_refs - actual_refs)
@@ -830,6 +841,8 @@ def _build_retry_feedback(issues: list[str], ayahs_ep: list) -> str:
                 notes.append(f"- {iss}: أعد الصياغة دون نقل عبارات الآية داخل السرد.")
         elif iss == "quran_quoted_with_brackets_in_narration":
             notes.append("- يُمنع وضع أقواس ﴿...﴾ أو نص الآية داخل narration؛ ضع الآية في كتلة quran فقط.")
+        elif iss.startswith("duplicate_ayah"):
+            notes.append(f"- {iss}: ذُكرت الآية أكثر من مرة؛ ضع كل آية مرة واحدة فقط.")
         elif iss.startswith("consecutive_unrelated_quran_segments"):
             notes.append(
                 f"- خطأ تتابع آيات ({iss}): يُمنع وضع آيتين وراء بعضهما مباشرة دون فقرة narration بينهما "
@@ -868,8 +881,8 @@ def generate_summary(story, ep_title, segments):
 
 {THEOLOGICAL_DIGNITY_RULES}
 
-اكتب "خلاصة وعبرة" دافئة وقريبة للقلب من سطرين إلى ثلاثة أسطر:
-- بلغة عربية مبسّطة دافئة بلمسة شامية بيضاء مهذّبة (تخاطب القلب والعقل معاً، وتعطي المستمع فكرة عملية يطبقها بحياته اليوم).
+اكتب "خلاصة وعبرة" عملية ومباشرة من سطرين إلى ثلاثة أسطر:
+- بلغة عربية معاصرة سهلة جداً وواضحة للجميع، تعطي المستمع فكرة عملية يطبقها في يومه.
 - ممنوع المقدمات المستهلكة ("وفي الختام"، "نستنتج مما سبق") وممنوع أي ألفاظ غير لائقة بالذات الإلهية أو العرش.
 أعد النص فقط."""
     for _ in range(2):
@@ -899,9 +912,9 @@ def generate_teaser(story, ep_title, summary_text, next_ep_title):
 {extra_warn}
 
 المطلوب: اكتب جملة واحدة فقط تشوّق المستمع للحلقة القادمة:
-- اربط السؤال بموضوع الحلقة القادمة الحقيقي بأسلوب دافئ ومبسّط يثير الفضول (مثل: بس تُرى شو رح يصير...؟ أو كيف تكشف لنا...؟) مع الحفاظ على الأدب والتعظيم.
+- اربط السؤال بموضوع الحلقة القادمة الحقيقي بلغة عربية سهلة وواضحة ومثيرة للفضول.
 - يُمنع منعاً باتاً استخدام كلمات الصراع البشري أو الخيانة أو السقوط أو انهيار العروش/الكراسي.
-- جملة واحدة فقط باللغة العربية المبسّطة.
+- جملة واحدة فقط.
 أعد الجملة فقط."""
         res = call_llm(prompt, is_json=False, timeout=45, max_tokens=2048, minimal_thinking=True, temperature=0.38)
         teaser = clean_narration(res) if isinstance(res, str) else ""
@@ -911,8 +924,8 @@ def generate_teaser(story, ep_title, summary_text, next_ep_title):
     if next_ep_title:
         clean_next = clean_narration(next_ep_title)
         if clean_next and not check_theological_and_context_safety(clean_next, story):
-            return f"فما الذي تكشفه لنا النصوص الموثقة في المحطة القادمة حول {clean_next}؟"
-    return "فماذا تكشف لنا الآيات الكريمة والأحاديث الصحيحة في المحطة القادمة من هذه السلسلة المباركة؟"
+            return f"فما الذي تكشفه لنا النصوص الموثقة في الحلقة القادمة حول {clean_next}؟"
+    return "فماذا تكشف لنا الآيات الكريمة والأحاديث الصحيحة في الحلقة القادمة من هذه السلسلة المباركة؟"
 
 
 def main(clear_latest: bool = True, _visited: set | None = None):
@@ -1122,7 +1135,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
             "text": teaser,
             "next_episode_title": f"الحلقة {ep_num + 1}",
             "url": "https://qamarsyria.github.io/qamar-malak/",
-            "platform_name": "مَلَاكُ المَعْرِفَةِ",
+            "platform_name": "مَلَّاكُ المَعْرِفَةِ",
         })
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
