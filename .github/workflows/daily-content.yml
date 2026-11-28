@@ -16,9 +16,10 @@ on:
           - hadith
           - quran
           - adhkar
+          - dua
 
 env:
-  # غيّرها إلى "true" بعد الاطمئنان لتجارب التلاوة على تيليجرام لتفعيل النشر التلقائي
+  # غيّرها إلى "true" بعد الاطمئنان للنتائج على تيليجرام لتفعيل النشر التلقائي
   AUTO_PUBLISH: "false"
 
 jobs:
@@ -26,7 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
-      models: read
       contents: write
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -44,9 +44,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            ffmpeg fonts-hosny-amiri espeak-ng libespeak-ng1 \
+            libraqm-dev libfribidi-dev libharfbuzz-dev
           pip install --upgrade pip
-          pip install requests edge-tts pillow arabic-reshaper python-bidi huggingface_hub quranic-phonemizer datasets
+          pip install "numpy<2" requests edge-tts pillow arabic-reshaper python-bidi \
+            huggingface_hub quranic-phonemizer datasets \
+            opencv-python-headless onnxruntime "gradio_client>=1.10.0,<2.0.0"
           pip install --force-reinstall phonemizer==3.2.1
 
       - name: Fetch All Libraries (Fiqh, Hadith, Quran, Adhkar)
@@ -59,7 +63,6 @@ jobs:
       - name: Generate Daily Content
         id: gen
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           FORCE_CONTENT_TYPE: ${{ github.event.inputs.content_type || 'auto' }}
         run: |
@@ -78,8 +81,8 @@ jobs:
         if: steps.gen.outputs.EP_FILE != ''
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TTS_ENGINE: "1"
+          ENABLE_EN_SUBTITLES: "1"
         run: |
           python -u scripts/story_audio.py \
             "${{ steps.gen.outputs.EP_FILE }}" \
@@ -92,8 +95,16 @@ jobs:
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SHARE_EPISODE_MEDIA: "1"
+          CINEMA_ANIME_MODE: "0"
+          USE_ISLAMIC_CARDS: "1"
+          ENABLE_8D_RAYS: "0"
+          ENABLE_8D_PARTICLES: "0"
         run: |
           mkdir -p videos
+          rm -rf /tmp/story_media_cache
           python -u scripts/story_video.py \
             "out/${{ steps.gen.outputs.EP_NAME }}_yt_meta.json" \
             "out/${{ steps.gen.outputs.EP_NAME }}_yt.mp3" \
@@ -105,6 +116,13 @@ jobs:
         if: steps.aud.outcome == 'success'
         env:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SHARE_EPISODE_MEDIA: "1"
+          CINEMA_ANIME_MODE: "0"
+          USE_ISLAMIC_CARDS: "1"
+          ENABLE_8D_RAYS: "0"
+          ENABLE_8D_PARTICLES: "0"
         run: |
           mkdir -p videos
           python -u scripts/story_video.py \
@@ -112,6 +130,7 @@ jobs:
             "out/${{ steps.gen.outputs.EP_NAME }}_social.mp3" \
             "videos/${{ steps.gen.outputs.EP_NAME }}_social.mp4" \
             "social"
+          rm -rf /tmp/story_media_cache
 
       - name: Upload to Telegram
         id: tg
@@ -131,9 +150,10 @@ jobs:
 
             local SIZE
             SIZE=$(stat -c%s "$VIDEO_PATH")
+            echo "📹 $VIDEO_PATH ($(awk "BEGIN {printf \"%.1f\", $SIZE/1048576}") MB)"
             if [ $((SIZE / 1024 / 1024)) -gt 45 ]; then
               local COMPRESSED="videos/${{ steps.gen.outputs.EP_NAME }}_${OUT_TAG}_tg.mp4"
-              ffmpeg -y -i "$VIDEO_PATH" -vf "scale=720:-2" -c:v libx264 -b:v 600k -maxrate 800k -bufsize 1200k -preset fast -c:a aac -b:a 64k "$COMPRESSED"
+              ffmpeg -y -i "$VIDEO_PATH" -vf "scale=720:-2" -c:v libx264 -crf 28 -maxrate 165k -bufsize 330k -preset medium -c:a aac -ac 1 -b:a 36k -movflags +faststart "$COMPRESSED"
               UPLOAD_FILE="$COMPRESSED"
             fi
 
@@ -184,11 +204,21 @@ jobs:
         run: |
           rm -rf videos out data/daily/generated data/libraries
 
+          git config --global http.version HTTP/1.1
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f state/daily_state.json
           if ! git diff --staged --quiet; then
             git commit -m "chore: update daily state [skip ci]"
-            git pull --rebase --autostash || true
-            git push || git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" "HEAD:${{ github.ref_name }}"
+            for attempt in 1 2 3; do
+              echo "🔄 محاولة رفع الحالة ($attempt/3)..."
+              git pull --rebase --autostash || true
+              if git push || git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" "HEAD:${{ github.ref_name }}"; then
+                echo "✅ تم حفظ الحالة بنجاح"
+                exit 0
+              fi
+              sleep $((attempt * 10))
+            done
+            echo "❌ فشل git push بعد 3 محاولات"
+            exit 1
           fi
