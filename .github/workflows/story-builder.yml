@@ -244,13 +244,13 @@ jobs:
                 FAILED=$((FAILED+1))
                 continue
               fi
-              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 48}")
-              [ "$TARGET_KBPS" -gt 450 ] && TARGET_KBPS=450
-              [ "$TARGET_KBPS" -lt 220 ] && TARGET_KBPS=220
+              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 36}")
+              [ "$TARGET_KBPS" -gt 220 ] && TARGET_KBPS=220
+              [ "$TARGET_KBPS" -lt 140 ] && TARGET_KBPS=140
               COMPRESSED="compressed_$(basename "$f")"
               ffmpeg -y -i "$f" \
                 -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
-                -preset medium -c:a aac -ac 1 -b:a 48k -movflags +faststart "$COMPRESSED"
+                -preset medium -c:a aac -ac 1 -b:a 36k -movflags +faststart "$COMPRESSED"
               TO_SEND="$COMPRESSED"
               CLEANUP_COMP="$COMPRESSED"
             fi
@@ -297,12 +297,26 @@ jobs:
       - name: Commit state
         if: steps.gen.outcome == 'success' && (steps.gen.outputs.has_episode == 'false' || steps.telegram.outcome == 'success')
         run: |
+          git config --global http.version HTTP/1.1
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state/ data/stories/*/state.json data/stories/*/audited/events/*/split.json || true
-          git commit -m "🎬 ${{ steps.gen.outputs.ep_name || 'advance-story-state' }}" || echo "لا تغييرات"
-          git pull --rebase --autostash origin main || git pull --rebase --autostash || true
-          git push
+          if ! git diff --staged --quiet; then
+            git commit -m "🎬 ${{ steps.gen.outputs.ep_name || 'advance-story-state' }}"
+            for attempt in 1 2 3; do
+              echo "🔄 محاولة رفع الحالة ($attempt/3)..."
+              git pull --rebase --autostash origin main || git pull --rebase --autostash || true
+              if git push; then
+                echo "✅ تم حفظ الحالة بنجاح"
+                exit 0
+              fi
+              sleep $((attempt * 10))
+            done
+            echo "❌ فشل git push بعد 3 محاولات"
+            exit 1
+          else
+            echo "لا تغييرات"
+          fi
 
       - name: Notify failure
         if: failure()
