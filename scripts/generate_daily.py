@@ -4,6 +4,7 @@ import os
 import random
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 import requests
@@ -11,34 +12,38 @@ import requests
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from model_discovery import discover_and_cache
+from gemini_tts_pool import get_pool
+from utilities import get_breaker
+
 OUTPUT_DIR = _REPO_ROOT / "data" / "daily" / "generated"
 OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
 STATE_FILE = _REPO_ROOT / "state" / "daily_state.json"
 LIBRARIES_DIR = _REPO_ROOT / "data" / "libraries"
 
-SALAF_SYSTEM_PROMPT = """أنت داعية ومحرر محتوى إسلامي متمكّن على منهج أهل السنة والجماعة والطريقة السلفية الصافية (الكتاب والسنة بفهم سلف الأمة، وأقوال العلماء الراسخين كابن كثير والسعدي وابن باز وابن عثيمين والألباني والفوزان).
+SALAF_SYSTEM_PROMPT = """أنت محرر ومُقدِّم محتوى إسلامي ذكي ومعاصر على منهج أهل السنة والجماعة وفهم سلف الأمة (مستنداً لأقوال العلماء الراسخين كابن كثير والسعدي وابن باز وابن عثيمين والألباني والفوزان).
 
 قواعد إلزامية لا يجوز مخالفتها أبداً:
 1. الأمانة العلمية التامة: التزم التزاماً صارماً بالحكم الشرعي والدليل والمعنى الموجود في المصادر المرفقة؛ لا تغيّر حكماً ولا تخترع حديثاً أو قصة أو سبب نزول غير وارد فيها.
 2. النصوص الشرعية (متن الآية، الحديث النبوي، الدعاء أو الذكر المأثور): تُنقل كما هي بالضبط دون تحريف.
-3. أسلوب الشرح والسرد (مهم جداً):
-   - يُمنع منعاً باتاً الأسلوب المدرسي الجاف والمقدمات المعلّبة ("نتوقف اليوم مع..."، "في هذا المقطع..."، "مقدمة روحانية..."، "مما لا شك فيه...").
-   - اشرح بلغة عربية مبسطة حية بلمسة شامية بيضاء مهذّبة ودافئة قريبة للقلب ومفهومة لكل العرب (مثل: "تخيّل معي..."، "بس لحظة..."، "شو يعني هالكلمة؟"، "هون بيت القصيد..."، "كتير ناس بتفكر إنو... بس الصح..."، "خلي هالمعلومة ببالك..."، "مو مجرد...").
-   - فكّك وشرح أي كلمة غريبة أو تراثية في النص الشرعي (مثل: تحفهم، السكينة، غشيتهم، كظم، ضلع الدين، عصمة أمري) ببساطة مدهشة تجعل المستمع يحسّ أنه يفهمها لأول مرة في حياته.
-   - أعطِ عمقاً حقيقياً (الحكمة + التفصيل الدقيق الذي يخطئ فيه الناس + التطبيق العملي اليومي).
+3. أسلوب الطرح واللغة (حاسم جداً):
+   - يُمنع منعاً باتاً أسلوب الثمانينات الجاف وصيغ الأسئلة المعلّبة ("سأل سائل"، "سُئل الشيخ"، "سأل فلان وقال علتان"، "نتوقف اليوم مع..."، "في هذا المقطع..."، "مما لا شك فيه...").
+   - اكتب بلغة عربية معاصرة **سهلة جداً وواضحة ومباشرة** يفهمها القاصي والداني ممن ليست لغته العربية قوية: جمل قصيرة، واضحة، سلسة النطق في القراءة الآلية (TTS)، بدون مفردات معجمية ثقيلة أو عامية مغرقة تشوه النطق.
+   - ادخل في الموضوع فوراً بذكاء: اربط الحكم أو الحديث بموقف يومي واقعي نعيشه في البيت أو الشغل أو المال أو العلاقات، واشرح "ليش" والحكمة وراءه بمثال حيّ قريب للعقل.
+   - إذا وجدت أي كلمة صعبة أو تراثية في الحديث أو الآية أو الفتوى (مثل: ضلع الدين، تحفّهم، كظم، السكينة، غشيتهم، أشططت)، ترجم معناها فوراً لكلمات يومية بسيطة ("بمعنى أوضح...").
 4. قواعد النطق والتصوير التقنية:
-   - اسم القناة هو «مَلَاك المَعْرِفَة» بفتح الميم (مَـلَاك) وليس بكسرها (مِلاك).
-   - يُمنع منعاً باتاً استخدام الأقواس () أو [] أو ﴿﴾ أو الرموز مثل * # _ - أو أي حروف إنجليزية داخل أي نص.
-   - اكتب الأرقام بالكلمات العربية (مثال: ثلاث مرات، مئة مرة) ولا تكتب أرقاماً هندية (١٢٣).
+   - اسم القناة هو «مَلَّاكُ المَعْرِفَةِ» بفتح الميم وتشديد اللام مع الفتح.
+   - يُمنع منعاً باتاً استخدام الأقواس () أو [] أو ﴿﴾ أو الشرطة - أو الرموز مثل * # _ أو أي حروف إنجليزية داخل أي نص.
+   - اكتب الأرقام بالكلمات العربية (مثال: ثلاث مرات، مئة مرة) ولا تكتب أرقاماً هندية أو إنجليزية.
    - اكتب "صلى الله عليه وسلم" أو "رحمه الله" أو "رضي الله عنه" بدون أقواس تماماً.
-   - اجعل العنوان (title) مختصراً جداً (لا يتجاوز 45 حرفاً بدون أقواس أو إيموجي).
+   - اجعل العنوان (title) قصيراً وذكياً وجذاباً (أقل من 45 حرفاً بدون أقواس أو إيموجي).
 5. أعد JSON فقط بالبنية المطلوبة دون أي كلام قبله أو بعده."""
 
 HOOK_STYLES = [
-    "ابدأ بسؤال واقعي صادم أو فضولي يمسّ حياة الناس اليومية فوراً (مثل: تخيّل لو... أو ليش كتير منا بيعمل كذا مع إنو...؟).",
-    "ابدأ بتصحيح مفهوم غلط شائع عند أغلب الناس حول هذا الموضوع ثم اكشف الصواب بلطف.",
-    "ابدأ بالتركيز على كلمة واحدة مدهشة داخل النص لا يعرف معناها نصّ الناس، واشعل الفضول لمعرفتها.",
-    "ابدأ بمشهد إنساني يومي يعيشه كل واحد فينا (في البيت، الشغل، أو لحظة ضيق) ثم اربطه مباشرة بالحل الشرعي.",
+    "ابدأ مباشرةً بموقف يومي ذكي يقع فيه أغلبنا اليوم في البيت أو العمل أو الهاتف، ثم اطرح المفاجأة الشرعية التي تصحح التصرف.",
+    "ابدأ بتصحيح فكرة مغلوطة منتشرة بين الناس بأسلوب هادئ وذكي يشعر المستمع أنه اكتشف شيئاً مهماً لأول مرة.",
+    "ابدأ بالتقاط كلمة واحدة دقيقة ومدهشة في النص الشرعي يمر الناس عليها دون أن يعرفوا معناها الحقيقي، ثم اكشف معناها ببساطة.",
+    "ابدأ بسؤال مباشر يمسّ حاجة نفسية أو مادية أو أسرية حقيقية يعيشها المشاهد الآن، وادخل فوراً في الحل العملي.",
 ]
 
 DUA_TOPICS = [
@@ -59,7 +64,7 @@ DUA_TOPICS = [
             {
                 "text": "اللهم إني أعوذ بك من الهم والحزن، والعجز والكسل، والبخل والجبن، وضلع الدين وغلبة الرجال.",
                 "source": "رواه البخاري، وكان النبي صلى الله عليه وسلم يكثر منه",
-                "focus_words": "ضَلَع الدَّيْن وغَلَبَة الرجال، الفرق بين الهم والحزن",
+                "focus_words": "ضلع الدين وغلبة الرجال، الفرق بين الهم والحزن",
             },
             {
                 "text": "اللهم رحمتك أرجو فلا تكلني إلى نفسي طرفة عين، وأصلح لي شأني كله، لا إله إلا أنت.",
@@ -106,12 +111,12 @@ DUA_TOPICS = [
             {
                 "text": "اللهم مصرف القلوب صرف قلوبنا على طاعتك.",
                 "source": "رواه مسلم في صحيحه",
-                "focus_words": "صَرِّف قلوبنا",
+                "focus_words": "صرف قلوبنا",
             },
             {
                 "text": "اللهم أصلح لي ديني الذي هو عصمة أمري، وأصلح لي دنياي التي فيها معاشي، وأصلح لي آخرتي التي فيها معادي.",
                 "source": "رواه مسلم في صحيحه",
-                "focus_words": "عِصمة أمري، فيها معادي",
+                "focus_words": "عصمة أمري، فيها معادي",
             },
             {
                 "text": "ربنا لا تزغ قلوبنا بعد إذ هديتنا وهب لنا من لدنك رحمة إنك أنت الوهاب.",
@@ -142,7 +147,7 @@ DUA_TOPICS = [
             {
                 "text": "اللهم احفظني من بين يدي ومن خلفي، وعن يميني وعن شمالي، ومن فوقي، وأعوذ بعظمتك أن أغتال من تحتي.",
                 "source": "رواه أبو داود وابن ماجه وصححه الألباني",
-                "focus_words": "أُغتال من تحتي",
+                "focus_words": "أغتال من تحتي",
             },
         ],
     },
@@ -158,17 +163,17 @@ DUA_TOPICS = [
             {
                 "text": "ربنا هب لنا من أزواجنا وذرياتنا قرة أعين واجعلنا للمتقين إماما.",
                 "source": "القرآن الكريم، سورة الفرقان",
-                "focus_words": "قُرّة أعين، للمتقين إماماً",
+                "focus_words": "قرة أعين، للمتقين إماماً",
             },
             {
-                "text": "رب أوزعني أن أشكر نعمتك التي أنعمت علي وعلى والدي وأن أعمل صالحا ترضاه وأصلح لي في ذريتي.",
+                "text": "رب أوزعني أن أشكر نعمتك التي أنعمت علي وعلى والدي وأن أعمل صالحا ترضاه وأصلح لي في ذريتي إني تبت إليك وإني من المسلمين.",
                 "source": "القرآن الكريم، سورة الأحقاف",
                 "focus_words": "أوزعني، أصلح لي في ذريتي",
             },
             {
                 "text": "اللهم ألف بين قلوبنا، وأصلح ذات بيننا، واهدنا سبل السلام، ونجنا من الظلمات إلى النور.",
                 "source": "رواه أبو داود والحاكم وصححه الألباني",
-                "focus_words": "ألّف بين قلوبنا، أصلح ذات بيننا",
+                "focus_words": "ألف بين قلوبنا، أصلح ذات بيننا",
             },
         ],
     },
@@ -189,7 +194,7 @@ DUA_TOPICS = [
             {
                 "text": "اللهم باعد بيني وبين خطاياي كما باعدت بين المشرق والمغرب، اللهم نقني من خطاياي كما ينقى الثوب الأبيض من الدنس.",
                 "source": "متفق عليه في الصحيحين",
-                "focus_words": "الدَّنَس، المشرق والمغرب",
+                "focus_words": "الدنس، المشرق والمغرب",
             },
             {
                 "text": "اللهم إنك عفو تحب العفو فاعف عني.",
@@ -203,7 +208,7 @@ DUA_TOPICS = [
         "topic": "أدعية السكينة والطمأنينة وذهاب القلق",
         "duas": [
             {
-                "text": "اللهم إني عبدك ابن عبدك ابن أمتك، ناصيتي بيدك، ماض في حكمك، عدل في قضاؤك، أسألك بكل اسم هو لك سميت به نفسك أو أنزلته في كتابك، أن تجعل القرآن ربيع قلبي، ونور صدري، وجلاء حزني، وذهاب همي.",
+                "text": "اللهم إني عبدك ابن عبدك ابن أمتك، ناصيتي بيدك، ماض في حكمك، عدل في قضاؤك، أسألك بكل اسم هو لك سميت به نفسك أو أنزلته في كتابك، أو علمته أحداً من خلقك، أو استأثرت به في علم الغيب عندك، أن تجعل القرآن ربيع قلبي، ونور صدري، وجلاء حزني، وذهاب همي.",
                 "source": "رواه أحمد وصححه الألباني",
                 "focus_words": "ناصيتي بيدك، ربيع قلبي، جلاء حزني",
             },
@@ -220,7 +225,7 @@ DUA_TOPICS = [
             {
                 "text": "اللهم اهدني وسددني.",
                 "source": "رواه مسلم في صحيحه",
-                "focus_words": "الفرق بين اهدني وسدّدني مثل السهم",
+                "focus_words": "الفرق بين اهدني وسددني مثل السهم",
             },
         ],
     },
@@ -257,7 +262,7 @@ DUA_TOPICS = [
             {
                 "text": "اللهم لا سهل إلا ما جعلته سهلا، وأنت تجعل الحزن إذا شئت سهلا.",
                 "source": "رواه ابن حبان وصححه الألباني",
-                "focus_words": "الحَزْن بفتح الحاء وسكون الزاي أي الأرض الصعبة",
+                "focus_words": "الحزن بفتح الحاء وسكون الزاي أي الأرض الصعبة",
             },
             {
                 "text": "رب اشرح لي صدري ويسر لي أمري واحلل عقدة من لساني يفقهوا قولي.",
@@ -270,9 +275,9 @@ DUA_TOPICS = [
                 "focus_words": "مدخل صدق ومخرج صدق",
             },
             {
-                "text": "اللهم خر لي واختر لي ولا تكلني إلى اختياري.",
-                "source": "معنى جامع في طلب التوفيق والخيرة",
-                "focus_words": "خِرْ لي واختر لي",
+                "text": "اللهم إني أستخيرك بعلمك وأستقدرك بقدرتك وأسألك من فضلك العظيم، فإنك تقدر ولا أقدر وتعلم ولا أعلم وأنت علام الغيوب.",
+                "source": "رواه البخاري في صحيحه، من دعاء الاستخارة",
+                "focus_words": "أستخيرك بعلمك وأستقدرك بقدرتك",
             },
         ],
     },
@@ -283,7 +288,7 @@ DUA_TOPICS = [
             {
                 "text": "اللهم اغفر له وارحمه وعافه واعف عنه وأكرم نزله ووسع مدخله واغسله بالماء والثلج والبرد.",
                 "source": "رواه مسلم في صحيحه، من أجمع أدعية الجنازة",
-                "focus_words": "أكرم نُزُله، نقه كما ينقى الثوب",
+                "focus_words": "أكرم نزله، نقه كما ينقى الثوب",
             },
             {
                 "text": "اللهم اغفر لحينا وميتنا وشاهدنا وغائبنا وصغيرنا وكبيرنا وذكرنا وأنثانا.",
@@ -293,7 +298,7 @@ DUA_TOPICS = [
             {
                 "text": "ربنا اغفر لنا ولإخواننا الذين سبقونا بالإيمان ولا تجعل في قلوبنا غلا للذين آمنوا.",
                 "source": "القرآن الكريم، سورة الحشر",
-                "focus_words": "غِلاً أي الحقد والبغض",
+                "focus_words": "غلاً أي الحقد والبغض",
             },
             {
                 "text": "اللهم من أحييته منا فأحيه على الإسلام ومن توفيته منا فتوفه على الإيمان.",
@@ -305,28 +310,64 @@ DUA_TOPICS = [
 ]
 
 _DIGIT_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+_ARABIC_UNITS = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"]
+_ARABIC_TEENS = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر",
+                 "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"]
+_ARABIC_TENS = ["", "عشرة", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون", "تسعون"]
+_ARABIC_HUNDREDS = ["", "مئة", "مئتان", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة"]
 
 
-def _enforce_malak_fatha(text: str) -> str:
-    """يضبط نطق اسم القناة (مَلَاك) بفتح الميم قطعاً ويمنع كسرها (مِلاك)."""
-    return re.sub(
-        r"(?<![\u0621-\u064A])م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك([\u064B-\u065F]*)(?=$|[^\u0621-\u064A])",
-        lambda m: "مَلَاك" + (m.group(1) or ""),
+def _num_to_arabic(n: int) -> str:
+    if n == 0:
+        return "صفر"
+    if n < 10:
+        return _ARABIC_UNITS[n]
+    if n < 20:
+        return _ARABIC_TEENS[n - 10]
+    if n < 100:
+        t, u = divmod(n, 10)
+        return _ARABIC_TENS[t] if u == 0 else f"{_ARABIC_UNITS[u]} و{_ARABIC_TENS[t]}"
+    if n < 1000:
+        h, r = divmod(n, 100)
+        p = _ARABIC_HUNDREDS[h]
+        return p if r == 0 else f"{p} و{_num_to_arabic(r)}"
+    if n < 1_000_000:
+        th, r = divmod(n, 1000)
+        if th == 1:
+            p = "ألف"
+        elif th == 2:
+            p = "ألفان"
+        elif 3 <= th <= 10:
+            p = f"{_ARABIC_UNITS[th]} آلاف"
+        else:
+            p = f"{_num_to_arabic(th)} ألف"
+        return p if r == 0 else f"{p} و{_num_to_arabic(r)}"
+    return str(n)
+
+
+def _enforce_mallak(text: str) -> str:
+    """يضبط اسم القناة دائماً بفتح الميم وتشديد اللام مع الفتح: مَلَّاكُ المَعْرِفَةِ."""
+    text = re.sub(
+        r"(?<![\u0621-\u064A])م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك([\u064B-\u065F]*)"
+        r"\s+ال[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة([\u064B-\u065F]*)",
+        lambda m: f"مَلَّاك{m.group(1) or 'ُ'} المَعْرِفَة{m.group(2) or 'ِ'}",
         text,
     )
+    return text
 
 
 def make_tts_safe(text: str) -> str:
     if not text:
         return ""
     text = text.translate(_DIGIT_MAP)
+    text = re.sub(r"\b(\d{1,6})\b", lambda m: _num_to_arabic(int(m.group(0))), text)
     text = text.replace("ﷺ", " صلى الله عليه وسلم ")
     text = re.sub(r"[()\[\]﴿﴾«»\"'`]", " ", text)
-    text = re.sub(r"[*#@_•/\\|~=+]", " ", text)
-    text = re.sub(r"[a-zA-Z]", " ", text)
+    text = re.sub(r"[*#@_•/\\|~=+—–\-]", " ", text)
+    text = re.sub(r"[a-zA-Z0-9]", " ", text)
     text = re.sub(r"\s*([،؛؟!.:])\s*", r"\1 ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return _enforce_malak_fatha(text)
+    return _enforce_mallak(text)
 
 
 def make_title_safe(title: str, fallback: str) -> str:
@@ -354,7 +395,7 @@ def format_repeat_ar(rep: int) -> str:
     }
     if rep in mapping:
         return mapping[rep]
-    return f"{rep} مرة"
+    return f"{_num_to_arabic(rep)} مرة"
 
 
 def load_library(filename: str) -> list:
@@ -370,17 +411,29 @@ def load_library(filename: str) -> list:
         return []
 
 
-def pick_unused(items: list, used_ids: list[str], predicate=None) -> tuple[dict | None, list[str]]:
+def pick_unused(
+    items: list,
+    used_ids: list[str],
+    predicate=None,
+    exclude_ids: set[str] | None = None,
+    mark_used: bool = True,
+) -> tuple[dict | None, list[str]]:
     pool = [i for i in items if (predicate(i) if predicate else True)]
+    if exclude_ids:
+        pool = [i for i in pool if i.get("id") not in exclude_ids]
+    if not pool:
+        return None, used_ids
+
+    pool_ids = {i.get("id") for i in pool}
     unused = [i for i in pool if i.get("id") not in used_ids]
     if not unused:
-        print("♻️ تم استهلاك جميع العناصر المتاحة في هذا القسم، جاري إعادة التدوير...")
+        print("♻️ تم استهلاك عناصر هذا التصنيف، إعادة تدوير هذا التصنيف فقط...")
+        used_ids = [uid for uid in used_ids if uid not in pool_ids]
         unused = pool
-        used_ids = []
-    if not unused:
-        return None, used_ids
+
     picked = random.choice(unused)
-    used_ids.append(picked["id"])
+    if mark_used and picked.get("id") not in used_ids:
+        used_ids.append(picked["id"])
     return picked, used_ids
 
 
@@ -392,76 +445,122 @@ def _extract_json(raw_text: str) -> dict | None:
     if s == -1 or e <= s:
         return None
     try:
-        return json.loads(raw_text[s : e + 1])
+        return json.loads(raw_text[s:e + 1])
     except Exception:
         return None
 
 
-def call_llm_json(user_prompt: str, max_tokens: int = 2800) -> dict | None:
-    gh_token = os.getenv("GITHUB_TOKEN", "").strip()
-    if gh_token:
-        for model in ("openai/gpt-4.1", "openai/gpt-4o", "openai/gpt-4o-mini"):
-            try:
-                r = requests.post(
-                    "https://models.github.ai/inference/chat/completions",
-                    headers={
-                        "Accept": "application/vnd.github+json",
-                        "Authorization": f"Bearer {gh_token}",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "temperature": 0.42,
-                        "max_tokens": max_tokens,
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": SALAF_SYSTEM_PROMPT},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                    },
-                    timeout=60,
-                )
-                if r.status_code == 200:
-                    content = r.json()["choices"][0]["message"]["content"]
-                    parsed = _extract_json(content)
-                    if parsed:
-                        print(f"   🤖 تم التوليد عبر GitHub Models ({model})", flush=True)
-                        return parsed
-                else:
-                    print(f"   ⚠️ GitHub Models ({model}): HTTP {r.status_code}", flush=True)
-            except Exception as e:
-                print(f"   ⚠️ خطأ GitHub Models ({model}): {e}", flush=True)
+def _thinking_config(model: str) -> dict | None:
+    m = model.lower()
+    if any(x in m for x in ["gemini-3", "gemini-4"]):
+        return {"thinkingLevel": "low"}
+    if "gemini-2.5" in m:
+        return {"thinkingBudget": 512}
+    return None
 
-    raw_keys = os.getenv("GEMINI_API_KEYS", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
-    keys = [k.strip() for k in re.split(r"[\s,;]+", raw_keys) if len(k.strip()) > 20]
-    for key in keys:
-        for g_model in ("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"):
+
+def call_llm_json(user_prompt: str, max_tokens: int = 3200) -> dict | None:
+    pool = get_pool()
+    breaker = get_breaker()
+    models = discover_and_cache(force=False)[:8]
+
+    for model in models:
+        if breaker.is_open(f"model:{model}"):
+            continue
+
+        use_thinking = True
+        use_temperature = True
+        valid_tries = 0
+        dead_skips = 0
+
+        while valid_tries < 2:
             try:
-                r = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={key}",
-                    json={
-                        "systemInstruction": {"parts": [{"text": SALAF_SYSTEM_PROMPT}]},
-                        "contents": [{"parts": [{"text": user_prompt}]}],
-                        "generationConfig": {
-                            "temperature": 0.42,
-                            "maxOutputTokens": max_tokens,
-                            "responseMimeType": "application/json",
-                        },
-                    },
-                    timeout=60,
-                )
+                key = pool.get_current()
+                if not key:
+                    return None
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                gen_cfg: dict = {
+                    "maxOutputTokens": max_tokens,
+                    "responseMimeType": "application/json",
+                }
+                if use_temperature:
+                    gen_cfg["temperature"] = 0.40
+                if use_thinking:
+                    tc = _thinking_config(model)
+                    if tc:
+                        gen_cfg["thinkingConfig"] = tc
+
+                body = {
+                    "systemInstruction": {"parts": [{"text": SALAF_SYSTEM_PROMPT}]},
+                    "contents": [{"parts": [{"text": user_prompt}]}],
+                    "generationConfig": gen_cfg,
+                }
+                r = requests.post(url, json=body, timeout=(15, 65))
+
                 if r.status_code == 200:
-                    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    resp = r.json()
+                    cand = (resp.get("candidates") or [{}])[0]
+                    finish = cand.get("finishReason", "")
+                    parts = cand.get("content", {}).get("parts", [])
                     txt = "".join(p.get("text", "") for p in parts if not p.get("thought") and p.get("text"))
                     parsed = _extract_json(txt)
                     if parsed:
-                        print(f"   🤖 تم التوليد عبر Gemini ({g_model})", flush=True)
+                        if hasattr(pool, "_advance"):
+                            pool._advance()
+                        breaker.record_success(f"model:{model}")
+                        print(f"   🤖 تم التوليد عبر Gemini ({model})", flush=True)
                         return parsed
-                elif r.status_code in (401, 403):
-                    break  # مفتاح غير صالح — انتقل فوراً للمفتاح التالي
-            except Exception:
-                continue
+                    print(f"   ⚠️ {model}: رد JSON غير مكتمل (finish={finish})", flush=True)
+                    break
+
+                elif r.status_code == 401 or (r.status_code == 403 and "api key" in r.text.lower()):
+                    pool.mark_dead(f"HTTP {r.status_code}")
+                    dead_skips += 1
+                    if dead_skips >= 20:
+                        break
+                    continue
+
+                elif r.status_code == 400:
+                    low_err = r.text.lower()
+                    if use_thinking and "thinking" in low_err:
+                        use_thinking = False
+                        continue
+                    if use_temperature and ("temperature" in low_err or "sampling" in low_err):
+                        use_temperature = False
+                        continue
+                    print(f"   ⚠️ {model}: HTTP 400 ({r.text[:140]})", flush=True)
+                    breaker.record_failure(f"model:{model}")
+                    break
+
+                elif r.status_code == 429:
+                    print(f"   ⏸️ {model}: 429 تدوير المفتاح", flush=True)
+                    pool.mark_failed(75)
+                    valid_tries += 1
+                    time.sleep(2)
+                    continue
+
+                elif r.status_code in (403, 404):
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    breaker.record_failure(f"model:{model}")
+                    break
+
+                else:
+                    print(f"   ⚠️ {model}: HTTP {r.status_code}", flush=True)
+                    valid_tries += 1
+                    if hasattr(pool, "_advance"):
+                        pool._advance()
+                    time.sleep(2)
+                    continue
+
+            except requests.exceptions.Timeout:
+                print(f"   ⏱️ {model}: Timeout", flush=True)
+                if hasattr(pool, "_advance"):
+                    pool._advance()
+                break
+            except Exception as e:
+                print(f"   ⚠️ {model}: {str(e)[:90]}", flush=True)
+                break
+
     return None
 
 
@@ -481,43 +580,43 @@ def build_fiqh_episode(used_ids: list[str], hook_style: str) -> tuple[str, list[
     scholar = item.get("scholar", "أهل العلم")
     source = item.get("source", "المصادر الشرعية الموثوقة")
 
-    prompt = f"""لدينا مسألة فقهية موثقة من {scholar} من مصدر {source}:
+    prompt = f"""لدينا مسألة فقهية موثقة، نريد تحويلها إلى فيديو ذكي وعصري يصلح للنشر في 2026 بلغة عربية بسيطة جداً ومفهومة لكل الناس:
 
-السؤال أو الموضوع:
-{question[:700]}
+المسألة الخام (للاستناد العلمي فقط - لا تنسخ صيغة السؤال والجواب أبداً!):
+الموضوع: {question[:700]}
+الشرح الموثوق من {scholar}: {answer[:3200]}
 
-النص العلمي والفتوى الكاملة:
-{answer[:3200]}
-
-أسلوب البداية الإلزامي لهذه الحلقة:
+أسلوب الافتتاحية المطلوب:
 {hook_style}
 
-المطلوب: حوّل هذه المسألة إلى طرح فقهي عميق ومشوّق بلغة مبسّطة دافئة بلمسة شامية بيضاء (بعيداً تماماً عن الأسلوب المدرسي الممل) مع الالتزام التام بالحكم والدليل الموجودين في الفتوى فقط:
+قواعد صارمة لصياغة الفقه:
+- ممنوع تماماً صيغة "سأل رجل / سُئل الشيخ / ما حكم كذا / الجواب: نعم يجوز / قال فلان وقال علّان".
+- حوّل الفتوى إلى **فكرة ذكية ومباشرة**:
+  1) في `hook_question`: ادخل فوراً في موقف واقعي يعيشه الناس اليوم أو خطأ شائع يقعون فيه (جملتان قصيرتان تشدّان الانتباه).
+  2) في `ruling_summary`: أعطِ الحكم الشرعي الصافي والواضح مباشرةً بلغة عصرية سهلة جداً، مع ذكر الشرط أو الاستثناء المهم في 3 جمل قصيرة وواضحة.
+  3) في `simple_explanation`: اشرح "السبب والحكمة" + قدّم **مثالاً واقعياً من حياتنا اليومية** (مثل العمل، البيت، الراتب، الأهل) + بسّط أي مصطلح فقهي صعب فوراً بعبارة واضحة في 4 إلى 6 جمل قصيرة وسهلة الفهم لمن لغته العربية ضعيفة.
+  4) في `source_credit`: جملة مختصرة أنيقة للختام تذكر المرجع باختصار (مثل: المرجع فتوى الشيخ ابن باز رحمه الله).
+
+أعد JSON فقط:
 {{
-  "title": "عنوان مشوق مختصر أقل من 45 حرفاً يبدأ بـ فقه:",
-  "hook_question": "خطاف جذاب من جملتين يلامس خطأً شائعاً أو سؤالاً حقيقياً في حياة الناس، بدون أي مقدمات تقليدية.",
-  "ruling_summary": "الحكم الشرعي الدقيق مع توضيح التفصيل المهم أو الحالة الاستثنائية إن وردت في كلام العالم، بلغة واضحة وحاسمة في 3 إلى 4 جمل.",
-  "simple_explanation": "العمق الفقهي: ليش الحكم هيك؟ اشرح الدليل والحكمة وفكّك أي مصطلح فقهي صعب بلغة شامية بيضاء قريبة للقلب، ثم أعطِ تطبيقاً عملياً واضحاً للمستمع في 5 إلى 7 جمل.",
-  "source_credit": "جملة واحدة دافئة تذكر اسم العالم والمصدر مثل: هذه الفتوى مستفادة من علم الشيخ ابن باز رحمه الله."
+  "title": "عنوان ذكي قصير أقل من 45 حرفاً بدون أقواس",
+  "hook_question": "...",
+  "ruling_summary": "...",
+  "simple_explanation": "...",
+  "source_credit": "..."
 }}"""
 
     res = call_llm_json(prompt)
-    if res and res.get("hook_question") and res.get("ruling_summary"):
-        title = make_title_safe(res.get("title", ""), "فقه وفتوى على منهج السلف")
-        segments = [
-            {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(res["hook_question"])},
-            {"type": "fiqh",      "voice": "Orus",       "text": make_tts_safe(res["ruling_summary"])},
-            {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res.get("simple_explanation", ""))},
-            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("source_credit", f"مستفاد من {scholar}"))},
-        ]
-    else:
-        title = make_title_safe(f"فقه: {item.get('title', '')}", "فقه وفتوى على منهج السلف")
-        segments = [
-            {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(f"كتير ناس بتحتار بهالسؤال اليومي: {question[:220]}")},
-            {"type": "fiqh",      "voice": "Orus",       "text": make_tts_safe(answer[:950])},
-            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(f"هذه الفائدة مستفادة من {scholar} في {source}.")},
-        ]
+    if not res or not res.get("hook_question") or not res.get("ruling_summary"):
+        raise RuntimeError(f"❌ فشل LLM في توليد صياغة الفقه الذكية ({item.get('id')}); توقف لمنع نشر نص خام.")
 
+    title = make_title_safe(res.get("title", ""), "فائدة فقهية مبسطة")
+    segments = [
+        {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(res["hook_question"])},
+        {"type": "fiqh",      "voice": "Orus",       "text": make_tts_safe(res["ruling_summary"])},
+        {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res.get("simple_explanation", ""))},
+        {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("source_credit", f"المرجع: {scholar} في {source}."))},
+    ]
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
 
@@ -556,14 +655,25 @@ def build_hadith_episode(used_ids: list[str], hook_style: str) -> tuple[str, lis
         raise RuntimeError("❌ مكتبة الحديث فارغة.")
 
     item = None
-    for _ in range(8):
-        cand, used_ids = pick_unused(lib, used_ids)
+    tried_bad: set[str] = set()
+    for _ in range(12):
+        cand, used_ids = pick_unused(
+            lib,
+            used_ids,
+            predicate=lambda i: 15 <= len(i.get("text", "")) <= 900,
+            exclude_ids=tried_bad,
+            mark_used=False,
+        )
         if not cand:
             break
         enriched = _enrich_hadith_from_henc(cand)
-        if enriched and enriched.get("text") and len(enriched.get("text", "")) <= 1200:
+        if enriched and enriched.get("text") and len(enriched.get("text", "")) <= 950:
             item = enriched
+            if item.get("id") and item["id"] not in used_ids:
+                used_ids.append(item["id"])
             break
+        if cand.get("id"):
+            tried_bad.add(cand["id"])
 
     if not item:
         raise RuntimeError("❌ لم يتم العثور على حديث صحيح مناسب.")
@@ -584,48 +694,39 @@ def build_hadith_episode(used_ids: list[str], hook_style: str) -> tuple[str, lis
             words_list.append(w)
     words_text = " | ".join(words_list)
 
-    prompt = f"""لدينا حديث نبوي شريف موثق مع شرحه ومعاني مفرداته من موسوعة الأحاديث النبوية:
+    prompt = f"""لدينا حديث نبوي شريف موثق نريد تقديمه بأسلوب عصري ذكي ومبسّط يفهمه كل إنسان بسهولة تامة:
 
-المتن النبوي الشريف:
+المتن النبوي الشريف (يُذكر كما هو):
 {matn}
 
 التخريج والدرجة: {attribution} ، درجته: {grade}
-الشرح الموثوق:
-{explanation[:2500] if explanation else "حديث صحيح ثابت في السنة النبوية."}
-
+الشرح الموثوق: {explanation[:2500] if explanation else "حديث صحيح ثابت في السنة النبوية."}
 معاني الكلمات: {words_text}
 أبرز الفوائد: {hints_text}
 
-أسلوب البداية الإلزامي لهذه الحلقة:
+أسلوب الافتتاحية المطلوب:
 {hook_style}
 
-المطلوب: أعد شرح هذا الحديث بأسلوب حيّ يدهش المستمع ويبسّط المعاني الصعبة بلغة شامية بيضاء دافئة ومهذّبة، مع الحفاظ على لفظ الحديث النبوي حرفياً كما ورد:
+المطلوب:
 {{
-  "title": "عنوان مشوق أقل من 45 حرفاً مثل: سر كلمة في حديث نبوي:",
-  "intro": "خطاف جذاب من جملتين يشد السامع فوراً (مثل ذكر كلمة غريبة في الحديث يخطئ الناس بفهمها أو سؤال واقعي من حياتنا)، بدون أي ترحيب أو تمهيد تقليدي.",
-  "hadith_text": "نص الحديث النبوي الشريف كاملاً ومضبوطاً كما ورد، بدون أي أقواس.",
-  "sharh_and_benefits": "هنا جوهر التبسيط والعمق: أولاً فكّك الكلمات الغريبة في الحديث (مثل: بس لحظة... شو يعني كلمة كذا؟ كتير ناس بتفكر معناها كذا، بس الحقيقة معناها...) مستنداً إلى معاني الكلمات والشرح المرفق، ثم اشرح الحكمة الدقيقة وكيف يغيّر الحديث يومنا وحياتنا في 5 إلى 7 جمل دافئة.",
-  "takhrij_credit": "جملة واحدة تذكر التخريج والدرجة والمصدر مثل: رواه البخاري ومسلم وهو حديث صحيح، من موسوعة الأحاديث النبوية."
+  "title": "عنوان مشوق أقل من 45 حرفاً بدون أقواس",
+  "intro": "مدخل ذكي من جملتين يربط الحديث بمشكلة حقيقية في حياتنا أو يكشف كلمة مهمة فيه، بدون مقدمات تقليدية.",
+  "hadith_text": "نص الحديث النبوي الشريف كاملاً كما ورد بدون أقواس.",
+  "sharh_and_benefits": "شرح واضح جداً بلغة عربية بسيطة وسلسة: ترجم أي كلمة غريبة فوراً لمعنى يومي بسيط، ثم اشرح الفكرة العملية التي تغير يوم المستمع مع مثال واقعي قصير في 4 إلى 6 جمل.",
+  "takhrij_credit": "جملة ختامية مختصرة: رواه {attribution} وهو حديث {grade}."
 }}"""
 
     res = call_llm_json(prompt)
-    if res and res.get("sharh_and_benefits"):
-        title = make_title_safe(res.get("title", ""), "حديث شريف وشرحه")
-        segments = [
-            {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(res.get("intro", "في كلمة صغيرة بهالحديث، لو فهمت معناها رح يتغير إحساسك كله."))},
-            {"type": "hadith",    "voice": "Orus",       "text": make_tts_safe(matn)},
-            {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res["sharh_and_benefits"])},
-            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("takhrij_credit", f"التخريج: {attribution}، {grade}، عن موسوعة الأحاديث النبوية."))},
-        ]
-    else:
-        title = make_title_safe(f"حديث: {item.get('title', '')}", "حديث شريف وشرحه")
-        segments = [
-            {"type": "intro",     "voice": "Puck",       "text": "اسمع هالحديث العظيم وركّز بمعاني كلماته الدقيقة."},
-            {"type": "hadith",    "voice": "Orus",       "text": make_tts_safe(matn)},
-            {"type": "narration", "voice": "Charon",     "text": make_tts_safe(explanation[:1000] if explanation else f"حديث عظيم من هدي نبينا صلى الله عليه وسلم، {hints_text}")},
-            {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(f"{attribution}، ودرجته {grade}، من موسوعة الأحاديث النبوية.")},
-        ]
+    if not res or not res.get("sharh_and_benefits"):
+        raise RuntimeError(f"❌ فشل LLM في توليد شرح الحديث ({item.get('id')}); توقف لمنع نشر نص خام.")
 
+    title = make_title_safe(res.get("title", ""), "هدي نبوي مبسط")
+    segments = [
+        {"type": "intro",     "voice": "Puck",       "text": make_tts_safe(res.get("intro", "كلمة واحدة في هذا الحديث تغير نظرتك لكثير من مواقف حياتك."))},
+        {"type": "hadith",    "voice": "Orus",       "text": make_tts_safe(matn)},
+        {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res["sharh_and_benefits"])},
+        {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("takhrij_credit", f"التخريج: {attribution}، {grade}."))},
+    ]
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
 
@@ -647,11 +748,22 @@ def build_quran_episode(used_ids: list[str], hook_style: str) -> tuple[str, list
     if not lib:
         raise RuntimeError("❌ مكتبة الآيات فارغة.")
 
-    item, used_ids = pick_unused(
-        lib,
-        used_ids,
-        predicate=lambda i: 45 <= len(i.get("text", "")) <= 340 and len(i.get("tafsir", "")) >= 80,
-    )
+    def _good_ayah(i: dict) -> bool:
+        t = (i.get("text") or "").strip()
+        if not (45 <= len(t) <= 320 and len(i.get("tafsir", "")) >= 80):
+            return False
+        plain = re.sub(r"[\u064B-\u065F\u0670]", "", t)
+        if re.match(r"^(?:قالوا|فلما|ثم قال|وإذ قال|أولئك|فإن لم|فإذا)", plain):
+            return False
+        return True
+
+    item, used_ids = pick_unused(lib, used_ids, predicate=_good_ayah)
+    if not item:
+        item, used_ids = pick_unused(
+            lib,
+            used_ids,
+            predicate=lambda i: 45 <= len(i.get("text", "")) <= 340 and len(i.get("tafsir", "")) >= 80,
+        )
     if not item:
         raise RuntimeError("❌ لم يتم العثور على آية صالحة.")
 
@@ -672,37 +784,30 @@ def build_quran_episode(used_ids: list[str], hook_style: str) -> tuple[str, list
 التفسير الميسر:
 {muyassar[:1000]}
 
-تفسير العلامة عبد الرحمن السعدي رحمه الله:
-{saadi[:1400] if saadi else "غير متوفر لهذه الآية"}
+تفسير العلامة السعدي رحمه الله:
+{saadi[:1400] if saadi else "غير متوفر"}
 
-مقتطف من تفسير الحافظ ابن كثير رحمه الله:
-{ibn_kathir[:1400] if ibn_kathir else "غير متوفر لهذه الآية"}
+مقتطف من تفسير ابن كثير رحمه الله:
+{ibn_kathir[:1400] if ibn_kathir else "غير متوفر"}
 
-أسلوب البداية الإلزامي لهذه الحلقة:
+أسلوب الافتتاحية المطلوب:
 {hook_style}
 
-المطلوب: صُغ فقرة «آية وحكاية» بأسلوب قصصي وتدبّري حيّ يشدّ السامع (بلغة عربية مبسطة بلمسة شامية بيضاء دافئة ومهذّبة)، مع الالتزام الصارم بالتفاسير الموثقة أعلاه دون اختراع أي سبب نزول غير وارد:
+المطلوب: صغ الفقرة بلغة عربية سهلة وواضحة ومؤثرة (يفهمها الجميع بسهولة تامة) مع الالتزام الصارم بالتفاسير الموثقة أعلاه دون اختراع أي سبب نزول:
 {{
-  "title": "عنوان مشوق أقل من 45 حرفاً مثل: سر آية في سورة {s_name}",
-  "intro": "خطاف تمهيدي درامي أو سؤال من واقع حياتنا من جملتين يمهّد لقصة الآية أو حكمتها ويشوق لسماعها، ثم يذكر اسم سورة {s_name}.",
-  "tafsir_story": "شرح معمّق وحيّ لمعنى الآية وحكايتها أو سبب نزولها كما ورد في التفاسير؛ توقف عند أي كلمة قرآنية غريبة معناها غامض عند الناس واشرحها ببساطة مدهشة (يعني شو هالكلمة؟)، ثم اربط لطائف السعدي وابن كثير بشعور الإنسان اليوم في 5 إلى 7 جمل.",
-  "takeaway": "رسالة عملية مباشرة لقلبك من بكرة، مع ذكر مصدر التفسير في جملة واحدة."
+  "title": "عنوان مشوق أقل من 45 حرفاً بدون أقواس",
+  "intro": "مدخل قصصي أو حياتي ذكي من جملتين يمهّد لموقف الآية ويذكر اسم سورة {s_name}.",
+  "tafsir_story": "شرح مبسط وحكواتي لمعنى الآية وقصتها كما في التفاسير؛ بسّط كل كلمة قرآنية قد تبدو غامضة بلغة سهلة واضحة، ثم اربط الحكمة بواقع الإنسان اليوم في 5 إلى 6 جمل قصيرة.",
+  "takeaway": "خلاصة عملية ليومك من جملة أو جملتين مع ذكر مصدر التفسير باختصار."
 }}"""
 
     res = call_llm_json(prompt)
-    if res and res.get("tafsir_story"):
-        title = make_title_safe(res.get("title", ""), f"آية وحكاية: سورة {s_name}")
-        intro_txt = make_tts_safe(res.get("intro", f"لما تضيق الدنيا، بتلاقي الجواب بهالآية من سورة {s_name}."))
-        tafsir_txt = make_tts_safe(res["tafsir_story"])
-        takeaway_txt = make_tts_safe(res.get("takeaway", "هذه اللطائف مستفادة من التفسير الميسر وتفسير السعدي رحمه الله."))
-    else:
-        title = make_title_safe(f"آية وحكاية: سورة {s_name}", f"آية وحكاية: سورة {s_name}")
-        intro_txt = f"في سورة {s_name}، اسمع هالآية العظيمة وشوف معناها العميق:"
-        tafsir_txt = make_tts_safe(f"يقول أهل التفسير في معنى هذه الآية الكريمة: {muyassar[:850]}")
-        takeaway_txt = "فلنتدبر كتاب الله ونعمل بهداياته في حياتنا اليومية."
+    if not res or not res.get("tafsir_story"):
+        raise RuntimeError(f"❌ فشل LLM في توليد تفسير الآية {s_num}:{a_num}.")
 
+    title = make_title_safe(res.get("title", ""), f"آية وحكاية: سورة {s_name}")
     segments = [
-        {"type": "intro", "voice": "Puck", "text": intro_txt},
+        {"type": "intro", "voice": "Puck", "text": make_tts_safe(res.get("intro", f"آية عظيمة من سورة {s_name} تحمل لك رسالة عملية واضحة."))},
         {
             "type": "quran",
             "surah": s_num,
@@ -710,8 +815,8 @@ def build_quran_episode(used_ids: list[str], hook_style: str) -> tuple[str, list
             "ayah_numbers": [a_num],
             "display": f"{s_name}: {a_num}",
         },
-        {"type": "narration", "voice": "Charon",     "text": tafsir_txt},
-        {"type": "summary",   "voice": "Rasalgethi", "text": takeaway_txt},
+        {"type": "narration", "voice": "Charon",     "text": make_tts_safe(res["tafsir_story"])},
+        {"type": "summary",   "voice": "Rasalgethi", "text": make_tts_safe(res.get("takeaway", "مستفاد من التفسير الميسر وتفسير السعدي رحمه الله."))},
     ]
     return title, segments, used_ids
 
@@ -733,14 +838,17 @@ def build_adhkar_episode(used_ids: list[str], state: dict, hook_style: str) -> t
     slot_label = slot_names[current_slot]
 
     picked_list = []
+    picked_ids: set[str] = set()
     for _ in range(3):
         item, used_ids = pick_unused(
             lib,
             used_ids,
-            predicate=lambda i: i.get("slot") == current_slot and 20 <= len(i.get("text", "")) <= 500,
+            predicate=lambda i: i.get("slot") == current_slot and 20 <= len(i.get("text", "")) <= 450,
+            exclude_ids=picked_ids,
         )
-        if item and item not in picked_list:
+        if item and item.get("id") not in picked_ids:
             picked_list.append(item)
+            picked_ids.add(item["id"])
 
     if not picked_list:
         raise RuntimeError(f"❌ لم يتم العثور على أذكار لقسم {slot_label}.")
@@ -750,54 +858,48 @@ def build_adhkar_episode(used_ids: list[str], state: dict, hook_style: str) -> t
         for idx, x in enumerate(picked_list)
     )
 
-    prompt = f"""لدينا باقة مختارة من {slot_label} الصحيحة من حصن المسلم والسنة النبوية:
+    prompt = f"""لدينا باقة مختارة من {slot_label} الصحيحة من حصن المسلم (عددها {len(picked_list)}):
 
 {adhkar_bundle}
 
-أسلوب البداية الإلزامي لهذه الحلقة:
+أسلوب الافتتاحية المطلوب:
 {hook_style}
 
-المطلوب: إعداد حلقة روحانية دافئة ومبسّطة لقسم {slot_label} بلغة شامية بيضاء مهذّبة تُفهم المستمع سر كل ذكر ومعنى كلماته الصعبة (حتى لا يردده باللسان فقط بدون قلب!)، مع بقاء نص الذكر النبوي حرفياً كما ورد:
+المطلوب: إعداد حلقة روحانية واضحة ومبسّطة لقسم {slot_label} بلغة سهلة جداً تفهّم المستمع سر كل ذكر ومعنى كلماته الصعبة (ليستحضر قلبه عند الذكر لا لسانه فقط)، على أن يكون عدد عناصر `items` مساوياً تماماً لعدد الأذكار ({len(picked_list)}):
 {{
   "title": "عنوان مختصر أقل من 45 حرفاً يبدأ بـ {slot_label}",
-  "intro": "خطاف روحاني جذاب من جملتين يلامس الحاجة النفسية لهذا الذكر (القلق، الحماية، الرزق، السكينة) بدون مقدمات جامدة.",
+  "intro": "مدخل قريب للقلب من جملتين يلامس الحاجة النفسية لهذه الأذكار بدون مقدمات جامدة.",
   "items": [
     {{
-      "lead_in": "تمهيد شائق من جملة إلى جملتين يوضح متى تقوله وعدد تكراره بالكلمات وفضله العجيب.",
-      "dhikr_exact": "نص الذكر الأصلي كما هو بدون أي أقواس أو تغيير.",
-      "meaning_note": "تفكيك وتبسيط معنى الكلمات الصعبة في الذكر وأثره النفسي والإيماني بلمسة شامية دافئة في جملتين إلى ثلاث جمل."
+      "lead_in": "تمهيد قصير من جملة إلى جملتين يذكر وقت الذكر وعدد تكراره بالكلمات وفضله.",
+      "dhikr_exact": "نص الذكر الأصلي كما هو بدون أقواس.",
+      "meaning_note": "تبسيط معنى الكلمات الصعبة في الذكر وأثره النفسي بلغة سهلة جداً في جملتين."
     }}
   ],
-  "closing": "خاتمة عملية تذكّر بمكان هذه الأذكار في حصن المسلم وتثبّتها في يوم المستمع."
+  "closing": "خاتمة عملية تذكّر بمكان هذه الأذكار في حصن المسلم."
 }}"""
 
     res = call_llm_json(prompt)
-    segments = []
-    if res and isinstance(res.get("items"), list) and len(res["items"]) > 0:
-        title = make_title_safe(res.get("title", ""), f"{slot_label} من السنة الصحيحة")
-        segments.append({"type": "intro", "voice": "Puck", "text": make_tts_safe(res.get("intro", f"أغلبنا بيقرأ {slot_label} بسرعة بس ما بينتبه لمعانيها العجيبة."))})
-        for idx, gen_item in enumerate(res["items"][:3]):
-            src_item = picked_list[idx] if idx < len(picked_list) else picked_list[-1]
-            lead = make_tts_safe(gen_item.get("lead_in", ""))
-            if lead:
-                segments.append({"type": "narration", "voice": "Charon", "text": lead})
-            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(src_item["text"])})
-            note = make_tts_safe(gen_item.get("meaning_note", ""))
-            if note:
-                segments.append({"type": "narration", "voice": "Charon", "text": note})
-        segments.append({"type": "summary", "voice": "Rasalgethi", "text": make_tts_safe(res.get("closing", f"خلي {slot_label} جزء ثابت من يومك، من كتاب حصن المسلم."))})
-    else:
-        title = make_title_safe(f"{slot_label} المباركة", slot_label)
-        segments.append({"type": "intro", "voice": "Puck", "text": f"باقة مباركة من {slot_label} الثابتة عن النبي صلى الله عليه وسلم ومعانيها المبسطة."})
-        for x in picked_list:
-            rep = int(x.get("repeat", 1) or 1)
-            rep_txt = format_repeat_ar(rep)
-            bless = x.get("bless", "")
-            lead = f"يُقال هذا الذكر {rep_txt}. {bless}".strip() if rep_txt else bless
-            if lead.strip():
-                segments.append({"type": "narration", "voice": "Charon", "text": make_tts_safe(lead)})
-            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(x["text"])})
-        segments.append({"type": "summary", "voice": "Rasalgethi", "text": f"حافظ على {slot_label} يومياً، من كتاب حصن المسلم والسنة النبوية الصحيحة."})
+    if not res or not isinstance(res.get("items"), list) or not res["items"]:
+        raise RuntimeError(f"❌ فشل LLM في توليد شرح الأذكار ({slot_label}).")
+
+    title = make_title_safe(res.get("title", ""), f"{slot_label} المباركة")
+    segments = [
+        {"type": "intro", "voice": "Puck", "text": make_tts_safe(res.get("intro", f"كثيرون يرددون {slot_label} بسرعة دون التوقف عند معانيها المدهشة."))}
+    ]
+    for idx, src_item in enumerate(picked_list):
+        gen_item = res["items"][idx] if idx < len(res["items"]) else {}
+        rep = int(src_item.get("repeat", 1) or 1)
+        rep_txt = format_repeat_ar(rep)
+        fallback_lead = f"يُقال هذا الذكر {rep_txt}." if rep_txt else ""
+        lead = make_tts_safe(gen_item.get("lead_in") or fallback_lead)
+        if lead:
+            segments.append({"type": "narration", "voice": "Charon", "text": lead})
+        segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(src_item["text"])})
+        note = make_tts_safe(gen_item.get("meaning_note", ""))
+        if note:
+            segments.append({"type": "narration", "voice": "Charon", "text": note})
+    segments.append({"type": "summary", "voice": "Rasalgethi", "text": make_tts_safe(res.get("closing", f"داوم على {slot_label} يومياً، من كتاب حصن المسلم."))})
 
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
@@ -816,57 +918,52 @@ def build_dua_episode(used_ids: list[str], hook_style: str) -> tuple[str, list[d
         for i, d in enumerate(duas_list)
     )
 
-    prompt = f"""نريد إعداد حلقة موسّعة ومؤثرة جداً لفقرة الأدعية حول محور: «{topic_name}».
+    prompt = f"""نريد إعداد حلقة دعاء عميقة ومبسّطة حول محور: «{topic_name}».
 
-الأدعية المعتمدة (4 أدعية صحيحة تُستخدم كلها بدون تحريف نص الدعاء):
+الأدعية المعتمدة ({len(duas_list)} أدعية صحيحة تُستخدم كلها بالترتيب بدون تحريف):
 {duas_bundle}
 
-أسلوب البداية الإلزامي لهذه الحلقة:
+أسلوب الافتتاحية المطلوب:
 {hook_style}
 
-المطلوب: صياغة رحلة دعاء موسّعة تلمس القلب، تفهم المستمع أسرار كل دعاء وكلماته الصعبة بلغة شامية بيضاء دافئة ومبسّطة (حتى يدعو وهو مستحضر قلبه، لا يردد بلسانه فقط):
+المطلوب: صياغة رحلة دعاء تلمس القلب وتفهم المستمع معنى الكلمات الدقيقة في كل دعاء بلغة عربية بسيطة جداً ومفهومة للجميع:
 {{
   "title": "عنوان مختصر دافئ أقل من 45 حرفاً يعبر عن {topic_name}",
-  "intro": "خطاف عاطفي واقعي من 2 إلى 3 جمل يلامس ألم الناس وحاجتهم لهذا المحور من الدعاء، ويمهّد له بدون مقدمات تقليدية.",
+  "intro": "مدخل إنساني واقعي من جملتين يلامس حاجة الناس لهذا الدعاء بدون مقدمات تقليدية.",
   "items": [
     {{
-      "lead_in": "تمهيد حميمي من جملتين يهيّئ القلب ويبين متى قال النبي هذا الدعاء أو متى يُستحب.",
+      "lead_in": "تمهيد قريب للقلب من جملة أو جملتين يوضح متى يُستحب هذا الدعاء.",
       "dua_exact": "نص الدعاء كما ورد بالضبط بدون أقواس.",
-      "deep_meaning": "شرح معمّق ومبسط لمعاني الكلمات الدقيقة في الدعاء بلغة شامية بيضاء دافئة ومفهومة في 3 إلى 4 جمل."
+      "deep_meaning": "شرح بسيط وواضح جداً لمعاني الكلمات الدقيقة في الدعاء بلغة سهلة في جملتين إلى ثلاث جمل."
     }}
   ],
-  "etiquette_closing": "خاتمة موسّعة من 3 إلى 4 جمل تذكّر بآداب استجابة الدعاء (الثناء، الصلاة على النبي صلى الله عليه وسلم، وحضور القلب واليقين بالإجابة) مع دعوة للناس بترديدها دائماً."
+  "etiquette_closing": "خاتمة من جملتين إلى ثلاث تذكر بآداب استجابة الدعاء وحضور القلب."
 }}"""
 
-    res = call_llm_json(prompt, max_tokens=3400)
-    segments = []
+    res = call_llm_json(prompt, max_tokens=3600)
+    if not res or not isinstance(res.get("items"), list) or not res["items"]:
+        raise RuntimeError(f"❌ فشل LLM في توليد فقرة الدعاء ({topic_obj['id']}).")
 
-    if res and isinstance(res.get("items"), list) and len(res["items"]) > 0:
-        title = make_title_safe(res.get("title", ""), topic_name)
-        segments.append({
+    title = make_title_safe(res.get("title", ""), topic_name)
+    segments = [
+        {
             "type": "intro",
             "voice": "Puck",
-            "text": make_tts_safe(res.get("intro", f"لمّا تتسكّر الأبواب بوجهك، ما في باب بيفتح أسرع من الدعاء الصادق، تعال نعيش اليوم مع {topic_name}.")),
-        })
-        for idx, src_dua in enumerate(duas_list):
-            gen_item = res["items"][idx] if idx < len(res["items"]) else {}
-            lead = make_tts_safe(gen_item.get("lead_in", ""))
-            if lead:
-                segments.append({"type": "narration", "voice": "Charon", "text": lead})
-            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(src_dua["text"])})
-            deep = make_tts_safe(gen_item.get("deep_meaning", ""))
-            if deep:
-                segments.append({"type": "narration", "voice": "Charon", "text": deep})
+            "text": make_tts_safe(res.get("intro", f"عندما تضيق بك السبل، تذكر أن باب الدعاء لا يغلق أبداً، وهذه جوامع {topic_name}.")),
+        }
+    ]
+    for idx, src_dua in enumerate(duas_list):
+        gen_item = res["items"][idx] if idx < len(res["items"]) else {}
+        lead = make_tts_safe(gen_item.get("lead_in", ""))
+        if lead:
+            segments.append({"type": "narration", "voice": "Charon", "text": lead})
+        segments.append({"type": "dua", "voice": "Algieba", "text": make_tts_safe(src_dua["text"])})
+        deep = make_tts_safe(gen_item.get("deep_meaning", ""))
+        if deep:
+            segments.append({"type": "narration", "voice": "Charon", "text": deep})
 
-        closing = make_tts_safe(res.get("etiquette_closing", "ولحتى يستجيب ربنا دعاءك، ابدأ بالثناء على الله والصلاة على النبي صلى الله عليه وسلم، وادعُ وأنت واثق أن الله يسمعك وقريب منك."))
-        segments.append({"type": "summary", "voice": "Rasalgethi", "text": closing})
-    else:
-        title = make_title_safe(topic_name, "أدعية نبوية وقرآنية")
-        segments.append({"type": "intro", "voice": "Puck", "text": f"باقة مباركة وموسّعة من {topic_name} من القرآن الكريم والسنة الصحيحة."})
-        for d in duas_list:
-            segments.append({"type": "narration", "voice": "Charon", "text": make_tts_safe(f"من الأدعية العظيمة الثابتة في {d['source']}:")})
-            segments.append({"type": "adhkar", "voice": "Algieba", "text": make_tts_safe(d["text"])})
-        segments.append({"type": "summary", "voice": "Rasalgethi", "text": "حافظ على هذه الأدعية بقلب حاضر ويقين بالإجابة، ولا تنسَ الصلاة على النبي صلى الله عليه وسلم."})
+    closing = make_tts_safe(res.get("etiquette_closing", "ابدأ دعاءك بالثناء على الله والصلاة على النبي صلى الله عليه وسلم، وادع وأنت موقن بالإجابة."))
+    segments.append({"type": "summary", "voice": "Rasalgethi", "text": closing})
 
     segments = [s for s in segments if s.get("text")]
     return title, segments, used_ids
@@ -917,7 +1014,7 @@ def main():
     segments.append({
         "type": "cta",
         "voice": "Puck",
-        "text": "قال رسول الله صلى الله عليه وسلم: من دل على خير فله مثل أجر فاعله. شارك المقطع لتعم الفائدة. مَلَاكُ المَعْرِفَةِ.",
+        "text": "قال رسول الله صلى الله عليه وسلم: من دل على خير فله مثل أجر فاعله. شارك المقطع لتعم الفائدة. مَلَّاكُ المَعْرِفَةِ.",
     })
 
     ep_data = {
