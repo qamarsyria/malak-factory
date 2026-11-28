@@ -10,26 +10,39 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 MODELS_CACHE = _REPO_ROOT / "state" / "models_cache.json"
 MAX_AGE_HOURS = 12
 
+_RETIRED_PREFIXES = ("gemini-1.", "gemini-2.0")
+_DEPRECATED_NAMES = {
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+}
+
 
 def _model_score(name: str) -> tuple:
     n = name.lower()
     bad_tokens = [
         "tts", "speech", "audio", "image", "imagen", "veo",
         "embedding", "aqa", "vision", "gemma", "learnlm",
-        "robotics", "computer-use", "nano",
+        "robotics", "computer-use", "nano", "live", "transcribe",
     ]
     if any(bad in n for bad in bad_tokens):
-        return (999, 999, name)
+        return (999, 999, 999, 0.0, name)
+
+    if n.startswith(_RETIRED_PREFIXES):
+        return (999, 999, 999, 0.0, name)
 
     m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
     ver = float(m.group(1)) if m else 0.0
 
-    if ver >= 3.0:
+    if n in _DEPRECATED_NAMES:
+        tier = 2
+    elif ver >= 3.0:
         tier = 0
     elif ver >= 2.5:
         tier = 1
     else:
-        tier = 2
+        tier = 3
 
     if "flash" in n and "lite" not in n:
         kind = 0
@@ -66,19 +79,25 @@ def fetch_available_models(api_key: str) -> list:
         return []
 
 
+def _parse_api_keys(raw: str) -> list[str]:
+    return [k.strip() for k in re.split(r"[\s,;]+", (raw or "").strip()) if len(k.strip()) > 20]
+
+
 def discover_and_cache(force: bool = False) -> list:
+    fallback = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
+
     if not force and MODELS_CACHE.exists():
         try:
             cache = json.loads(MODELS_CACHE.read_text(encoding="utf-8"))
             age_hours = (time.time() - cache.get("timestamp", 0)) / 3600
-            if age_hours < MAX_AGE_HOURS and cache.get("models"):
-                return cache["models"]
+            cached_models = [m for m in cache.get("models", []) if _model_score(m)[0] < 999]
+            if age_hours < MAX_AGE_HOURS and cached_models:
+                return sorted(cached_models, key=_model_score)
         except Exception:
             pass
 
     raw = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
-    keys = [k.strip() for k in raw.split(",") if k.strip()]
-    fallback = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    keys = _parse_api_keys(raw)
 
     if not keys:
         print("⚠️ لا توجد مفاتيح Gemini", flush=True)
