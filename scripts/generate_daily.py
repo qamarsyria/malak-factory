@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model_discovery import discover_and_cache
 from gemini_tts_pool import get_pool
 from utilities import get_breaker
+from outro_templates import OUTRO_TEMPLATES
 
 OUTPUT_DIR = _REPO_ROOT / "data" / "daily" / "generated"
 OUT_FILE_PATH = _REPO_ROOT / "out" / "latest_episode.txt"
@@ -969,6 +970,16 @@ def build_dua_episode(used_ids: list[str], hook_style: str) -> tuple[str, list[d
     return title, segments, used_ids
 
 
+def _pick_cta(state: dict) -> str:
+    if not OUTRO_TEMPLATES:
+        return "قال رسول الله صلى الله عليه وسلم: من دل على خير فله مثل أجر فاعله. شارك المقطع لتعم الفائدة. مَلَّاكُ المَعْرِفَةِ."
+    last_idx = int(state.get("last_cta_idx", -1))
+    choices = [i for i in range(len(OUTRO_TEMPLATES)) if i != last_idx] or [0]
+    chosen_idx = random.choice(choices)
+    state["last_cta_idx"] = chosen_idx
+    return OUTRO_TEMPLATES[chosen_idx]["text"]
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -977,6 +988,7 @@ def main():
     state = {
         "run_count": 0,
         "adhkar_slot_idx": 0,
+        "last_cta_idx": -1,
         "used_ids": {k: [] for k in all_types},
     }
     if STATE_FILE.exists():
@@ -1014,7 +1026,7 @@ def main():
     segments.append({
         "type": "cta",
         "voice": "Puck",
-        "text": "قال رسول الله صلى الله عليه وسلم: من دل على خير فله مثل أجر فاعله. شارك المقطع لتعم الفائدة. مَلَّاكُ المَعْرِفَةِ.",
+        "text": make_tts_safe(_pick_cta(state)),
     })
 
     ep_data = {
