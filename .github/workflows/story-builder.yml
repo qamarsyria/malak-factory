@@ -59,7 +59,6 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: write
-      models: read
 
     env:
       ENABLE_YT_RVC: ${{ github.event_name == 'schedule' && 'true' || (inputs.build_youtube_rvc && 'true' || 'false') }}
@@ -145,8 +144,8 @@ jobs:
         id: audio
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TTS_ENGINE: '1'
+          ENABLE_EN_SUBTITLES: "1"
         run: |
           mkdir -p out
           if [ "$ENABLE_YT_RVC" = "true" ]; then
@@ -183,8 +182,11 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SHARE_EPISODE_MEDIA: "1"
           CINEMA_ANIME_MODE: "1"
+          USE_ISLAMIC_CARDS: "1"
           ENABLE_HERO_I2V: "1"
           MAX_HERO_I2V_SHOTS: "2"
+          ENABLE_8D_RAYS: "0"
+          ENABLE_8D_PARTICLES: "0"
         run: |
           mkdir -p videos
           rm -rf /tmp/story_media_cache
@@ -242,13 +244,13 @@ jobs:
                 FAILED=$((FAILED+1))
                 continue
               fi
-              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 64}")
-              [ "$TARGET_KBPS" -gt 800 ] && TARGET_KBPS=800
-              [ "$TARGET_KBPS" -lt 300 ] && TARGET_KBPS=300
+              TARGET_KBPS=$(awk "BEGIN {printf \"%d\", ((42 * 8 * 1024 * 1024) / $DURATION / 1000) - 48}")
+              [ "$TARGET_KBPS" -gt 450 ] && TARGET_KBPS=450
+              [ "$TARGET_KBPS" -lt 220 ] && TARGET_KBPS=220
               COMPRESSED="compressed_$(basename "$f")"
               ffmpeg -y -i "$f" \
                 -c:v libx264 -b:v "${TARGET_KBPS}k" -maxrate "${TARGET_KBPS}k" -bufsize "$((TARGET_KBPS * 2))k" \
-                -preset medium -c:a aac -b:a 64k -movflags +faststart "$COMPRESSED"
+                -preset medium -c:a aac -ac 1 -b:a 48k -movflags +faststart "$COMPRESSED"
               TO_SEND="$COMPRESSED"
               CLEANUP_COMP="$COMPRESSED"
             fi
@@ -262,7 +264,8 @@ jobs:
             RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
               -F "chat_id=${TELEGRAM_CHAT_ID}" \
               -F "video=@${TO_SEND}" \
-              -F "caption=${LABEL} — $(basename "$f")")
+              -F "caption=${LABEL} — $(basename "$f")" \
+              -F "supports_streaming=true")
 
             [ -n "$CLEANUP_COMP" ] && rm -f "$CLEANUP_COMP"
 
