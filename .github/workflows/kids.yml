@@ -1,4 +1,4 @@
-name: "🧸 قصص الأطفال 3D (عماد ومريم)"
+name: "🧸 قصص الأطفال 3D (زيد ونور وميار)"
 
 on:
   workflow_dispatch:
@@ -32,8 +32,9 @@ jobs:
       - name: "✍️ تأليف قصة الأطفال وتوليد الأصوات"
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          KIDS_BOY_NAME: "عِمَاد"
-          KIDS_GIRL_NAME: "مَرْيَم"
+          KIDS_BOY_NAME: "زَيْد"
+          KIDS_GIRL_NAME: "نُور"
+          KIDS_MAYAR_NAME: "مَيَّار"
         run: |
           python -u scripts/kids_story.py
 
@@ -42,8 +43,13 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           AI_HORDE_API_KEY: ${{ secrets.AI_HORDE_API_KEY }}
-          KIDS_BOY_NAME: "عِمَاد"
-          KIDS_GIRL_NAME: "مَرْيَم"
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          ENABLE_KIDS_I2V: "1"
+          ENABLE_8D_RAYS: "0"
+          ENABLE_8D_PARTICLES: "0"
+          KIDS_BOY_NAME: "زَيْد"
+          KIDS_GIRL_NAME: "نُور"
+          KIDS_MAYAR_NAME: "مَيَّار"
         run: |
           EP_JSON=$(cat out/kids/latest_kids_ep.txt)
           python -u scripts/kids_video.py "$EP_JSON" "out/kids/kids_final.mp4"
@@ -63,7 +69,7 @@ jobs:
           tok = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
           cid = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
           if tok and cid:
-              cap = f"🧸 قصص الأطفال — مَلَّاكُ المَعْرِفَةِ\n📖 {ep.get('title','')}\n✨ الحكمة: {ep.get('moral_card','')}"
+              cap = f"🧸 قصص الأطفال — مَلَاكُ المَعْرِفَةِ\n📖 {ep.get('title','')}\n✨ الحكمة: {ep.get('moral_card','')}"
               with open(vid, "rb") as vf:
                   r = requests.post(
                       f"https://api.telegram.org/bot{tok}/sendVideo",
