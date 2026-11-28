@@ -1,8 +1,8 @@
 """
-story_video.py — المرحلة 5: بناء الفيديو الطولي 8D (720×1280)
-- يجهّز قالب الدفتر الصوفي 8K مسبقاً (warmup) قبل استهلاك ZeroGPU على لقطات القصة.
-- يحوّل لقطات اليوميات والدفتر الصوفي الإسلامي والقصص إلى أنيميشن 8D مجاني على CPU عبر fx_8d.py.
-- يحافظ كلياً على الرسم العثماني (AmiriQuran-Regular + MaxFilter Halo + تباعد 2.35×) مع تأطير ذهبي روحاني للآيات.
+story_video.py — المرحلة 5: بناء الفيديو الطولي 720×1280
+- يجهّز قالب الدفتر الصوفي 8K مسبقاً (warmup) قبل استهلاك ZeroGPU.
+- يعرض الترجمة الإنكليزية الدقيقة نصاً على الشاشة لجميع الفقرات باستثناء القرآن الكريم.
+- يضبط اسم القناة (مَلَّاكُ المَعْرِفَةِ) ويوازن الضغط ليصبح حجم مقطع الـ 3 دقائق ~3.5-4.5 MB بجودة حادة.
 """
 
 import io
@@ -49,7 +49,7 @@ try:
 except Exception as _ice:
     CARDS_AVAILABLE = False
     warmup_islamic_notebook_template = None
-    print(f"ℹ️ بطاقات النصوص المطرّزة غير متاحة: {_ice}", flush=True)
+    print(f"ℹ️ بطاقات النصوص غير متاحة: {_ice}", flush=True)
 
 try:
     from fx_8d import render_8d_animation_clip
@@ -58,7 +58,8 @@ except Exception:
     render_8d_animation_clip = None
     HAS_FX8D = False
 
-CARD_SEG_TYPES = {"cta", "outro", "hadith", "fiqh", "adhkar"}
+CARD_SEG_TYPES = {"cta", "outro", "hadith", "fiqh", "adhkar", "dua"}
+CHANNEL_BRAND = "مَلَّاكُ المَعْرِفَةِ"
 
 HAS_RAQM = features.check("raqm")
 print(f"🔤 محرك الخط العربي: {'RAQM (مباشر)' if HAS_RAQM else 'Reshaper + Bidi (احتياطي)'}", flush=True)
@@ -73,20 +74,21 @@ VIDEO_FPS = 24
 ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "veryfast",
-    "-crf", "18",
+    "-crf", "20",
     "-pix_fmt", "yuv420p",
 ]
 
 FINAL_ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "slow",
-    "-crf", "25",
-    "-maxrate", "480k",
-    "-bufsize", "960k",
+    "-crf", "27",
+    "-maxrate", "280k",
+    "-bufsize", "560k",
     "-profile:v", "high",
     "-level:v", "4.0",
-    "-g", str(VIDEO_FPS * 4),
-    "-bf", "3",
+    "-g", str(VIDEO_FPS * 5),
+    "-bf", "4",
+    "-refs", "4",
     "-aq-mode", "3",
     "-pix_fmt", "yuv420p",
 ]
@@ -211,6 +213,19 @@ def find_arabic_font() -> str:
     raise RuntimeError("❌ لم يُعثر على أي خط عربي")
 
 
+def find_latin_font() -> str:
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return FONT_PATH
+
+
 def find_quran_font() -> str:
     font_cache_dir = Path(tempfile.gettempdir()) / "quran_fonts_cache"
     font_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -251,64 +266,21 @@ def find_quran_font() -> str:
 
 
 FONT_PATH = find_arabic_font()
+LATIN_FONT_PATH = find_latin_font()
 QURAN_FONT_PATH = find_quran_font()
 print(f"✅ خط السرد: {FONT_PATH}", flush=True)
+print(f"✅ خط الترجمة: {LATIN_FONT_PATH}", flush=True)
 print(f"✅ خط القرآن: {QURAN_FONT_PATH}", flush=True)
 
 
-def create_bokeh_layer(W: int, H: int) -> Image.Image:
-    bw, bh = W + 400, H + 400
-    img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    for _ in range(70):
-        x, y = random.randint(0, bw), random.randint(0, bh)
-        r = random.randint(18, 65)
-        alpha = random.randint(55, 165)
-        color = random.choice([
-            (255, 215, 0),
-            (255, 230, 150),
-            (212, 175, 55),
-            (255, 200, 70),
-        ])
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=(*color, alpha))
-    return img.filter(ImageFilter.GaussianBlur(radius=10))
-
-
-def create_sparkle_layer(W: int, H: int) -> Image.Image:
-    sw, sh = W + 300, H + 300
-    img = Image.new("RGBA", (sw, sh), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    for _ in range(135):
-        x, y = random.randint(0, sw), random.randint(0, sh)
-        r = random.randint(2, 4)
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=(255, 250, 210, 240))
-    return img
-
-
-def create_light_leak(W: int, H: int) -> Image.Image:
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    x = random.randint(0, W)
-    y = random.randint(0, H)
-    r = random.randint(240, 420)
-    draw.ellipse([x - r, y - r, x + r, y + r], fill=(255, 220, 150, 75))
-    return img.filter(ImageFilter.GaussianBlur(radius=70))
-
-
-def prepare_fx_layers(work_dir: Path, W: int, H: int) -> dict:
-    bokeh_path = work_dir / "fx_bokeh.png"
-    sparkle_path = work_dir / "fx_sparkle.png"
-    leak_path = work_dir / "fx_leak.png"
-    create_bokeh_layer(W, H).save(bokeh_path)
-    create_sparkle_layer(W, H).save(sparkle_path)
-    create_light_leak(W, H).save(leak_path)
-    return {"bokeh": bokeh_path, "sparkle": sparkle_path, "leak": leak_path}
-
-
-WOMEN_KEYWORDS = [
-    "مريم", "آسية", "خديجة", "عائشة", "فاطمة", "حفصة", "زينب", "هاجر", "سارة",
-    "المرأة", "النساء", "امرأة", "زوجة", "ابنة", "حامل", "ولادة",
-]
+# مطابقة ذكية لذكر النساء بدون الوقوع في فخ كلمات مثل "هاجر النبي" أو "أخبار سارة" أو "حامل القرآن"
+WOMEN_PATTERN = re.compile(
+    r"(?<!\S)(?:"
+    r"مريم|آسية|خديجة|عائشة|فاطمة|حفصة|زينب|"
+    r"السيدة\s+هاجر|أمنا\s+هاجر|أم\s+إسماعيل|السيدة\s+سارة|"
+    r"المرأة|النساء|امرأة|زوجة|ابنة|الفتاة|ولادة|امرأة\s+حامل"
+    r")(?!\S)"
+)
 NIQAB_SCENES = ["woman in niqab", "niqab woman praying", "niqab woman reading quran"]
 
 THEME_POOLS = {
@@ -356,7 +328,7 @@ KEYWORD_RULES = [
     (r"\b(?:جبل|جبال|طور|صخر|حجر|كهف|غار|ثلج|برد)\b", THEME_POOLS["waterfalls_snow"]),
     (r"\b(?:صحراء|رمل|رمال|بادية|بيداء|وادي)\b", ["desert dunes sunset", "misty mountains sunrise"]),
     (r"\b(?:شجر|نخل|بستان|جنة|زهر|ورد|غابة|ربيع)\b", THEME_POOLS["spiritual_nature"]),
-    (r"\b(?:مسجد|كعبة|مكة|المدينة|قدس|أقصى|صلاة|توحيد|ذكر|دعاء|دار|بيت|شام|دمشق|خير|ذكر|تسبيح|استغفار)\b", THEME_POOLS["damascus_heritage"] + THEME_POOLS["cosmos_mosque"]),
+    (r"\b(?:مسجد|كعبة|مكة|المدينة|قدس|أقصى|صلاة|توحيد|ذكر|دعاء|دار|بيت|شام|دمشق|خير|تسبيح|استغفار)\b", THEME_POOLS["damascus_heritage"] + THEME_POOLS["cosmos_mosque"]),
 ]
 
 
@@ -373,17 +345,17 @@ def suggest_visual_query(scene_text: str, seg_type: str = "", explicit_visual: s
     if explicit_visual and is_safe_query(explicit_visual):
         return explicit_visual
 
-    for kw in WOMEN_KEYWORDS:
-        if kw in scene_text:
-            return random.choice(NIQAB_SCENES)
+    plain = re.sub(r"[\u064B-\u065F\u0670]", "", scene_text or "")
+    if WOMEN_PATTERN.search(plain):
+        return random.choice(NIQAB_SCENES)
 
     matched_candidates = []
     for pattern, queries in KEYWORD_RULES:
-        if re.search(pattern, scene_text):
+        if re.search(pattern, plain):
             matched_candidates.extend(queries)
 
     if not matched_candidates:
-        if seg_type in ("adhkar", "quran"):
+        if seg_type in ("adhkar", "quran", "dua"):
             matched_candidates = THEME_POOLS["cosmos_mosque"] + THEME_POOLS["streams"] + THEME_POOLS["spiritual_nature"]
         elif seg_type in ("fiqh", "hadith"):
             matched_candidates = THEME_POOLS["damascus_heritage"] + THEME_POOLS["streams"] + THEME_POOLS["cosmos_mosque"]
@@ -406,7 +378,7 @@ def suggest_visual_query(scene_text: str, seg_type: str = "", explicit_visual: s
     return random.choice(safe_all) if safe_all else "crystal clear forest stream"
 
 
-def detect_scenes(segments: list, max_scene_dur: float | None = None) -> list:
+def detect_scenes(segments: list, max_scene_dur: float | None = None, skip_types: set[str] | None = None) -> list:
     if max_scene_dur is None:
         total_dur = sum(float(c.get("duration", 0)) for seg in segments for c in seg.get("chunks", []))
         max_scene_dur = 22.0 if total_dur > 240.0 else 13.0
@@ -417,6 +389,8 @@ def detect_scenes(segments: list, max_scene_dur: float | None = None) -> list:
 
     for idx, seg in enumerate(segments):
         stype = seg.get("type", "")
+        if skip_types and stype in skip_types:
+            continue
         chunks = seg.get("chunks", [])
         is_quran = (stype == "quran")
 
@@ -494,6 +468,18 @@ def _save_clean_jpeg(content: bytes, out_path: Path) -> bool:
         return False
 
 
+def _is_valid_video(path: Path) -> bool:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        return r.returncode == 0 and "," in (r.stdout or "")
+    except Exception:
+        return False
+
+
 def _make_islamic_fallback_bg(path: Path, W: int, H: int) -> str:
     img = Image.new("RGB", (W, H), (10, 28, 38))
     draw = ImageDraw.Draw(img)
@@ -516,8 +502,7 @@ def _make_islamic_fallback_bg(path: Path, W: int, H: int) -> str:
 def _try_pixabay_video(q: str, work_dir: Path, used_urls: set, scene_id: int) -> str | None:
     if not PIXABAY_KEY:
         return None
-    v_types = ["film", "all"]
-    for v_type in v_types:
+    for v_type in ("film", "all"):
         for page in (random.choice([1, 1, 2]), 1):
             try:
                 r = requests.get(
@@ -550,13 +535,17 @@ def _try_pixabay_video(q: str, work_dir: Path, used_urls: set, scene_id: int) ->
                     )
                     if not url or url in used_urls:
                         continue
+                    resp = requests.get(url, timeout=60, stream=True)
+                    if resp.status_code != 200 or "video" not in resp.headers.get("Content-Type", "").lower():
+                        continue
                     out = work_dir / f"px_vid_{scene_id}_{hit['id']}.mp4"
                     with open(out, "wb") as f:
-                        for ch in requests.get(url, timeout=60, stream=True).iter_content(16384):
+                        for ch in resp.iter_content(16384):
                             f.write(ch)
-                    if out.stat().st_size > 50000:
+                    if out.stat().st_size > 50000 and _is_valid_video(out):
                         used_urls.add(url)
                         return str(out)
+                    out.unlink(missing_ok=True)
             except Exception:
                 continue
     return None
@@ -603,7 +592,7 @@ def _try_openverse_image(q: str, work_dir: Path, used_urls: set, scene_id: int) 
     try:
         r = requests.get(
             "https://api.openverse.org/v1/images/",
-            headers={"User-Agent": "MalakAlMarifa/1.0"},
+            headers={"User-Agent": "MallakAlMarifa/1.0"},
             params={
                 "q": q,
                 "license_type": "commercial",
@@ -636,7 +625,7 @@ def _try_openverse_image(q: str, work_dir: Path, used_urls: set, scene_id: int) 
             if not safety_text or not is_safe_tag(safety_text):
                 continue
 
-            resp = requests.get(url, headers={"User-Agent": "MalakAlMarifa/1.0"}, timeout=25)
+            resp = requests.get(url, headers={"User-Agent": "MallakAlMarifa/1.0"}, timeout=25)
             if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "").lower():
                 out = work_dir / f"ov_img_{scene_id}_{idx}.jpg"
                 if _save_clean_jpeg(resp.content, out):
@@ -754,7 +743,7 @@ def _composite_with_outline(canvas: Image.Image, fg_layer: Image.Image, outline_
     canvas.alpha_composite(fg_layer)
 
 
-def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int):
+def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int, has_en: bool = False):
     scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(scrim)
     if is_quran:
@@ -764,14 +753,14 @@ def _apply_cinematic_scrim(overlay: Image.Image, is_quran: bool, W: int, H: int)
         gd.ellipse([W // 2 - 260, H // 2 - 300, W // 2 + 260, H // 2 + 260], fill=(212, 175, 55, 22))
         scrim.alpha_composite(glow.filter(ImageFilter.GaussianBlur(70)))
     else:
-        for y in range(0, 105):
-            alpha = int(115 * (1.0 - y / 105.0))
+        for y in range(0, 100):
+            alpha = int(115 * (1.0 - y / 100.0))
             draw.line([(0, y), (W, y)], fill=(4, 10, 16, alpha))
-        start_y = int(H * 0.60)
+        start_y = int(H * (0.50 if has_en else 0.58))
         span = H - start_y
         for y in range(start_y, H):
             ratio = (y - start_y) / max(1, span)
-            alpha = int(198 * (ratio ** 1.35))
+            alpha = int(208 * (ratio ** 1.30))
             draw.line([(0, y), (W, y)], fill=(4, 10, 16, alpha))
     overlay.alpha_composite(scrim)
 
@@ -817,18 +806,39 @@ def _wrap_logical(text: str, font, max_w: int, draw) -> list[str]:
     return lines
 
 
+def _wrap_latin(text: str, font, max_w: int, draw) -> list[str]:
+    lines = []
+    for para in (text or "").splitlines():
+        words = para.split()
+        if not words:
+            continue
+        cur = ""
+        for w in words:
+            trial = f"{cur} {w}".strip() if cur else w
+            bb = draw.textbbox((0, 0), trial, font=font)
+            if (bb[2] - bb[0]) <= max_w:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+    return lines
+
+
 def _layout_slides(
     text: str,
     max_w: int,
     max_h: int,
-    start_size: int = 48,
-    min_size: int = 32,
+    start_size: int = 44,
+    min_size: int = 30,
     is_quran: bool = False,
     cinematic_subtitles: bool = False,
 ) -> tuple[object, list[list[str]], int]:
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
-    lh_mult = 2.35 if is_quran else (1.58 if cinematic_subtitles else 1.75)
+    lh_mult = 2.35 if is_quran else (1.58 if cinematic_subtitles else 1.72)
 
     for size in range(start_size, min_size - 1, -2):
         font = _load_font(size, is_quran=is_quran)
@@ -863,34 +873,39 @@ def make_caption_slides(
     c_dur: float,
     show_reciter: bool = True,
     cinematic_subtitles: bool = False,
+    text_en: str = "",
 ) -> list[tuple[Path, float]]:
     if is_quran:
         clean_body = (chunk_text or "").strip()
+        en_body = ""  # حماية مطلقة: لا تُترجم نصوص القرآن الكريم أبداً
     else:
         clean_body = re.sub(r"[*#@_\[\]]", "", chunk_text or "")
         clean_body = re.sub(r"[a-zA-Z]", "", clean_body).strip()
         clean_body = clean_body.replace("ﷺ", "صلى الله عليه وسلم")
+        en_body = (text_en or "").strip()
 
     if not clean_body:
         return []
+
+    has_en = bool(en_body) and (not is_quran)
 
     if cinematic_subtitles and not is_quran:
         font, slides_lines, lh = _layout_slides(
             clean_body,
             max_w=W - 84,
-            max_h=210,
-            start_size=36,
-            min_size=28,
+            max_h=200,
+            start_size=34,
+            min_size=26,
             is_quran=False,
             cinematic_subtitles=True,
         )
     else:
         font, slides_lines, lh = _layout_slides(
             clean_body,
-            max_w=W - 96 if is_quran else W - 90,
-            max_h=H - 520 if is_quran else H - 360,
-            start_size=44 if is_quran else 48,
-            min_size=34 if is_quran else 32,
+            max_w=W - 96 if is_quran else W - 88,
+            max_h=H - 520 if is_quran else H - (510 if has_en else 360),
+            start_size=44 if is_quran else 42,
+            min_size=34 if is_quran else 30,
             is_quran=is_quran,
             cinematic_subtitles=False,
         )
@@ -901,8 +916,23 @@ def make_caption_slides(
     title_font = _load_font(24 if cinematic_subtitles else 26, is_quran=False)
     ref_font = _load_font(28, is_quran=False)
     reciter_font = _load_font(24, is_quran=False)
-    wm_font = _load_font(26 if cinematic_subtitles else 28, is_quran=False)
+    wm_font = _load_font(24, is_quran=False)
 
+    # تحضير الترجمة الإنكليزية لوضعها في منطقة مخصصة أسفل النص العربي
+    en_lines: list[str] = []
+    en_font = ImageFont.truetype(LATIN_FONT_PATH, 20)
+    en_lh = 28
+    if has_en:
+        dd = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        for sz in (22, 20, 18, 17):
+            ef = ImageFont.truetype(LATIN_FONT_PATH, sz)
+            wrapped_en = _wrap_latin(en_body, ef, W - 84, dd)
+            if len(wrapped_en) <= 3 or sz == 17:
+                en_font = ef
+                en_lines = wrapped_en[:4]
+                break
+
+    en_block_h = (len(en_lines) * en_lh + 22) if en_lines else 0
     clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
 
     for s_idx, lines in enumerate(slides_lines):
@@ -910,8 +940,7 @@ def make_caption_slides(
         slide_dur = max(0.3, c_dur * (slide_chars / total_chars)) if len(slides_lines) > 1 else c_dur
 
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        if cinematic_subtitles or is_quran:
-            _apply_cinematic_scrim(overlay, is_quran=is_quran, W=W, H=H)
+        _apply_cinematic_scrim(overlay, is_quran=is_quran, W=W, H=H, has_en=has_en)
 
         body_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         meta_fg = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -926,17 +955,38 @@ def make_caption_slides(
 
         if cinematic_subtitles and not is_quran:
             block_h = len(lines) * lh
-            y = H - 122 - block_h + max(0, -min_top)
+            bottom_anchor = H - 72 - en_block_h
+            y = bottom_anchor - block_h + max(0, -min_top)
         else:
             ref_extra = 64 if (is_quran and display_ref) else 0
             total_h = len(lines) * lh + ref_extra
-            y = max(145 + max(0, -min_top), (H - total_h) // 2)
+            usable_h = H - (en_block_h + 76 if has_en else 0)
+            y = max(145 + max(0, -min_top), (usable_h - total_h) // 2)
 
         quran_top_orn = y - 22
         text_color = "#FFE066" if is_quran else "#FFFFFF"
         for line in lines:
             _draw_centered(body_draw, y, line, font, text_color, W)
             y += lh
+
+        if en_lines and not is_quran:
+            en_box_y1 = H - 56
+            en_box_y0 = en_box_y1 - en_block_h
+            band = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(band).rounded_rectangle(
+                [26, en_box_y0, W - 26, en_box_y1],
+                radius=16,
+                fill=(10, 14, 18, 175),
+                outline=(212, 175, 55, 95),
+                width=1,
+            )
+            overlay.alpha_composite(band)
+            ey = en_box_y0 + 11
+            for eln in en_lines:
+                ebb = meta_draw.textbbox((0, 0), eln, font=en_font)
+                ex = (W - (ebb[2] - ebb[0])) // 2 - ebb[0]
+                meta_draw.text((ex, ey), eln, font=en_font, fill="#F5ECD4")
+                ey += en_lh
 
         if is_quran:
             ref_y = max(y + 8, (y - lh) + last_bottom + 20)
@@ -950,15 +1000,15 @@ def make_caption_slides(
         if is_quran and reciter_name and show_reciter:
             _draw_centered(meta_draw, H - 150, f"بصوت: {reciter_name}", reciter_font, "#E8D5A0", W)
 
-        wm_txt = _prepare_draw_text("مَلَاكُ المَعْرِفَةِ")
+        wm_txt = _prepare_draw_text(CHANNEL_BRAND)
         if HAS_RAQM:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font, direction="rtl")
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
-            meta_draw.text((wx, H - 56), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
+            meta_draw.text((wx, H - 44), wm_txt, font=wm_font, fill="#D4AF37", direction="rtl")
         else:
             wm_bbox = meta_draw.textbbox((0, 0), wm_txt, font=wm_font)
             wx = W - (wm_bbox[2] - wm_bbox[0]) - 28 - wm_bbox[0]
-            meta_draw.text((wx, H - 56), wm_txt, font=wm_font, fill="#D4AF37")
+            meta_draw.text((wx, H - 44), wm_txt, font=wm_font, fill="#D4AF37")
 
         _composite_with_outline(overlay, body_fg, outline_px=2, shadow_blur=3)
         _composite_with_outline(overlay, meta_fg, outline_px=1, shadow_blur=2)
@@ -976,40 +1026,15 @@ def make_caption_slides(
 
 
 def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: float, W: int, H: int, out_chunk: Path):
-    """يحرّك الدفتر الصوفي الإسلامي 8K بأنيميشن 8D ناعم على CPU مع انتقال dissolve."""
+    """يعرض شرائح الدفتر بثبات وحدة تامة وانتقال dissolve ناعم بدون أي تشويش يرفع حجم الملف."""
     n = len(card_slides)
     if n == 1:
         png_path, _ = card_slides[0]
-        if HAS_FX8D and render_8d_animation_clip is not None:
-            try:
-                render_8d_animation_clip(
-                    img_path=png_path,
-                    out_mp4=out_chunk,
-                    duration=c_dur,
-                    W=W,
-                    H=H,
-                    fps=VIDEO_FPS,
-                    mood="spiritual_noor",
-                    particles="gold_motes",
-                    move="orbit_in",
-                    is_notebook=True,
-                    seed=777,
-                )
-                return
-            except Exception as e:
-                print(f"   ⚠️ [Card 8D fallback]: {str(e)[:70]}", flush=True)
-
-        frames = max(24, int(round(c_dur * VIDEO_FPS)) + 12)
-        vf = (
-            f"scale={W*2}:{H*2}:flags=lanczos,"
-            f"zoompan=z='min(zoom+0.00035,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-            f"d={frames}:s={W}x{H}:fps={VIDEO_FPS},format=yuv420p,setsar=1"
-        )
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-loop", "1", "-t", f"{c_dur:.3f}", "-i", str(png_path),
-                "-vf", vf,
+                "-vf", f"scale={W}:{H},fps={VIDEO_FPS},format=yuv420p,setsar=1",
                 "-t", f"{c_dur:.3f}",
                 *ENCODE_ARGS, str(out_chunk),
             ],
@@ -1018,33 +1043,11 @@ def _render_card_slides_video(card_slides: list[tuple[Path, float]], c_dur: floa
         return
 
     min_s = min(d for _, d in card_slides)
-    fade_d = min(0.32, min_s * 0.35)
+    fade_d = min(0.28, min_s * 0.32)
     inputs = []
     filters = []
-    tmp_dir = out_chunk.parent
     for i, (png_path, s_dur) in enumerate(card_slides):
         in_dur = s_dur + (fade_d if i < n - 1 else 0.0)
-        if HAS_FX8D and render_8d_animation_clip is not None:
-            try:
-                sl_mp4 = tmp_dir / f"{out_chunk.stem}_8d_{i}.mp4"
-                render_8d_animation_clip(
-                    img_path=png_path,
-                    out_mp4=sl_mp4,
-                    duration=in_dur,
-                    W=W,
-                    H=H,
-                    fps=VIDEO_FPS,
-                    mood="spiritual_noor",
-                    particles="gold_motes",
-                    move="orbit_in" if i % 2 == 0 else "orbit_out",
-                    is_notebook=True,
-                    seed=700 + i * 31,
-                )
-                inputs.extend(["-i", str(sl_mp4)])
-                filters.append(f"[{i}:v]fps={VIDEO_FPS},format=yuv420p,setsar=1[c{i}]")
-                continue
-            except Exception:
-                pass
         inputs.extend(["-loop", "1", "-t", f"{in_dur:.3f}", "-i", str(png_path)])
         filters.append(f"[{i}:v]scale={W}:{H},fps={VIDEO_FPS},format=yuv420p,setsar=1[c{i}]")
 
@@ -1083,10 +1086,9 @@ def get_duration(path) -> float:
         return 0.0
 
 
-def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Path, fx_layers: dict | None = None):
+def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Path):
     is_img = bg_file.lower().endswith((".jpg", ".jpeg", ".png"))
 
-    # في وضع اليوميات: نحول الصور الثابتة تلقائياً إلى أنيميشن 8D مجاني عبر fx_8d.py!
     if is_img and HAS_FX8D and render_8d_animation_clip is not None:
         try:
             moves = ("orbit_in", "orbit_out", "orbit_left", "orbit_right")
@@ -1099,85 +1101,49 @@ def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Pat
                 H=H,
                 fps=VIDEO_FPS,
                 mood="sacred_heritage",
-                particles="gold_motes",
+                particles="none",
                 move=moves[seed_v % len(moves)],
                 is_notebook=False,
                 seed=seed_v,
             )
             return
         except Exception as e:
-            print(f"   ⚠️ [Daily 8D fallback]: {str(e)[:70]}", flush=True)
+            print(f"   ⚠️ [Daily 3D fallback]: {str(e)[:70]}", flush=True)
 
-    if fx_layers:
-        try:
-            if is_img:
-                total_frames = max(24, int(duration * VIDEO_FPS) + 24)
-                base_cmd = ["-i", bg_file]
-                base_filter = (
-                    f"[0:v]scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
-                    f"crop={W*2}:{H*2},"
-                    f"zoompan=z='min(zoom+0.0007,1.14)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={W}x{H}:fps={VIDEO_FPS},"
-                    f"colorbalance=rs=0.05:gs=0.02:bs=-0.03,"
-                    f"eq=brightness=-0.09:contrast=1.08:saturation=1.18,"
-                    f"vignette=PI/5,format=yuv420p[base]"
-                )
-            else:
-                base_cmd = ["-stream_loop", "-1", "-i", bg_file]
-                base_filter = (
-                    f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-                    f"crop={W}:{H},fps={VIDEO_FPS},"
-                    f"colorbalance=rs=0.05:gs=0.02:bs=-0.03,"
-                    f"eq=brightness=-0.09:contrast=1.08:saturation=1.18,"
-                    f"vignette=PI/5,format=yuv420p[base]"
-                )
-
-            fx_inputs = [
-                "-loop", "1", "-i", str(fx_layers["bokeh"]),
-                "-loop", "1", "-i", str(fx_layers["sparkle"]),
-                "-loop", "1", "-i", str(fx_layers["leak"]),
-            ]
-            fc = (
-                f"{base_filter};"
-                f"[1:v]fps={VIDEO_FPS},format=rgba,colorchannelmixer=aa=0.22[bk];"
-                f"[2:v]fps={VIDEO_FPS},format=rgba,colorchannelmixer=aa=0.40[sp];"
-                f"[3:v]fps={VIDEO_FPS},format=rgba,colorchannelmixer=aa=0.25[lk];"
-                f"[base][bk]overlay=x='-100+50*sin(t/8)':y='-100+50*cos(t/10)':shortest=1[v1];"
-                f"[v1][sp]overlay=x='-50+30*cos(t/6)':y='-50+30*sin(t/9)':shortest=1[v2];"
-                f"[v2][lk]overlay=0:0:shortest=1,format=yuv420p,setsar=1[vout]"
-            )
-            subprocess.run(
-                ["ffmpeg", "-y"] + base_cmd + fx_inputs + [
-                    "-filter_complex", fc, "-map", "[vout]",
-                    "-t", f"{duration:.3f}", *ENCODE_ARGS, str(out_path),
-                ],
-                check=True, capture_output=True, timeout=240,
-            )
-            return
-        except Exception:
-            pass
-
-    input_flags = ["-loop", "1"] if is_img else ["-stream_loop", "-1"]
-    vf = (
-        f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-        f"crop={W}:{H},fps={VIDEO_FPS},"
-        f"eq=brightness=-0.10:contrast=1.06,"
-        f"format=yuv420p,setsar=1"
-    )
-    subprocess.run(
-        ["ffmpeg", "-y"] + input_flags + [
-            "-i", bg_file, "-t", f"{duration:.3f}", "-vf", vf,
-            *ENCODE_ARGS, str(out_path),
-        ],
-        check=True, capture_output=True,
-    )
+    if is_img:
+        total_frames = max(24, int(duration * VIDEO_FPS) + 12)
+        vf = (
+            f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
+            f"crop={W*2}:{H*2},"
+            f"zoompan=z='min(zoom+0.00045,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={W}x{H}:fps={VIDEO_FPS},"
+            f"eq=brightness=-0.08:contrast=1.06:saturation=1.10,"
+            f"format=yuv420p,setsar=1"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", bg_file, "-t", f"{duration:.3f}", "-vf", vf, *ENCODE_ARGS, str(out_path)],
+            check=True, capture_output=True, timeout=180,
+        )
+    else:
+        vf = (
+            f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+            f"crop={W}:{H},fps={VIDEO_FPS},"
+            f"eq=brightness=-0.08:contrast=1.06,"
+            f"format=yuv420p,setsar=1"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-stream_loop", "-1", "-i", bg_file, "-t", f"{duration:.3f}", "-vf", vf,
+             *ENCODE_ARGS, str(out_path)],
+            check=True, capture_output=True, timeout=180,
+        )
 
 
-def prepare_scene_backgrounds(meta: dict, work_dir: Path, W: int, H: int) -> tuple[list, dict]:
-    scenes = detect_scenes(meta["segments"])
+def prepare_scene_backgrounds(meta: dict, work_dir: Path, W: int, H: int, skip_types: set[str] | None = None) -> tuple[list, dict]:
+    scenes = detect_scenes(meta["segments"], skip_types=skip_types)
     used_urls = set()
     used_local = set()
     scene_bg_map = {}
-    print(f"🎨 تحضير {len(scenes)} مشهد بصري سحري متنوع...", flush=True)
+    if scenes:
+        print(f"🎨 تحضير {len(scenes)} مشهد بصري متنوع...", flush=True)
     for scene in scenes:
         sid = scene["scene_id"]
         query = scene["query"]
@@ -1215,7 +1181,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
     final_audio_input = audio_path
 
     if use_cinema:
-        print("🎥 تفعيل مخرج الواقعية السينمائية 8D + الدفتر الصوفي الإسلامي 8K", flush=True)
+        print("🎥 تفعيل مخرج الواقعية السينمائية 3D + الدفتر الصوفي الإسلامي", flush=True)
         cinema_meta = meta
         if card_mode:
             cinema_meta = {
@@ -1229,8 +1195,8 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
         chunk_bg_map = prepare_and_render_episode_chunks(cinema_meta, cinema_plan, W, H, work_dir)
         final_audio_input = build_halal_ambient_mix(meta, cinema_plan, audio_path, work_dir)
     else:
-        fx_layers = prepare_fx_layers(work_dir, W, H)
-        scenes, scene_bg_map = prepare_scene_backgrounds(meta, work_dir, W, H)
+        skip_types = CARD_SEG_TYPES if card_mode else set()
+        scenes, scene_bg_map = prepare_scene_backgrounds(meta, work_dir, W, H, skip_types=skip_types)
         for scene in scenes:
             sid = scene["scene_id"]
             for key in scene["chunk_keys"]:
@@ -1238,7 +1204,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             scene_dur = scene["duration"]
             if scene_dur > 0:
                 bg_mp4 = work_dir / f"bg_scene_{sid}_{W}x{H}.mp4"
-                prep_background(scene_bg_map[sid], scene_dur + 0.5, W, H, bg_mp4, fx_layers=fx_layers)
+                prep_background(scene_bg_map[sid], scene_dur + 0.5, W, H, bg_mp4)
                 scene_bg_videos[sid] = bg_mp4
         scene_offsets = {sc["scene_id"]: 0.0 for sc in scenes}
 
@@ -1257,12 +1223,10 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 continue
 
             c_text = chunk_data.get("text", "")
+            c_text_en = "" if is_quran else chunk_data.get("text_en", "")
             out_chunk = work_dir / f"chunk_{seg_idx}_{c_idx}.mp4"
 
             if is_card_seg and c_text.strip():
-                if not use_cinema and (seg_idx, c_idx) in chunk_to_scene:
-                    scene_offsets[chunk_to_scene[(seg_idx, c_idx)]] += c_dur
-
                 card_slides = render_islamic_card_slides(
                     chunk_text=c_text,
                     seg_type=stype,
@@ -1272,6 +1236,8 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                     W=W,
                     H=H,
                     c_dur=c_dur,
+                    text_en=c_text_en,
+                    latin_font_path=LATIN_FONT_PATH,
                 )
                 if card_slides:
                     _render_card_slides_video(card_slides, c_dur, W, H, out_chunk)
@@ -1282,6 +1248,8 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 bg_video = chunk_bg_map[(seg_idx, c_idx)]
                 bg_cmd = ["-i", str(bg_video)]
             else:
+                if (seg_idx, c_idx) not in chunk_to_scene:
+                    continue
                 sid = chunk_to_scene[(seg_idx, c_idx)]
                 bg_video = scene_bg_videos[sid]
                 bg_offset = scene_offsets[sid]
@@ -1293,7 +1261,10 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
 
             if is_quran:
                 surah = int(chunk_data.get("surah") or seg.get("surah") or 0)
-                a_num = int(chunk_data.get("ayah") or (ayahs[c_idx] if c_idx < len(ayahs) else 0))
+                a_num = int(
+                    chunk_data.get("ayah")
+                    or (ayahs[c_idx] if c_idx < len(ayahs) else (ayahs[0] if len(ayahs) == 1 else 0))
+                )
                 sname = (
                     chunk_data.get("surah_name")
                     or seg.get("surah_name")
@@ -1317,6 +1288,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                 c_dur=c_dur,
                 show_reciter=show_reciter,
                 cinematic_subtitles=use_cinema,
+                text_en=c_text_en,
             )
 
             if not slides:
@@ -1333,7 +1305,11 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
                     slide_filters.append(f"[{in_idx}:v]fps={VIDEO_FPS},format=rgba[t{s_i}]")
 
                 concat_txt = "".join(f"[t{k}]" for k in range(len(slides)))
-                fc = ";".join(slide_filters) + f";{concat_txt}concat=n={len(slides)}:v=1:a=0[txt];[0:v][txt]overlay=shortest=1,format=yuv420p,setsar=1[v]"
+                fc = (
+                    ";".join(slide_filters)
+                    + f";{concat_txt}concat=n={len(slides)}:v=1:a=0[txt];"
+                    + "[0:v][txt]overlay=shortest=1,format=yuv420p,setsar=1[v]"
+                )
                 subprocess.run(
                     ["ffmpeg", "-y"] + bg_cmd + slide_inputs + [
                         "-filter_complex", fc, "-map", "[v]",
@@ -1357,7 +1333,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             "-i", final_audio_input,
             "-map", "0:v", "-map", "1:a",
             *FINAL_ENCODE_ARGS,
-            "-c:a", "aac", "-ac", "1", "-b:a", "64k",
+            "-c:a", "aac", "-ac", "1", "-b:a", "48k",
             "-movflags", "+faststart",
             "-shortest",
             output_mp4,
