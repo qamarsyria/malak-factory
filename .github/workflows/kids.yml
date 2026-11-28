@@ -9,7 +9,7 @@ permissions:
 jobs:
   kids_story:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - name: "📥 سحب المستودع"
@@ -23,8 +23,11 @@ jobs:
       - name: "📦 تثبيت الحزم والخطوط العربية"
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg libraqm0 fonts-hosny-amiri
-          pip install -q pillow requests arabic-reshaper python-bidi gradio_client numpy opencv-python-headless onnxruntime huggingface_hub
+          sudo apt-get install -y -qq --no-install-recommends \
+            ffmpeg fonts-hosny-amiri libraqm-dev libfribidi-dev libharfbuzz-dev
+          pip install --upgrade -q pip
+          pip install -q "numpy<2" pillow requests arabic-reshaper python-bidi \
+            edge-tts "gradio_client>=1.10.0,<2.0.0" opencv-python-headless onnxruntime huggingface_hub
 
       - name: "✍️ تأليف قصة الأطفال وتوليد الأصوات"
         env:
@@ -34,7 +37,7 @@ jobs:
         run: |
           python -u scripts/kids_story.py
 
-      - name: "🎬 إخراج الفيديو الكرتوني 3D/8D"
+      - name: "🎬 إخراج الفيديو الكرتوني 3D"
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -53,25 +56,42 @@ jobs:
           python - << 'EOF'
           import json, os, requests
           from pathlib import Path
-          ep = json.loads(Path(Path("out/kids/latest_kids_ep.txt").read_text().strip()).read_text())
+          ep_path = Path(Path("out/kids/latest_kids_ep.txt").read_text(encoding="utf-8").strip())
+          ep = json.loads(ep_path.read_text(encoding="utf-8"))
+          vid = Path("out/kids/kids_final.mp4")
+          assert vid.exists() and vid.stat().st_size > 10000, "❌ ملف الفيديو غير موجود أو فارغ"
           tok = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
           cid = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-          if tok and cid and Path("out/kids/kids_final.mp4").exists():
-              cap = f"🧸 قصص الأطفال — مَلَاكُ المَعْرِفَةِ\n📖 {ep.get('title','')}\n✨ الحكمة: {ep.get('moral_card','')}"
-              with open("out/kids/kids_final.mp4", "rb") as vf:
+          if tok and cid:
+              cap = f"🧸 قصص الأطفال — مَلَّاكُ المَعْرِفَةِ\n📖 {ep.get('title','')}\n✨ الحكمة: {ep.get('moral_card','')}"
+              with open(vid, "rb") as vf:
                   r = requests.post(
                       f"https://api.telegram.org/bot{tok}/sendVideo",
                       data={"chat_id": cid, "caption": cap, "supports_streaming": "true"},
                       files={"video": vf},
                       timeout=180,
                   )
-              print("Telegram:", r.status_code, r.text[:160])
+              print("Telegram:", r.status_code, r.text[:200])
+              data = r.json()
+              assert r.status_code == 200 and data.get("ok"), f"❌ فشل الرفع إلى تلجرام: {r.text}"
           EOF
 
       - name: "💾 حفظ حالة القصص"
         run: |
+          git config --global http.version HTTP/1.1
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/kids_state.json || true
-          git diff --staged --quiet || git commit -m "chore(kids): update kids_state.json"
-          git push || true
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f state/kids_state.json || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(kids): update kids_state.json [skip ci]"
+            for attempt in 1 2 3; do
+              echo "🔄 محاولة حفظ الحالة ($attempt/3)..."
+              git pull --rebase --autostash || true
+              if git push; then
+                echo "✅ تم الحفظ بنجاح"
+                exit 0
+              fi
+              sleep $((attempt * 10))
+            done
+            echo "⚠️ تعذر git push بعد 3 محاولات"
+          fi
