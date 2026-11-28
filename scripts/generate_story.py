@@ -3,7 +3,7 @@ generate_story.py — المرحلة 3: تقسيم الأحداث وتوليد �
 - يقرأ audited/events/ بالترتيب الزمني الدقيق.
 - يبني كل حلقة بنمط: [فقرة سرد حيّة مبسّطة تشرح المعاني والألفاظ الصعبة ← الآية المؤكدة لها مباشرة].
 - يجمع بين الدقة العلمية والتعظيم الشرعي وبين اللغة العربية البسيطة الواضحة للجميع.
-- يضبط اسم القناة (مَلَّاكُ المَعْرِفَةِ) بفتح الميم وتشديد اللام مع الفتح.
+- يضبط اسم القناة (مَلَاكُ المَعْرِفَةِ) بفتح الميم وبدون شدة على اللام.
 """
 
 import os
@@ -172,12 +172,12 @@ def arabize_numbers(text: str) -> str:
     return re.sub(r"\b(\d{1,6})\b", lambda m: num_to_arabic(int(m.group(0))), text)
 
 
-def _enforce_mallak(text: str) -> str:
-    """يضبط اسم القناة دائماً بفتح الميم وتشديد اللام مع الفتح: مَلَّاكُ المَعْرِفَةِ."""
+def _enforce_malak(text: str) -> str:
+    """يضبط اسم القناة دائماً بفتح الميم وبدون شدة على اللام: مَلَاكُ المَعْرِفَةِ."""
     return re.sub(
         r"(?<![\u0621-\u064A])م[\u064B-\u065F]*ل[\u064B-\u065F]*ا[\u064B-\u065F]*ك([\u064B-\u065F]*)"
         r"\s+ال[\u064B-\u065F]*م[\u064B-\u065F]*ع[\u064B-\u065F]*ر[\u064B-\u065F]*ف[\u064B-\u065F]*ة([\u064B-\u065F]*)",
-        lambda m: f"مَلَّاك{m.group(1) or 'ُ'} المَعْرِفَة{m.group(2) or 'ِ'}",
+        lambda m: f"مَلَاك{m.group(1) or 'ُ'} المَعْرِفَة{m.group(2) or 'ِ'}",
         text,
     )
 
@@ -190,7 +190,7 @@ def clean_narration(text: str) -> str:
     text = re.sub(r"[a-zA-Z]+", "", text)
     text = re.sub(r"[\[\]\(\)\{\}<>﴿﴾«»\"'`*#@_•/\\|~=+—–\-]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return _enforce_mallak(text)
+    return _enforce_malak(text)
 
 
 def _norm_ar(text: str) -> str:
@@ -493,7 +493,6 @@ def llm_split_event(event_title: str, ayahs: list, narrative: list) -> dict:
         if cleaned_eps:
             missing_idx = [i for i in range(n_len) if i not in used_idx]
             for mi in missing_idx:
-                # إلحاق أي فقرة منسية بأقرب حلقة تحافظ على الترتيب الزمني التصاعدي
                 target_ep = next(
                     (ep for ep in cleaned_eps if ep["narrative_indices"] and mi < ep["narrative_indices"][-1]),
                     cleaned_eps[-1],
@@ -591,7 +590,7 @@ SCRIPT_PROMPT = """أنت حكواتي وراوٍ إسلامي ذكي تخاطب
 2️⃣ **فصل التلاوة عن السرد**: يُمنع كتابة الآية القرآنية حرفياً أو اقتباس جملة قرآنية كاملة داخل نص `"narration"`. اشرح معناها وسياقها بكلمات وصفية بسيطة، ثم ضع مرجعها في كتلة `"quran"` التالية مباشرة.
 3️⃣ **منع تتابع آيتين غير متسلسلتين**: يُمنع منعاً باتاً وضع كتلتَي `"quran"` متتاليتين مباشرةً دون فقرة `"narration"` فاصلة بينهما، **إلا** إذا كانتا من **نفس السورة ومتتاليتين تماماً بالأرقام** (مثل آية 22 ثم 23). وكذلك لا تجمع داخل كتلة `"quran"` واحدة أرقاماً غير متتالية؛ إذا تباعدت الآيات أو اختلفت السور فاجعل قبل كل آية فقرة `"narration"` تمهد لها.
 4️⃣ **لا حشو**: ممنوع الجمل الإنشائية الفارغة ("في خضم الأحداث"، "مما لا شك فيه"، "ومن الجدير بالذكر").
-5️⃣ **اللغة**: عربية بسيطة وواضحة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد، واسم القناة هو «مَلَّاكُ المَعْرِفَةِ» بفتح الميم وتشديد اللام.
+5️⃣ **اللغة**: عربية بسيطة وواضحة فقط، بلا كلمات إنجليزية ولا أرقام رقمية داخل السرد، واسم القناة هو «مَلَاكُ المَعْرِفَةِ» بفتح الميم وبدون شدة على اللام.
 6️⃣ **الطول المستهدف للسرد**: {min_words} إلى {max_words} كلمة (بقدر المادة الموثقة دون مطّ).
 
 {dignity_rules}
@@ -678,7 +677,6 @@ def enrich_and_validate_script(
 
     expected_refs = {a["ref"] for a in expected_ayahs}
     actual_refs = set()
-    actual_refs_list = []
     meaningful_segments = []
 
     for s in segments:
@@ -712,7 +710,6 @@ def enrich_and_validate_script(
                 if ref_k in actual_refs:
                     issues.append(f"duplicate_ayah ({ref_k})")
                 actual_refs.add(ref_k)
-                actual_refs_list.append(ref_k)
             meaningful_segments.append(s)
 
     missing = sorted(expected_refs - actual_refs)
@@ -1135,7 +1132,7 @@ def main(clear_latest: bool = True, _visited: set | None = None):
             "text": teaser,
             "next_episode_title": f"الحلقة {ep_num + 1}",
             "url": "https://qamarsyria.github.io/qamar-malak/",
-            "platform_name": "مَلَّاكُ المَعْرِفَةِ",
+            "platform_name": "مَلَاكُ المَعْرِفَةِ",
         })
     outro = random.choice(OUTRO_TEMPLATES)
     segments.append({"type": "cta", "text": outro["text"], "visual": "mosque architecture"})
