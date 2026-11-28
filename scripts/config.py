@@ -4,9 +4,9 @@ import os
 # ============================================================
 # الفيديو
 # ============================================================
-VIDEO_W = 1080
-VIDEO_H = 1920
-VIDEO_FPS = 30
+VIDEO_W = 720
+VIDEO_H = 1280
+VIDEO_FPS = 24
 VIDEO_DURATION_MAX = 1200
 FONT_PATH = ""
 FONT_SIZE = 70
@@ -24,8 +24,8 @@ GEMINI_VOICE_FEMALE = "Kore"
 
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "eastus")
-AZURE_VOICE = "ar-EG-ShakirNeural"
-AZURE_RATE = "-10%"
+AZURE_VOICE = "ar-SA-HamedNeural"
+AZURE_RATE = "-7%"
 
 PIPER_MODEL = "/tmp/piper/ar_JO-kareem-medium.onnx"
 PIPER_CONFIG = "/tmp/piper/ar_JO-kareem-medium.onnx.json"
@@ -33,36 +33,33 @@ PIPER_LENGTH_SCALE = 1.0
 
 TTS_VOICE = GEMINI_VOICE
 TTS_VOICE_FEMALE = GEMINI_VOICE_FEMALE
-TTS_RATE = "-10%"
+TTS_RATE = "-7%"
 TTS_VOLUME = "+0%"
 TTS_DELAY_BETWEEN_SEGMENTS = 3
 
-TARGET_SAMPLE_RATE = "44100"
+TARGET_SAMPLE_RATE = "24000"
 TARGET_CHANNELS = "1"
-TARGET_BITRATE = "192k"
+TARGET_BITRATE = "48k"
 
 # ============================================================
 # القرآن (everyayah)
 # ============================================================
-QURAN_RECITER = "Alafasy_128kbps"
-QURAN_BASE = "https://everyayah.com/data"
-
-# 🌟 القارئ الآمن (الشيخ محمود خليل الحصري - آمن 100% على يوتيوب)
 SAFE_RECITERS = [
     "Husary_128kbps"
 ]
-# للتوافق مع الكود القديم (في حال استُخدم STORY_RECITER في مكان آخر)
+QURAN_RECITER = SAFE_RECITERS[0]
 STORY_RECITER = SAFE_RECITERS[0]
+QURAN_BASE = "https://everyayah.com/data"
 
 # ============================================================
 # خريطة الأصوات لكل نوع محتوى
 # ============================================================
 VOICE_MAP = {
-    "hadith":  {"gemini": "Charon",       "azure": "ar-EG-ShakirNeural"},
-    "faq":     {"gemini": "Charon",       "azure": "ar-EG-ShakirNeural"},
-    "riyad":   {"gemini": "Charon",       "azure": "ar-EG-ShakirNeural"},
-    "ruqyah":  {"gemini": "Charon",       "azure": "ar-SA-HamedNeural"},
-    "story":   {"gemini": "Charon",       "azure": "ar-EG-ShakirNeural"},
+    "hadith": {"gemini": "Orus",    "azure": "ar-SA-HamedNeural"},
+    "faq":    {"gemini": "Charon",  "azure": "ar-SA-HamedNeural"},
+    "riyad":  {"gemini": "Charon",  "azure": "ar-SA-HamedNeural"},
+    "ruqyah": {"gemini": "Orus",    "azure": "ar-SA-HamedNeural"},
+    "story":  {"gemini": "Charon",  "azure": "ar-SA-HamedNeural"},
 }
 
 # ============================================================
@@ -96,28 +93,28 @@ SFX_DIR = "assets/audio/sfx"
 # ============================================================
 # Gemini API
 # ============================================================
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEYS", "") or os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_MODELS_TO_TRY = [
-    "gemini-flash-lite-latest",
     "gemini-3.8-flash",
-    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
 ]
 
 # ============================================================
-# التحقق (verifier.py) — مهم جداً
+# التحقق (verifier.py)
 # ============================================================
 DORAR_API = "https://dorar.net/dorar_api.json"
 QURAN_API = "https://api.alquran.cloud/v1"
 
 # ============================================================
-# Freesound API (المؤثرات الصوتية)
+# Freesound API (يُقرأ من GitHub Secrets فقط)
 # ============================================================
-FREESOUND_API_KEY = "mctCOs0Xtos88jMekujyo8r9e0dDenmKAOhjiGzD"
+FREESOUND_API_KEY = os.getenv("FREESOUND_API_KEY", "")
 FREESOUND_CACHE_DIR = "assets/audio/sfx_cache"
 
 # ============================================================
-# خريطة المشاهد (الخلفية + المؤثرات الصوتية)
+# خريطة المشاهد
 # ============================================================
 SCENE_MAP = {
     "conspiracy": {
@@ -165,31 +162,22 @@ SCENE_MAP = {
 # ============================================================
 # الهاشتاجات
 # ============================================================
-HASHTAGS = "#إسلاميات #قرآن #حديث #قصص_الأنبياء #رقية_شرعية #دين #تذكير #قمر_الشام #ملاك_المعرفة"
+HASHTAGS = "#إسلاميات #قرآن #حديث #قصص_الأنبياء #فقه_مبسط #دين #تذكير #ملاك_المعرفة"
 
 # ============================================================
-# تيليجرام
+# تيليجرام / فيسبوك / يوتيوب
 # ============================================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# ============================================================
-# فيسبوك
-# ============================================================
 FACEBOOK_PAGE_TOKEN = os.getenv("FACEBOOK_PAGE_TOKEN", "")
 FACEBOOK_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "")
 
-# ============================================================
-# يوتيوب
-# ============================================================
 YT_CLIENT_ID = os.getenv("YT_CLIENT_ID", "")
 YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET", "")
 YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN", "")
 YT_PRIVACY = "public"
 
-# ============================================================
-# الموقع
-# ============================================================
 SITE_URL = "https://qamarsyria.github.io/qamar-malak/"
 
 # ============================================================
@@ -230,11 +218,11 @@ QURAN_RULES = {
 # التوجيه العاطفي
 # ============================================================
 STYLE_HINTS = {
-    "hadith":  "(in a calm, solemn, and dignified tone)",
-    "faq":     "(in a clear, educational, and friendly tone)",
-    "riyad":   "(in a spiritual, moving, and humble tone)",
-    "ruqyah":  "(in a strong, firm, and authoritative tone)",
-    "story":   "(in a narrative, engaging, and warm tone, with slight pauses between sentences)",
+    "hadith": "(in a calm, solemn, and dignified tone)",
+    "faq":    "(in a clear, educational, and friendly tone)",
+    "riyad":  "(in a spiritual, moving, and humble tone)",
+    "ruqyah": "(in a strong, firm, and authoritative tone)",
+    "story":  "(in a narrative, engaging, and warm tone, with slight pauses between sentences)",
 }
 
 # ============================================================
