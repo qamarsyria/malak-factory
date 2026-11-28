@@ -1,8 +1,8 @@
 """
-story_video.py — المرحلة 5: بناء الفيديو الطولي 720×1280
-- يجهّز قالب الدفتر الصوفي 8K مسبقاً (warmup) قبل استهلاك ZeroGPU.
+story_video.py — المرحلة 5: بناء الفيديو الطولي 720×1280 بحجم اقتصادي ونقاء حاد
+- يضبط معدل الإطارات (15 FPS) وسقف الضغط (-maxrate 165k + صوت 36k) بحيث لا يتجاوز فيديو الـ 3 دقائق ~3-4.4 MB.
 - يعرض الترجمة الإنكليزية الدقيقة نصاً على الشاشة لجميع الفقرات باستثناء القرآن الكريم.
-- يضبط اسم القناة (مَلَّاكُ المَعْرِفَةِ) ويوازن الضغط ليصبح حجم مقطع الـ 3 دقائق ~3.5-4.5 MB بجودة حادة.
+- يحفظ الرسم العثماني (AmiriQuran) واسم القناة (مَلَّاكُ المَعْرِفَةِ).
 """
 
 import io
@@ -69,26 +69,26 @@ DIMENSIONS = {
     "social": {"w": 720, "h": 1280},
 }
 
-VIDEO_FPS = 24
+VIDEO_FPS = 15
 
 ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "veryfast",
-    "-crf", "20",
+    "-crf", "22",
     "-pix_fmt", "yuv420p",
 ]
 
 FINAL_ENCODE_ARGS = [
     "-c:v", "libx264",
     "-preset", "slow",
-    "-crf", "27",
-    "-maxrate", "280k",
-    "-bufsize", "560k",
+    "-crf", "28",
+    "-maxrate", "165k",
+    "-bufsize", "330k",
     "-profile:v", "high",
     "-level:v", "4.0",
-    "-g", str(VIDEO_FPS * 5),
+    "-g", str(VIDEO_FPS * 10),
     "-bf", "4",
-    "-refs", "4",
+    "-refs", "5",
     "-aq-mode", "3",
     "-pix_fmt", "yuv420p",
 ]
@@ -273,7 +273,6 @@ print(f"✅ خط الترجمة: {LATIN_FONT_PATH}", flush=True)
 print(f"✅ خط القرآن: {QURAN_FONT_PATH}", flush=True)
 
 
-# مطابقة ذكية لذكر النساء بدون الوقوع في فخ كلمات مثل "هاجر النبي" أو "أخبار سارة" أو "حامل القرآن"
 WOMEN_PATTERN = re.compile(
     r"(?<!\S)(?:"
     r"مريم|آسية|خديجة|عائشة|فاطمة|حفصة|زينب|"
@@ -918,7 +917,6 @@ def make_caption_slides(
     reciter_font = _load_font(24, is_quran=False)
     wm_font = _load_font(24, is_quran=False)
 
-    # تحضير الترجمة الإنكليزية لوضعها في منطقة مخصصة أسفل النص العربي
     en_lines: list[str] = []
     en_font = ImageFont.truetype(LATIN_FONT_PATH, 20)
     en_lh = 28
@@ -1111,11 +1109,11 @@ def prep_background(bg_file: str, duration: float, W: int, H: int, out_path: Pat
             print(f"   ⚠️ [Daily 3D fallback]: {str(e)[:70]}", flush=True)
 
     if is_img:
-        total_frames = max(24, int(duration * VIDEO_FPS) + 12)
+        total_frames = max(15, int(duration * VIDEO_FPS) + 10)
         vf = (
             f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
             f"crop={W*2}:{H*2},"
-            f"zoompan=z='min(zoom+0.00045,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={W}x{H}:fps={VIDEO_FPS},"
+            f"zoompan=z='min(zoom+0.00045,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={W}x{H}:fps={VIDEO_FPS},"
             f"eq=brightness=-0.08:contrast=1.06:saturation=1.10,"
             f"format=yuv420p,setsar=1"
         )
@@ -1293,7 +1291,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
 
             if not slides:
                 subprocess.run(
-                    ["ffmpeg", "-y"] + bg_cmd + ["-t", f"{c_dur:.3f}", *ENCODE_ARGS, str(out_chunk)],
+                    ["ffmpeg", "-y"] + bg_cmd + ["-t", f"{c_dur:.3f}", "-vf", f"fps={VIDEO_FPS}", *ENCODE_ARGS, str(out_chunk)],
                     check=True, capture_output=True,
                 )
             else:
@@ -1306,9 +1304,10 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
 
                 concat_txt = "".join(f"[t{k}]" for k in range(len(slides)))
                 fc = (
-                    ";".join(slide_filters)
+                    f"[0:v]fps={VIDEO_FPS}[bg];"
+                    + ";".join(slide_filters)
                     + f";{concat_txt}concat=n={len(slides)}:v=1:a=0[txt];"
-                    + "[0:v][txt]overlay=shortest=1,format=yuv420p,setsar=1[v]"
+                    + "[bg][txt]overlay=shortest=1,format=yuv420p,setsar=1[v]"
                 )
                 subprocess.run(
                     ["ffmpeg", "-y"] + bg_cmd + slide_inputs + [
@@ -1333,7 +1332,7 @@ def build_video(meta: dict, audio_path: str, output_mp4: str, W: int, H: int, wo
             "-i", final_audio_input,
             "-map", "0:v", "-map", "1:a",
             *FINAL_ENCODE_ARGS,
-            "-c:a", "aac", "-ac", "1", "-b:a", "48k",
+            "-c:a", "aac", "-ac", "1", "-b:a", "36k",
             "-movflags", "+faststart",
             "-shortest",
             output_mp4,
