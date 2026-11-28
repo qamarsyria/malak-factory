@@ -5,7 +5,7 @@ scripts/islamic_cards.py
 مولد الدفتر الصوفي القطني الإسلامي 8K لمشروع «مَلَّاكُ المَعْرِفَةِ»:
 - يولّد دفتراً صوفياً قطنياً بطابع ديني روحاني عبر Gemini Image / Z-Image-Turbo / FLUX.1-schnell / AI Horde.
 - يدعم تعدد الصفحات (Pagination) تلقائياً للأحاديث والأدعية والفتاوى الطويلة بدون بتر أي كلمة.
-- يعرض الترجمة الإنكليزية الدقيقة (text_en) في شريط سفلي أنيق عالي التباين دون مزاحمة النص العربي.
+- يضبط موضع الترويسة أسفل دبوس الهلال الذهبي ويعرض الترجمة الإنكليزية (text_en) في شريط سفلي أنيق.
 """
 
 from __future__ import annotations
@@ -267,7 +267,7 @@ def _get_active_horde_models() -> list[str]:
 
 
 def _vision_inspect_islamic_card(img_path: Path) -> tuple[bool, tuple[int, int, int, int]]:
-    default_box = (115, 225, 895, 780)
+    default_box = (115, 290, 895, 780)
     keys = _get_gemini_keys()
     if not keys:
         return True, default_box
@@ -287,8 +287,8 @@ def _vision_inspect_islamic_card(img_path: Path) -> tuple[bool, tuple[int, int, 
         "1) halal_ok: false if there are humans, uncovered women, couples, red romantic hearts, crosses, or statues.\n"
         "2) blank_clean: true ONLY if the center cream wool area is clean and free of scribbled gibberish text.\n"
         "3) box: [x0, y0, x1, y1] in 0..1000 normalized coordinates for the largest CLEAN center writing area "
-        "(right of spiral rings, below top margin, above bottom lantern/flowers).\n"
-        'Return ONLY JSON: {"halal_ok": true, "blank_clean": true, "box": [115, 225, 895, 780]}'
+        "(right of spiral rings, strictly BELOW any top golden crescent/flower pin, above bottom lantern/flowers).\n"
+        'Return ONLY JSON: {"halal_ok": true, "blank_clean": true, "box": [115, 290, 895, 780]}'
     )
     for model_id in ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
         for k in keys[:3]:
@@ -313,7 +313,7 @@ def _vision_inspect_islamic_card(img_path: Path) -> tuple[bool, tuple[int, int, 
                         bx = res.get("box")
                         if isinstance(bx, list) and len(bx) == 4:
                             x0, y0, x1, y1 = [int(v) for v in bx]
-                            if 40 <= x0 < x1 <= 960 and 120 <= y0 < y1 <= 860 and (x1 - x0) >= 480 and (y1 - y0) >= 320:
+                            if 40 <= x0 < x1 <= 960 and 150 <= y0 < y1 <= 860 and (x1 - x0) >= 480 and (y1 - y0) >= 300:
                                 return clean, (x0, y0, x1, y1)
                         return clean, default_box
             except Exception:
@@ -522,7 +522,7 @@ def _ai_generate_blank_plush(prompt: str, out_path: Path, W: int, H: int, seed: 
 def _soft_clean_center_wool(img: Image.Image, norm_box: tuple[int, int, int, int]) -> Image.Image:
     w, h = img.size
     x0 = max(60, int(norm_box[0] * w / 1000) - 10)
-    y0 = max(160, int(norm_box[1] * h / 1000) - 10)
+    y0 = max(180, int(norm_box[1] * h / 1000) - 10)
     x1 = min(w - 60, int(norm_box[2] * w / 1000) + 10)
     y1 = min(h - 160, int(norm_box[3] * h / 1000) + 10)
 
@@ -540,7 +540,7 @@ def _soft_clean_center_wool(img: Image.Image, norm_box: tuple[int, int, int, int
 
 
 def _get_plush_template(kind: str, W: int, H: int) -> tuple[Image.Image | None, tuple[int, int, int, int]]:
-    default_box = (115, 225, 895, 780)
+    default_box = (115, 290, 895, 780)
     repo_tpl = _REPO_ROOT / "assets" / "templates" / f"{kind}.jpg"
     if repo_tpl.exists() and repo_tpl.stat().st_size > 15000:
         _, bx = _vision_inspect_islamic_card(repo_tpl)
@@ -669,8 +669,8 @@ def _draw_crisp_overlay_label(
 
     alpha = fg.getchannel("A")
     zero = Image.new("L", canvas.size, 0)
-    outline_a = alpha.filter(ImageFilter.MaxFilter(5))
-    sh_a = outline_a.filter(ImageFilter.GaussianBlur(2))
+    outline_a = alpha.filter(ImageFilter.MaxFilter(3))
+    sh_a = outline_a.filter(ImageFilter.GaussianBlur(1.5))
     canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, sh_a)), dest=(0, 2))
     canvas.alpha_composite(Image.merge("RGBA", (zero, zero, zero, outline_a)))
     canvas.alpha_composite(fg)
@@ -712,7 +712,7 @@ def _draw_en_subtitle_band(
     bd.rounded_rectangle(
         [x0, y0, x1, y1],
         radius=18,
-        fill=(18, 12, 8, 208),
+        fill=(18, 12, 8, 212),
         outline=(212, 175, 55, 130),
         width=2,
     )
@@ -808,50 +808,48 @@ def _render_notebook_slides(
 
     ai_tpl, norm_box = _get_plush_template("notebook_plush_blank", W, H)
 
-    # تخصيص مساحة كافية في الأسفل لشريط الترجمة الإنكليزية بحيث لا يتداخل مع الصفحة
-    en_reserve = 195 if (text_en or "").strip() else 140
+    en_reserve = 205 if (text_en or "").strip() else 145
 
     if ai_tpl is not None:
         bx0 = max(72, int(norm_box[0] * W / 1000))
-        by0 = max(195, int(norm_box[1] * H / 1000))
+        by0 = max(210, int(norm_box[1] * H / 1000))
         bx1 = min(W - 64, int(norm_box[2] * W / 1000))
         by1 = min(H - en_reserve, int(norm_box[3] * H / 1000))
         if bx1 - bx0 < 400:
             bx0, bx1 = 92, W - 76
         if by1 - by0 < 340:
-            by0, by1 = 215, H - en_reserve
+            by0, by1 = 230, H - en_reserve
         safe_x0, safe_x1 = bx0, bx1
-        hdr_y = max(160, by0 - 44)
-        zone_top, zone_bot = by0 + 14, by1
+        hdr_y = max(int(H * 0.315), by0 + 22)
+        zone_top, zone_bot = hdr_y + 52, by1
     else:
         safe_x0, safe_x1 = 94, W - 74
         hdr_y = 162
         zone_top, zone_bot = 224, H - max(205, en_reserve + 15)
 
     text_max_w = safe_x1 - safe_x0
-    text_max_h = zone_bot - zone_top
+    text_max_h = max(240, zone_bot - zone_top)
     center_x = (safe_x0 + safe_x1) // 2
 
     chosen_font = _load_font(font_path, 30)
     clause_lines_map: list[list[str]] = []
-    lh = 56
+    lh = 54
 
-    for sz in range(40, 28, -2):
+    for sz in range(38, 28, -2):
         f = _load_font(font_path, sz)
         grouped = [_wrap_text(cl, f, text_max_w, dd) for cl in clauses]
         total_lines = sum(len(g) for g in grouped)
-        cand_lh = max(54, int(sz * 1.72))
+        cand_lh = max(52, int(sz * 1.70))
         if total_lines * cand_lh <= text_max_h:
             chosen_font, clause_lines_map, lh = f, grouped, cand_lh
             break
     else:
         chosen_font = _load_font(font_path, 30)
         clause_lines_map = [_wrap_text(cl, chosen_font, text_max_w, dd) for cl in clauses]
-        lh = max(54, int(30 * 1.72))
+        lh = max(52, int(30 * 1.70))
 
     max_lines_per_page = max(3, text_max_h // lh)
 
-    # تجميع السطور في صفحات متعددة عند الحاجة (Pagination) لمنع بتر أي سطر أبداً!
     flat_items: list[tuple[int, str]] = []
     for cl_i, lines in enumerate(clause_lines_map):
         for ln in lines:
@@ -866,23 +864,32 @@ def _render_notebook_slides(
         bg = _make_rich_wool_notebook_fallback(W, H, groove_ys, lh).convert("RGBA")
 
     dec = ImageDraw.Draw(bg)
-    dec.line([(center_x - 135, hdr_y + 28), (center_x + 135, hdr_y + 28)], fill=(184, 144, 62, 165), width=2)
-    dec.ellipse([center_x - 4, hdr_y + 24, center_x + 4, hdr_y + 32], fill=(184, 144, 62, 210))
+    dec.line([(center_x - 135, hdr_y + 26), (center_x + 135, hdr_y + 26)], fill=(184, 144, 62, 175), width=2)
+    dec.ellipse([center_x - 4, hdr_y + 22, center_x + 4, hdr_y + 30], fill=(184, 144, 62, 220))
 
     meta_items: list[tuple[int, int, str, object, tuple[int, int, int], str]] = [
-        (center_x, hdr_y, header_label, _load_font(font_path, 30), (118, 76, 24), "center"),
+        (center_x, hdr_y, header_label, _load_font(font_path, 28), (118, 76, 24), "center"),
     ]
     bg_with_meta = _embed_text_into_wool(bg.convert("RGB"), meta_items)
 
     clean_title = re.sub(r"[a-zA-Z]", "", ep_title or "").strip()
     if clean_title:
-        _draw_crisp_overlay_label(bg_with_meta, W // 2, 46, clean_title, _load_font(font_path, 24), (244, 218, 152), is_rtl=True)
-    _draw_crisp_overlay_label(bg_with_meta, W // 2, H - 26, CHANNEL_BRAND, _load_font(font_path, 24), (218, 184, 96), is_rtl=True)
+        t_bar = Image.new("RGBA", bg_with_meta.size, (0, 0, 0, 0))
+        ImageDraw.Draw(t_bar).rounded_rectangle(
+            [W // 2 - 240, 20, W // 2 + 240, 70],
+            radius=16,
+            fill=(18, 12, 8, 150),
+            outline=(212, 175, 55, 85),
+            width=1,
+        )
+        bg_with_meta.alpha_composite(t_bar)
+        _draw_crisp_overlay_label(bg_with_meta, W // 2, 45, clean_title, _load_font(font_path, 25), (255, 226, 145), is_rtl=True)
+
+    _draw_crisp_overlay_label(bg_with_meta, W // 2, H - 26, CHANNEL_BRAND, _load_font(font_path, 25), (255, 222, 130), is_rtl=True)
 
     outputs: list[tuple[Path, float]] = []
 
     if total_lines_all <= max_lines_per_page:
-        # كل النص يتسع في صفحة واحدة: نظهر تمييزاً متدرجاً للجمل
         total_text_h = total_lines_all * lh
         text_start_y = zone_top + max(0, (text_max_h - total_text_h) // 2)
         total_chars = max(1, sum(len(cl) for cl in clauses))
@@ -905,7 +912,6 @@ def _render_notebook_slides(
             s_dur = max(0.35, c_dur * (max(1, len(clauses[active_idx])) / total_chars)) if len(clauses) > 1 else c_dur
             outputs.append((out_png, s_dur))
     else:
-        # النص طويل: تقسيم على صفحات متتابعة بدون حذف أي حرف
         pages = [flat_items[i : i + max_lines_per_page] for i in range(0, len(flat_items), max_lines_per_page)]
         total_chars_pages = max(1, sum(len(ln) for _, ln in flat_items))
 
